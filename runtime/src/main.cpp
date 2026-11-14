@@ -154,7 +154,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "disc_content_hash.h"
 #include "sbi_setup.h"
 #include "disc_path.h"
-#include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
+#include "disc_boot_image.h" /* text-image guard: the boot EXE on the disc */
 #include "psx_keybinds.h"
 #include "host_overlay.h"
 #include "psx_disc_tray.h"
@@ -346,73 +346,22 @@ static void arm_text_image_guard(const std::string &exe_path,
         }
     }
     /* 2. Extract the boot EXE from the disc image. */
-    if (!disc_path.empty()) {
-        PS1::ISOReader iso;
-        if (iso.Open(disc_path)) {
-            /* The boot filename: basename of the game.toml exe field (it names
-             * the same file the recompiler consumed, which came off this disc);
-             * fall back to the SYSTEM.CNF BOOT token for configs whose local
-             * name differs from the disc name. */
-            std::string boot_name;
-            if (!exe_path.empty()) {
-                const size_t slash = exe_path.find_last_of("/\\");
-                boot_name = (slash == std::string::npos)
-                                ? exe_path : exe_path.substr(slash + 1);
-            }
-            PS1::ISOFileEntry ent;
-            if (boot_name.empty() || !iso.FindFile(boot_name, ent)) {
-                /* SYSTEM.CNF: `BOOT = cdrom:\SCUS_944.23;1` */
-                uint8_t cnf[2048] = {0};
-                size_t n = iso.ReadFile("SYSTEM.CNF", cnf, sizeof(cnf) - 1);
-                if (n > 0) {
-                    std::string text((const char *)cnf, n);
-                    std::string lower = text;
-                    for (char &c : lower) c = (char)std::tolower((unsigned char)c);
-                    const size_t key = lower.find("cdrom:");
-                    if (key != std::string::npos) {
-                        size_t j = key + 6;
-                        while (j < text.size() && (text[j] == '\\' || text[j] == '/')) j++;
-                        std::string tok;
-                        while (j < text.size()) {
-                            char c = text[j];
-                            if (c == ';' || c == '\r' || c == '\n' || c == ' ' ||
-                                c == '\t' || c == '\0') break;
-                            tok += c; j++;
-                            if (tok.size() > 64) break;
-                        }
-                        const size_t s2 = tok.find_last_of("\\/");
-                        if (s2 != std::string::npos) tok = tok.substr(s2 + 1);
-                        if (!tok.empty() && iso.FindFile(tok, ent)) boot_name = tok;
-                    }
-                }
-            }
-            if (!boot_name.empty() && iso.FindFile(boot_name, ent) &&
-                ent.size > 2048) {
-                uint8_t *file = (uint8_t *)std::malloc(ent.size);
-                if (file) {
-                    size_t got = iso.ReadFile(boot_name, file, ent.size);
-                    if (got > 2048) {
-                        uint32_t img_len = (uint32_t)(got - 2048);
-                        uint8_t *img = (uint8_t *)std::malloc(img_len);
-                        if (img) {
-                            memcpy(img, file + 2048, img_len);
-                            std::free(file);
-                            dirty_ram_register_text_image(phys_lo, img, img_len);
-                            std::fprintf(stdout,
-                                "psxrecomp: text image guard armed (0x%08X..0x%08X, disc %s)\n",
-                                load_address, load_address + img_len,
-                                boot_name.c_str());
-                            return;
-                        }
-                    }
-                    std::free(file);
-                }
-            }
+    {
+        uint32_t img_len = 0;
+        std::string boot_name;
+        uint8_t *img = psx_read_disc_boot_image(exe_path, disc_path, &img_len, &boot_name);
+        if (img) {
+            dirty_ram_register_text_image(phys_lo, img, img_len);
+            std::fprintf(stdout,
+                "psxrecomp: text image guard armed (0x%08X..0x%08X, disc %s)\n",
+                load_address, load_address + img_len, boot_name.c_str());
+            return;
         }
     }
     std::fprintf(stdout,
         "psxrecomp: WARNING: text image guard NOT armed (no local EXE, no disc "
-        "boot EXE) — native text dispatch will be conservative\n");
+        "boot EXE) — no statically compiled game function will run; the game's "
+        "own code is interpreted\n");
 }
 
 /* dma.c */
