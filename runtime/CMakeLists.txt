@@ -1984,6 +1984,11 @@ if(BUILD_TESTING)
     # comments were reduced to a `ctest -R <name>` pointer so there is exactly
     # one description of how a test is built, and it is one the build executes.
 
+    add_executable(disc_roster_test tests/test_disc_roster.cpp)
+    target_include_directories(disc_roster_test PRIVATE include)
+    target_compile_features(disc_roster_test PRIVATE cxx_std_17)
+    add_test(NAME disc_roster_test COMMAND disc_roster_test)
+
     add_executable(cdrom_irq_mask_test tests/test_cdrom_irq_mask.c)
     target_include_directories(cdrom_irq_mask_test PRIVATE src)
     add_test(NAME cdrom_irq_mask_test COMMAND cdrom_irq_mask_test)
