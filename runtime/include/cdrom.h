@@ -107,6 +107,11 @@ int  cdrom_disc_roster_count(void);
 int  cdrom_disc_selected(void);
 const char *cdrom_disc_roster_path(int index_1based);
 int  cdrom_disc_select(int index_1based);
+/* The save-state disc token of each roster entry, when it is not the entry's
+ * roster index: a program of a multi-program set mounts only its own discs,
+ * and its states take each disc's position in the whole set. A token of 0,
+ * or no table (count 0), keeps the roster index. */
+void cdrom_disc_scope_tokens_set(const int *tokens, int count);
 
 /* TOC of the image currently mounted; 0 when the drive is empty. Two images
  * of a set have different TOCs, so this is how a caller confirms that a disc

@@ -761,6 +761,8 @@ static void* iso_handle = NULL;
 #define CDROM_MAX_DISCS      8
 #define CDROM_DISC_PATH_MAX  1024
 static char s_disc_roster[CDROM_MAX_DISCS][CDROM_DISC_PATH_MAX];
+static int  s_disc_scope_tokens[CDROM_MAX_DISCS];
+static int  s_disc_scope_token_count;
 static int  s_disc_roster_count;
 static int  s_disc_selected;  /* 1-based roster entry mounted; 0 = none */
 
@@ -3797,6 +3799,14 @@ void cdrom_disc_roster_set(const char *const *paths, int count,
 
 int cdrom_disc_roster_count(void) { return s_disc_roster_count; }
 
+void cdrom_disc_scope_tokens_set(const int *tokens, int count) {
+    s_disc_scope_token_count = 0;
+    if (!tokens || count <= 0) return;
+    if (count > CDROM_MAX_DISCS) count = CDROM_MAX_DISCS;
+    for (int i = 0; i < count; i++) s_disc_scope_tokens[i] = tokens[i];
+    s_disc_scope_token_count = count;
+}
+
 uint32_t cdrom_mounted_sector_count(void) {
     return iso_handle ? iso_sector_count(iso_handle) : 0u;
 }
@@ -3866,7 +3876,11 @@ int cdrom_disc_select(int index_1based) {
      * disc, so a mid-session change has to update it. Without this a state
      * saved after a swap is filed under the disc the game booted from, which
      * is the exact mix-up the scoping exists to prevent. */
-    savestate_set_disc_scope(s_disc_roster_count > 1 ? index_1based : 0);
+    int scope = s_disc_roster_count > 1 ? index_1based : 0;
+    if (index_1based <= s_disc_scope_token_count &&
+        s_disc_scope_tokens[index_1based - 1] > 0)
+        scope = s_disc_scope_tokens[index_1based - 1];
+    savestate_set_disc_scope(scope);
 
     trace_cdrom('M', (uint32_t)index_1based, 1u, 0);
     return 1;

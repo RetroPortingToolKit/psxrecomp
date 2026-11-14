@@ -158,6 +158,35 @@ or by hand — switches discs even though `path` still points at the previous
 one. That is what makes disc choice manageable like any other setting. Both
 keys are written only for multi-disc titles.
 
+### Several programs in one set
+
+Some sets put a different program on each disc (Resident Evil 2: Leon on disc
+1, Claire on disc 2). Each program is its own build. The builds can share one
+folder, one `settings.toml`, one set of key binds and one `saves` folder:
+
+- **A config per exe.** If `<exe name>.game.toml` exists beside the
+  executable, it is that executable's game config. Otherwise the build's
+  default config name applies, as for every single-program folder.
+- **`[game] program_discs`.** Every program's config lists the whole set in
+  `discs` and `disc_serials`. `program_discs` holds the 1-based positions the
+  program boots:
+
+  ```toml
+  [game]
+  id            = "SLUS-00756"
+  discs         = ["Game (Disc 1).chd", "Game (Disc 2).chd"]
+  disc_serials  = ["SLUS-00748", "SLUS-00756"]
+  program_discs = [2]
+  ```
+
+  The program mounts only its own discs. When the shared settings remember
+  the other program's disc, the program mounts its own disc instead. Save
+  states take the disc's position in the set (`_disc2`), so two programs with
+  the same entry point never share a state file. Absent, the key means "every
+  disc".
+- **One at a time.** The programs share the memory cards, so a second program
+  started from the same folder is refused while the first runs.
+
 ## Recompiler block
 
 ```toml

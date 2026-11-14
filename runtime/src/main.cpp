@@ -155,6 +155,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "disc_content_hash.h"
 #include "sbi_setup.h"
 #include "disc_roster.h"
+#include "program_set_lock.h"
 #include "disc_path.h"
 #include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
 #include "psx_keybinds.h"
@@ -3019,6 +3020,33 @@ static void load_host_keymap(const char *argv0) {
         host_keymap_load(nullptr);
 }
 
+/* "<exe name>.game.toml" beside the executable, when that file exists; empty
+ * otherwise. A folder that holds several programs of one set (Resident Evil 2:
+ * a Leon exe and a Claire exe) gives each exe its own game config this way,
+ * while settings, key binds and saves stay shared. A folder with one program
+ * has no such file and uses the build's default config name as before. */
+static std::filesystem::path exe_specific_game_config(const char* argv0) {
+    namespace fs = std::filesystem;
+    std::string name;
+#ifdef _WIN32
+    {
+        wchar_t buf[MAX_PATH * 4];
+        DWORD n = GetModuleFileNameW(NULL, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])));
+        if (n > 0 && n < (DWORD)(sizeof(buf) / sizeof(buf[0])))
+            name = fs::path(std::wstring(buf, buf + n)).stem().string();
+    }
+#endif
+    if (name.empty() && argv0 && argv0[0]) {
+        const fs::path p(argv0);
+        /* Only Windows executables carry an extension to drop. */
+        name = (p.extension() == ".exe" ? p.stem() : p.filename()).string();
+    }
+    if (name.empty()) return {};
+    std::error_code ec;
+    const fs::path candidate = exe_dir_from_argv(argv0) / (name + ".game.toml");
+    return fs::is_regular_file(candidate, ec) ? candidate : fs::path{};
+}
+
 static std::filesystem::path resolve_existing_runtime_path(const char* requested,
                                                            const char* argv0) {
     namespace fs = std::filesystem;
@@ -3216,17 +3244,46 @@ static bool pick_runtime_file(const char* title, const char* filter,
 static std::vector<std::filesystem::path> g_disc_metadata_roster;
 static std::vector<std::string> g_disc_serials;
 static std::vector<std::string> g_disc_netplay_fps;
+/* [game] program_discs: the 1-based positions of the set roster above that
+ * THIS build boots. Empty for every title except a program of a set whose
+ * discs boot different programs (see disc_roster.h). The three vectors above
+ * always describe the whole set. */
+static std::vector<int> g_program_discs;
 
 static std::string uppercase_ascii(std::string s);
 
 /* The serial THIS image is expected to carry: the set's per-disc value when
  * the game declared one, the game's own id otherwise. An image that belongs
  * to a declared set but has no serial listed is returned ungated (""), never
- * gated against another disc's number. */
+ * gated against another disc's number. A disc that another program of the set
+ * boots is gated against this program's own id, so it reads as the wrong disc
+ * here, which it is. */
 static std::string expected_serial_for_disc(const std::filesystem::path& disc,
                                             const std::string& fallback) {
     return PSXRecompV4::disc_roster_expected_serial(
-        g_disc_metadata_roster, g_disc_serials, disc, fallback);
+        g_disc_metadata_roster, g_disc_serials, g_program_discs, disc, fallback);
+}
+
+/* True when `disc` is an image that another program of the set boots: a set
+ * roster entry this build does not own, or a relocated image whose serial is
+ * one of the other programs' serials. The programs of a set share
+ * settings.toml and disc.cfg, so the disc one program remembered reaches the
+ * other; it must not be mounted there. */
+static bool disc_belongs_to_other_program(const std::filesystem::path& disc) {
+    if (g_program_discs.empty() || disc.empty()) return false;
+    if (PSXRecompV4::disc_roster_index(g_disc_metadata_roster, disc) >= 0)
+        return PSXRecompV4::disc_roster_program_foreign(
+            g_disc_metadata_roster, g_program_discs, disc);
+    for (size_t i = 0; i < g_disc_serials.size(); ++i) {
+        if (g_disc_serials[i].empty() ||
+            PSXRecompV4::disc_roster_program_owns(g_program_discs, (int)i + 1))
+            continue;
+        const PSXRecompV4::DiscIdentity id = PSXRecompV4::identify_disc(
+            disc, g_disc_serials[i], /*expected_crc*/0,
+            /*has_expected_crc*/false, /*compute_crc*/false);
+        if (id.opened && id.has_header && id.serial_matches) return true;
+    }
+    return false;
 }
 
 static std::string uppercase_ascii(std::string s) {
@@ -3652,7 +3709,10 @@ static std::filesystem::path resolve_disc_for_runtime(const std::filesystem::pat
     if (!cached.empty()) {
         cached = resolve_persisted_disc_path(cached, exe_dir_from_argv(argv0));
     }
+    /* disc.cfg is shared by the programs of a set; the other program's disc
+     * is not this build's. */
     if (!cached.empty() && std::filesystem::exists(cached) &&
+        !disc_belongs_to_other_program(cached) &&
         validate_disc_for_launch(cached, game_id)) {
         return cached;
     }
@@ -18151,8 +18211,11 @@ int main(int argc, char** argv) {
         }
     }
     if (!game_config_path) {
-        std::filesystem::path default_game_config =
-            resolve_existing_runtime_path(PSX_DEFAULT_GAME_CONFIG_PATH, argv[0]);
+        /* This exe's own config wins over the build's default name. */
+        std::filesystem::path default_game_config = exe_specific_game_config(argv[0]);
+        if (default_game_config.empty())
+            default_game_config =
+                resolve_existing_runtime_path(PSX_DEFAULT_GAME_CONFIG_PATH, argv[0]);
         if (!default_game_config.empty()) {
             default_game_config_storage = default_game_config.string();
             game_config_path = default_game_config_storage.c_str();
@@ -18313,11 +18376,21 @@ int main(int argc, char** argv) {
                 (settings_profile && settings_profile->settings_package_id) ? 1 : 0;
             PSXRecompV4::mod_runtime_set_netplay_content_negotiation(
                 g_netplay_content_negotiation != 0);
-            game_discs = gc.discs;
+            /* The metadata vectors always describe the whole set. game_discs
+             * is what this build may mount: every disc, or, for a program of
+             * a multi-program set, its own discs ([game] program_discs). */
             g_disc_metadata_roster = gc.discs;
             g_disc_serials = gc.disc_serials;
             g_disc_netplay_fps = gc.netplay_required_disc_fps;
-            if (!gc.discs.empty()) resolved_disc = gc.discs.front();
+            g_program_discs = gc.program_discs;
+            game_discs = PSXRecompV4::disc_roster_program_subset(
+                gc.discs, g_program_discs);
+            if (!g_program_discs.empty())
+                std::fprintf(stdout,
+                    "psxrecomp: program of a %zu-disc set; this build boots %zu "
+                    "of them (first: set disc %d)\n",
+                    gc.discs.size(), game_discs.size(), g_program_discs.front());
+            if (!game_discs.empty()) resolved_disc = game_discs.front();
             if (gc.runtime.has_memcard_dir)  memcard_dir   = gc.runtime.memcard_dir;
             if (gc.runtime.has_window_title) window_title  = gc.runtime.window_title;
             if (gc.runtime.has_debug_port)   debug_port    = gc.runtime.debug_port;
@@ -19108,6 +19181,20 @@ int main(int argc, char** argv) {
                 const int idx = roster_index_for_disc(game_discs, resolved_disc);
                 if (idx >= 0) selected_disc_index = idx + 1;
             }
+        }
+        /* The programs of a multi-program set share this settings file, so
+         * [disc] path can name the disc the OTHER program last mounted. This
+         * build boots only its own discs: fall back to its own selected (or
+         * first) disc instead of mounting another program's. */
+        if (!disc_override_path && !game_discs.empty() &&
+            disc_belongs_to_other_program(resolved_disc)) {
+            const int own = std::min(std::max(selected_disc_index, 1),
+                                     (int)game_discs.size());
+            std::fprintf(stdout,
+                "psxrecomp: the remembered disc belongs to another program of "
+                "this set; mounting this program's own disc instead\n");
+            selected_disc_index = own;
+            resolved_disc = normalize_disc_path_for_launch(game_discs[own - 1]);
         }
         /* Relative [memcard] values anchor on the exe directory; the
          * per-game options file also lives in memcard_dir. */
@@ -21224,6 +21311,10 @@ session_reboot:
         const int mounted = roster_index_for_disc(game_discs, disc_path_str);
         cdrom_disc_roster_set(roster.data(), (int)roster.size(),
                               mounted >= 0 ? mounted + 1 : selected_disc_index);
+        /* A program of a set names its states by set position, also after
+         * a disc change while it runs. */
+        cdrom_disc_scope_tokens_set(g_program_discs.data(),
+                                    (int)g_program_discs.size());
         /* --disc names a disc of the set, but the earlier index derivation is
          * skipped for an override, so selected_disc_index kept its default of
          * 1. That put the savestate disc token at _disc1 whatever was mounted,
@@ -21325,6 +21416,24 @@ session_reboot:
             std::fprintf(stdout, "psxrecomp: disc speed divisor=%d (applied post-BIOS, "
                          "instant budget %d/frame)\n",
                          divisor, cdrom_get_instant_rate());
+    }
+    /* The programs of a multi-program set share the memory cards. Each keeps
+     * them in memory and writes them back, so only one may run at a time
+     * (program_set_lock.h). A lock-file error other than "held" does not stop
+     * the player. Taken once; a session reboot finds it already held by us. */
+    if (!g_program_discs.empty()) {
+        std::error_code lock_dir_ec;   /* a first run has no saves folder yet */
+        std::filesystem::create_directories(memcard_dir, lock_dir_ec);
+    }
+    if (!g_program_discs.empty() &&
+        psx_program_set_lock_acquire(memcard_dir_str.c_str()) == 0) {
+        const unsigned lock_messages = s_player_message_seq;
+        launcher_warning("Already running",
+            "Another program of this game is running from this folder. They "
+            "share the same memory cards, so only one can run at a time.\n\n"
+            "Close the other one, then start this one again.");
+        return refuse_start("already_running", "Already running", "",
+                            lock_messages);
     }
     {
         std::string mc1 = memcard1_path.string();
@@ -22073,8 +22182,17 @@ session_reboot:
          * believes it is still reading disc 2 -- and nothing in the slot list
          * would say so, because every disc of a set shares one entry_pc, which
          * is the key the slot files already use. Single-disc titles pass 0 and
-         * keep their existing filenames untouched. */
-        savestate_set_disc_scope(game_discs.size() > 1 ? selected_disc_index : 0);
+         * keep their existing filenames untouched.
+         *
+         * A program of a multi-program set shares the saves folder with the
+         * set's other programs, and two of them can share an entry_pc (Rival
+         * Schools). Its states take the disc's position in the SET, so they
+         * never collide with another program's. */
+        savestate_set_disc_scope(
+            !g_program_discs.empty()
+                ? PSXRecompV4::disc_roster_program_set_position(
+                      g_program_discs, selected_disc_index)
+                : (game_discs.size() > 1 ? selected_disc_index : 0));
         savestate_configure(memcard_dir.string().c_str(),
                             memory_get_bios_checksum(), game_entry_pc,
                             bios_token, openbios_ws);

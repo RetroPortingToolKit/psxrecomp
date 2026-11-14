@@ -1061,6 +1061,18 @@ struct GameConfig {
     // that produced disc_set.json.
     std::vector<std::string> disc_serials;
 
+    // Optional ([game] program_discs): the 1-based positions in `discs` that
+    // THIS build boots. Absent means every disc, which is every single-disc
+    // title and every set whose discs carry one program. It is set only for a
+    // set whose discs boot different programs (Resident Evil 2: Leon on disc
+    // 1, Claire on disc 2), where each program is its own build and the builds
+    // share one folder, one settings file and one saves folder. `discs` and
+    // `disc_serials` then list the WHOLE set in every program's config, and
+    // this key says which entries are the program's own. The runtime mounts
+    // only those; a remembered disc that belongs to another program is not
+    // mounted, and save states take the disc's position in the set.
+    std::vector<int> program_discs;
+
     // Optional expected disc identity, for the launcher's "Disc verified" badge.
     // disc_crc: full-file CRC32 (IEEE) of the data track. disc_sha1: lowercase
     // hex SHA-1. Either may be absent (has_disc_crc / disc_sha1.empty()).
