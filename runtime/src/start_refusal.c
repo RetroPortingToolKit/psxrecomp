@@ -10,6 +10,7 @@ static char s_title[PSX_START_REFUSAL_TITLE_CAP];
 static char s_message[PSX_START_REFUSAL_TEXT_CAP];
 static char s_row_bios[PSX_START_LAUNCHER_ROW_CAP];
 static char s_row_disc[PSX_START_LAUNCHER_ROW_CAP];
+static char s_disc_warning[PSX_START_REFUSAL_TEXT_CAP];
 
 static int is_separator(char c) { return c == '/' || c == '\\'; }
 
@@ -87,6 +88,10 @@ void psx_start_note_launcher(const char *row, const char *text) {
 void psx_start_refusal_reset(void) {
     s_kind[0] = s_title[0] = s_message[0] = '\0';
     s_row_bios[0] = s_row_disc[0] = '\0';
+}
+
+void psx_disc_warning_set(const char *message) {
+    psx_start_refusal_without_folders(s_disc_warning, sizeof(s_disc_warning), message);
 }
 
 /* Length of the well-formed UTF-8 sequence at s, or 0 when the bytes there
@@ -191,5 +196,13 @@ int psx_start_launcher_status_json(char *out, size_t cap) {
         put_json_string(out, cap, &pos, s_row_disc) &&
         put_text(out, cap, &pos, "}"))
         return (int)pos;
+    return put_null(out, cap);
+}
+
+int psx_disc_warning_json(char *out, size_t cap) {
+    size_t pos = 0;
+    if (!out || cap == 0) return 0;
+    if (!s_disc_warning[0]) return put_null(out, cap);
+    if (put_json_string(out, cap, &pos, s_disc_warning)) return (int)pos;
     return put_null(out, cap);
 }

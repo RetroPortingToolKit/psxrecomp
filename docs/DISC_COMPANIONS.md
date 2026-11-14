@@ -49,6 +49,30 @@ Cooked ISO and 2448-byte conversions preserve supplied SBI files but do not inhe
 The existing 2448-byte conversion discards embedded subchannels; this change does not extract them into SBI.
 CHD preparation and automatic protection detection for other revisions are outside this tool's coverage.
 
+## Known-disc missing-file warning
+
+These European discs carry LibCrypt protection and get a warning when no SBI
+is loaded: CTR SCES-02105; Final Fantasy IX SLES-02965, SLES-12965, SLES-22965
+and SLES-32965; Soul Reaver SLES-01301; Galerians SLES-02328, SLES-12328 and
+SLES-22328; Asterix SLES-03324; Lucky Luke SLES-03530. The serials come from
+the matching Redump entries. The list qualifies no CHD, pressing or SBI hash.
+RE3 SLES-02529 also enters the warning list through its existing required-SBI
+record. The generator combines these serials with the measured-track registry;
+it adds no track or SBI hashes and leaves Python's measured-track checks intact.
+
+Python preparation and verification use the measured main-track SHA-1. They
+print one missing-SBI sentence and retain it in the existing subchannel receipt.
+The native setup/validation paths use the mounted disc's detected boot serial,
+never a configured or expected serial. Serial membership is a warning lead,
+not a revision check. A successfully loaded companion removes the warning;
+the existing exact-revision requirement and hash checks remain separate.
+
+The runtime prints the sentence on a validation/game start and retains it as
+`disc_warning` in the run report after the first guest instruction. This warning
+adds no new refusal, download, patch or companion redistribution rule. Unknown
+discs do not receive it. Neither an absent warning nor a format-valid SBI proves
+that a protection check passed.
+
 ## Receipts and callers
 
 Preparation writes `<output-cue-basename>.disc-receipt.json` beside the output.
@@ -70,7 +94,7 @@ Older installed setup kits retain their existing behavior.
 The native launcher also checks the exact data-track SHA-256 before Play.
 With the matching recomp-ui update, the verification card shows `SBI File`:
 `Missing` for a required missing or mismatched companion, `OK` for a match,
-and `N/A` when the registry has no requirement for this disc.
+and `N/A` when the registry has no requirement for this disc. A CHD never matches a data-track rule; for a serial on the LibCrypt warning list the row then shows `OK` when the disc mounted with its SBI loaded and `Missing` otherwise. That row is a warning only and does not block Play. The missing-SBI warning follows the same test: it is raised for such a serial exactly when the row would show `Missing`, also when the image's TOC did not mount (for example because the `.sbi` beside it is empty or damaged), since no SBI was loaded then.
 `N/A` is not proof that an unknown revision has complete subchannels.
 
 Select the disc first. Use **Browse For Disc / SBI** to select its matching SBI.
@@ -108,8 +132,14 @@ Run the source-owned setup tests from the framework root:
 ```sh
 python tools/tests/test_disc_companion.py -v
 python tools/tests/test_sbi_registry.py -v
+python tools/tests/test_missing_sbi_reason.py --cxx g++
 ```
 
 The fixtures create synthetic ISO directory records, an inert executable header, audio bytes, and SBI records.
 Tests bind their own synthetic revision through an in-memory registry entry.
 No fixture copies retail game data, BIOS data, or a third-party SBI.
+The native `missing_sbi_report_test` target checks the warning's report lifetime
+and privacy, in standard C++17.
+`missing_sbi_reason_test` executes the launcher's exact reason expression.
+An identity refusal or required-companion failure keeps its blocking reason
+ahead of the advisory missing-SBI warning.

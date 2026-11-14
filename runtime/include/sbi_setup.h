@@ -20,6 +20,19 @@ struct SbiRequirement {
 };
 #include "sbi_registry.h"
 
+// The caller supplies the inserted disc's detected serial, never its config ID.
+// A warning does not qualify a pressing or change the existing exact hash gate.
+inline std::string missing_sbi_warning(const std::filesystem::path& image,
+                                       const std::string& serial, bool loaded) {
+    if (loaded) return {};
+    for (const char* known : kKnownLibcryptSerials) {
+        if (serial == known)
+            return "Missing SBI: " + serial + " is associated with LibCrypt and no SBI was loaded for \""
+                + image.filename().string() + "\", so the game may stop or fail to run correctly.";
+    }
+    return {};
+}
+
 struct SbiSetupResult {
     bool required = false;
     bool ready = true;

@@ -958,6 +958,8 @@ def _verify_chd(
         subchannel, _ = inspect_companion(disc, chosen.size, chosen.sha1)
     except CompanionError as exc:
         raise DiscVerifyError(str(exc)) from exc
+    if subchannel.get("warning"):
+        progress.log(subchannel["warning"])
     identity = {
         "path": str(disc),
         "md5": chosen.md5,
@@ -1008,6 +1010,8 @@ def verify_disc_path(
         subchannel, _ = inspect_companion(disc, size, sha1)
     except CompanionError as exc:
         raise DiscVerifyError(str(exc)) from exc
+    if subchannel.get("warning"):
+        progress.log(subchannel["warning"])
     identity = {
         "path": str(path),
         "md5": md5,

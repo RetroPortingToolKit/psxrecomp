@@ -2958,6 +2958,10 @@ int cdrom_has_disc(void) {
     return has_disc();
 }
 
+int cdrom_has_sbi(void) {
+    return iso_handle != NULL && subq_replacements_active;
+}
+
 uint32_t cdrom_read(uint32_t addr) {
     uint32_t ret = 0;
     switch (addr) {
