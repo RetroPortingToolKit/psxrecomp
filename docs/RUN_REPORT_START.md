@@ -35,6 +35,7 @@ report always loads as UTF-8 JSON.
 | `memcard_dir` | The folder given with `--memcard-dir` cannot be created. |
 | `overlay_cache` | The cache of compiled game code cannot be set up. |
 | `no_disc` | No usable disc: the image does not open, or the picker was cancelled. |
+| `wrong_disc` | The disc is not the one this build needs: its serial is another game's or another release's, or no serial was found on it. The message is the sentence the launcher's disc panel shows for the same disc: "This disc is SLES-02913. This build needs SLES-01156." The launcher's PLAY refuses such a disc; a start that skips the launcher is refused here. |
 | `mods` | The selected mods cannot be applied, or cannot be switched off for a netplay match. |
 | `no_bios` | No usable BIOS: the file is not an image this build was compiled from, the bundled image is missing, or the picker was cancelled. |
 | `setup_program` | The program is a setup program: no game and no BIOS code is linked into it. Run Generate and rebuild; the game is in `build-release`. |

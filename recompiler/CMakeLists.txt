@@ -1412,6 +1412,7 @@ if(BUILD_TESTING)
                 launcher_pad_mode_wiring
                 netplay_start_failure_wiring
                 start_refusal_wiring
+                launcher_serial_status_wiring
                 jalr_link_register_guards
                 gl_internal_scale_guards
                 launcher_vulkan_option

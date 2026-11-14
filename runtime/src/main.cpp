@@ -3225,9 +3225,8 @@ static std::string uppercase_ascii(std::string s);
  * gated against another disc's number. */
 static std::string expected_serial_for_disc(const std::filesystem::path& disc,
                                             const std::string& fallback) {
-    if (g_disc_serials.empty()) return fallback;
-    return PSXRecompV4::disc_roster_value(
-        g_disc_metadata_roster, g_disc_serials, disc, "");
+    return PSXRecompV4::disc_roster_expected_serial(
+        g_disc_metadata_roster, g_disc_serials, disc, fallback);
 }
 
 static std::string uppercase_ascii(std::string s) {
@@ -3265,6 +3264,7 @@ struct DiscValidation {
     bool has_header = false;
     bool id_matches = false;
     std::string detail;
+    std::string wrong_disc;   // the sentence, when the disc is refused for its serial
 };
 
 static DiscValidation validate_disc_image(const std::filesystem::path& selected_path,
@@ -3279,20 +3279,55 @@ static DiscValidation validate_disc_image(const std::filesystem::path& selected_
     const PSXRecompV4::DiscIdentity id =
         PSXRecompV4::identify_disc(selected_path, expect, /*expected_crc*/0,
                                    /*has_expected_crc*/false, /*compute_crc*/false);
+    /* A build with a serial list expects nothing of an image its disc list
+     * does not know, so `expect` is empty for it and nothing was compared:
+     * another game's disc started with no warning, where a build with no
+     * list warns. Such an image is
+     * judged as the launcher's panel judges it, by the serial read against
+     * every serial of the list, and gets the same warning. Whether the start
+     * should be refused is not decided here: it is not. */
+    const PSXRecompV4::DiscSetSerial outside = PSXRecompV4::disc_roster_outside_list(
+        g_disc_metadata_roster, g_disc_serials, selected_path,
+        id.expected_serial_given, id.opened && id.has_header, id.detected_serial);
+    const bool outside_wrong = PSXRecompV4::disc_roster_wrong_disc(outside);
     DiscValidation v;
     v.opened     = id.opened;
     v.has_header = id.has_header;
-    v.id_matches = expect.empty() ? true : id.serial_matches;
+    v.id_matches = expect.empty() ? !outside_wrong : id.serial_matches;
     v.detail     = id.detail;
-    if (id.opened && id.has_header && !v.id_matches && v.detail.empty()) {
-        v.detail = "The disc header is readable, but it does not contain the expected game ID " +
-                   uppercase_ascii(expect) + " in the early disc metadata.";
-    }
+    /* A readable disc whose serial is not the one this build needs is the
+     * wrong disc, and a start with it is refused:
+     * another game's disc cannot run on this game's code. The sentence is the
+     * panel's. */
+    if (id.opened && id.has_header && !v.id_matches)
+        v.wrong_disc = PSXRecompV4::disc_roster_wrong_disc_sentence(
+            id.detected_serial,
+            expect.empty() ? PSXRecompV4::disc_roster_serial_list(g_disc_serials)
+                           : PSXRecompV4::disc_roster_serial_list({uppercase_ascii(expect)}));
     return v;
+}
+
+/* The sentence of the last disc this start checked and refused for its
+ * serial; empty when the last disc checked was not refused for that. The
+ * start's refusal reads it for the run report (kind `wrong_disc`). */
+static std::string s_wrong_disc_sentence;
+
+/* The box for a disc that is refused for its serial. As every refusal's box
+ * it opens only when a person started the program: a scripted start gets the
+ * line on stderr and the run report. */
+static void wrong_disc_notice(const std::string& sentence) {
+    ++s_player_message_seq;
+    s_player_message_title = "Disc verification failed";
+    s_player_message_text  = sentence;
+    std::fprintf(stderr, "Disc verification failed: %s\n", sentence.c_str());
+    if (s_start_interactive && !g_headless)
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Disc verification failed",
+                                 sentence.c_str(), NULL);
 }
 
 static bool validate_disc_for_launch(const std::filesystem::path& path,
                                      const std::string& game_id) {
+    s_wrong_disc_sentence.clear();
     std::string identity_error;
     if (!PSXRecompV4::required_original_disc_matches(path, &identity_error)) {
         std::fprintf(stderr, "psxrecomp: %s\n", identity_error.c_str());
@@ -3303,7 +3338,18 @@ static bool validate_disc_for_launch(const std::filesystem::path& path,
         launcher_warning("Disc Image Not Found", v.detail + "\n\nSelected path:\n" + path.string());
         return false;
     }
-    if (!v.has_header || !v.id_matches) {
+    /* The wrong disc is refused, as the launcher's PLAY refuses it.
+     * Until then a start from the command line warned and
+     * ran another game's disc on this game's code. */
+    if (!v.wrong_disc.empty()) {
+        s_wrong_disc_sentence = v.wrong_disc;
+        wrong_disc_notice(v.wrong_disc);
+        return false;
+    }
+    /* What the warning still covers: an image that opens and has no ISO 9660
+     * header where a PlayStation disc has one. Its serial cannot be read, so
+     * it cannot be called another game's disc. */
+    if (!v.has_header) {
         launcher_warning("Disc Image Warning",
             v.detail + "\n\nThis may be the wrong game or a corrupt image. The runtime will try to run it anyway.");
     }
@@ -11859,6 +11905,49 @@ namespace {
         std::snprintf(out->serial, sizeof(out->serial), "%s", serial.c_str());
         std::snprintf(out->region, sizeof(out->region), "%s", id.region.c_str());
         out->iso_ok = id.has_header ? 1 : 0;
+        /* A set, and an image its disc list does not know (another file name,
+         * another folder): no serial is expected for it, so nothing was
+         * checked. A copy of one of the set's discs must stay accepted;
+         * another game's disc was called verified and PLAY was lit. It is
+         * judged by its serial against every serial of the set. An image
+         * that IS in the disc list is judged by its own entry, as before. */
+        const PSXRecompV4::DiscSetSerial set_serial =
+            PSXRecompV4::disc_roster_outside_list(
+                g_disc_metadata_roster, g_disc_serials,
+                std::filesystem::path(disc_path), id.expected_serial_given,
+                id.opened && id.has_header, id.detected_serial);
+        /* Wrong disc: what was read is none of the list's serials, and
+         * that includes a disc on which no serial was found. */
+        const bool set_wrong_disc = PSXRecompV4::disc_roster_wrong_disc(set_serial);
+#if defined(RECOMP_LAUNCHER_HAS_SERIAL_STATUS)
+        /* Whether the serial is one this build lists. The launcher
+         * ticked the Serial row for any serial, so a disc of another release
+         * looked right and the only sentence on the panel was the online-play
+         * note. */
+        if (id.expected_serial_given) {
+            /* The row shows what was read from the disc, never the serial
+             * that was expected: a disc with no readable serial, or a file
+             * that did not open, showed the right serial with a tick. */
+            if (!id.serial_matches)
+                std::snprintf(out->serial, sizeof(out->serial), "%s",
+                              id.detected_serial.c_str());
+            /* A disc that did not open says nothing more: its ISO header row
+             * is the reason. */
+            if (id.opened && id.has_header) {
+                out->serial_status = id.serial_matches ? RECOMP_SERIAL_LISTED
+                                                       : RECOMP_SERIAL_NOT_LISTED;
+                std::snprintf(out->expected_serials, sizeof(out->expected_serials),
+                              "%s", expect_serial.c_str());
+            }
+        } else if (set_serial != PSXRecompV4::DiscSetSerial::NotJudged) {
+            /* The image outside the set's disc list: the row's mark, and the
+             * whole list of the set for the sentence. */
+            out->serial_status = set_serial == PSXRecompV4::DiscSetSerial::Listed
+                                     ? RECOMP_SERIAL_LISTED : RECOMP_SERIAL_NOT_LISTED;
+            std::snprintf(out->expected_serials, sizeof(out->expected_serials), "%s",
+                          PSXRecompV4::disc_roster_serial_list(g_disc_serials).c_str());
+        }
+#endif
         if (g_lnch_netplay_available) {
             out->track_count = id.track_count;
             out->netplay_ok = id.netplay_ok ? 1 : 0;
@@ -11878,7 +11967,8 @@ namespace {
         // netplay-capable titles; ordinary offline disc verification is
         // strictly serial/header/optional-CRC based.
         if (!id.opened || !id.has_header)                            out->verdict = 3; // bad
-        else if (id.expected_serial_given && !id.serial_matches)     out->verdict = 3; // wrong disc
+        else if ((id.expected_serial_given && !id.serial_matches) ||
+                 set_wrong_disc)                                     out->verdict = 3; // wrong disc
         else if (id.expected_crc_given && id.crc_computed && !id.crc_matches) out->verdict = 2; // warn
         else if (g_lnch_netplay_available && !id.netplay_ok)         out->verdict = 2; // TOC/cue
         else                                                          out->verdict = 1; // ok
@@ -11910,13 +12000,24 @@ namespace {
         }
         {
             /* The row's verdict and its reason, for the run report: a red
-             * row blocks Play, and the start then ends as "launcher closed"
-             *. */
+             * row blocks Play, and the start then ends as "launcher closed".
+             *
+             *
+             * An image outside the disc list of a build with a serial list
+             * has no single expected serial: it is refused for carrying none
+             * of the list's. The row then names the list, and
+             * gives that reason, not the online-play note, which is true of
+             * another game's disc too and is not why it is refused. */
+            const std::string expected_for_row = id.expected_serial_given
+                ? expect_serial
+                : set_serial != PSXRecompV4::DiscSetSerial::NotJudged
+                    ? PSXRecompV4::disc_roster_serial_list(g_disc_serials)
+                    : std::string();
             const char* why =
                 !identity_error.empty() ? identity_error.c_str()
                 : !companion.ready ? companion.message.c_str()
                 : !id.detail.empty() ? id.detail.c_str()
-                : (id.expected_serial_given && !id.serial_matches)
+                : ((id.expected_serial_given && !id.serial_matches) || set_wrong_disc)
                     ? "the disc does not carry the expected serial"
                 : id.netplay_detail.c_str();
             char row[PSX_START_LAUNCHER_ROW_CAP];
@@ -11924,7 +12025,7 @@ namespace {
                           "verdict=%s serial=%s expected=%s tracks=%d%s%s",
                           out->verdict == 1 ? "ok"
                               : out->verdict == 2 ? "warning" : "refused",
-                          id.detected_serial.c_str(), expect_serial.c_str(),
+                          id.detected_serial.c_str(), expected_for_row.c_str(),
                           id.track_count, why[0] ? "; " : "", why);
             psx_start_note_launcher("disc", row);
         }
@@ -20447,6 +20548,12 @@ int main(int argc, char** argv) {
         const unsigned disc_messages = s_player_message_seq;
         resolved_disc = resolve_disc_for_runtime(
             resolved_disc, disc_override_path, game_id, argv[0]);
+        if (resolved_disc.empty() && !s_wrong_disc_sentence.empty()) {
+            /* The disc check has shown its box (a person's start) and printed
+             * its line; the report gets the kind and that sentence. */
+            return refuse_start("wrong_disc", "Disc verification failed",
+                                s_wrong_disc_sentence, disc_messages);
+        }
         if (game_config_path && resolved_disc.empty()) {
             std::fprintf(stderr, "psxrecomp: no disc image selected; exiting.\n");
             return refuse_start("no_disc", "No disc selected",
