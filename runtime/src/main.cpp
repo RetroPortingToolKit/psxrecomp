@@ -154,6 +154,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "disc_identity.h"
 #include "disc_content_hash.h"
 #include "sbi_setup.h"
+#include "disc_roster.h"
 #include "disc_path.h"
 #include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
 #include "psx_keybinds.h"
@@ -3209,26 +3210,12 @@ static bool pick_runtime_file(const char* title, const char* filter,
 #endif
 }
 
-/* Per-disc expected serials for a multi-disc set, keyed by the disc image's
- * UPPERCASED file-name stem (game.toml [game] disc_serials, in the order of
- * [game] discs). Every disc of a set carries its own serial, so checking disc
- * 2 against the BOOT disc's serial reports the player's correct disc as the
- * wrong game -- which is what the launcher's disc dropdown would trip on
- * every time, and what the launch-time check warned about even when the
- * player picked exactly the right image. A disc absent from this map is not
- * serial-gated at all; the ISO-header check still applies. Keyed by stem
- * rather than full path because a .cue and the .bin it owns are one disc and
- * either may be what the player picked. Populated from game.toml; empty for
- * every single-disc title, which therefore behaves exactly as before. */
-static std::unordered_map<std::string, std::string> g_disc_serials;
-
-/* Per-disc netplay TOC fingerprints, same keying and same reason as
- * g_disc_serials: every disc of a set has its own TOC, so a set gated on the
- * BOOT disc's fingerprint refuses online play on every other disc the player
- * can now select. Populated from game.toml [netplay] required_disc_fps; empty
- * for every single-disc title and every port that predates the key, which
- * therefore keep the flat [netplay] required_disc_fp behaviour exactly. */
-static std::unordered_map<std::string, std::string> g_disc_netplay_fps;
+/* Per-disc metadata follows the roster order. Paths with equal basenames in
+ * different directories are distinct discs. The shared resolver preserves
+ * same-directory CUE/BIN alternatives and unambiguous relocated names. */
+static std::vector<std::filesystem::path> g_disc_metadata_roster;
+static std::vector<std::string> g_disc_serials;
+static std::vector<std::string> g_disc_netplay_fps;
 
 static std::string uppercase_ascii(std::string s);
 
@@ -3239,8 +3226,8 @@ static std::string uppercase_ascii(std::string s);
 static std::string expected_serial_for_disc(const std::filesystem::path& disc,
                                             const std::string& fallback) {
     if (g_disc_serials.empty()) return fallback;
-    const auto it = g_disc_serials.find(uppercase_ascii(disc.stem().string()));
-    return it != g_disc_serials.end() ? it->second : std::string();
+    return PSXRecompV4::disc_roster_value(
+        g_disc_metadata_roster, g_disc_serials, disc, "");
 }
 
 static std::string uppercase_ascii(std::string s) {
@@ -3348,37 +3335,27 @@ static std::filesystem::path resolve_persisted_disc_path(
  * That ordering is the whole point of storing the index: an external launcher
  * (or a hand edit) changes discs by writing one integer, and it takes effect
  * even though settings.toml still carries the previous disc's path. A player
- * who browsed for their own copy of the selected disc is still honoured,
- * because a relocated or container-swapped image keeps its stem -- a Redump
- * dump names the disc in the file name and only the extension moves
- * (".. (Disc 2).cue" and ".. (Disc 2).bin" identify the same disc).
- * normalize_disc_path_for_launch preserves the resolver's mount path.
+ * who browsed for their own copy of the selected disc is still honoured
+ * when the shared resolver identifies it as that disc (disc_roster.h): its
+ * directory-qualified path matches a roster entry (".. (Disc 2).cue" and a
+ * same-directory ".. (Disc 2).bin" are one disc), or it was relocated and its
+ * stem names exactly one roster entry. Equal file names in different
+ * directories are different discs; an ambiguous relocated name is no disc.
  *
  * Single-disc titles (roster of 0 or 1) are returned unchanged: the persisted
  * path wins, exactly as it did before any of this existed. */
-/* Roster position of `disc`, or -1. Compare stems so the roster can identify
- * equivalent CUE and raw-image selections after disc-path resolution. */
+/* Roster position of `disc`, or -1. The same resolver keys per-disc serials
+ * and netplay fingerprints, so every per-disc lookup agrees on identity. */
 static int roster_index_for_disc(
     const std::vector<std::filesystem::path>& roster,
     const std::filesystem::path& disc) {
-    if (disc.empty()) return -1;
-    const std::string want = uppercase_ascii(disc.stem().string());
-    for (size_t i = 0; i < roster.size(); ++i)
-        if (uppercase_ascii(roster[i].stem().string()) == want) return (int)i;
-    return -1;
+    return PSXRecompV4::disc_roster_index(roster, disc);
 }
 
 static std::filesystem::path resolve_selected_disc(
     const std::vector<std::filesystem::path>& roster, int selected_1based,
     const std::filesystem::path& persisted) {
-    if (roster.size() < 2) return persisted;
-    const int idx = selected_1based - 1;
-    if (idx < 0 || idx >= (int)roster.size()) return persisted;
-    if (!persisted.empty() &&
-        uppercase_ascii(persisted.stem().string()) ==
-            uppercase_ascii(roster[(size_t)idx].stem().string()))
-        return persisted;
-    return roster[(size_t)idx];
+    return PSXRecompV4::disc_roster_selected(roster, selected_1based, persisted);
 }
 
 /* BIOS selection state (docs/BIOS_SELECTION.md). s_openbios_allowed is the
@@ -11539,9 +11516,8 @@ static PSXRecompV4::NetplayDiscExpect netplay_expect_for_disc(
     const std::filesystem::path& disc) {
     PSXRecompV4::NetplayDiscExpect e = g_netplay_disc_expect;
     if (!g_disc_netplay_fps.empty()) {
-        const auto it =
-            g_disc_netplay_fps.find(uppercase_ascii(disc.stem().string()));
-        if (it != g_disc_netplay_fps.end()) e.required_disc_fp = it->second;
+        e.required_disc_fp = PSXRecompV4::disc_roster_value(
+            g_disc_metadata_roster, g_disc_netplay_fps, disc, e.required_disc_fp);
     }
     return e;
 }
@@ -18237,25 +18213,9 @@ int main(int argc, char** argv) {
             PSXRecompV4::mod_runtime_set_netplay_content_negotiation(
                 g_netplay_content_negotiation != 0);
             game_discs = gc.discs;
-            /* Per-disc serial gate, shared by the launch-time disc check and
-             * the launcher's disc verdict. Keyed by the image's uppercased
-             * stem so a .cue and its .bin agree. */
-            g_disc_serials.clear();
-            for (size_t i = 0;
-                 i < gc.discs.size() && i < gc.disc_serials.size(); ++i) {
-                if (gc.disc_serials[i].empty()) continue;
-                g_disc_serials[uppercase_ascii(gc.discs[i].stem().string())] =
-                    gc.disc_serials[i];
-            }
-            /* Same keying for the per-disc netplay TOC fingerprints. */
-            g_disc_netplay_fps.clear();
-            for (size_t i = 0;
-                 i < gc.discs.size() && i < gc.netplay_required_disc_fps.size();
-                 ++i) {
-                if (gc.netplay_required_disc_fps[i].empty()) continue;
-                g_disc_netplay_fps[uppercase_ascii(gc.discs[i].stem().string())] =
-                    gc.netplay_required_disc_fps[i];
-            }
+            g_disc_metadata_roster = gc.discs;
+            g_disc_serials = gc.disc_serials;
+            g_disc_netplay_fps = gc.netplay_required_disc_fps;
             if (!gc.discs.empty()) resolved_disc = gc.discs.front();
             if (gc.runtime.has_memcard_dir)  memcard_dir   = gc.runtime.memcard_dir;
             if (gc.runtime.has_window_title) window_title  = gc.runtime.window_title;
