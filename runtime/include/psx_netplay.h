@@ -146,6 +146,8 @@ const char *psx_netplay_host_profile_status(void);
 int psx_netplay_host_profile_selection(PSXHostSelection *out);
 int psx_netplay_host_profile_failed(void);
 int psx_netplay_host_profile_ready(void);
+/* Immutable first settlement, captured before state/media work or guest entry. */
+int psx_netplay_host_profile_initial_settlement(uint64_t *cycles,uint32_t *tick);
 int psx_netplay_direct_loopback_scope(const PsxNetplayConfig *);
 /* Internal: startup-delayed RB controls, released in receive order only after
  * capability agreement. The rollback wire loop consumes these first. */

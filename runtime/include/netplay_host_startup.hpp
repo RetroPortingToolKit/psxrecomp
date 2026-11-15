@@ -84,7 +84,13 @@ static bool psx_log_required_host_profile_settled(uint64_t cycles,uint32_t tick,
        !psx_netplay_host_profile_selection(&selected)){
         error="The host simulation agreement did not settle before gameplay.";return false;
     }
-    if(cycles||tick){error="The host simulation agreement was reached after guest execution.";return false;}
+    if(psx_netplay_is_spectator()){
+        uint64_t initial_cycles=0;uint32_t initial_tick=0;
+        if(!psx_netplay_host_profile_initial_settlement(&initial_cycles,&initial_tick)||initial_cycles){
+            error="The observer did not settle its host profile before local guest execution.";return false;
+        }
+        cycles=initial_cycles;tick=initial_tick;
+    }else if(cycles||tick){error="The host simulation agreement was reached after guest execution.";return false;}
     char hex[65];const char digits[]="0123456789abcdef";
     for(unsigned i=0;i<32;++i){hex[i*2]=digits[selected.identity[i]>>4];hex[i*2+1]=digits[selected.identity[i]&15];}hex[64]=0;
     std::fprintf(stderr,"psxrecomp: host profile settled profile=%s revision=%u selected_sha256=%s cycles=%llu sim_tick=%u before-enter-guest=1\n",

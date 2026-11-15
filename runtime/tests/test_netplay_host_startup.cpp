@@ -13,6 +13,9 @@ static PsxBiosBackend bios;
 static unsigned clears,installs,shutdowns,seals,ends,callbacks;
 static bool fp_ok,seal_ok,image_ok,register_ok,callback_ok,scope,ready,failed,selection_ok;
 static int fp_contract,sealed;
+static int spectator,initial_settled;
+static uint64_t initial_cycles;
+static uint32_t initial_tick;
 static PSXModNetplayHostStartup observed;
 static PSXHostSelection selected;
 extern "C" {
@@ -36,6 +39,10 @@ int psx_netplay_host_profile_register(const PSXHostCapabilities *caps,const PSXH
     ++installs;if(register_ok)registered=*caps;return register_ok;
 }
 int psx_netplay_host_profile_ready(void){return ready;}
+int psx_netplay_is_spectator(void){return spectator;}
+int psx_netplay_host_profile_initial_settlement(uint64_t *c,uint32_t *t){
+    if(!initial_settled)return 0;*c=initial_cycles;*t=initial_tick;return 1;
+}
 int psx_netplay_host_profile_failed(void){return failed;}
 int psx_netplay_host_profile_selection(PSXHostSelection *out){if(!selection_ok)return 0;*out=selected;return 1;}
 }
@@ -64,6 +71,7 @@ static void reset(void){
     fp_ok=seal_ok=image_ok=register_ok=callback_ok=selection_ok=true;
     scope=ready=failed=false;fp_contract=2;sealed=0;
     clears=installs=shutdowns=seals=ends=callbacks=0;
+    spectator=initial_settled=0;initial_cycles=0;initial_tick=0;
     image={};image.image_id="TEST-BIOS";image.image_wordsum=0x12345678;
     bios={};bios.image=&image;
     selected={};std::strcpy(selected.profile,rule.profile);selected.revision=7;selected.identity[0]=3;
@@ -125,6 +133,9 @@ static void settlement(void){
     failed=false;CHECK(!psx_log_required_host_profile_settled(1,0,error));
     CHECK(!psx_log_required_host_profile_settled(0,1,error));
     CHECK(psx_log_required_host_profile_settled(0,0,error));
+    spectator=1;CHECK(!psx_log_required_host_profile_settled(1000,200,error));
+    initial_settled=1;initial_cycles=1;CHECK(!psx_log_required_host_profile_settled(1000,200,error));
+    initial_cycles=0;initial_tick=0;CHECK(psx_log_required_host_profile_settled(1000,200,error));
 }
 static void routes(void){
     const char *bad[]={nullptr,"","localhost:1234","127.0.0.2:1","0.0.0.0:2",":3",
