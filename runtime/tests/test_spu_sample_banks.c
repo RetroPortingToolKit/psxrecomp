@@ -5,7 +5,8 @@
 #include <stdio.h>
 #include "../src/spu.c"
 uint64_t s_frame_count;
-uint64_t psx_get_cycle_count(void) {return 0;}
+static uint64_t guest_cycles;
+uint64_t psx_get_cycle_count(void) {return guest_cycles;}
 void audio_trace_pcm(int t,const int16_t *s,int n) {(void)t;(void)s;(void)n;}
 void audio_trace_event(uint16_t k,uint32_t a,uint32_t b) {(void)k;(void)a;(void)b;}
 void psx_irq_raise(uint32_t b,uint32_t d) {(void)b;(void)d;}
@@ -20,6 +21,81 @@ static void block(uint8_t *p,uint8_t packed) {
 static void ready_voice(unsigned i) {
     voices[i].env_level=0x6000;voices[i].adsr_phase=ADSR_SUSTAIN;
     spu_regs[i*8+2]=0x1000;
+}
+/* Released SDK private inspection contract, without importing unrelated
+ * sample-bank debug endpoints. Owed guest time must remain owed after reads. */
+static void test_private_inspection(void) {
+    spu_init();uint8_t asset[32];block(asset,0x22);
+    CHECK(spu_register_sample_bank(1,asset,sizeof asset));
+    const uint16_t regs[8]={0x1000,0x2000,0x0478,2,0x80FF,0x1FC0,0,4};
+    CHECK(spu_private_voice_play(23,1,regs,3));
+    const uint32_t n=spu_snapshot_bytes();uint8_t *before=malloc(n),*after=malloc(n);
+    CHECK(before && after);spu_snapshot_write(before);
+    const uint64_t events=spu_event_total(),renders=render_frames,clock=s_clock;
+    const uint32_t epoch=spu_sample_bank_epoch(),keyons=key_on_count,queued=spu_output_available();
+    guest_cycles=1000000;
+    SpuVoiceState state;
+    CHECK(spu_get_private_voice_state(23,&state) && state.active && state.sample_bank==1 && !state.pending_bank && state.mode==3);
+    CHECK(state.pitch==regs[2] && state.start_lo==regs[3] && state.loop_lo==regs[7]);
+    CHECK(state.adsr_lo==regs[4] && state.adsr_hi==regs[5] && state.cur_addr==16);
+    CHECK(state.sample_idx==28 && state.env_level==0 && state.adsr_phase==ADSR_ATTACK);
+    CHECK(spu_get_private_voice_state(0,&state) && !state.active && !state.sample_bank);
+    CHECK(!spu_get_private_voice_state(24,&state) && !state.active);
+    CHECK(!spu_get_private_voice_state(UINT32_MAX,&state) && !spu_get_private_voice_state(0,NULL));
+    spu_get_voice_state(47,&state);CHECK(!state.active && !state.sample_bank);
+    CHECK(events==spu_event_total() && renders==render_frames && clock==s_clock);
+    CHECK(epoch==spu_sample_bank_epoch() && keyons==key_on_count && queued==spu_output_available());
+    guest_cycles=0;spu_snapshot_write(after);CHECK(!memcmp(before,after,n));
+    free(before);free(after);spu_init();
+    CHECK(spu_get_private_voice_state(23,&state) && !state.active && !private_enabled);
+}
+static void test_private_owners(void) {
+    const uint64_t a=UINT64_C(0x4D4D583650320001),b=UINT64_C(0x464F524549474E02);
+    uint8_t asset[32];block(asset,0x22);spu_init();
+    CHECK(spu_register_sample_bank(1,asset,sizeof asset));block(asset,0x44);
+    CHECK(spu_register_sample_bank(2,asset,sizeof asset));
+    const uint16_t regs[8]={0x1000,0x2000,0x1000,0,0xF,0,0,0};
+    uint32_t mask=(1u<<20)|(1u<<21);
+    CHECK(!spu_private_voice_claim(0,mask) && !spu_private_voice_claim(a,0));
+    CHECK(!spu_private_voice_claim(a,1u<<24) && !spu_private_voice_claim(a,UINT32_MAX));
+    CHECK(!private_enabled && !spu_private_voice_owner(20));
+    CHECK(spu_private_voice_claim(a,mask) && private_enabled);
+    CHECK(spu_private_voice_owner(20)==a && spu_private_voice_owner(21)==a);
+    CHECK(!spu_private_voice_owner(24) && !spu_private_voice_owner(UINT32_MAX));
+    CHECK(spu_private_voice_play_owned(a,20,1,regs,0));
+    CHECK(spu_private_voice_play_owned(a,20,2,regs,2) && voices[44].sample_bank==2);
+    CHECK(spu_private_voice_claim(a,mask)); /* Own active reservation is stable. */
+    CHECK(spu_private_voice_claim(b,(1u<<22)|(1u<<23)));
+    CHECK(spu_private_voice_play_owned(b,22,2,regs,0)); /* Same bank is not ownership. */
+    CHECK(spu_private_voice_play_owned(b,23,2,regs,0) && spu_private_voice_owner(23)==b);
+    uint32_t bytes=spu_snapshot_bytes();uint8_t *before=malloc(bytes),*after=malloc(bytes);
+    CHECK(before && after);spu_snapshot_write(before);
+    CHECK(!spu_private_voice_claim(b,(1u<<4)|(1u<<20)) && !spu_private_voice_owner(4));
+    CHECK(!spu_private_voice_release(a,mask) && spu_private_voice_owner(21)==a);
+    CHECK(!spu_private_voice_play_owned(b,20,2,regs,0));
+    CHECK(!spu_private_voice_volume_owned(b,20,0,0));
+    CHECK(!spu_private_voice_stop_owned(a,(1u<<20)|(1u<<22)));
+    CHECK(!spu_private_voice_play_owned(0,20,2,regs,0));
+    CHECK(!spu_private_voice_stop_owned(0,mask) && !spu_private_voice_stop_owned(a,0));
+    CHECK(!spu_private_voice_play(20,2,regs,0) && !spu_private_voice_volume(20,0,0));
+    spu_private_voice_stop(UINT32_MAX); /* Legacy cannot stop either owner. */
+    spu_snapshot_write(after);CHECK(!memcmp(before,after,bytes));
+    CHECK(spu_private_voice_volume_owned(a,20,0,0) && spu_private_voice_stop_owned(a,mask));
+    voice_next_sample(44);CHECK(!voices[44].active);
+    CHECK(spu_private_voice_release(a,mask) && !spu_private_voice_owner(20));
+    CHECK(!spu_private_voice_release(a,1u<<22) && spu_private_voice_owner(22)==b);
+    CHECK(spu_private_voice_play(20,2,regs,0));
+    CHECK(!spu_private_voice_claim(a,(1u<<4)|(1u<<20)) && !spu_private_voice_owner(4));
+    spu_init();CHECK(!spu_private_voice_owner(22) && !private_enabled);
+    block(asset,0x22);CHECK(spu_register_sample_bank(1,asset,sizeof asset));
+    block(asset,0x44);CHECK(spu_register_sample_bank(2,asset,sizeof asset));
+    CHECK(spu_snapshot_read(before,bytes));
+    CHECK(spu_private_voice_owner(20)==a && spu_private_voice_owner(21)==a && spu_private_voice_owner(22)==b);
+    CHECK(spu_private_voice_owner(23)==b);
+    CHECK(!spu_private_voice_play(20,2,regs,0) && !spu_private_voice_play_owned(b,20,2,regs,0));
+    CHECK(spu_private_voice_play_owned(a,20,1,regs,0) && voices[44].sample_bank==1);
+    CHECK(!spu_snapshot_len_ok(bytes-24u*8u)); /* Unknown old private wire rejected. */
+    free(before);free(after);spu_init();
 }
 int main(void) {
     spu_init();uint8_t a[32],b[32];block(a,0x11);block(b,0x33);
@@ -95,5 +171,7 @@ int main(void) {
      * its unchanged wire size. Initialization clears them and their banks. */
     CHECK(spu_snapshot_read(snapshot,n) && !spu_private_voice_active() && spu_snapshot_bytes()==n);
     free(full);free(snapshot);spu_init();CHECK(!spu_bind_next_voice_bank(0,1));
+    test_private_inspection();
+    test_private_owners();
     puts("SPU private sample-bank checks passed");return 0;
 }
