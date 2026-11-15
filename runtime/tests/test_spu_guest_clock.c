@@ -188,6 +188,29 @@ static void test_pcm_overlay_uses_guest_clock(void) {
           "unbinding restores native silence without advancing mod playback");
 }
 
+static void test_cd_reset_keeps_due_audio(void) {
+    g_cycle = 0;
+    spu_init();
+    spu_write(0x1F801DAAu, 0xC001u);
+    spu_write(0x1F801D80u, 0x3FFFu);
+    spu_write(0x1F801D82u, 0x3FFFu);
+    spu_write(0x1F801DB0u, 0x7FFFu);
+    spu_write(0x1F801DB2u, 0x7FFFu);
+    const int16_t cd[8] = {1000,-1000,2000,-2000,3000,-3000,4000,-4000};
+    spu_cd_audio_push(cd, 4);
+    g_cycle = 768u * 2u;
+    spu_cd_audio_reset();
+    int16_t out[8] = {0};
+    CHECK(spu_output_pop(out, 4) == 2u && out[0] > 0 && out[1] < 0 &&
+          out[2] > out[0] && out[3] < out[1],
+          "CD reset first renders already-due input samples");
+    CHECK(cd_frame_count == 0, "CD reset discards only the remaining future queue");
+    g_cycle = 768u * 4u;
+    spu_catch_up();
+    CHECK(spu_output_pop(out, 4) == 2u && !out[0] && !out[1] && !out[2] && !out[3],
+          "samples after the CD reset observe the cleared queue");
+}
+
 static void render_partition(int granular, int16_t *out, SpuVoiceState *state) {
     g_cycle = 0;
     stage_voice0();
@@ -274,6 +297,7 @@ int main(void) {
     test_gate_and_rewind();
     test_pcm_overlay_uses_guest_clock();
     test_block_pcm_partition();
+    test_cd_reset_keeps_due_audio();
 #if defined(PSX_TEST_SCHEDULER)
     test_scheduler_latch_rearm();
 #endif
