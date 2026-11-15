@@ -64,6 +64,7 @@ void psx_headroom_totals(PsxHeadroomFrame *out) {
     memcpy(v+PSX_HR_MEM_INLINE_LOAD_RAM_U8,&widths,sizeof widths);
     memcpy(v+PSX_HR_MEM_RUNTIME_FAST_LOAD_RAM_U8,psx_hr_runtime_fast_loads,sizeof psx_hr_runtime_fast_loads);
     v[PSX_HR_SVC_GPU_IMPLICIT]=psx_hr_gpu_hold_implicit_services;
+    memcpy(v+PSX_HR_MEM_CALLBACK_LOAD_U8,psx_hr_bus_callbacks,sizeof psx_hr_bus_callbacks);
 }
 
 #if !defined(PSX_DISABLE_HEADROOM_COUNTERS) || !PSX_DISABLE_HEADROOM_COUNTERS

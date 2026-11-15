@@ -31,6 +31,7 @@ uint32_t overlay_watch_pagegen_sum(uint32_t phys,uint32_t len);
 #endif
 
 static unsigned custom_reads, custom_writes, flushes;
+static uint32_t custom_address, custom_value;
 static unsigned helper_reads(void) {
     PSXDirectMemoryStats *s=&g_psx_direct_memory_stats;
     return (unsigned)(s->load_helper_ram+s->load_helper_scratch+s->load_helper_mmio+s->load_helper_other);
@@ -42,7 +43,11 @@ static unsigned helper_writes(void) {
 static uint32_t read_word(uint32_t a) { (void)a; ++custom_reads; return 0xFEDCBA98u; }
 static uint16_t read_half(uint32_t a) { (void)a; ++custom_reads; return 0xBA98u; }
 static uint8_t read_byte(uint32_t a) { (void)a; ++custom_reads; return 0x98u; }
-static void write_word(uint32_t a,uint32_t v) { (void)a; (void)v; ++custom_writes; }
+static void write_word(uint32_t a,uint32_t v) { custom_address=a;custom_value=v;++custom_writes; }
+static void write_half(uint32_t a,uint16_t v) { custom_address=a;custom_value=v;++custom_writes; }
+static void write_byte(uint32_t a,uint8_t v) { custom_address=a;custom_value=v;++custom_writes; }
+static uint32_t forward_word(uint32_t a) { ++custom_reads;return psx_read_word(a); }
+static void forward_store(uint32_t a,uint32_t v) { ++custom_writes;psx_write_word(a,v); }
 static void flush(void) { ++flushes; }
 uint32_t parity_host_frame(void) { return 7; }
 uint64_t parity_host_cycle(void) { return 123; }
@@ -98,18 +103,54 @@ static void check_memory_widths(CPUState *cpu) {
         CHECK(g_psx_memory_width_stats.helper_access[1][PSX_MEM_SCRATCH][width]==1+!FAST);
     }
 #endif
-    /* Raw inspection and custom callbacks are explicitly outside canonical
-     * helper counts; the old generated fallback totals still cover that site. */
+    /* Raw inspection stays outside both lanes. Pure callback dispatch does
+     * actual value/effect work but never invents a canonical helper entry. */
     PSXMemoryWidthStats before=g_psx_memory_width_stats;
+    memset(psx_hr_bus_callbacks,0,sizeof psx_hr_bus_callbacks);
     extern uint32_t psx_peek_word_untraced(uint32_t);
     (void)psx_peek_word_untraced(addresses[0]);
-    cpu->read_word=read_word;
-    (void)psx_cyc_load_word(cpu,addresses[1],2,0);
-    cpu->read_word=psx_read_word;
-    cpu->write_word=write_word;
-    PSX_STORE_WORD(cpu,addresses[0],0);
-    cpu->write_word=psx_write_word;
+    for(unsigned access=0;access<2;++access)for(unsigned width=0;width<3;++width)
+        CHECK(psx_hr_bus_callbacks[access][width]==0);
+    const uint32_t old_word=psx_peek_word_untraced(addresses[0]);
+    cpu->read_word=read_word;cpu->read_half=read_half;cpu->read_byte=read_byte;
+    cpu->write_word=write_word;cpu->write_half=write_half;cpu->write_byte=write_byte;
+    const unsigned reads_before=custom_reads,writes_before=custom_writes;
+    for(unsigned n=1;n<=2;++n){const uint32_t a=addresses[n];
+        CHECK(psx_cyc_load_word(cpu,a,2,0)==0xFEDCBA98u);
+        CHECK(psx_cyc_load_half(cpu,a,2,0)==0xBA98u);
+        CHECK(psx_cyc_load_byte(cpu,a,2,0)==0x98u);
+        PSX_STORE_WORD(cpu,a,0x12345678u);CHECK(custom_address==a&&custom_value==0x12345678u);
+        PSX_STORE_HALF(cpu,a,0x789Au);CHECK(custom_address==a&&custom_value==0x789Au);
+        PSX_STORE_BYTE(cpu,a,0xBCu);CHECK(custom_address==a&&custom_value==0xBCu);
+    }
+    /* The portable generated-store interface uses the same observation lane. */
+    psx_bus_store_word(cpu,addresses[0],0x10203040u);
+    psx_bus_store_half(cpu,addresses[0],0x5060u);
+    psx_bus_store_byte(cpu,addresses[0],0x70u);
+    CHECK(custom_reads==reads_before+6u&&custom_writes==writes_before+9u);
+    CHECK(psx_peek_word_untraced(addresses[0])==old_word);
     CHECK(!memcmp(&before,&g_psx_memory_width_stats,sizeof before));
+#if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
+    const unsigned counted=0;
+#else
+    const unsigned counted=1;
+#endif
+    for(unsigned width=0;width<3;++width){
+        CHECK(psx_hr_bus_callbacks[0][width]==2u*counted);
+        CHECK(psx_hr_bus_callbacks[1][width]==3u*counted);
+    }
+    /* A forwarding callback does BOTH real dispatch and canonical-helper
+     * work. Keep those distinct rather than claiming disjoint access totals. */
+    cpu->read_word=forward_word;cpu->write_word=forward_store;
+    CHECK(psx_cyc_load_word(cpu,addresses[1],2,0)==0x789ABCDEu);
+    PSX_STORE_WORD(cpu,addresses[0],0xA1B2C3D4u);
+    CHECK(psx_peek_word_untraced(addresses[0])==0xA1B2C3D4u);
+    CHECK(psx_hr_bus_callbacks[0][PSX_MEM_U32]==3u*counted);
+    CHECK(psx_hr_bus_callbacks[1][PSX_MEM_U32]==4u*counted);
+    CHECK(g_psx_memory_width_stats.helper_access[0][PSX_MEM_SCRATCH][PSX_MEM_U32]==before.helper_access[0][PSX_MEM_SCRATCH][PSX_MEM_U32]+counted);
+    CHECK(g_psx_memory_width_stats.helper_access[1][PSX_MEM_RAM][PSX_MEM_U32]==before.helper_access[1][PSX_MEM_RAM][PSX_MEM_U32]+counted);
+    cpu->read_word=psx_read_word;cpu->read_half=psx_read_half;cpu->read_byte=psx_read_byte;
+    cpu->write_word=psx_write_word;cpu->write_half=psx_write_half;cpu->write_byte=psx_write_byte;
 }
 
 int main(void) {

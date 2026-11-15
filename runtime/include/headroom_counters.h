@@ -94,7 +94,13 @@ enum { PSX_HR_DEADLINE_VBLANK, PSX_HR_DEADLINE_TIMER, PSX_HR_DEADLINE_CD,
  X(MEM_RUNTIME_FAST_LOAD_RAM_U8,mem_runtime_fast_load_ram_u8) \
  X(MEM_RUNTIME_FAST_LOAD_RAM_U16,mem_runtime_fast_load_ram_u16) \
  X(MEM_RUNTIME_FAST_LOAD_RAM_U32,mem_runtime_fast_load_ram_u32) \
- X(SVC_GPU_IMPLICIT,service_gpu_hold_implicit)
+ X(SVC_GPU_IMPLICIT,service_gpu_hold_implicit) \
+ X(MEM_CALLBACK_LOAD_U8,mem_callback_load_u8) \
+ X(MEM_CALLBACK_LOAD_U16,mem_callback_load_u16) \
+ X(MEM_CALLBACK_LOAD_U32,mem_callback_load_u32) \
+ X(MEM_CALLBACK_STORE_U8,mem_callback_store_u8) \
+ X(MEM_CALLBACK_STORE_U16,mem_callback_store_u16) \
+ X(MEM_CALLBACK_STORE_U32,mem_callback_store_u32)
 
 enum {
 #define PSX_HR_FIELD(id, name) PSX_HR_##id,
@@ -118,6 +124,23 @@ extern uint64_t psx_hr_interrupt_at_calls;
 extern uint32_t psx_hr_gpu_hold_depth;
 extern uint64_t psx_hr_gpu_hold_implicit_services;
 extern uint64_t psx_hr_runtime_fast_loads[3]; /* u8/u16/u32; legacy value leaves */
+/* Callback invocations are separate work from canonical helper entries. A
+ * forwarding callback increments both lanes; never sum them as memory accesses.
+ * Backing regions/internal raw-buffer operations are opaque at this boundary. */
+extern uint64_t psx_hr_bus_callbacks[2][3]; /* load/store, u8/u16/u32 */
+static inline void psx_headroom_bus_callback(unsigned store, uint32_t width) {
+    if(store<2u && (width==1u || width==2u || width==4u))
+        PSX_HR_INC(psx_hr_bus_callbacks[store][width==4u?2u:width==2u?1u:0u]);
+    (void)store;(void)width;
+}
+#if (defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS) || \
+    defined(PSX_COSIM) || defined(PSX_OVERLAY_DLL_BUILD)
+#define PSX_HR_CUSTOM_BUS_CALLBACK(actual, canonical, store, width) ((void)0)
+#else
+#define PSX_HR_CUSTOM_BUS_CALLBACK(actual, canonical, store, width) do { \
+    if ((actual) != (canonical)) psx_headroom_bus_callback((store), (width)); \
+} while (0)
+#endif
 #if defined(PSX_COSIM) || defined(PSX_OVERLAY_DLL_BUILD)
 #define PSX_HR_RUNTIME_FAST_LOAD(width_index) ((void)0)
 #else

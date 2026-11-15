@@ -85,7 +85,8 @@ static inline uint32_t psx_native_span_word(CPUState *cpu, uint32_t addr,
     const uint8_t *ram = psx_native_span_load_view(cpu, addr, 4u);
     (void)rt; (void)deps;
     psx_native_span_note_load(addr, ram, 4u);
-    if (!ram) return cpu->read_word(addr);
+    if (!ram) { PSX_HR_CUSTOM_BUS_CALLBACK(cpu->read_word,psx_read_word,0u,4u);
+        return cpu->read_word(addr); }
     return (uint32_t)ram[0] | ((uint32_t)ram[1] << 8)
          | ((uint32_t)ram[2] << 16) | ((uint32_t)ram[3] << 24);
 }
@@ -94,7 +95,8 @@ static inline uint16_t psx_native_span_half(CPUState *cpu, uint32_t addr,
     const uint8_t *ram = psx_native_span_load_view(cpu, addr, 2u);
     (void)rt; (void)deps;
     psx_native_span_note_load(addr, ram, 2u);
-    if (!ram) return cpu->read_half(addr);
+    if (!ram) { PSX_HR_CUSTOM_BUS_CALLBACK(cpu->read_half,psx_read_half,0u,2u);
+        return cpu->read_half(addr); }
     return (uint16_t)((uint16_t)ram[0] | ((uint16_t)ram[1] << 8));
 }
 static inline uint8_t psx_native_span_byte(CPUState *cpu, uint32_t addr,
@@ -102,7 +104,9 @@ static inline uint8_t psx_native_span_byte(CPUState *cpu, uint32_t addr,
     const uint8_t *ram = psx_native_span_load_view(cpu, addr, 1u);
     (void)rt; (void)deps;
     psx_native_span_note_load(addr, ram, 1u);
-    return ram ? *ram : cpu->read_byte(addr);
+    if (!ram) { PSX_HR_CUSTOM_BUS_CALLBACK(cpu->read_byte,psx_read_byte,0u,1u);
+        return cpu->read_byte(addr); }
+    return *ram;
 }
 static inline uint32_t psx_native_span_lwc2(CPUState *cpu, uint32_t addr) {
     return psx_native_span_word(cpu, addr, 0u, 0u);

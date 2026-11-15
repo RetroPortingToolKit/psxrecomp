@@ -5596,15 +5596,16 @@ static void handle_hr_counters(int id,const char *json)
         n+=(size_t)snprintf(out+n,cap-n,"\"%s\":%llu,",psx_headroom_field_names[i],
             (unsigned long long)current.values[i]);
     n+=(size_t)snprintf(out+n,cap-n,"\"memory_supported\":%s,\"canonical_memory_supported\":true,\"coverage\":{"
-        "\"memory\":\"legacy12 generated-site totals; widths below are disjoint value paths\","
+        "\"memory\":\"legacy12 generated-site totals; canonical/inline widths are disjoint value paths; callback dispatch widths are separate work\","
         "\"memory_widths\":\"native inline RAM/scratch, canonical psx_read/write helper entries, legacy runtime fast RAM; u8/u16/u32\","
+        "\"callback_widths\":\"maintained host store macros and native-span fallback dispatches; u8/u16/u32, backing region opaque; forwarding dispatch and canonical helper work are separate, not additive accesses\","
         "\"helper_sources\":\"CPU, BIOS, interpreter, host and device callers of canonical helpers; observer/replay entries count even if substituted/refused\","
         "\"callers\":\"schema2 host samples carry last-entered guest function and exception; group helper time by guest operation\","
         "\"gpu_hold\":\"explicit drains and implicit catch-up inside synchronous GPU hold; implicit count is a subset\","
         "\"deadline\":\"earliest advertised at service entry; ties keep scheduler priority\","
         "\"block_edges\":\"logical IRQ observations; native excludes frozen/replay\"},"
         "\"excluded\":[\"untraced raw peeks\",\"direct host/device buffer access\"],"
-        "\"missing\":[\"custom/private bus callback memory widths\"],"
+        "\"missing\":[\"private callback calls outside maintained host CPU bus helpers\"],"
         "\"fields\":[",
 #if defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS
         "true"

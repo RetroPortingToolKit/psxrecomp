@@ -28,7 +28,8 @@ void psx_direct_memory_get_stats(PSXDirectMemoryStats *out);
  * generated fallback is also a canonical entry when its callback is psx_*;
  * do not add the generated fallback totals to these helper counts.
  * Host/device/BIOS/interpreter calls through psx_read/write_* are included.
- * Raw peeks, private overlay callbacks and substituted bus readers are not.
+ * Raw peeks and private callback internals are not. Substituted callback
+ * dispatches have a separate width-only lane in headroom_counters.h.
  * This accounting is host-only and removed by the M0 overhead control. */
 enum { PSX_MEM_RAM, PSX_MEM_SCRATCH, PSX_MEM_MMIO, PSX_MEM_OTHER };
 enum { PSX_MEM_U8, PSX_MEM_U16, PSX_MEM_U32 };
@@ -158,20 +159,26 @@ static inline void psx_direct_note_store(uint32_t addr, uint32_t value, uint32_t
 
 static inline void psx_native_store_word(CPUState *cpu, uint32_t addr, uint32_t value) {
     uint8_t *p = cpu->write_word == psx_write_word ? psx_direct_store_view(addr, 4u) : NULL;
-    if (!p) { psx_direct_note_helper(addr, 1); cpu->write_word(addr, value); return; }
+    if (!p) { psx_direct_note_helper(addr, 1);
+        PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_word,psx_write_word,1u,4u);
+        cpu->write_word(addr, value); return; }
     psx_direct_note_store(addr, value, 4u);
     p[0] = (uint8_t)value; p[1] = (uint8_t)(value >> 8);
     p[2] = (uint8_t)(value >> 16); p[3] = (uint8_t)(value >> 24);
 }
 static inline void psx_native_store_half(CPUState *cpu, uint32_t addr, uint16_t value) {
     uint8_t *p = cpu->write_half == psx_write_half ? psx_direct_store_view(addr, 2u) : NULL;
-    if (!p) { psx_direct_note_helper(addr, 1); cpu->write_half(addr, value); return; }
+    if (!p) { psx_direct_note_helper(addr, 1);
+        PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_half,psx_write_half,1u,2u);
+        cpu->write_half(addr, value); return; }
     psx_direct_note_store(addr, value, 2u);
     p[0] = (uint8_t)value; p[1] = (uint8_t)(value >> 8);
 }
 static inline void psx_native_store_byte(CPUState *cpu, uint32_t addr, uint8_t value) {
     uint8_t *p = cpu->write_byte == psx_write_byte ? psx_direct_store_view(addr, 1u) : NULL;
-    if (!p) { psx_direct_note_helper(addr, 1); cpu->write_byte(addr, value); return; }
+    if (!p) { psx_direct_note_helper(addr, 1);
+        PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_byte,psx_write_byte,1u,1u);
+        cpu->write_byte(addr, value); return; }
     psx_direct_note_store(addr, value, 1u);
     p[0] = value;
 }

@@ -10,6 +10,7 @@ uint8_t *g_psx_ram = ram;
 PSXDirectMemoryStats g_psx_direct_memory_stats;
 PSXMemoryWidthStats g_psx_memory_width_stats;
 uint64_t psx_hr_runtime_fast_loads[3];
+uint64_t psx_hr_bus_callbacks[2][3];
 uint32_t g_psx_ram_mask = PSX_MAIN_RAM_RETAIL_BYTES - 1u;
 int g_ls_mode, g_ls_replay_active, g_event_step_conservative;
 volatile int g_ds_recording;
@@ -27,6 +28,11 @@ void psx_advance_cycles_slow(uint32_t cycles) { psx_cycle_count += cycles; psx_d
 static uint32_t read_word(uint32_t addr) { ++reads; last_addr = addr; return 0xFEDCBA98u; }
 static uint16_t read_half(uint32_t addr) { ++reads; last_addr = addr; return 0xBA98u; }
 static uint8_t read_byte(uint32_t addr) { ++reads; last_addr = addr; return 0x98u; }
+/* Canonical identity seams for the private callback comparison; value
+ * behavior remains the same small bus used throughout this isolated fixture. */
+uint32_t psx_read_word(uint32_t addr) { return read_word(addr); }
+uint16_t psx_read_half(uint32_t addr) { return read_half(addr); }
+uint8_t psx_read_byte(uint32_t addr) { return read_byte(addr); }
 
 int main(void) {
     CPUState cpu;

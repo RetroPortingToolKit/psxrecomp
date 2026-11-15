@@ -15,6 +15,7 @@ uint64_t psx_hr_service_deadlines[PSX_HR_DEADLINE_COUNT];
 uint64_t psx_hr_interrupt_at_calls=9;
 uint64_t psx_hr_gpu_hold_implicit_services=900;
 uint64_t psx_hr_runtime_fast_loads[3]={800,801,802};
+uint64_t psx_hr_bus_callbacks[2][3]={{1000,1001,1002},{1003,1004,1005}};
 static uint64_t width_base=700;
 uint64_t psx_observation_block_edges=1000,psx_observation_slow_edges=20;
 uint64_t g_spu_render_blocks=8,g_spu_sample_deadline_queries=9;
@@ -67,8 +68,11 @@ int main(void) {
     for(unsigned i=0;i<36;++i)assert(out.values[PSX_HR_MEM_INLINE_LOAD_RAM_U8+i]==700+i);
     for(unsigned i=0;i<3;++i)assert(out.values[PSX_HR_MEM_RUNTIME_FAST_LOAD_RAM_U8+i]==800+i);
     assert(out.values[PSX_HR_SVC_GPU_IMPLICIT]==900);
+    for(unsigned i=0;i<6;++i)assert(out.values[PSX_HR_MEM_CALLBACK_LOAD_U8+i]==1000+i);
     for(unsigned i=0;i<PSX_HEADROOM_CAP+17;++i) {
-        s_frame_count=i%100;g_disp_tail_seq+=3;width_base+=2;PSX_HEADROOM_RECORD_FRAME();
+        s_frame_count=i%100;g_disp_tail_seq+=3;width_base+=2;
+        for(unsigned access=0;access<2;++access)for(unsigned width=0;width<3;++width)psx_hr_bus_callbacks[access][width]+=4;
+        PSX_HEADROOM_RECORD_FRAME();
     }
 #if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
     assert(!psx_headroom_enabled() && psx_headroom_sequence()==0 && !psx_headroom_get(0,&out));
@@ -77,9 +81,12 @@ int main(void) {
     assert(!psx_headroom_get(16,&out));
     assert(psx_headroom_get(17,&out) && out.seq==17 && out.frame==17 && out.values[PSX_HR_DISPATCH]==3);
     assert(out.values[PSX_HR_MEM_HELPER_LOAD_MMIO_U16]==2);
-    g_disp_tail_seq=1;PSX_HEADROOM_RECORD_FRAME();
+    assert(out.values[PSX_HR_MEM_CALLBACK_STORE_U32]==4);
+    g_disp_tail_seq=1;psx_hr_bus_callbacks[1][2]=0;PSX_HEADROOM_RECORD_FRAME();
     assert(psx_headroom_get(psx_headroom_sequence()-1,&out));
     assert(out.values[PSX_HR_DISPATCH]==1 && (out.resets[0]&(UINT64_C(1)<<PSX_HR_DISPATCH)));
+    assert(out.values[PSX_HR_MEM_CALLBACK_STORE_U32]==0 &&
+        (out.resets[PSX_HR_MEM_CALLBACK_STORE_U32/64]&(UINT64_C(1)<<(PSX_HR_MEM_CALLBACK_STORE_U32%64))));
 #endif
     assert(!psx_headroom_get(UINT64_MAX,&out) && !psx_headroom_get(0,NULL));
     handle_hr_counters(42,"{\"n\":10000,\"from\":0}");puts(response);

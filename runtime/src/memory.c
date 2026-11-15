@@ -187,6 +187,7 @@ uint8_t *g_psx_scratchpad = scratchpad;
 PSXDirectMemoryStats g_psx_direct_memory_stats;
 PSXMemoryWidthStats g_psx_memory_width_stats;
 uint64_t psx_hr_runtime_fast_loads[3];
+uint64_t psx_hr_bus_callbacks[2][3];
 
 void psx_memory_get_width_stats(PSXMemoryWidthStats *out) {
     if (out) *out = g_psx_memory_width_stats;

@@ -13,6 +13,7 @@
 #define PSXRECOMP_CPU_STATE_H
 
 #include <stdint.h>
+#include "headroom_counters.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -91,9 +92,24 @@ static inline void psx_store_cycle_barrier(void) { }
 
 /* Generated stores keep one portable callback contract. Native span builds
  * may replace these macros after the shared declarations have been included. */
-#define PSX_STORE_WORD(cpu, addr, value) ((cpu)->write_word((addr), (value)))
-#define PSX_STORE_HALF(cpu, addr, value) ((cpu)->write_half((addr), (value)))
-#define PSX_STORE_BYTE(cpu, addr, value) ((cpu)->write_byte((addr), (value)))
+void psx_write_word(uint32_t addr, uint32_t value);
+void psx_write_half(uint32_t addr, uint16_t value);
+void psx_write_byte(uint32_t addr, uint8_t value);
+static inline void psx_bus_store_word(CPUState *cpu,uint32_t addr,uint32_t value) {
+    PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_word,psx_write_word,1u,4u);
+    cpu->write_word(addr,value);
+}
+static inline void psx_bus_store_half(CPUState *cpu,uint32_t addr,uint16_t value) {
+    PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_half,psx_write_half,1u,2u);
+    cpu->write_half(addr,value);
+}
+static inline void psx_bus_store_byte(CPUState *cpu,uint32_t addr,uint8_t value) {
+    PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_byte,psx_write_byte,1u,1u);
+    cpu->write_byte(addr,value);
+}
+#define PSX_STORE_WORD(cpu, addr, value) psx_bus_store_word((cpu), (addr), (value))
+#define PSX_STORE_HALF(cpu, addr, value) psx_bus_store_half((cpu), (addr), (value))
+#define PSX_STORE_BYTE(cpu, addr, value) psx_bus_store_byte((cpu), (addr), (value))
 
 /* Faithful exception-return (fix B) — defined in runtime/src/interrupts.c. The
  * interrupted-thread resume PC is the REAL guest PC, stored in COP0.EPC and (by the
