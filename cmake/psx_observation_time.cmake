@@ -64,6 +64,7 @@ function(psxrecomp_observation_time target)
                        "${PSXRECOMP_ROOT}/runtime/include/psx_cycle_freeze.h"
                        "${PSXRECOMP_ROOT}/runtime/include/psx_block_edge.h"
                        "${PSXRECOMP_ROOT}/runtime/src/interrupts.c"
+                       "${PSXRECOMP_ROOT}/runtime/src/overlay_loader.c"
                        "${PSXRECOMP_ROOT}/runtime/src/spu_observation_time.c"
                        "${PSXRECOMP_ROOT}/runtime/src/spu.c"
                        "${_directory}/psx_observation_config.h"

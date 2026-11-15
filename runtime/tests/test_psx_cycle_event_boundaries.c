@@ -27,6 +27,13 @@ static uint32_t s_device_calls;
 static uint32_t s_vblank_phase;
 static int s_cd_ready = 0;
 static uint32_t s_dma_ready_cycles = 0;
+static int s_cd_raise_irq;
+
+#if defined(PSX_TEST_OVERLAY_CHARGE) && PSX_TEST_OVERLAY_CHARGE
+#define TEST_OVERLAY_CPU_CHARGE(cycles) overlay_cpu_charge(cycles)
+#else
+#define TEST_OVERLAY_CPU_CHARGE(cycles) psx_advance_cycles(cycles)
+#endif
 
 void sio_advance(uint32_t cycles) { (void)cycles; }
 
@@ -36,6 +43,7 @@ void cdrom_advance(uint32_t cycles) {
     if (cycles >= s_cd_cycles_remaining) {
         s_cd_cycles_remaining = 0;
         s_cd_ready = 1;
+        if (s_cd_raise_irq) i_stat |= 1u << 2;
     } else {
         s_cd_cycles_remaining -= cycles;
     }
@@ -213,14 +221,14 @@ int main(void) {
     now = psx_cycle_count; calls_before = s_device_calls;
     uint64_t sample_deadline = psx_next_cycle_sample;
     VERIFY(psx_cycle_freeze_begin(&save, 0, NULL), "freeze starts");
-    psx_advance_cycles(1000); psx_devices_mmio_sync(); PSX_BLOCK_EDGE(&cpu, 0x8002E6C0u);
+    TEST_OVERLAY_CPU_CHARGE(1000); psx_devices_mmio_sync(); PSX_BLOCK_EDGE(&cpu, 0x8002E6C0u);
     VERIFY(s_device_calls == calls_before && s_edge_calls == 6, "frozen rendering owns no observations");
     psx_cycle_freeze_end(&save);
     VERIFY(psx_cycle_count == now && psx_next_cycle_sample == sample_deadline,
            "freeze restores clock and sampling cadence");
     g_ls_replay_active = 1;
     VERIFY(psx_cycle_replay_begin(123), "private replay starts");
-    psx_advance_cycles(100); psx_devices_mmio_sync(); PSX_BLOCK_EDGE(&cpu, 0x8002E6C0u);
+    TEST_OVERLAY_CPU_CHARGE(100); psx_devices_mmio_sync(); PSX_BLOCK_EDGE(&cpu, 0x8002E6C0u);
     VERIFY(psx_cycle_replay_end() == 223 && psx_cycle_count == now,
            "private replay restores authoritative clock");
     g_ls_replay_active = 0;
@@ -228,6 +236,24 @@ int main(void) {
     psx_cycle_count = 50; psx_cycles_resync_after_restore(NULL);
     VERIFY(psx_next_service_cycle == 0 && psx_next_cycle_sample == 0,
            "restore rederives clock-dependent horizons");
+#if defined(PSX_TEST_OVERLAY_CHARGE) && PSX_TEST_OVERLAY_CHARGE
+    /* A native DLL's charge precedes its no-pending-IRQ fast return. An
+     * overdue completion must become visible even when no IRQ is latched yet. */
+    s_cd_ready = 0; s_cd_cycles_remaining = 5; s_cd_raise_irq = 1;
+    i_mask = 1u << 2; i_stat = 0;
+    psx_devices_refresh_observation_deadline();
+    psx_advance_cycles(9);
+    VERIFY(!s_cd_ready && i_stat == 0 && psx_cycle_count > psx_next_service_cycle,
+           "overlay regression starts overdue with no latched IRQ");
+    TEST_OVERLAY_CPU_CHARGE(1);
+    VERIFY(s_cd_ready && (i_stat & i_mask),
+           "overlay charge raises overdue completion before IRQ fast return");
+    calls_before = s_device_calls;
+    TEST_OVERLAY_CPU_CHARGE(1);
+    VERIFY(s_device_calls == calls_before,
+           "overlay charge under the next horizon does not service devices");
+    s_cd_raise_irq = 0; i_mask = 0; i_stat = 0;
+#endif
     fprintf(stderr, "PASS observation charges/edges, MMIO arm, IRQ/frame, waits, sample, freeze/replay/restore\n");
 #endif
 

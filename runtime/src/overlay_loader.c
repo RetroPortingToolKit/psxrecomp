@@ -15,7 +15,18 @@
 /* Out-of-line copy of the header-inline CPU charge for the overlay callback
  * table: overlay DLLs publish their accumulated CPU charge here, into the
  * same function native code charges (no scaling at this boundary). */
-static void overlay_cpu_charge(uint32_t cycles) { psx_cpu_charge(cycles); }
+static void overlay_cpu_charge(uint32_t cycles) {
+    psx_cpu_charge(cycles);
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    /* DLLs keep the eager device policy: their IRQ callbacks can return before
+     * the host block edge when no source is latched yet. A charge must raise
+     * any due device edge first, including the completion a guest is polling.
+     * The maintained observer retains replay/freeze/reentrancy exclusions. */
+    if (!psx_in_device_service &&
+        (psx_next_service_cycle == 0u || psx_cycle_count >= psx_next_service_cycle))
+        psx_devices_observe();
+#endif
+}
 #include "lockstep.h"
 #include "overlay_posix.h"
 #include "psx_memory.h"
