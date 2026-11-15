@@ -2486,6 +2486,15 @@ if(BUILD_TESTING)
     add_executable(spu_guest_clock_test tests/test_spu_guest_clock.c)
     target_include_directories(spu_guest_clock_test PRIVATE include)
     add_test(NAME spu_guest_clock_test COMMAND spu_guest_clock_test)
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        find_package(Python3 COMPONENTS Interpreter)
+        if(Python3_Interpreter_FOUND)
+            add_test(NAME spu_block_audio
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_spu_block_audio.py
+                    --cc ${CMAKE_C_COMPILER})
+        endif()
+    endif()
     add_executable(spu_sample_banks_test tests/test_spu_sample_banks.c)
     target_include_directories(spu_sample_banks_test PRIVATE include)
     add_test(NAME spu_sample_banks_test COMMAND spu_sample_banks_test)

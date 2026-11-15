@@ -50,6 +50,7 @@ static inline uint16_t voice_reg(int voice,int reg);
 static uint32_t transfer_addr;
 static uint32_t key_on_count;
 static uint64_t render_frames;
+uint64_t g_spu_render_blocks;
 static uint64_t nonzero_frames;
 static int32_t last_peak;
 static int32_t peak;
@@ -202,7 +203,7 @@ static void spu_event_record(uint8_t kind, int voice, uint32_t addr) {
     e->kind     = kind;
     e->voice    = (uint8_t)voice;
     e->addr     = addr;
-    if (voice >= 0 && voice < SPU_MIX_VOICES) {
+    if (voice >= 0 && (unsigned)voice < SPU_MIX_VOICES) {
         /* PSX voice block layout (16-bit register indices from voice base):
          *   0=VOL_L 1=VOL_R 2=PITCH 3=START 4=ADSR_LO 5=ADSR_HI 6=CURVOL 7=LOOP */
         e->pitch    = voice_reg(voice,2);
@@ -1122,6 +1123,7 @@ void spu_init(void) {
     transfer_addr = 0;
     key_on_count = 0;
     render_frames = 0;
+    g_spu_render_blocks = 0;
     nonzero_frames = 0;
     last_peak = 0;
     peak = 0;
@@ -1161,6 +1163,7 @@ void spu_set_pcm_overlay(void (*callback)(int16_t*, uint32_t)) {
 
 static void spu_render_block(int16_t* out_stereo, int frames) {
     if (!out_stereo || frames <= 0) return;
+    ++g_spu_render_blocks;
 
     uint16_t ctrl = spu_regs[reg_index(0x1F801DAAu)];
     int enabled  = (ctrl & 0x8000u) != 0;
@@ -1858,6 +1861,10 @@ uint32_t spu_ram_peek(uint32_t addr, uint8_t *out, uint32_t len) {
     if (len > SPU_RAM_SIZE - addr) len = SPU_RAM_SIZE - addr;
     memcpy(out, spu_ram + addr, len);
     return len;
+}
+
+int spu_irq_can_raise(void) {
+    return (spu_ctrl_read() & 0x8040u) == 0x8040u && !irq_flag;
 }
 
 uint16_t spu_ctrl_read(void) {

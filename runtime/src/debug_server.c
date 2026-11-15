@@ -7119,6 +7119,8 @@ static void handle_mc_status(int id, const char *json)
 static void handle_spu_status(int id, const char *json)
 {
     (void)json;
+    extern uint64_t g_spu_render_blocks, g_spu_sample_deadline_queries;
+    extern uint64_t g_spu_sample_service_checks, g_spu_sample_service_pumps;
     SpuDebugInfo info;
     spu_debug_info(&info);
     /* The DSP-fidelity state (issue #103: SPU IRQ, reverb, noise, sweeps) lives
@@ -7134,6 +7136,8 @@ static void handle_spu_status(int id, const char *json)
              "\"cd_l\":%d,\"cd_r\":%d,"
              "\"key_on_count\":%u,"
              "\"render_frames\":%llu,\"nonzero_frames\":%llu,"
+             "\"render_blocks\":%llu,\"sample_queries\":%llu,"
+             "\"sample_checks\":%llu,\"sample_pumps\":%llu,"
              "\"last_peak\":%d,\"peak\":%d,"
              "\"cd_frames\":%u,\"cd_push_frames\":%llu,"
              "\"cd_overflow_frames\":%llu,\"cd_underflow_frames\":%llu,"
@@ -7155,6 +7159,10 @@ static void handle_spu_status(int id, const char *json)
              info.key_on_count,
              (unsigned long long)info.render_frames,
              (unsigned long long)info.nonzero_frames,
+             (unsigned long long)g_spu_render_blocks,
+             (unsigned long long)g_spu_sample_deadline_queries,
+             (unsigned long long)g_spu_sample_service_checks,
+             (unsigned long long)g_spu_sample_service_pumps,
              info.last_peak,
              info.peak,
              info.cd_frames,

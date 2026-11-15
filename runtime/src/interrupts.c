@@ -444,7 +444,12 @@ uint32_t psx_spu_sample_event_cycles_to_next(void) {
     /* Gate on SPUCNT alone — this runs on every deadline recompute, and the
      * full SpuGlobalState snapshot here dominated the emu thread under an
      * MMIO-polling guest loop (Capcom FMV, gdb-sampled 2026-09-01). */
+#if defined(PSX_BLOCK_AUDIO) && PSX_BLOCK_AUDIO
+    /* A latched IRQ cannot raise again before a catch-up-before-clear write. */
+    if (!spu_irq_can_raise()) {
+#else
     if ((spu_ctrl_read() & 0x0040u) == 0) {
+#endif
         g_spu_sample_ctrl_rejects++;
         return UINT32_MAX;
     }
@@ -465,6 +470,9 @@ void psx_spu_sample_event_service(void) {
     if (!spu_sample_event_mode() || !s_midframe_audio_pump)
         return;
     /* SPUCNT alone — same hot-gate rationale as the deadline query above. */
+#if defined(PSX_BLOCK_AUDIO) && PSX_BLOCK_AUDIO
+    if (!spu_irq_can_raise()) return;
+#endif
     const uint16_t ctrl = spu_ctrl_read();
     if ((ctrl & 0x0040u) != 0) {
         g_spu_sample_enabled_services++;
