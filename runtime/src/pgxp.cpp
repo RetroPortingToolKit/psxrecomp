@@ -728,7 +728,8 @@ static inline void sc_kill(PGXPScalar *s) { s->gen = 0; }
 /* Coalescing stores the last actual value, never a later CPU register value:
  * the latter can have changed at a deferred guest load writeback. */
 static void flush_plain_writes(void) {
-#if defined(PSX_NATIVE_PRECISION_SLICES) && PSX_NATIVE_PRECISION_SLICES
+#if (defined(PSX_NATIVE_PRECISION_SLICES) && PSX_NATIVE_PRECISION_SLICES) || \
+    (defined(PSX_PGXP_DATAFLOW) && PSX_PGXP_DATAFLOW)
     const uint32_t mask = psx_pgxp_plain_mask;
     if (!mask) return;
     psx_pgxp_plain_mask = 0;

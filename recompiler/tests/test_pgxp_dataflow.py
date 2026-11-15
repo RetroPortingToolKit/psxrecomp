@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Compile actual emitted GTE-to-packet code against the full PGXP engine."""
+import argparse
+import os
+from pathlib import Path
+import re
+import struct
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'runtime/tests'))
+from fixture_link import nm_symbols, library_symbols, write_stubs, MULTIPLE, UNDEFINED
+
+
+def run(argv, **kw):
+    p = subprocess.run([str(x) for x in argv], capture_output=True, text=True,
+                       encoding='utf-8', errors='replace', **kw)
+    if p.returncode:
+        raise RuntimeError(' '.join(map(str, argv)) + '\n' + p.stdout + p.stderr)
+    if p.stdout:
+        print(p.stdout, end='', flush=True)
+    return p
+
+
+def program():
+    base = 0x80010000
+    words, labels, branches = [], {}, []
+    def i(op, rs, rt, imm=0): words.append(op << 26 | rs << 21 | rt << 16 | (imm & 65535))
+    def r(rs, rt, rd, fn, sh=0): words.append(rs << 21 | rt << 16 | rd << 11 | sh << 6 | fn)
+    words.append(0x48087000)  # mfc2 t0,SXY2
+    i(15, 0, 10, 0x1234)  # shadow-dead control setup, even across the loop
+    i(9, 0, 9, 0)
+    labels['loop'] = len(words)
+    i(9, 9, 9, 1)
+    i(10, 9, 10, 4)
+    branches.append((len(words), 'loop')); i(5, 10, 0)
+    words.append(0)
+    r(0, 8, 11, 0, 16); r(0, 11, 11, 3, 16); i(9, 11, 11, 1)
+    r(0, 8, 12, 2, 16); i(9, 12, 12, -1); r(0, 12, 12, 0, 16)
+    i(12, 11, 11, 65535); r(11, 12, 13, 0x25); i(43, 4, 13)
+    i(35, 5, 8); words.append(0); r(8, 6, 8, 0x21); i(43, 4, 8, 4)
+    words.append(0x480E7000)  # mfc2 t6,SXY2
+    r(14, 0, 10, 0x21)  # dead coordinate copy, destructive queue must end lineage
+    i(15, 0, 10, 12); i(13, 10, 10, 8); i(43, 4, 10, 8)
+    i(35, 7, 15); words.append(0); i(43, 4, 15, 12)
+    words += [0x03E00008, 0]
+    for index, label in branches:
+        words[index] |= (labels[label] - index - 1) & 65535
+    return base, words
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--recompiler', required=True)
+    ap.add_argument('--cc', required=True)
+    ap.add_argument('--cxx', required=True)
+    a = ap.parse_args()
+    with tempfile.TemporaryDirectory(prefix='psx-pgxp-flow-') as folder:
+        work = Path(folder)
+        base, words = program()
+        header = bytearray(2048); header[:8] = b'PS-X EXE'
+        for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
+            struct.pack_into('<I', header, offset, value)
+        exe = work / 'flow.psx'; exe.write_bytes(header + struct.pack('<%dI' % len(words), *words))
+        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n', encoding='utf-8')
+        out = work / 'generated'
+        run([a.recompiler, exe, '--seeds', seeds, '--out-dir', out])
+        sources = sorted(out.glob('*_full*.c'))
+        text = '\n'.join(x.read_text(encoding='utf-8') for x in sources)
+        dead_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_DEAD_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
+        if not {words[1], words[4], words[21]} <= dead_words:
+            raise RuntimeError('actual CFG emitter failed to remove cross-block control/dead-copy hooks')
+        for word in words[7:15] + [words[18]]:
+            if word in dead_words:
+                raise RuntimeError('actual emitter removed live coordinate arithmetic 0x%08X' % word)
+        common = ['-O2', '-ffunction-sections', '-fdata-sections', '-DPSX_PGXP=1',
+                  '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_NO_DEBUG_TOOLS=1',
+                  '-I', str(ROOT/'runtime/include'), '-I', str(out)]
+        objects = []
+        for selected, name in ((0, 'reference'), (1, 'candidate')):
+            c = work / (name+'.c')
+            c.write_text(text.replace('func_80010000(', 'flow_'+name+'('), encoding='utf-8')
+            obj = work / (name+'.o')
+            run([a.cc, *common, '-DPSX_PGXP_DATAFLOW='+str(selected), '-c', c, '-o', obj])
+            objects.append(obj)
+        for compiler, source, name in (
+            (a.cc, ROOT/'runtime/src/psx_ram_geometry.c', 'ram'),
+            (a.cxx, ROOT/'runtime/src/pgxp.cpp', 'pgxp'),
+            (a.cxx, ROOT/'runtime/tests/pgxp_test_mod_memory.cpp', 'mod-memory'),
+            (a.cxx, ROOT/'runtime/tests/pgxp_dataflow_fixture.cpp', 'fixture')):
+            obj = work/(name+'.o')
+            run([compiler, *common, '-DPSX_PGXP_DATAFLOW=1', '-c', source, '-o', obj]); objects.append(obj)
+        defined, undefined = nm_symbols(objects)
+        provided = library_symbols(a.cc)
+        stubs = {s for s in undefined-defined-provided if not s.startswith('__')}
+        result_exe = work/('products.exe' if os.name == 'nt' else 'products')
+        for _ in range(20):
+            write_stubs(work/'stubs.c', stubs)
+            run([a.cc, '-w', '-c', work/'stubs.c', '-o', work/'stubs.o'])
+            p = subprocess.run([a.cxx, *map(str, objects), str(work/'stubs.o'),
+                                '-Wl,--gc-sections', '-lm', '-o', str(result_exe)], capture_output=True, text=True)
+            if not p.returncode: break
+            changed = False
+            for symbol in MULTIPLE.findall(p.stderr):
+                if symbol in stubs: stubs.remove(symbol); changed = True
+            for symbol in UNDEFINED.findall(p.stderr):
+                if symbol not in defined and symbol not in provided and symbol not in stubs:
+                    stubs.add(symbol); changed = True
+            if not changed: raise RuntimeError(p.stderr)
+        else: raise RuntimeError('fixture link did not converge')
+        run([result_exe])
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

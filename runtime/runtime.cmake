@@ -31,6 +31,7 @@ include("${PSXRECOMP_ROOT}/cmake/psx_frame_submission.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_block_audio.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_static_calls.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_precision_slices.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_pgxp_dataflow.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_sha256_file.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 
@@ -1752,6 +1753,7 @@ function(psxrecomp_add_runtime_target target)
     psxrecomp_block_audio(${target})
     psxrecomp_static_calls(${target} "${PSXRT_GAME_GENERATED_DISPATCH_C}")
     psxrecomp_precision_slices(${target})
+    psxrecomp_pgxp_dataflow(${target})
     psxrecomp_capture_jobs(${target})
     # audio_trace.c uses C11 atomics. Make the runtime's actual language
     # requirement explicit instead of relying on a parent project's global

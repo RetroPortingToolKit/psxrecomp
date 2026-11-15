@@ -403,6 +403,7 @@ private:
     std::vector<Function> last_functions_;
     std::map<uint32_t, ControlFlowGraph> last_cfgs_;
     std::set<uint32_t> extra_labels_;    // Mid-block addresses that need inline labels (jump table targets)
+    std::set<uint32_t> precision_dead_alu_; // CFG-proven unused shadow results
     const AnnotationTable* annotations_ = nullptr;
 
     // Forward declarations for every psx_alias_body_XXXXXXXX() emitted by
@@ -497,6 +498,7 @@ private:
     int detect_cull_bltz_sites(const ControlFlowGraph& cfg);
 
     // Instruction translation
+    void prepare_precision_dataflow(const ControlFlowGraph& cfg);
     std::string translate_instruction(uint32_t addr, uint32_t instr,
                                       PgxpPlainSpan* precision_span = nullptr);
     std::string translate_instruction_core(uint32_t addr, uint32_t instr,

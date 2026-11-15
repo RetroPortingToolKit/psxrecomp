@@ -1,5 +1,6 @@
 #include "code_generator.h"
 #include "pgxp_hook_emitter.h"
+#include "pgxp_dataflow.h"
 #include "control_flow.h"
 #include "gte_register_classification.h"
 #include "../src/bios_address_model.h"
@@ -1029,7 +1030,18 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr,
     const PSXRecompV4::ModImmediateSite* imm_site = find_mod_immediate_site(addr, instr);
     std::string body = imm_site ? mod_immediate_translation(addr, instr, *imm_site)
                                       : translate_instruction_core(addr, instr);
-    if (precision_span && !imm_site && hook.empty() && clamp.empty() && body.find("psx_") == std::string::npos &&
+    const bool ordinary = !imm_site && hook.empty() && clamp.empty() &&
+        body.find("psx_") == std::string::npos && body.find("gte_") == std::string::npos;
+    bool dead_shadow = false;
+    if (ordinary && precision_dead_alu_.count(addr)) {
+        const auto at = body.find("PGXP_ALU(");
+        if (at != std::string::npos && body.find("PGXP_ALU(", at + 1u) == std::string::npos) {
+            const auto effect = pgxp_flow_effect(instr);
+            body.replace(at, 9u, fmt::format("PGXP_FLOW_DEAD_ALU({}u, ", effect.destination));
+            dead_shadow = true;
+        }
+    }
+    if (!dead_shadow && precision_span && ordinary && body.find("psx_") == std::string::npos &&
         body.find("gte_") == std::string::npos) {
         const auto hook = body.find("PGXP_ALU(");
         if (hook != std::string::npos && body.find("PGXP_ALU(", hook + 1u) == std::string::npos) {
@@ -3017,6 +3029,62 @@ std::string CodeGenerator::translate_basic_block(
     return ss.str();
 }
 
+void CodeGenerator::prepare_precision_dataflow(const ControlFlowGraph& cfg) {
+    precision_dead_alu_.clear();
+    std::set<uint32_t> delay_slots;
+    for (const auto& [_, b] : cfg.blocks)
+        if (b.exit_instr.has_delay_slot) delay_slots.insert(b.exit_instr.address + 4u);
+    std::vector<PgxpFlowBlock> flow;
+    for (const auto& [address, b] : cfg.blocks) {
+        PgxpFlowBlock f{address, {}, b.successors};
+        const auto kind = b.exit_instr.type;
+        f.boundary = b.is_exit || kind == ControlFlowType::JumpLink ||
+            kind == ControlFlowType::JumpLinkReg || kind == ControlFlowType::JumpRegister ||
+            kind == ControlFlowType::Return;
+        uint32_t end = b.end_addr;
+        if (b.exit_instr.has_delay_slot) end = std::max(end, b.exit_instr.address + 4u);
+        if (end < address || end - address > 0x40000u) return;
+        for (uint32_t pc = address; pc <= end; pc += 4u) {
+            const auto word = exe_.read_word(pc);
+            if (!word) return;
+            PgxpFlowInstruction i{pc, *word};
+            i.removable = !delay_slots.count(pc);
+            i.opaque = extra_labels_.count(pc) || !mod_instruction_call(pc, *word).empty() ||
+                find_mod_immediate_site(pc, *word) || !draw_distance_clamp_prefix(pc, *word).empty();
+            const auto effect = pgxp_flow_effect(*word);
+            if (effect.pure_alu && !i.opaque) {
+                const auto text = translate_instruction_core(pc, *word);
+                // Special widescreen/mod emissions are not the decoded ALU.
+                i.opaque = text.find("psx_") != std::string::npos || text.find("gte_") != std::string::npos;
+            }
+            // Keep both sides of a load-delay pair opaque. Its register value
+            // writeback is deliberately reordered by the maintained emitter.
+            const uint32_t op = *word >> 26, rt = (*word >> 16) & 31u;
+            if (rt && (op == 0x20 || op == 0x21 || op == 0x23 || op == 0x24 || op == 0x25)) {
+                if (const auto next = exe_.read_word(pc + 4u)) {
+                    if (pgxp_flow_effect(*next).uses & (UINT64_C(1) << rt)) {
+                        i.opaque = true;
+                        f.instructions.push_back(i);
+                        if (pc + 4u <= end) {
+                            f.instructions.push_back({pc + 4u, *next, true, false});
+                            pc += 4u;
+                        }
+                        continue;
+                    }
+                }
+            }
+            f.instructions.push_back(i);
+        }
+        flow.push_back(std::move(f));
+    }
+    precision_dead_alu_ = pgxp_dead_alu_flow(flow);
+    std::map<uint32_t, unsigned> occurrences;
+    for (const auto& block : flow)
+        for (const auto& instruction : block.instructions) ++occurrences[instruction.address];
+    for (const auto& [pc, count] : occurrences)
+        if (count != 1u) precision_dead_alu_.erase(pc);
+}
+
 bool CodeGenerator::func_has_screen_extent_cull(const ControlFlowGraph& cfg) const {
     // The GTE trivial-reject pairs a width compare (slti/sltiu, immediate from
     // the per-game W set) with a height compare (immediate from the H set) in
@@ -3136,6 +3204,7 @@ GeneratedFunction CodeGenerator::generate_function(
     extra_labels_.clear();
     std::map<uint32_t, std::vector<uint32_t>> jr_table_edges;
     scan_jr_tables(cfg, jr_table_edges);
+    prepare_precision_dataflow(cfg);
 
     // CPS (§25): collect this function's continuations (call return points) as
     // blocks are translated, so the entry-switch below can route a dispatched
@@ -3429,6 +3498,7 @@ std::vector<GeneratedFunction> CodeGenerator::generate_alias_group(
     extra_labels_.clear();
     std::map<uint32_t, std::vector<uint32_t>> jr_table_edges;
     scan_jr_tables(cfg, jr_table_edges);
+    prepare_precision_dataflow(cfg);
 
     // CPS (§25): collect this alias group's continuations during block
     // translation (also prevents a stale list from leaking into the next

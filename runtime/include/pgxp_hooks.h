@@ -83,6 +83,23 @@ extern uint32_t psx_pgxp_plain_values[32];
 #define PGXP_PLAIN_ALU(dst, instr, res, s1, s2) PGXP_ALU(instr, res, s1, s2)
 #endif
 
+/* Function-CFG analysis proved that this shadow result is overwritten before
+ * any precision consumer. Still end its old lineage, including equal words:
+ * reuse the maintained destructive-write queue, flushed by full hooks,
+ * checkpoints, debug inspection and serialization. Never bypass memory/GTE
+ * hooks. Reference, overlays and non-native timing retain the full engine. */
+#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_PGXP_DATAFLOW) && PSX_PGXP_DATAFLOW && \
+    defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && !defined(PSX_OVERLAY_DLL_BUILD)
+#define PGXP_FLOW_DEAD_ALU(dst, instr, res, s1, s2) do { \
+    if (psx_pgxp_plain_enabled) { \
+        psx_pgxp_plain_values[(dst)] = (res); \
+        psx_pgxp_plain_mask |= UINT32_C(1) << (dst); \
+    } \
+} while (0)
+#else
+#define PGXP_FLOW_DEAD_ALU(dst, instr, res, s1, s2) PGXP_ALU(instr, res, s1, s2)
+#endif
+
 /* Forwarder table for overlay DLLs (OverlayCallbacks.pgxp). Appended-last
  * member semantics apply: a NULL pointer (older host) means "no shadowing". */
 typedef struct PGXPHooks {
