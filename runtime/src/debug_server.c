@@ -5566,6 +5566,43 @@ static void handle_host_profile(int id, const char *json)
     free(buf);
 }
 
+/* Raw form of the existing host-profile history. Schema 2 is portable little
+ * endian: rva:u64, frame:u32, in_pass:u32, guest_pc:u32, flags:u32. */
+static void handle_hr_profile_dump(int id, const char *json)
+{
+    char path[512];
+    if (!json_get_str(json, "path", path, sizeof path)) { send_err(id, "missing path"); return; }
+    const int frame_lo = json_get_int(json, "frame_lo", -1);
+    const int frame_hi = json_get_int(json, "frame_hi", -1);
+    const uint64_t seq = host_sampler_seq();
+    const uint64_t oldest = seq > HOST_SAMPLER_CAP ? seq - HOST_SAMPLER_CAP : 0;
+    FILE *file = fopen(path, "wb");
+    if (!file) { send_err(id, "open failed"); return; }
+    uint64_t written = 0;
+    for (uint64_t i = oldest; i < seq; ++i) {
+        HostSample sample;
+        if (!host_sampler_get(i, &sample)) continue;
+        if (frame_lo >= 0 && sample.frame < (uint32_t)frame_lo) continue;
+        if (frame_hi >= 0 && sample.frame > (uint32_t)frame_hi) continue;
+        uint8_t bytes[24];
+        for (unsigned j = 0; j < 8; ++j) bytes[j] = (uint8_t)(sample.rva >> (j * 8));
+        const uint32_t words[4] = { sample.frame, sample.in_pass, sample.guest_pc, sample.flags };
+        for (unsigned word = 0; word < 4; ++word)
+            for (unsigned j = 0; j < 4; ++j)
+                bytes[8 + word * 4 + j] = (uint8_t)(words[word] >> (j * 8));
+        if (fwrite(bytes, sizeof bytes, 1, file) != 1) {
+            fclose(file); send_err(id, "write failed"); return;
+        }
+        ++written;
+    }
+    if (fclose(file) != 0) { send_err(id, "close failed"); return; }
+    send_fmt("{\"id\":%d,\"ok\":true,\"supported\":%d,\"schema\":2,"
+             "\"record_bytes\":24,\"guest_pc_kind\":\"last_entered_function\","
+             "\"image_base\":\"0x%llX\",\"seq\":%llu,\"written\":%llu}",
+             id, host_sampler_supported(), (unsigned long long)host_sampler_image_base(),
+             (unsigned long long)seq, (unsigned long long)written);
+}
+
 /* host_span_ring / frame_wall_ring - always-on wall-time rings (host_span_ring.h).
  *   {"cmd":"host_span_ring","from":SEQ,"n":N}  spans with seq >= from (default: oldest)
  *     -> {total, oldest, events:[[seq, kind, t0_us, dur_us, frame, emu, arg], ...]}
@@ -16565,6 +16602,7 @@ static const CmdEntry s_commands[] = {
     { "pgxp_store_ring",   handle_pgxp_store_ring },
     { "pgxp_shadow",       handle_pgxp_shadow },
     { "host_profile",      handle_host_profile },
+    { "hr_profile_dump",   handle_hr_profile_dump },
     { "host_span_ring",    handle_host_span_ring },
     { "frame_wall_ring",   handle_frame_wall_ring },
     { "pgxp_miss_ring",    handle_pgxp_miss_ring },

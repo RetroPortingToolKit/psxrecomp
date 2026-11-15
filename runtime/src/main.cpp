@@ -20918,9 +20918,7 @@ session_reboot:
          * suspenders; save-on-change already persists them live). No-op if not yet
          * armed, so it can't overwrite the saved file with boot defaults. */
         std::atexit(game_options_save_now);
-#ifndef PSX_NO_DEBUG_TOOLS
-        host_sampler_start();   /* this is the emulation thread */
-#endif
+        host_sampler_start();   /* always-on history, including Release */
 #ifdef PSX_COSIM
         cosim_init();  /* first-divergence oracle server */
 #endif
