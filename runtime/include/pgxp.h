@@ -21,6 +21,8 @@
 extern "C" {
 #endif
 
+struct CPUState;
+
 /* --- lifecycle / configuration ------------------------------------------ */
 
 /* Master arm. Allocates the RAM shadow lazily; fails closed (stays disabled)
@@ -295,6 +297,8 @@ void pgxp_get_stats(PGXPStats *out);
 /* Active instruction hooks only; inactive/suppressed calls are not counted. */
 typedef struct PGXPHookStats {
     uint64_t alu, load, store, cop2, muldiv, plain_batches, plain_registers;
+    uint64_t native_words_captured, native_words_published;
+    uint64_t native_sxy_imports, native_clobbers;
 } PGXPHookStats;
 void pgxp_get_hook_stats(PGXPHookStats *out);
 /* Count one geometry-corrected triangle with `precise` (0..3) precise
@@ -370,6 +374,32 @@ int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected, const PGXPWordSha
  * Rollback restores the destination's previous metadata. */
 int pgxp_restore_relocated_word_shadow(uint32_t destination, uint32_t expected,
                                        const PGXPWordShadow *in);
+
+/* Whole native geometry operations transport vertex metadata at their input
+ * and output boundaries, without simulating their internal CPU instructions.
+ * A receipt is the existing validated word shadow plus optional lineage. It
+ * is transient host state, never a serialized guest representation.
+ *
+ * Capture ALL source words before any potentially aliasing guest writes. Write
+ * the packet with the maintained memory helpers, then publish its receipts.
+ * Publishing accepts only the current precision generation and journals the
+ * previous destinations in a render checkpoint. At most four words form one
+ * atomic batch. Suppressed passes leave the live metadata untouched. */
+typedef struct PGXPNativeWord {
+    PGXPWordShadow word;
+    uint64_t source;
+} PGXPNativeWord;
+int pgxp_native_capture_words(const uint32_t *addresses, const uint32_t *values,
+                              PGXPNativeWord *out, uint32_t count);
+int pgxp_native_publish_words(const uint32_t *destinations,
+                              const PGXPNativeWord *words, uint32_t count);
+/* The caller has already written the corresponding SXY register word. */
+int pgxp_native_import_sxy(uint32_t reg, const PGXPNativeWord *word);
+/* End precision belonging to registers the native operation owns. Values must
+ * already be materialized in cpu; r0 is ignored, SXY FIFO writes are excluded.
+ * Pending plain-ALU writes are committed before the clobber, so cannot later
+ * resurrect metadata. A GTE mask may name only ordinary data registers. */
+void pgxp_native_clobber(struct CPUState *cpu, uint32_t gpr_mask, uint32_t gte_mask);
 
 /* Refused precise-word lookups, newest at (seq - 1) % cap (TCP pgxp_miss_ring). */
 enum {

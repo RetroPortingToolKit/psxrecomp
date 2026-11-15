@@ -534,6 +534,21 @@ extern "C" int pgxp_capture_word_shadow(uint32_t addr, uint32_t expected,
     return 1;
 }
 
+/* The same receipt fields feed sandbox restoration and native publication. */
+static PGXPValue value_from_word_shadow(const PGXPWordShadow *in) {
+    PGXPValue restored{};
+    if (in->valid) {
+        restored.value = in->value;
+        restored.gen = s_gen;
+        restored.x16 = in->x16;
+        restored.y16 = in->y16;
+        restored.z = in->z;
+        restored.flags = in->flags;
+        restored.projection = in->projection;
+    }
+    return restored;
+}
+
 static int restore_word_shadow(uint32_t addr, uint32_t expected,
                                const PGXPWordShadow *in, bool relocated) {
     uint32_t canonical, source;
@@ -548,17 +563,7 @@ static int restore_word_shadow(uint32_t addr, uint32_t expected,
     if (!destination) return in->valid == 0u;
     ck_note(destination, addr);
     if (s_ck_lossy) return 0;
-    PGXPValue restored{};
-    if (in->valid) {
-        restored.value = in->value;
-        restored.gen = s_gen;
-        restored.x16 = in->x16;
-        restored.y16 = in->y16;
-        restored.z = in->z;
-        restored.flags = in->flags;
-        restored.projection = in->projection;
-    }
-    *destination = restored;
+    *destination = value_from_word_shadow(in);
     source_set(destination, 0);
     return 1;
 }
@@ -1080,6 +1085,106 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
     default:
         return;
     }
+}
+
+/* Native geometry transports the existing word receipts instead of executing
+ * the CPU load/ALU/store shadow stream. No receipt survives the operation. */
+static int native_word_valid(const PGXPNativeWord *word) {
+    uint32_t source;
+    return word && word->word.valid <= 1u &&
+        word->word.source_generation == s_gen &&
+        packet_shadow_address(word->word.address, &source) &&
+        source == word->word.address && (!word->word.valid || s_enabled);
+}
+
+extern "C" int pgxp_native_capture_words(const uint32_t *addresses,
+                                         const uint32_t *values,
+                                         PGXPNativeWord *out, uint32_t count) {
+    if (!addresses || !values || !out || count == 0 || count > 4u) return 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t canonical;
+        if (!packet_shadow_address(addresses[i], &canonical)) return 0;
+    }
+    PGXPNativeWord captured[4]{};
+    for (uint32_t i = 0; i < count; ++i) {
+        // The native operation consumes these words exactly as a hooked load
+        // does: retain matching halves and end stale lineage before capture.
+        if (g_pgxp_active) {
+            PGXPValue *source = pgxp_ptr_w(addresses[i]);
+            if (source && source->gen == s_gen) pv_validate(source, values[i]);
+        }
+        if (!pgxp_capture_word_shadow(addresses[i], values[i], &captured[i].word)) return 0;
+        const PGXPValue *source = pgxp_ptr(addresses[i]);
+        if (source && source->gen == s_gen && source->value == values[i])
+            captured[i].source = source_get(source);
+    }
+    std::memcpy(out, captured, count * sizeof(*out));
+    if (g_pgxp_active) s_hook_stats.native_words_captured += count;
+    return 1;
+}
+
+extern "C" int pgxp_native_publish_words(const uint32_t *destinations,
+                                         const PGXPNativeWord *words,
+                                         uint32_t count) {
+    if (!destinations || !words || count == 0 || count > 4u) return 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t canonical;
+        if (!packet_shadow_address(destinations[i], &canonical) ||
+            !native_word_valid(&words[i])) return 0;
+    }
+    if (!g_pgxp_active) return 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        PGXPValue *destination = pgxp_ptr_w(destinations[i]);
+        if (!destination) continue;
+        PGXPValue restored = value_from_word_shadow(&words[i].word);
+        // Source tracking can be active with visual correction disabled.
+        if (!words[i].word.valid) {
+            restored.value = words[i].word.value;
+            restored.gen = s_gen;
+        }
+        *destination = restored;
+        source_set(destination, words[i].source);
+    }
+    s_hook_stats.native_words_published += count;
+    return 1;
+}
+
+extern "C" int pgxp_native_import_sxy(uint32_t reg, const PGXPNativeWord *word) {
+    if (reg < 12u || reg > 14u || !native_word_valid(word)) return 0;
+    if (!g_pgxp_active) return 1;
+    PGXPValue restored = value_from_word_shadow(&word->word);
+    if (!word->word.valid) {
+        restored.value = word->word.value;
+        restored.gen = s_gen;
+    }
+    s_gte[reg] = restored;
+    source_set(&s_gte[reg], word->source);
+    sc_kill(&s_gte_s[reg]);
+    gte_sxy2_mirror(reg);
+    ++s_hook_stats.native_sxy_imports;
+    return 1;
+}
+
+extern "C" void pgxp_native_clobber(CPUState *cpu, uint32_t gpr_mask,
+                                     uint32_t gte_mask) {
+    if (!cpu || s_suppress != 0) return;
+    flush_plain_writes();
+    psx_pgxp_plain_mask &= ~gpr_mask;
+    for (uint32_t r = 1; r < 32u; ++r) {
+        if (gpr_mask & (UINT32_C(1) << r)) {
+            pv_reset(&s_gpr[r], cpu->gpr[r]);
+            sc_kill(&s_gpr_s[r]);
+        }
+    }
+    // SXY has FIFO/alias semantics and is owned by import_sxy, never clobber.
+    gte_mask &= ~UINT32_C(0xF000);
+    for (uint32_t r = 0; r < 32u; ++r) {
+        if (gte_mask & (UINT32_C(1) << r)) {
+            pv_reset(&s_gte[r], cpu->gte_data[r]);
+            sc_kill(&s_gte_s[r]);
+        }
+    }
+    if (g_pgxp_active) ++s_hook_stats.native_clobbers;
 }
 
 /* ------------------------------------------------------------------------- */

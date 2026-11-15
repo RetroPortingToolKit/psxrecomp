@@ -1,6 +1,7 @@
 #include "pgxp.h"
 #include "pgxp_hooks.h"
 #include "mod_memory.h"
+#include "cpu_state.h"
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
@@ -213,6 +214,90 @@ int main() {
     check_attributes(flagged, capture(Arena, Flagged));
     pgxp_invalidate_all();
     CHECK(!pgxp_store_flagged_gte_sxy(Arena, 14, Packed, Flagged));
+    // A native packet producer captures the old source words before any guest
+    // writes, then republishes the same receipts after aliases are overwritten.
+    pgxp_set_source_tracking(1);
+    seed(Address, Packed, (8 << 16) + 16384);
+    CHECK(pgxp_tag_word_source(Address, Packed, 101));
+    pgxp_gte_set_projection(&projection); pgxp_store_gte_reg(Address, 15);
+    CHECK(pgxp_tag_word_source(Address, Packed, 101));
+    seed(Other, Packed, (8 << 16) + 49152);
+    CHECK(pgxp_tag_word_source(Other, Packed, 202));
+    const uint32_t inputs[2] = {Address, Other}, words[2] = {Packed, Packed};
+    const uint32_t swapped[2] = {Other, Address};
+    PGXPNativeWord receipts[2]{};
+    CHECK(pgxp_native_capture_words(inputs, words, receipts, 2));
+    CHECK(receipts[0].source == 101 && receipts[1].source == 202);
+    const auto first_native = receipts[0].word, second_native = receipts[1].word;
+    pgxp_invalidate_word(Address); pgxp_invalidate_word(Other); // guest overwrites
+    CHECK(pgxp_native_publish_words(swapped, receipts, 2));
+    auto expect_first = first_native; expect_first.address = Other & 0x1FFFFFFFu;
+    auto expect_second = second_native; expect_second.address = Address & 0x1FFFFFFFu;
+    check_attributes(expect_first, capture(Other, Packed));
+    check_attributes(expect_second, capture(Address, Packed));
+    CHECK(pgxp_load_source(Other, Packed) == 101);
+    CHECK(pgxp_load_source(Address, Packed) == 202);
+    CHECK(!pgxp_native_import_sxy(15, &receipts[0])); // FIFO push is caller-owned
+    CHECK(pgxp_native_import_sxy(14, &receipts[0]));
+    psx_pgxp_cop2(nullptr, 0xE82F0000u, Packed, Address + 16); // swc2 SXYP
+    CHECK(pgxp_load_source(Address + 16, Packed) == 101);
+    auto imported = first_native; imported.address = (Address + 16) & 0x1FFFFFFFu;
+    check_attributes(imported, capture(Address + 16, Packed));
+
+    pgxp_checkpoint_begin();
+    CHECK(pgxp_native_publish_words(inputs, receipts, 2));
+    CHECK(pgxp_load_source(Address, Packed) == 101);
+    pgxp_checkpoint_rollback();
+    check_attributes(expect_second, capture(Address, Packed));
+    CHECK(pgxp_load_source(Address, Packed) == 202);
+    pgxp_suppress_begin();
+    CHECK(pgxp_native_publish_words(inputs, receipts, 2));
+    CHECK(pgxp_native_import_sxy(14, &receipts[1]));
+    pgxp_suppress_end();
+    check_attributes(expect_second, capture(Address, Packed));
+    CHECK(pgxp_load_source(Address, Packed) == 202);
+
+    const uint32_t bad_destinations[2] = {Address, 0x1F801814u};
+    CHECK(!pgxp_native_publish_words(bad_destinations, receipts, 2));
+    check_attributes(expect_second, capture(Address, Packed)); // atomic refusal
+    auto bad_receipt = receipts[0]; bad_receipt.word.address |= 1;
+    CHECK(!pgxp_native_publish_words(inputs, &bad_receipt, 1));
+    CHECK(!pgxp_native_capture_words(inputs, words, receipts, 5));
+    CHECK(!pgxp_native_capture_words(nullptr, words, receipts, 1));
+
+    // Validation is part of consuming the input words. A changed X ends only
+    // that half/depth/lineage; the still-matching precise Y survives exactly as
+    // it does through the ordinary hooked load/store path.
+    const uint32_t partial_value[1] = {Packed ^ 1u};
+    PGXPNativeWord partial{};
+    CHECK(pgxp_native_capture_words(inputs, partial_value, &partial, 1));
+    CHECK(partial.word.valid && !(partial.word.flags & 1u) && (partial.word.flags & 2u));
+    CHECK(partial.source == 0);
+
+    // Restore the previously captured full vertex before the clobber case.
+    CHECK(pgxp_native_publish_words(inputs, &receipts[1], 1));
+    CPUState machine{};
+    machine.gpr[5] = Packed;
+    psx_pgxp_cop2(&machine, 0x48057000u, Packed, 0); // mfc2 a1,SXY2
+    psx_pgxp_plain_values[5] = 99;
+    psx_pgxp_plain_mask |= 1u << 5;
+    machine.gte_data[16] = 123;
+    pgxp_native_clobber(&machine, 1u << 5, (1u << 14) | (1u << 16));
+    CHECK(!(psx_pgxp_plain_mask & (1u << 5)));
+    int live; uint32_t value, flags; int32_t sx, sy; uint16_t sz;
+    CHECK(pgxp_debug_shadow(1, 5, &live, &value, &flags, &sx, &sy, &sz));
+    CHECK(live && value == Packed && flags == 0);
+    CHECK(pgxp_debug_shadow(2, 16, &live, &value, &flags, &sx, &sy, &sz));
+    CHECK(live && value == 123 && flags == 0);
+    psx_pgxp_cop2(nullptr, 0xE82F0000u, Packed, Address + 16);
+    check_attributes(imported, capture(Address + 16, Packed)); // clobber excludes FIFO
+
+    pgxp_invalidate_all();
+    seed(Address, Packed, (8 << 16) + 32768);
+    const auto new_generation = capture(Address, Packed);
+    CHECK(!pgxp_native_publish_words(inputs, receipts, 2));
+    CHECK(!pgxp_native_import_sxy(14, &receipts[0]));
+    check_attributes(new_generation, capture(Address, Packed));
     gpu_bytes = 0; // pages retained on the host are not guest allocations
     CHECK(!pgxp_capture_word_shadow(Arena, Packed, &refused));
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");
