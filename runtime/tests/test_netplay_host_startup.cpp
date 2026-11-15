@@ -76,9 +76,9 @@ static void reset(void){
     bios={};bios.image=&image;
     selected={};std::strcpy(selected.profile,rule.profile);selected.revision=7;selected.identity[0]=3;
 }
-static bool install(uint32_t initialized=PSX_HOST_BACKENDS_ALL,const PsxBiosBackend *builtin=&bios){
+static bool install(uint32_t initialized=PSX_HOST_BACKENDS_ALL,const PsxBiosBackend *builtin=&bios,int observer_config=0){
     PsxNetplayConfig config{};std::string error;
-    config.slot_count=2;config.player_count=2;config.occupied_mask=3;
+    config.slot_count=2;config.player_count=2;config.occupied_mask=3;config.spectator=observer_config;
     bool ok=psx_install_required_host_profile(config,initialized,builtin,1,1,error);
     CHECK(config.host_profile_required==1);CHECK(clears==1);
     CHECK(ok==error.empty());return ok;
@@ -105,7 +105,8 @@ static void refusal(void){
     reset();cpu.architecture=PSX_HOST_ARCH_UNKNOWN;CHECK(!install()&&!seals);
     reset();cpu.features_known=0;cpu.features=0;CHECK(!install()&&!installs&&ends==1);
     reset();cpu.features_known=0;cpu.features=0;rule.flags=PSX_HOST_PROFILE_PORTABLE;CHECK(install()&&installs==1);
-    reset();rule.flags=PSX_HOST_PROFILE_OBSERVER;CHECK(install()&&installs==1);
+    reset();CHECK(!install(3,&bios,1)&&!installs&&ends==1);
+    reset();rule.flags=PSX_HOST_PROFILE_OBSERVER;CHECK(install(3,&bios,1)&&installs==1&&observed.observer==1);
     reset();CHECK(!install(0)&&!seals);
     reset();CHECK(!install(3,nullptr)&&!seals);
     reset();seal_ok=false;CHECK(!install()&&shutdowns==1&&seals==1&&!sealed);
