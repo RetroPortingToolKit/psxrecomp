@@ -20981,6 +20981,7 @@ session_reboot:
         std::fprintf(stdout, "psxrecomp: SPU float-shadow enabled (verified-enhancement)\n");
     spu_init();
     cdrom_init(disc_path_str.empty() ? NULL : disc_path_str.c_str());
+    cdrom_set_exception_probe(psx_get_in_exception);
 
     /* A disc was requested but nothing mounted. cdrom_init() is non-fatal here
      * (BIOS-only targets run with an empty drive on purpose), so without this

@@ -132,6 +132,23 @@ static uint32_t cdrom_intc_latched_generation;
  * 0 = no presentation hold. Relative remaining is derived for snaps/digests. */
 static uint64_t cdrom_irq_present_due;
 
+/* A response is held back while the CPU is inside its exception handler.
+ *
+ * The kernel walks one handler chain per exception. A response raised in the
+ * middle of that walk is seen only by the chain entries that have not run
+ * yet. When a game keeps its own CD handler installed and then calls a BIOS
+ * file function, the BIOS driver sits early in the chain and the game handler
+ * late: a BIOS command response that lands during an unrelated exception
+ * (vertical blank) is acknowledged by the game handler, and the BIOS driver
+ * never leaves its busy state. Nightmare Creatures (USA) then takes the BIOS
+ * disk-error halt during boot. The hold presents the response at the first
+ * advance after the handler has returned, where a new exception starts the
+ * chain from its head. The bound keeps a handler that never returns from
+ * starving the drive. */
+#define CDROM_IRQ_EXCEPTION_HOLD_MAX 564480u /* one NTSC field */
+static int (*s_cd_exception_probe)(void);
+void cdrom_set_exception_probe(int (*probe)(void)) { s_cd_exception_probe = probe; }
+
 /* Parameter FIFO */
 #define PARAM_FIFO_SIZE 16
 static uint8_t param_fifo[PARAM_FIFO_SIZE];
@@ -1003,6 +1020,10 @@ static void present_cdrom_irq(void) {
      * the guest's command/ack write — and thus from being lost to that ISR's
      * own trailing INTC ack. */
     if (cdrom_irq_present_due != 0 && psx_cycle_count < cdrom_irq_present_due)
+        return;
+    if (irq_flag && !cdrom_intc_request_latched && s_cd_exception_probe &&
+        s_cd_exception_probe() &&
+        psx_cycle_count < cdrom_irq_present_due + CDROM_IRQ_EXCEPTION_HOLD_MAX)
         return;
     if (cdrom_irq_mask_matches_reason(irq_enable, irq_flag) &&
         !cdrom_intc_request_latched) {
