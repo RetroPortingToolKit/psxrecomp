@@ -930,8 +930,44 @@ uint32_t savestate_last_save_pc(void) {
     return s_last_save_pc;
 }
 
+static savestate_checkpoint_fn s_checkpoint_fn;
+static int s_checkpoint_deferred_logged;
+
+int savestate_request_checkpoint(savestate_checkpoint_fn fn) {
+    if (!fn || s_checkpoint_fn) return 0;
+    s_checkpoint_fn = fn;
+    s_checkpoint_deferred_logged = 0;
+    g_psx_savestate_pending = 1;
+    return 1;
+}
+
+/* A staged checkpoint capture: the slot save's resume-PC test, with no
+ * time limit, since a replay can wait for the next safe boundary. */
+static void savestate_poll_checkpoint(CPUState* cpu, uint32_t resume_pc) {
+    uint32_t pc = savestate_resolve_resume_pc(cpu, resume_pc);
+    int pc_matches_cpu = cpu && cpu->pc != 0u &&
+                         (((cpu->pc ^ pc) & 0x1FFFFFFFu) == 0u);
+    if ((resume_pc == 0u && !pc_matches_cpu) ||
+        !psx_irq_resume_context_snapshot_safe_at(pc) || !savestate_resume_pc_ok(pc)) {
+        if (!s_checkpoint_deferred_logged) {
+            s_checkpoint_deferred_logged = 1;
+            fprintf(stderr, "savestate: checkpoint deferred: no safe resume PC "
+                            "(hint=0x%08X cpu=0x%08X)\n",
+                    (unsigned)resume_pc, (unsigned)(cpu ? cpu->pc : 0u));
+        }
+        return;
+    }
+    savestate_checkpoint_fn fn = s_checkpoint_fn;
+    s_checkpoint_fn = NULL;
+    g_psx_savestate_pending = s_save_pending >= 0 || s_load_pending >= 0;
+    CPUState snap = *cpu;
+    snap.pc = pc;
+    fn(&snap, s_bios_checksum, s_entry_pc);
+}
+
 void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
-    if (s_save_pending < 0 && s_load_pending < 0) return;   /* hot path: nothing staged */
+    if (s_save_pending < 0 && s_load_pending < 0 && !s_checkpoint_fn)
+        return;   /* hot path: nothing staged */
     extern int psx_mod_function_entry_active(void);
     ++s_status_polls;
     if (psx_mod_function_entry_active()) { s_status_wait = "mod_callback"; return; }
@@ -948,6 +984,8 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
         return;
     }
     s_status_wait = "resume_pc";
+
+    if (s_checkpoint_fn && cpu) savestate_poll_checkpoint(cpu, resume_pc);
 
     if (s_save_pending >= 0) {
         int slot = s_save_pending;

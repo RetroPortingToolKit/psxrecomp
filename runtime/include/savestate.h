@@ -85,6 +85,14 @@ uint32_t savestate_openbios_wordsum(void);
 /* Integrity key last passed to savestate_configure (for sandbox rebind). */
 void savestate_get_integrity(uint32_t* bios_checksum, uint32_t* entry_pc);
 
+/* Checkpoint capture (tas_checkpoint.c): call fn once, at the next boundary
+ * where a slot save could be written, with the CPU state a save would hold.
+ * Unlike a slot save it waits for a safe resume PC without a time limit.
+ * Returns 0 when a capture is already staged. */
+typedef void (*savestate_checkpoint_fn)(const CPUState* snap, uint32_t bios_checksum,
+                                        uint32_t entry_pc);
+int savestate_request_checkpoint(savestate_checkpoint_fn fn);
+
 /* Path for a manual slot or SAVESTATE_QUICK_SLOT. Returns 1 on success. */
 int savestate_slot_path(int slot, char* out, size_t cap);
 

@@ -75,6 +75,14 @@ int boot_state_check_buffer(const uint8_t* data, size_t size, uint32_t bios,
     assert(0); return 0;
 }
 
+static int checkpoint_calls;
+static uint32_t checkpoint_pc;
+static void checkpoint_probe(const CPUState* snap, uint32_t bios, uint32_t entry) {
+    (void)bios; (void)entry;
+    ++checkpoint_calls;
+    checkpoint_pc = snap->pc;
+}
+
 static void check_pending_status(int pending) {
     PSXSavestateStatus status;
     char json[512], expected[32];
@@ -244,6 +252,18 @@ int main(void) {
     mod_callback = override_callback = g_psx_guest_time_frozen = 0;
     host_depth = 0;
     savestate_set_title_blocked(0);
+    /* A checkpoint capture waits for a safe resume PC with no time limit,
+     * runs once with that PC, and writes no slot file. */
+    assert(savestate_request_checkpoint(checkpoint_probe) && g_psx_savestate_pending && !savestate_pending());
+    assert(!savestate_request_checkpoint(checkpoint_probe));
+    context_safe = 0;
+    for (int i = 0; i < 3; ++i) savestate_poll(&cpu, 0x80010000u);
+    assert(checkpoint_calls == 0 && s_checkpoint_fn && g_psx_savestate_pending);
+    context_safe = 1;
+    savestate_poll(&cpu, 0x80010000u);
+    assert(checkpoint_calls == 1 && checkpoint_pc == 0x80010000u && !s_checkpoint_fn && !g_psx_savestate_pending);
+    savestate_poll(&cpu, 0x80010000u);
+    assert(checkpoint_calls == 1);
     puts("savestate title policy and save/load host-continuation tests passed");
     return 0;
 }
