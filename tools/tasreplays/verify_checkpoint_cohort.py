@@ -79,16 +79,17 @@ def cohort(output, command, terminal, port=4370, timeout=3600.0, resumes=RESUMES
     return report
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__,
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, usage='%(prog)s output --terminal FRAME [options] -- COMMAND ...',
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('output', type=Path, help='new directory for the runs and results.json')
     parser.add_argument('--terminal', type=int, required=True, help='last frame; must exceed 2560')
     parser.add_argument('--port', type=int, default=4370)
     parser.add_argument('--timeout', type=float, default=3600.0, help='seconds per run')
-    parser.add_argument('command', nargs=argparse.REMAINDER, help='-- then the game command')
-    args = parser.parse_args()
-    command = args.command[1:] if args.command[:1] == ['--'] else args.command
+    argv = sys.argv[1:] if argv is None else list(argv)
+    cut = argv.index('--') if '--' in argv else len(argv)
+    args = parser.parse_args(argv[:cut])
+    command = argv[cut + 1:]
     if not command:
         parser.error('give the game command after "--"')
     if args.terminal <= 2560:

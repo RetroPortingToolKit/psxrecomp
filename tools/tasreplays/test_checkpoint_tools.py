@@ -21,8 +21,8 @@ sys.path.insert(0, str(HERE))
 
 from compare_boot_states import compare, sections  # noqa: E402
 from compare_checkpoint_runs import compare_runs  # noqa: E402
-from run_checkpoint import run  # noqa: E402
-from verify_checkpoint_cohort import cohort  # noqa: E402
+from run_checkpoint import main as run_main, run  # noqa: E402
+from verify_checkpoint_cohort import cohort, main as cohort_main  # noqa: E402
 
 DEFERRED = {500: 2}
 
@@ -130,7 +130,15 @@ def test_compare_boot_states(tmp):
 
 def test_cohort(tmp, mode, expect_passed, failing=None):
     port = free_port()
-    report = cohort(tmp / f'cohort-{mode}', game_command(port, mode), 2600, port, 60)
+    if mode == 'honest':
+        # The documented command line: options after the output folder, the game after --.
+        out = tmp / f'cohort-{mode}'
+        code = cohort_main([str(out), '--terminal', '2600', '--port', str(port), '--timeout', '60',
+                            '--', *game_command(port, mode)])
+        report = json.loads((out / 'results.json').read_text(encoding='utf-8'))
+        check(code == 0, f'the cohort command line exits 0 on a pass, got {code}')
+    else:
+        report = cohort(tmp / f'cohort-{mode}', game_command(port, mode), 2600, port, 60)
     check(report['passed'] == expect_passed, f'{mode}: cohort passed={report["passed"]}: {report.get("error")}')
     if failing:
         check(failing in report.get('error', ''), f'{mode}: fails at {failing}: {report.get("error")}')
@@ -177,6 +185,13 @@ def main(argv):
         port = free_port()
         code, _ = run(tmp / 'refused', game_command(port), [600], tmp / 'nothing.pst', None, port, 30)
         check(code == 2, f'a refused resume returns the game status, got {code}')
+
+        # The documented run command line, options after the output folder.
+        port = free_port()
+        code = run_main([str(tmp / 'cli'), '--save-at', '600', '--port', str(port), '--timeout', '30',
+                         '--', *game_command(port)])
+        check(code == 0 and json.loads((tmp / 'cli' / 'captures.json').read_text())[0]['requested_frame'] == 600,
+              f'the run command line captures at the requested frame, got exit {code}')
     print('checkpoint tools: state comparison, run driver, cohort and its controls pass')
     return 0
 

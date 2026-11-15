@@ -98,8 +98,8 @@ def run(out, command, save_at, resume=None, perturb=None, port=4370, timeout=360
     return process.returncode or 1, rows
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__,
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, usage='%(prog)s out --save-at FRAME [FRAME ...] [options] -- COMMAND ...',
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('out', type=Path, help='new directory for states, manifests and logs')
     parser.add_argument('--save-at', type=int, nargs='+', required=True, metavar='FRAME')
@@ -107,9 +107,10 @@ def main():
     parser.add_argument('--perturb-restore', choices=PERTURB_FIELDS)
     parser.add_argument('--port', type=int, default=4370, help='the build\'s debug-server port')
     parser.add_argument('--timeout', type=float, default=3600.0, help='seconds before the run is stopped')
-    parser.add_argument('command', nargs=argparse.REMAINDER, help='-- then the game command')
-    args = parser.parse_args()
-    command = args.command[1:] if args.command[:1] == ['--'] else args.command
+    argv = sys.argv[1:] if argv is None else list(argv)
+    cut = argv.index('--') if '--' in argv else len(argv)
+    args = parser.parse_args(argv[:cut])
+    command = argv[cut + 1:]
     if not command:
         parser.error('give the game command after "--"')
     if any(frame <= 0 for frame in args.save_at):
