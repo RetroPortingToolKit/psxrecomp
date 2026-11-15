@@ -155,8 +155,9 @@ static int resume_cpu_exec_parse(const uint8_t *p, uint32_t len, DirtyRamLoadDel
         if (!pst_r_u32(&r, &v[i])) return 0;
     /* Words 0-4 are reserved and must be zero. */
     if (v[0] | v[1] | v[2] | v[3] | v[4]) return 0;
-    /* rt, value, age (0 armed, 1 delay slot ran), armed; age needs armed. */
-    if (v[5] > 31u || v[7] > 1u || v[8] > 1u || (v[7] && !v[8])) return 0;
+    /* rt, value, age (0 armed, 1 delay slot ran), armed. A retired load
+     * leaves age 1 with armed 0, so age does not need armed. */
+    if (v[5] > 31u || v[7] > 1u || v[8] > 1u) return 0;
     d->rt = v[5];
     d->val = v[6];
     d->age = v[7];
