@@ -32,5 +32,12 @@ function(psxrecomp_frame_submission target)
                        "${PSXRECOMP_ROOT}/runtime/include/dma.h"
                        "${PSXRECOMP_ROOT}/runtime/include/gpu.h"
                        "${PSXRECOMP_ROOT}/runtime/include/mod_memory.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/psx_memory.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/dma_host_draw.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/dma_gpu_ll.h"
+                       "${PSXRECOMP_ROOT}/runtime/src/dma_gpu_ll.c"
+                       "${PSXRECOMP_ROOT}/runtime/include/ws_prepass_guard.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/ws_ui_group.h"
+                       "${PSXRECOMP_ROOT}/runtime/src/ws_ui_group.c"
                        "${CMAKE_CURRENT_FUNCTION_LIST_FILE}")
 endfunction()

@@ -1297,6 +1297,9 @@ if(BUILD_TESTING)
     target_include_directories(ws_auto_ui_untextured_exec_test PRIVATE
         include
         src)
+    if(UNIX)
+        target_link_libraries(ws_auto_ui_untextured_exec_test PRIVATE m)
+    endif()
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(ws_auto_ui_untextured_exec_test PRIVATE
             -ffunction-sections -fdata-sections)
@@ -1310,6 +1313,9 @@ if(BUILD_TESTING)
         tests/test_gpu_native_ui_submission.c
         src/ws_ui_group.c src/psx_video_timing.c src/gpu_timeline.c)
     target_include_directories(gpu_native_ui_submission_test PRIVATE include src)
+    if(UNIX)
+        target_link_libraries(gpu_native_ui_submission_test PRIVATE m)
+    endif()
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(gpu_native_ui_submission_test PRIVATE -ffunction-sections -fdata-sections)
         target_link_options(gpu_native_ui_submission_test PRIVATE -Wl,--gc-sections)

@@ -532,6 +532,8 @@ def build(cc: str, work: pathlib.Path, name: str, prod: bool) -> pathlib.Path:
         cmd.append("-Wl,-dead_strip")
     else:
         cmd.append("-Wl,--gc-sections")
+    if platform.system() != "Windows":
+        cmd.append("-lm")
     cmd.extend(["-o", str(exe)])
     subprocess.run(cmd, cwd=work, check=True)
     return exe
