@@ -13,6 +13,7 @@ int g_psx_precise_slice=0, g_psx_load_delay=1;
 volatile int g_ds_recording=0;
 static uint32_t backing[0x200000/4];
 uint8_t *g_psx_ram=(uint8_t*)backing;
+uint64_t psx_hr_runtime_fast_loads[3];
 uint32_t g_psx_ram_mask=0x1FFFFFu;
 int psx_load_delay_enabled(void) { return 1; }
 int psx_slice_block_impl(CPUState *c,uint32_t p,uint32_t n,int e) {
