@@ -1306,6 +1306,16 @@ if(BUILD_TESTING)
     add_test(NAME ws_auto_ui_untextured_exec_test
              COMMAND ws_auto_ui_untextured_exec_test)
 
+    add_executable(gpu_native_ui_submission_test
+        tests/test_gpu_native_ui_submission.c
+        src/ws_ui_group.c src/psx_video_timing.c src/gpu_timeline.c)
+    target_include_directories(gpu_native_ui_submission_test PRIVATE include src)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(gpu_native_ui_submission_test PRIVATE -ffunction-sections -fdata-sections)
+        target_link_options(gpu_native_ui_submission_test PRIVATE -Wl,--gc-sections)
+    endif()
+    add_test(NAME gpu_native_ui_submission_test COMMAND gpu_native_ui_submission_test)
+
     add_executable(ws_shared_split_ui_exec_test
         tests/test_ws_shared_split_ui_exec.c
         src/ws_ui_group.c
@@ -2484,6 +2494,14 @@ if(BUILD_TESTING)
             add_test(NAME gpu_gp0_history_guard_test
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_gp0_history_guard.py
+                             --cc ${CMAKE_C_COMPILER})
+            add_test(NAME gpu_native_submission_test
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_native_submission.py
+                             --cc ${CMAKE_C_COMPILER})
+            add_test(NAME gpu_native_dma_submission_test
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dma_gpu_list_cpu_hold.py
                              --cc ${CMAKE_C_COMPILER})
             add_test(NAME debug_input_route_test
                      COMMAND ${Python3_EXECUTABLE}
