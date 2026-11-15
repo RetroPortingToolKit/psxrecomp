@@ -3394,6 +3394,37 @@ static int32_t ws_ui_y(int32_t y, int32_t ay, double s) {
     if (s >= 1.0) return y;
     return ay + (int32_t)lround((double)(y - ay) * s);
 }
+static int32_t ws_shared_ui_delta(void);
+int gpu_ws_copy_presented_ui(uint32_t source,const uint32_t *words,uint32_t count,
+    int32_t x[4],int32_t y[4],unsigned vertices,int rectangle) {
+    if(!words || !x || !y || vertices<3 || vertices>4 || !ws_auto_ui_squash || !ws_active())return 0;
+    const WsUiPrepassItem *it=NULL;
+    for(uint32_t i=0;i<ws_ui_prepass_count;++i)
+        if(ws_ui_prepass[i].src_addr==GPU_RAM_KEY(source)) {it=&ws_ui_prepass[i];break;}
+    if(!it || !ws_prepass_packet_matches(&it->packet_guard,words,count))return 0;
+    int32_t lo_x=x[0],hi_x=x[0],lo_y=y[0],hi_y=y[0];
+    for(unsigned i=1;i<vertices;++i) {
+        if(x[i]<lo_x)lo_x=x[i];
+        if(x[i]>hi_x)hi_x=x[i];
+        if(y[i]<lo_y)lo_y=y[i];
+        if(y[i]>hi_y)hi_y=y[i];
+    }
+    const int32_t X=ws_disp_x(),W=ws_disp_w(),H=ws_disp_h();
+    if((lo_x<=X && hi_x>=X+W && lo_y<=0 && hi_y>=H) || (hi_x-lo_x>W/2 && hi_y-lo_y>H/4))return 0;
+    const double s=ws_auto_ui_size();
+    const int delta=ws_shared_ui_delta();
+    if(rectangle && s>=1) {
+        const int32_t left=ws_scale_about(lo_x,it->group.anchor)+delta;
+        const int32_t width=(int32_t)ws_scale_len(hi_x-lo_x);
+        for(unsigned i=0;i<vertices;++i)x[i]=left+(x[i]==hi_x?width:0);
+    } else {
+        for(unsigned i=0;i<vertices;++i) {
+            x[i]=ws_ui_x(x[i],it->group.anchor,s)+delta;
+            y[i]=ws_ui_y(y[i],it->anchor_y,s);
+        }
+    }
+    return 1;
+}
 
 static int ws_shared_ui_packet(void) {
     uint32_t op = gp0_cmd_buf[0] >> 24;
@@ -5078,39 +5109,6 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         gl_renderer_note_wide_triangle_recovery(s_native_wide_projection_correction &&
             ws_native_wide_active() &&
             psx_gpu_triangle_oversize(raw_x,raw_y,0,1,2));
-    }
-    if (gr_backend() == GR_BACKEND_OPENGL &&
-        gl_renderer_frame_generation() != gte_fg_source_enabled())
-        gte_fg_source_set(gl_renderer_frame_generation());   /* from the next projection */
-    if (gr_backend() == GR_BACKEND_OPENGL && gte_fg_source_enabled()) {
-        /* Frame generation re-projects vertices from their camera-space source. */
-        uint32_t id[3] = { 0, 0, 0 };
-        int32_t pc[9] = { 0 }, hd[3] = { 0, 0, 0 };
-        const int ix[3] = { i0, i1, i2 };
-        GteFgSrc c[3][2];
-        int nc[3];
-        for (int k = 0; k < 3; k++) nc[k] = gte_fg_source_lookup(gp0_cmd_buf[ix[k]], c[k]);
-        /* Two points on one pixel: the one projected by the same function as
-         * a vertex with one source, else the one nearest its depth. */
-        for (int k = 0; k < 3; k++) {
-            int pick = nc[k] == 1 ? 0 : -1;
-            if (nc[k] == 2) {
-                for (int m = 0; m < 3 && pick < 0; m++)
-                    if (m != k && nc[m] == 1)
-                        for (int q = 0; q < 2; q++)
-                            if (c[k][q].ra == c[m][0].ra) { pick = q; break; }
-                if (pick < 0)
-                    for (int m = 0; m < 3 && pick < 0; m++)
-                        if (m != k && nc[m] == 1) {
-                            const int32_t z = c[m][0].p[2];
-                            pick = abs(c[k][0].p[2] - z) <= abs(c[k][1].p[2] - z) ? 0 : 1;
-                        }
-            }
-            if (pick < 0) continue;
-            id[k] = c[k][pick].id; hd[k] = c[k][pick].h;
-            for (int q = 0; q < 3; q++) pc[3 * k + q] = c[k][pick].p[q];
-        }
-        gl_renderer_fg_source(id, pc, hd, vx, vy);
     }
     gr_set_perspective_triangle(0, 0.0f, 0.0f, 0.0f);
     /* PGXP depth (G1.14) only reaches the renderer while a PGXP renderer
@@ -8019,6 +8017,12 @@ void gpu_get_draw_area(GpuDrawArea* out) {
     out->bottom = draw_area_bottom;
     out->offset_x = draw_offset_x;
     out->offset_y = draw_offset_y;
+}
+void gpu_get_drawing_environment(GpuDrawingEnvironment* out) {
+    gpu_get_draw_area(&out->area);
+    out->texture_window=texture_window_value;
+    out->mode=texpage_x | texpage_y<<4 | semi_transparency<<5 | texpage_colors<<7 |
+        dither_enabled<<9 | set_mask_bit<<11 | check_mask_bit<<12 | texture_disable<<15;
 }
 
 uint16_t gpu_vram_peek(int x, int y) {

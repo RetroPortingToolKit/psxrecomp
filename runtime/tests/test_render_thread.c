@@ -101,7 +101,7 @@ static void reset_state(void) {
 
 static int start(size_t ring, int frames) {
     g_max_frames = frames;
-    RtConfig cfg = { ring, frames, fake_exec, fake_ctx, NULL };
+    RtConfig cfg = { ring, frames, fake_exec, fake_ctx, NULL, NULL };
     return rt_start(&cfg);
 }
 
@@ -280,6 +280,18 @@ static void test_tick(void) {
     rt_stop();
 }
 
+static void test_kick(void) {
+    reset_state();CHECK(start(1u<<20,2),"start for kick");
+    sleep_us(20000); /* let the empty consumer sleep */
+    CHECK(emit(16),"small latency-sensitive record");rt_kick();
+    const uint64_t deadline=rt_now_ns()+500000000ull;
+    while(!atomic_load(&exec_count) && rt_now_ns()<deadline)sleep_us(500);
+    CHECK(atomic_load(&exec_count)==1,"kick wakes before any frame marker or drain");
+    RtStats stats;rt_get_stats(&stats);
+    CHECK(!stats.frames_produced && !stats.frames_consumed && !stats.acquires,
+        "kick does not add frames or acquire the context");
+    rt_stop();
+}
 int main(void) {
     test_order_and_wrap();
     test_oversize();
@@ -287,6 +299,7 @@ int main(void) {
     test_acquire_release();
     test_stop_while_held();
     test_tick();
+    test_kick();
     printf("checks=%d failures=%d\n", checks, failures);
     return failures ? 1 : 0;
 }

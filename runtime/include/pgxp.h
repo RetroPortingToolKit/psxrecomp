@@ -183,6 +183,20 @@ void pgxp_gte_set_projection(const PGXPProjection *projection);
 int pgxp_load_projection(uint32_t addr, uint32_t packed, PGXPProjection *out);
 int pgxp_get_gte_projection(uint32_t index, uint32_t packed, PGXPProjection *out);
 
+/* Explicit producer lineage, transported only by intact word copies. Tokens
+ * name host-owned source vertices; they are never inferred from position,
+ * depth, caller or matching values. Arithmetic and partial/untracked writes
+ * discard them. This transport can run with precision correction disabled.
+ * Changing its mode invalidates history; restore/reset must do so as well. */
+int pgxp_set_source_tracking(int enabled);
+int pgxp_tag_gte_source(uint32_t index, uint32_t expected, uint64_t token);
+uint64_t pgxp_load_source(uint32_t address, uint32_t expected);
+/* A trusted producer may bind an explicitly derived vertex after its original
+ * writer completed. expected MUST be the current RAM/scratchpad word, read by
+ * the caller. No correspondence is inferred. A missing/stale precision shadow
+ * becomes a known word without precision; an intact shadow keeps its data. */
+int pgxp_tag_word_source(uint32_t address, uint32_t expected, uint64_t token);
+
 /* Current SXY FIFO shadow (index 0..3 selects GTE data regs 12..15).
  * Returns nonzero when the shadow is live and carries X/Y precision. */
 int pgxp_get_gte_sxy(uint32_t index, int32_t *x16, int32_t *y16);
@@ -210,7 +224,7 @@ enum {
  *               unknown (immediate GP0 writes) — skips the dataflow tier.
  *   packet_word the actual word (validation key).
  *   int_x/int_y the natively parsed 11-bit positions (pre-draw-offset).
- * On DATAFLOW/FALLBACK, *x16/*y16 hold the sub-pixel position (16.16, same
+ * On DATAFLOW/FALLBACK, *x16 and *y16 hold the sub-pixel position (16.16, same
  * coordinate space as the packet halves); *sz is the projected depth or 0.
  * Safeguards applied here: the integer part must match the native parse
  * (truncation agreement; a bounded window under preserve-projection) and the

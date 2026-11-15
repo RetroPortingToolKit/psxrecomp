@@ -42,8 +42,6 @@ void gpu_depth24_upload_span_reset(void){}
 /* Netplay unsplit view and forward-pass opt-in: off in these fixtures. */
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
 int render_pass_netplay_enabled(void){return 0;}
-void frame_interpolation_schedule_reset(FrameInterpolationSchedule *p){memset(p,0,sizeof(*p));}
-void frame_flip_tracker_reset(FrameFlipTracker *p){memset(p,0,sizeof(*p));p->period=1;}
 static int checks,failures;
 static void check(int ok,const char *label){checks++;if(!ok){fprintf(stderr,"FAIL %s\n",label);failures++;}}
 static void verify(const char *label){
@@ -409,54 +407,7 @@ static void verify_wide_overlay_order(void) {
  }
  free(wide);
 }
-/* Render-pass capture of an anchored wide frame (frame interpolation). The
- * camera view translates world draws by its shift, so the mirror drew the whole
- * wide surface and the canonical frame is NOT its centre. A capture taken on the
- * fast centre path must equal one taken with the fast path off; copying the
- * unshifted canonical frame over the centre shows stale margins beside a
- * displaced centre, alternating with the game's own frames (flicker). */
-static int capture_wide_pass(GLuint tex,int fast){
- PassGen g;memset(&g,0,sizeof g);
- g.source_path=GL_PRES_WIDE;g.x=0;g.y=0;g.w=320;g.h=240;
- flush_flat_batch();flush_tex_batch();
- s_wide_fast=fast;pass_capture_into(tex,&g);s_wide_fast=1;
- return glGetError()==GL_NO_ERROR;
-}
-static void verify_anchored_pass_capture(int scale,int shift){
- const int W=426*scale,H=240*scale;const size_t n=(size_t)W*H*4;
- uint8_t *fast=malloc(n),*full=malloc(n),*again=malloc(n);
- if(!fast||!full||!again){check(0,"anchored pass capture allocation");free(fast);free(full);free(again);return;}
- GLuint tex[2];glGenTextures(2,tex);
- for(int i=0;i<2;i++){
-  glBindTexture(GL_TEXTURE_2D,tex[i]);
-  glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,W,H,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
- }
- /* Full mirror first: a capture that copied the canonical frame into the live
-  * wide surface would also corrupt every later read of it. */
- check(capture_wide_pass(tex[1],0),"anchored pass capture, full mirror");
- check(capture_wide_pass(tex[0],1),"anchored pass capture, fast centre path");
- glPixelStorei(GL_PACK_ALIGNMENT,1);
- glBindTexture(GL_TEXTURE_2D,tex[0]);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,fast);
- glBindTexture(GL_TEXTURE_2D,tex[1]);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,full);
- size_t diff=0;for(size_t i=0;i<n;i++)diff+=fast[i]!=full[i];
- if(diff)fprintf(stderr,"anchored pass capture shift %d: %zu bytes differ\n",shift,diff);
- check(diff==0,"anchored pass capture keeps the mirrored centre");
- check(capture_wide_pass(tex[1],0),"anchored pass capture, full mirror again");
- glBindTexture(GL_TEXTURE_2D,tex[1]);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,again);
- glBindTexture(GL_TEXTURE_2D,0);glPixelStorei(GL_PACK_ALIGNMENT,4);
- diff=0;for(size_t i=0;i<n;i++)diff+=again[i]!=full[i];
- check(diff==0,"anchored pass capture leaves the live wide surface unchanged");
- /* The anchored world marker is in the capture where the view put it. */
- int at_view=0,at_canonical=0;
- for(int y=0;y<H;y++){
-  const uint8_t *v=fast+((size_t)y*W+(size_t)(213+shift)*scale)*4;
-  const uint8_t *c=fast+((size_t)y*W+(size_t)213*scale)*4;
-  at_view+=v[1]>200&&v[0]<64&&v[2]<64;at_canonical+=c[1]>200&&c[0]<64&&c[2]<64;
- }
- check(at_view>0,"anchored marker captured at the view position");
- if(shift)check(at_canonical==0,"no canonical-position marker in the anchored capture");
- glDeleteTextures(2,tex);free(fast);free(full);free(again);
-}
+
 static void verify_presentation_capture(void) {
  const int w=7*s_out_scale,h=3*s_out_scale,stride=w+3;
  uint32_t *out=malloc((size_t)stride*h*4);
@@ -487,6 +438,66 @@ static void verify_presentation_capture(void) {
  p_glBindBuffer(GL_PIXEL_PACK_BUFFER,0);((void (APIENTRY *)(GLsizei,const GLuint *))SDL_GL_GetProcAddress("glDeleteBuffers"))(1,&pack);
  glPixelStorei(PSXGL_PACK_ROW_LENGTH,0);glPixelStorei(GL_PACK_ALIGNMENT,4);
  s_cpu_auth_dual=0;free(out);
+}
+static void verify_view_transactions_and_geometry_export(void) {
+ static uint16_t gpu_before[1024*512],gpu_after[1024*512];
+ glb_set_draw_area(0,0,1023,511);glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+ gl_renderer_sync_cpu();memcpy(oracle,image,sizeof image);
+ /* The preceding authority fixture intentionally leaves GPU colour different
+  * from CPU words. Preserve each authoritative surface against its own baseline. */
+ check(gl_renderer_fbo_peek(0,0,1024,512,gpu_before),"native raster before view transactions");
+ gl_renderer_set_interpolation(1,144,144,60,1);
+ gl_renderer_set_interpolation_source(1);
+ check(!gl_renderer_interpolation_owns_cadence(),"retired controls cannot acquire native cadence");
+ check(!gl_renderer_pass_begin(0,0,32,32,1,2,0) && !s_pass_active,
+       "retired temporal replay cannot open a transaction");
+ s_pass_verify=1;
+ check(!gl_renderer_stereo_begin(0,0,INT32_MAX,1,0) && !s_pass_active,
+       "invalid view bounds refuse before scaled allocation");
+ for(unsigned eye=0;eye<2;++eye) {
+  int opened=gl_renderer_stereo_begin(0,0,32,32,eye!=0);
+  check(opened,"stereo transaction still opens independently of temporal replay");
+  if(!opened)continue;
+  glb_draw_flat_rect(2,3,6,5,eye?0x03e0:0x001f);
+  glb_vram_write(100,100,0x7fff); /* unscissored write: journal and restore */
+  check(gl_renderer_stereo_end(eye,1),"stereo retains its independent eye image");
+  check(gl_renderer_pass_verify_vram(),"stereo restores GPU and CPU VRAM exactly");
+  check(!memcmp(image,oracle,sizeof image),"stereo leaves canonical CPU pixels intact");
+ }
+ check(s_stereo_pair[1-s_stereo_current].mask==3,"both view images survive temporal retirement");
+ check(gl_renderer_fbo_peek(0,0,1024,512,gpu_after),"canonical image after stereo");
+ check(!memcmp(gpu_before,gpu_after,sizeof gpu_before),"stereo restores the complete canonical raster");
+
+ PsxPresentationMaterial material={0};PsxPresentationTriangle triangle={0};
+ material.semi=-1;material.clip[2]=1023;material.clip[3]=511;
+ triangle.vertices[0].x=10;triangle.vertices[0].y=10;
+ triangle.vertices[1].x=30;triangle.vertices[1].y=10;
+ triangle.vertices[2].x=10;triangle.vertices[2].y=30;
+ for(unsigned i=0;i<3;++i) {
+  triangle.vertices[i].reciprocal_z=1;
+  triangle.vertices[i].color[0]=triangle.vertices[i].color[3]=1;
+ }
+ check(psx_presentation_gpu_render(&triangle,1,&material,1),"private geometry raster at internal scale");
+ const char *path="geometry-export-test.png";
+ int exported=psx_presentation_gpu_write_png(path,10,10,9,7);
+ check(exported,"write internal-resolution geometry PNG");
+ if(exported) {
+  unsigned char header[24];FILE *file=fopen(path,"rb");
+  const int read=file && fread(header,1,sizeof header,file)==sizeof header;
+  if(file)fclose(file);
+  check(read,"read geometry PNG dimensions");
+  if(read) {
+   const uint32_t w=(uint32_t)header[16]<<24|(uint32_t)header[17]<<16|(uint32_t)header[18]<<8|header[19];
+   const uint32_t h=(uint32_t)header[20]<<24|(uint32_t)header[21]<<16|(uint32_t)header[22]<<8|header[23];
+   check(w==9u*(unsigned)s_out_scale && h==7u*(unsigned)s_out_scale,
+         "PNG preserves every internal-resolution pixel");
+  }
+  check(!remove(path),"remove task-owned PNG after validation");
+ }
+ check(!memcmp(image,oracle,sizeof image),"private geometry/export cannot change native CPU VRAM");
+ check(gl_renderer_fbo_peek(0,0,1024,512,gpu_after),"native raster after geometry export");
+ check(!memcmp(gpu_before,gpu_after,sizeof gpu_before),"private geometry/export cannot change native raster");
+ check(glGetError()==GL_NO_ERROR,"view transactions and geometry export GL error");
 }
 int main(int argc,char **argv){
  int scale=argc>1?atoi(argv[1]):1;
@@ -629,7 +640,6 @@ int main(int argc,char **argv){
   check(wide_pixels[(20*scale)*(426*scale)+213*scale]==0xfff80000u,"centered dialogue marker");
   check(wide_pixels[(60*scale)*(426*scale)]==0xff0000f8u,"anchored left edge");
   check(wide_pixels[(60*scale)*(426*scale)+425*scale]==0xff0000f8u,"anchored right edge");
-  verify_anchored_pass_capture(scale,shift);
  }
  glb_wide_set_view(0,0,0,0);
  check(wide_dx()==53,"disabled view preserves original origin");
@@ -660,6 +670,7 @@ int main(int argc,char **argv){
  check(glb_vram_read(102,302)==0x7c00,"dual software authority samples ordinary VRAM");
  test_title_profile_active=test_title_profile_banks=0;
  gl_renderer_set_cpu_auth_dual(0);
+ verify_view_transactions_and_geometry_export();
  printf("checks=%d failures=%d\n",checks,failures);
  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
 }
