@@ -2509,6 +2509,15 @@ if(BUILD_TESTING)
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dma_gpu_list_cpu_hold.py
                              --cc ${CMAKE_C_COMPILER})
+            if(CMAKE_GENERATOR MATCHES "Ninja")
+                add_test(NAME build_manifest_test
+                         COMMAND ${Python3_EXECUTABLE}
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_build_manifest.py
+                                 --cmake ${CMAKE_COMMAND}
+                                 --cc ${CMAKE_C_COMPILER}
+                                 --cxx ${CMAKE_CXX_COMPILER}
+                                 --ninja ${CMAKE_MAKE_PROGRAM})
+            endif()
             add_test(NAME debug_input_route_test
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_debug_input_route.py
