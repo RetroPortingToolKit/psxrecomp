@@ -53,6 +53,8 @@ int g_psx_cyc_bb_defer;
 uint32_t *g_psx_cyc_local_acc;
 uint64_t g_psx_bail_flattened, g_psx_device_gen, psx_cycle_count, s_frame_count;
 uint64_t psx_next_service_cycle;
+uint32_t g_psx_gcs_recip_q16=65536u, g_psx_gcs_frac;
+int g_psx_gcs_batch;
 int psx_in_device_service;
 uint32_t g_psx_icache_tv[1024];
 CPUState *debug_cpu_ptr;
@@ -124,7 +126,13 @@ int main(void) {
     /* The legacy header fast path and runtime byte/LWC2 path must stay
      * visible when native generated spans do not own these reads. */
     check(psx_cyc_load_byte(&cpu,0x80001000u,2u,0u)==0x78u,"legacy byte reads RAM");
+    /* LWC2 always charges its ReadMemory cost even with interlock timing
+     * disabled. Give that real path valid scale data and a future deadline;
+     * unrelated device seams must remain unreachable. */
+    psx_next_service_cycle=UINT64_MAX;
+    uint64_t before_lwc2=psx_cycle_count;
     check(psx_cyc_lwc2_read(&cpu,0x80001000u)==RAM_WORD,"legacy LWC2 reads RAM");
+    check(psx_cycle_count==before_lwc2+4u,"LWC2 keeps RAM wait plus completion cost");
 #if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
     check(!psx_hr_runtime_fast_loads[0] && !psx_hr_runtime_fast_loads[1] &&
           !psx_hr_runtime_fast_loads[2],"disabled control removes runtime fast counting");

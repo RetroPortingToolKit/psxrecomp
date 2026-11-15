@@ -16,9 +16,10 @@ if __name__ == "__main__":
         for opt in ("-O0", "-O2"):
             work = Path(scratch) / opt
             work.mkdir()
+            definitions=("PSX_ENABLE_BLOCK_CYCLES=1", "PSX_NO_DEBUG_TOOLS=1") + \
+                (("PSX_DISABLE_HEADROOM_COUNTERS=1",) if args.headroom_disabled else ())
             build_and_run(args.cc, here, here.parent, opt, work,
                           ["memory.c", "crc32.c", "psx_ram_geometry.c"],
                           "test_kseg2_inline_load.c",
-                          defines=("PSX_ENABLE_BLOCK_CYCLES=1", "PSX_NO_DEBUG_TOOLS=1") +
-                          (("PSX_DISABLE_HEADROOM_COUNTERS=1",) if args.headroom_disabled else ()))
+                          defines=definitions, fixture_defines=definitions)
             print("PASS: inline KSEG2 loads", opt, flush=True)
