@@ -1753,7 +1753,15 @@ function(psxrecomp_add_runtime_target target)
     psxrecomp_block_audio(${target})
     psxrecomp_static_calls(${target} "${PSXRT_GAME_GENERATED_DISPATCH_C}")
     psxrecomp_precision_slices(${target})
-    psxrecomp_pgxp_dataflow(${target})
+    set(_pgxp_flow_generated ${PSXRT_GAME_GENERATED_FULL_C})
+    # Older titles pass only their primary shard above and the other generated
+    # game bodies through EXTRAS_SOURCES. Validate those shards as well.
+    foreach(_extra IN LISTS PSXRT_EXTRAS_SOURCES)
+        if(_extra MATCHES "_full(_[0-9]+)?[.]c$")
+            list(APPEND _pgxp_flow_generated "${_extra}")
+        endif()
+    endforeach()
+    psxrecomp_pgxp_dataflow(${target} GENERATED_SOURCES ${_pgxp_flow_generated})
     psxrecomp_capture_jobs(${target})
     # audio_trace.c uses C11 atomics. Make the runtime's actual language
     # requirement explicit instead of relying on a parent project's global

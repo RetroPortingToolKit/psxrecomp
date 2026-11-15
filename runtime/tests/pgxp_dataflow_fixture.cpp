@@ -14,6 +14,7 @@ extern "C" {
 uint8_t *g_psx_ram=ram,*g_psx_scratchpad=scratch;
 PSXDirectMemoryStats g_psx_direct_memory_stats;
 uint32_t g_debug_last_store_pc,g_debug_current_func_addr;
+volatile uint32_t g_psx_last_fn_entry; // Release's real entry observer writes this slot
 uint64_t psx_cycle_count,psx_next_service_cycle=UINT64_MAX;
 int g_ls_mode,g_ls_replay_active,g_ram_read_watch_active,g_dma_exec_depth;
 volatile int g_ds_recording;

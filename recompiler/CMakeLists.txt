@@ -909,6 +909,12 @@ if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter)
     add_executable(pgxp_dataflow_test tests/test_pgxp_dataflow.cpp)
     add_test(NAME pgxp_dataflow_analysis COMMAND pgxp_dataflow_test)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME pgxp_dataflow_generation
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pgxp_dataflow_generation.py
+                --cmake ${CMAKE_COMMAND})
+    endif()
     if(Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING AND
        CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         add_test(NAME pgxp_dataflow_products

@@ -14,12 +14,12 @@ sys.path.insert(0, str(ROOT / 'runtime/tests'))
 from fixture_link import nm_symbols, library_symbols, write_stubs, MULTIPLE, UNDEFINED
 
 
-def run(argv, **kw):
+def run(argv, verbose=True, **kw):
     p = subprocess.run([str(x) for x in argv], capture_output=True, text=True,
                        encoding='utf-8', errors='replace', **kw)
     if p.returncode:
         raise RuntimeError(' '.join(map(str, argv)) + '\n' + p.stdout + p.stderr)
-    if p.stdout:
+    if p.stdout and verbose:
         print(p.stdout, end='', flush=True)
     return p
 
@@ -75,7 +75,7 @@ def main():
         exe = work / 'flow.psx'; exe.write_bytes(header + struct.pack('<%dI' % len(words), *words))
         seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n', encoding='utf-8')
         out = work / 'generated'
-        run([a.recompiler, exe, '--seeds', seeds, '--out-dir', out])
+        run([a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', ROOT], verbose=False)
         sources = sorted(out.glob('*_full*.c'))
         text = '\n'.join(x.read_text(encoding='utf-8') for x in sources)
         dead_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_DEAD_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
