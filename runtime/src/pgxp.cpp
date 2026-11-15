@@ -1144,8 +1144,27 @@ extern "C" int pgxp_native_publish_words(const uint32_t *destinations,
         }
         *destination = restored;
         source_set(destination, words[i].source);
+        note_store(PGXP_STORE_NATIVE_WORD, 0xFFu, &restored,
+                   destinations[i], words[i].word.value, destination);
     }
     s_hook_stats.native_words_published += count;
+    return 1;
+}
+
+extern "C" int pgxp_native_import_gpr(uint32_t reg, const PGXPNativeWord *word) {
+    if (reg == 0u || reg >= 32u || !native_word_valid(word)) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();
+    psx_pgxp_plain_mask &= ~(UINT32_C(1) << reg);
+    PGXPValue restored = value_from_word_shadow(&word->word);
+    if (!word->word.valid) {
+        restored.value = word->word.value;
+        restored.gen = s_gen;
+    }
+    s_gpr[reg] = restored;
+    source_set(&s_gpr[reg], word->source);
+    sc_kill(&s_gpr_s[reg]);
+    ++s_hook_stats.native_gpr_imports;
     return 1;
 }
 

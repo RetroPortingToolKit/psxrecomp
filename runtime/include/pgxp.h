@@ -298,7 +298,7 @@ void pgxp_get_stats(PGXPStats *out);
 typedef struct PGXPHookStats {
     uint64_t alu, load, store, cop2, muldiv, plain_batches, plain_registers;
     uint64_t native_words_captured, native_words_published;
-    uint64_t native_sxy_imports, native_clobbers;
+    uint64_t native_sxy_imports, native_clobbers, native_gpr_imports;
 } PGXPHookStats;
 void pgxp_get_hook_stats(PGXPHookStats *out);
 /* Count one geometry-corrected triangle with `precise` (0..3) precise
@@ -393,6 +393,8 @@ int pgxp_native_capture_words(const uint32_t *addresses, const uint32_t *values,
                               PGXPNativeWord *out, uint32_t count);
 int pgxp_native_publish_words(const uint32_t *destinations,
                               const PGXPNativeWord *words, uint32_t count);
+/* The caller has already materialized the GPR word. r0 is refused. */
+int pgxp_native_import_gpr(uint32_t reg, const PGXPNativeWord *word);
 /* The caller has already written the corresponding SXY register word. */
 int pgxp_native_import_sxy(uint32_t reg, const PGXPNativeWord *word);
 /* End precision belonging to registers the native operation owns. Values must
@@ -473,16 +475,19 @@ uint64_t pgxp_tri_ring(const PGXPTriRecord **ring, uint32_t *cap);
  * RAM or scratchpad, with the storing PC, the source register's shadow state
  * and the shadow the destination word holds afterwards. Walking a packet
  * word's provenance backwards (store PC -> source register -> the load that
- * filled it) is how a precision loss is pinned to one instruction. */
+ * filled it) is how a precision loss is pinned to one instruction. Native word
+ * publication uses opcode/reg 0xFF and the operation's PC breadcrumb; it does
+ * not claim that a CPU register held the transported receipt. */
 #define PGXP_STORE_RING_CAP 262144u
+#define PGXP_STORE_NATIVE_WORD 0xFFu
 typedef struct PGXPStoreRecord {
     uint64_t seq;
     uint32_t frame;
     uint32_t pc;            /* g_debug_last_store_pc of the store           */
     uint32_t addr;          /* guest address written                        */
     uint32_t value;         /* the value stored (half / byte for SH / SB)   */
-    uint8_t  op;            /* primary opcode (0x2B SW, 0x29 SH, 0x3A SWC2) */
-    uint8_t  reg;           /* source GPR (or GTE data register for SWC2)   */
+    uint8_t  op;            /* primary opcode, or PGXP_STORE_NATIVE_WORD   */
+    uint8_t  reg;           /* GPR, GTE data register (SWC2), or 0xFF      */
     uint8_t  src_live;      /* source shadow belongs to this generation     */
     uint8_t  pad;
     uint16_t src_flags;     /* source shadow flags (1 X, 2 Y, 4 Z)          */

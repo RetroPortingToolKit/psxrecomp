@@ -230,7 +230,23 @@ int main() {
     CHECK(receipts[0].source == 101 && receipts[1].source == 202);
     const auto first_native = receipts[0].word, second_native = receipts[1].word;
     pgxp_invalidate_word(Address); pgxp_invalidate_word(Other); // guest overwrites
+    uint32_t native_pc = 0x80012340u, store_cap = 0;
+    uint64_t native_frame = 77;
+    const PGXPStoreRecord *stores = nullptr;
+    pgxp_set_trace_sources(&native_pc, &native_frame);
+    const auto stores_before = pgxp_store_ring(&stores, &store_cap);
     CHECK(pgxp_native_publish_words(swapped, receipts, 2));
+    CHECK(pgxp_store_ring(&stores, &store_cap) == stores_before + 2);
+    for (unsigned i = 0; i < 2; ++i) {
+        const auto &record = stores[(stores_before + i) % store_cap];
+        CHECK(record.op == PGXP_STORE_NATIVE_WORD && record.reg == 0xFFu);
+        CHECK(record.pc == native_pc && record.frame == native_frame);
+        CHECK(record.addr == swapped[i] && record.value == Packed);
+        CHECK(record.src_live && record.src_flags == receipts[i].word.flags);
+        CHECK(record.dst_flags == receipts[i].word.flags);
+        CHECK(record.dst_x16 == receipts[i].word.x16 && record.dst_y16 == receipts[i].word.y16);
+    }
+    pgxp_set_trace_sources(nullptr, nullptr);
     auto expect_first = first_native; expect_first.address = Other & 0x1FFFFFFFu;
     auto expect_second = second_native; expect_second.address = Address & 0x1FFFFFFFu;
     check_attributes(expect_first, capture(Other, Packed));
@@ -277,6 +293,17 @@ int main() {
     // Restore the previously captured full vertex before the clobber case.
     CHECK(pgxp_native_publish_words(inputs, &receipts[1], 1));
     CPUState machine{};
+    machine.gpr[7] = Packed;
+    psx_pgxp_plain_values[7] = 99;
+    psx_pgxp_plain_mask |= 1u << 7;
+    CHECK(!pgxp_native_import_gpr(0, &receipts[0]));
+    CHECK(!pgxp_native_import_gpr(32, &receipts[0]));
+    CHECK(pgxp_native_import_gpr(7, &receipts[0]));
+    CHECK(!(psx_pgxp_plain_mask & (1u << 7)));
+    psx_pgxp_store(&machine, 0xAC270000u, Address + 32, Packed); // sw a3,0(at)
+    auto imported_gpr = first_native; imported_gpr.address = (Address + 32) & 0x1FFFFFFFu;
+    check_attributes(imported_gpr, capture(Address + 32, Packed));
+    CHECK(pgxp_load_source(Address + 32, Packed) == 101);
     machine.gpr[5] = Packed;
     psx_pgxp_cop2(&machine, 0x48057000u, Packed, 0); // mfc2 a1,SXY2
     psx_pgxp_plain_values[5] = 99;
