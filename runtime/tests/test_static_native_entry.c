@@ -34,7 +34,8 @@ int fntrace_is_game_started(void) { return started; }
 int psx_get_in_exception(void) { return exception; }
 int psx_game_text_native_ok(uint32_t addr) { (void)addr; return allowed; }
 #if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
-int g_psx_guest_time_frozen, g_psx_call_bail, g_ds_recording;
+int g_psx_guest_time_frozen, g_psx_call_bail;
+volatile int g_ds_recording;
 uint32_t *g_psx_cyc_local_acc;
 static int tail_mode;
 static unsigned tail_calls, tail_hooks_seen;

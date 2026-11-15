@@ -3207,7 +3207,7 @@ void psx_native_tail_note_body(CPUState *cpu, PsxNativeTailBody body) {
 
 int psx_native_tail_prepare(CPUState *cpu, uint32_t target,
                             PsxNativeTailBody caller, PsxNativeTailBody body) {
-    extern int g_psx_dispatch_depth, g_ds_recording;
+    extern int g_psx_dispatch_depth; /* g_ds_recording uses psx_cyc.h's volatile declaration */
     /* A raw host call into a generated function is not a CPS transfer from
      * this owner. Match its actual dispatched body, never a return address. */
     if (!s_native_tail.enabled || s_native_tail.cpu != cpu ||
