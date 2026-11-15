@@ -41,11 +41,20 @@ static int tail_mode;
 static unsigned tail_calls, tail_hooks_seen;
 static uintptr_t tail_stack_lo = UINTPTR_MAX, tail_stack_hi;
 static void tail_other(CPUState *cpu) { (void)cpu; }
-static void tail_body(CPUState *cpu) {
+/* Observe a real stack slot in a completed helper invocation. A slot owned by
+ * tail_body would still be alive when its address escapes across musttail;
+ * GCC correctly rejects that lifetime even when we retain only the number. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+static void tail_probe_stack(void) {
     volatile unsigned stack_local = 0;
     uintptr_t stack = (uintptr_t)&stack_local;
     if (stack < tail_stack_lo) tail_stack_lo = stack;
     if (stack > tail_stack_hi) tail_stack_hi = stack;
+}
+static void tail_body(CPUState *cpu) {
+    tail_probe_stack();
     ++tail_calls;
     if (!cpu->gpr[4]) { cpu->pc = next_pc; return; }
     --cpu->gpr[4]; cpu->pc = 0x80042000u;

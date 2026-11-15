@@ -151,6 +151,7 @@ def compile_only(compiler, sources, includes, native_tail=False, opt='-O0'):
         # front-end syntax. Objects remain in the existing temporary product.
         command.remove('-fsyntax-only')
         command[1:1] = ['-c', opt, '-DPSX_NO_DEBUG_TOOLS',
+                        '-Werror', '-DPSX_ENABLE_BLOCK_CYCLES=1',
                         '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_NATIVE_STATIC_CALLS=1',
                         '-DPSX_NATIVE_TAIL_CHAINS=1']
     r = subprocess.run(command, capture_output=True, text=True,
