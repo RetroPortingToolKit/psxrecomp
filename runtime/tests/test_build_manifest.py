@@ -103,7 +103,7 @@ psxrecomp_add_implementation(fixture NAME integer CONTRACT integer-v1
         assert build_read(build) == first, "no-op rebuild drift"
         (source / "src/plugin.c").write_text('#include "plugin.h"\nint plugin(void) { return PLUGIN_FACTOR + PLUGIN_OPTION + 1; }\n')
         changed = build_read(build)
-        assert changed[0] != first[0] and changed[1] == first[1] + 1
+        assert changed[0] != first[0] and changed[1] == first[1] + 1, (first, changed)
         (source / "src/plugin.h").write_text("#define PLUGIN_FACTOR 3\n")
         header = build_read(build)
         assert header[0] != changed[0] and header[1] == changed[1] + 1

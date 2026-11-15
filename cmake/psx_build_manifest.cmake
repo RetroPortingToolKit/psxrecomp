@@ -55,7 +55,9 @@ function(_psx_build_manifest_finalize target)
         endforeach()
     endforeach()
     string(APPEND _spec "${_sep}sources${_sep}$<TARGET_GENEX_EVAL:${target},${_identity_sources}>")
-    set(_dir "${_binary}/psx_build_manifest/${target}/$<CONFIG>")
+    # Keep the compiler's include spelling identical to Ninja's byproduct,
+    # including single-config builds without CMAKE_BUILD_TYPE.
+    set(_dir "${_binary}/psx_build_manifest/${target}$<$<BOOL:$<CONFIG>>:/$<CONFIG>>")
     # A removed compile language must not leave an old specification eligible
     # for the next build. These are only this target's generated input records.
     file(GLOB _old_specs "${_binary}/psx_build_manifest/${target}/*/inputs-*.txt")
