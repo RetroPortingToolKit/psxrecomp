@@ -69,7 +69,7 @@ void parity_trace_reset(void)        {
     }
     s_last_current_tcb = 0;
 }
-int  parity_trace_ig_parity_trace_armed(void)     { return (int)g_parity_trace_armed; }
+int  parity_trace_is_armed(void)     { return (int)g_parity_trace_armed; }
 int  parity_trace_is_frozen(void)    { return (int)s_frozen; }
 uint64_t parity_trace_total(void)    { return s_seq; }
 

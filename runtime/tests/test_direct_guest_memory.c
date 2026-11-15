@@ -171,13 +171,16 @@ int main(void) {
 
     // Preserve real parity writer attribution through an active watch.
     uint32_t watch=0x80020310u;
+    CHECK(!parity_trace_is_armed());
     parity_trace_config(0,0,0x88,0,&watch,1); parity_trace_arm(1);
+    CHECK(parity_trace_is_armed());
     g_debug_last_store_pc=0x80012340u;
     require_helper(&cpu,watch);
     parity_trace_note_read(watch,0xAABBCCDDu,0x80012380u);
     ParityEntry row;
     CHECK(parity_trace_reads_get(&row,1)==1 && row.watch_wpc[0]==g_debug_last_store_pc);
     parity_trace_arm(0);
+    CHECK(!parity_trace_is_armed());
     g_debug_last_store_pc=0x00001CE4u;
     require_helper(&cpu,0x80020320u); // keyed BIOS card-event writer stays canonical
     g_debug_last_store_pc=0;
