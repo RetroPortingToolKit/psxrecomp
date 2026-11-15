@@ -1,0 +1,113 @@
+'''Bounded real clock/edge and build-policy decisions for observation timing.'''
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+
+def run(argv, ok=True):
+    print('RUN', ' '.join(map(str, argv)), flush=True)
+    result = subprocess.run(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.stdout:
+        print(result.stdout, end='', flush=True)
+    if (result.returncode == 0) != ok:
+        raise AssertionError(f'exit {result.returncode}: {argv}')
+    return result.stdout
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cc', required=True)
+    parser.add_argument('--cmake', required=True)
+    parser.add_argument('--ninja', required=True)
+    parser.add_argument('--edge-assembly-only', action='store_true')
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parents[2]
+    inc = root/'runtime/include'
+    with tempfile.TemporaryDirectory(prefix='psx-observation-time-') as temp:
+        temp = Path(temp)
+        (temp/'psx_observation_config.h').write_text(
+            '#define PSX_OBSERVATION_WAIT_SITE(pc) ((pc) == 0x8002E6C0u)\n')
+        probe = temp/'edge_probe.c'
+        probe.write_text('#include "cpu_state.h"\nvoid emitted_common_edge(CPUState *cpu, uint32_t pc) { PSX_BLOCK_EDGE(cpu, pc); }\n')
+        asm = temp/'edge_probe.s'
+        run([args.cc, '-std=c11', '-O2', '-S', '-DPSX_NO_DEBUG_TOOLS',
+             '-DPSX_OBSERVATION_TIME=1', '-I'+str(inc), '-I'+str(temp),
+             str(probe), '-o', str(asm)])
+        assembly = asm.read_text()
+        assert 'psx_block_edge' not in assembly and 'psx_observation_delivery_pending' not in assembly, assembly
+        assert 'psx_observation_edge' in assembly, assembly
+        print('PASS O2 emitted edge contains inline policy and only conditional observation fallback')
+        if args.edge_assembly_only:
+            return
+        # Reuse the maintained event-boundary fixture under both policies.
+        for opt in ['0', '2']:
+            for native in [False, True]:
+                exe = temp/f'clock-{opt}-{int(native)}.exe'
+                defs = ['-DPSX_OBSERVATION_TIME=1'] if native else []
+                run([args.cc, '-std=c11', '-O'+opt, '-DPSX_NO_DEBUG_TOOLS',
+                     '-I'+str(inc), '-I'+str(temp), *defs,
+                     str(root/'runtime/tests/test_psx_cycle_event_boundaries.c'),
+                     str(root/'runtime/src/psx_cycles.c'), '-o', str(exe)])
+                run([str(exe)])
+        # These compile real bodies; they do not establish runtime IRQ/PCM parity.
+        for source in ['interrupts.c', 'interrupts_block_audio.c', 'spu_observation_time.c']:
+            run([args.cc, '-std=c11', '-O0', '-fsyntax-only', '-DPSX_NO_DEBUG_TOOLS',
+                 '-DPSX_OBSERVATION_TIME=1', '-I'+str(inc), '-I'+str(temp),
+                 str(root/'runtime/src'/source)])
+        source = temp/'policy'
+        source.mkdir()
+        (source/'spu.c').write_text('void policy_unused_spu(void) {}\n')
+        (source/'main.c').write_text('''#include <stdio.h>
+extern const unsigned psx_build_observation_time_model;
+int main(void) { printf("%u\\n", psx_build_observation_time_model); return 0; }
+''')
+        (source/'generated.c').write_text('/* psx-observation-edge-v1 */\n')
+        (source/'stale.c').write_text('/* stale generated code */\n')
+        (source/'CMakeLists.txt').write_text(f'''cmake_minimum_required(VERSION 3.20)
+project(observation_policy C)
+set(PSXRECOMP_ROOT "{root.as_posix()}")
+include("${{PSXRECOMP_ROOT}}/cmake/psx_execution_profile.cmake")
+include("${{PSXRECOMP_ROOT}}/cmake/psx_observation_time.cmake")
+add_library(fixture STATIC spu.c)
+target_include_directories(fixture PRIVATE "${{PSXRECOMP_ROOT}}/runtime/include")
+psxrecomp_execution_profile(fixture)
+psxrecomp_observation_time(fixture GENERATED_SOURCES "${{GENERATED_INPUT}}" WAIT_SITES 0x8002E6C0)
+file(GENERATE OUTPUT "${{CMAKE_CURRENT_BINARY_DIR}}/selection.txt" CONTENT "$<TARGET_PROPERTY:fixture,COMPILE_DEFINITIONS>\\n$<TARGET_PROPERTY:fixture,SOURCES>\\n")
+add_executable(probe main.c)
+target_link_libraries(probe PRIVATE fixture)
+''')
+        def configure(name, profile, enabled, generated='generated.c', spans='ON', ok=True):
+            build = temp/name
+            output = run([args.cmake, '-S', str(source), '-B', str(build), '-G', 'Ninja',
+                          '-DCMAKE_C_COMPILER='+args.cc, '-DCMAKE_MAKE_PROGRAM='+args.ninja,
+                          '-DPSX_EXECUTION_PROFILE='+profile, '-DPSX_OBSERVATION_TIME='+enabled,
+                          '-DPSX_NATIVE_CPU_SPANS='+spans, '-DGENERATED_INPUT='+generated], ok=ok)
+            if not ok:
+                assert ('Regenerate game sources' in output or 'requires materialized' in output
+                        or 'requires native CPU spans' in output), output
+            return build
+        manifests = []
+        for name, profile, enabled, expected in [('native','ENHANCED','ON',1),
+                                                ('reference','REFERENCE','ON',0),
+                                                ('disabled','ENHANCED','OFF',0)]:
+            build = configure(name, profile, enabled)
+            run([args.cmake, '--build', str(build), '--parallel', '1'])
+            exe = build/('probe.exe' if os.name == 'nt' else 'probe')
+            assert run([str(exe)]).strip() == str(expected)
+            selected = (build/'selection.txt').read_text()
+            assert ('PSX_OBSERVATION_TIME=1' in selected) == bool(expected), selected
+            assert ('spu_observation_time.c' in selected) == bool(expected), selected
+            manifests.append(json.loads((build/'psx_execution/fixture/manifest.json').read_text()))
+        assert len({m['identity'] for m in manifests}) == 3
+        assert all(m['implementations'][0]['name'] == 'machine-time' for m in manifests)
+        configure('stale','ENHANCED','ON','stale.c',ok=False)
+        configure('missing','ENHANCED','ON','missing.c',ok=False)
+        configure('no-spans','ENHANCED','ON',spans='OFF',ok=False)
+    print('PASS: O0/O2 canonical/native causality, independent sampling, common edges, MMIO arm, IRQ/frame, wait scope, freeze/replay/restore; real IRQ/SPU syntax; native/reference/off binding and identities')
+
+
+if __name__ == '__main__':
+    main()

@@ -191,16 +191,12 @@ bool FullFunctionEmitter::emit_function(
         return e == nullptr || e[0] != '0';
     }();
     auto emit_irq_check = [](uint32_t resume_pc, const std::string& indent = "    ") {
-        return std::string("#ifdef PSX_ENABLE_BLOCK_CYCLES\n") + indent +
-               "psx_cyc_bb_defer_flush();\n#endif\n" + indent +
-               fmt::format("psx_check_interrupts_at(cpu, 0x{:08X}u);\n",
-                           bios_runtime_pc(resume_pc));
+        return indent + fmt::format("PSX_BLOCK_EDGE(cpu, 0x{:08X}u);\n",
+                                    bios_runtime_pc(resume_pc));
     };
     auto emit_irq_check_expr = [](const std::string& resume_pc_expr,
                                   const std::string& indent = "    ") {
-        return std::string("#ifdef PSX_ENABLE_BLOCK_CYCLES\n") + indent +
-               "psx_cyc_bb_defer_flush();\n#endif\n" + indent +
-               fmt::format("psx_check_interrupts_at(cpu, {});\n", resume_pc_expr);
+        return indent + fmt::format("PSX_BLOCK_EDGE(cpu, {});\n", resume_pc_expr);
     };
     auto emit_cosim_instr = [](uint32_t pc, const std::string& indent = "    ") {
         return "#ifdef PSX_COSIM\n" + indent +
@@ -913,10 +909,7 @@ bool FullFunctionEmitter::emit_function(
                 "     * of this range, dispatch into RAM so its own instructions run;\n"
                 "     * otherwise fall through to the statically compiled ROM code. */\n"
                 "    if ({}) {{\n"
-                "#ifdef PSX_ENABLE_BLOCK_CYCLES\n"
-                "        psx_cyc_bb_defer_flush();\n"
-                "#endif\n"
-                "        psx_check_interrupts_at(cpu, 0x{:08X}u);\n"
+                "        PSX_BLOCK_EDGE(cpu, 0x{:08X}u);\n"
                 "        cpu->pc = 0x{:08X}u; return;\n"
                 "    }}\n",
                 addr, slot->ram_addr, slot->hi(), resume_ram,
@@ -2261,7 +2254,7 @@ void FullFunctionEmitter::emit_dispatch(
     // wrote, in its body's segment.
     out += "static void psx_dispatch_check_return_boundary(CPUState* cpu, uint32_t stop_addr) {\n";
     out += "    if (stop_addr != 0u) {\n";
-    out += "        psx_check_interrupts_at(cpu, stop_addr);\n";
+    out += "        PSX_BLOCK_EDGE(cpu, stop_addr);\n";
     out += "        if (cpu->pc == stop_addr) cpu->pc = 0;\n";
     out += "    } else {\n";
     out += "        psx_check_interrupts(cpu);\n";
@@ -2657,7 +2650,7 @@ EmitStats FullFunctionEmitter::emit(
     full_c += fmt::format("#define psx_dispatch      {}psx_dispatch\n", g_sym_prefix);
     full_c += fmt::format("#define psx_dispatch_call {}psx_dispatch_call\n\n", g_sym_prefix);
     full_c += "#include \"cpu_state.h\"\n\n";
-    full_c += "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n\n";
+    full_c += "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n\n";
 
     // Forward declare psx_dispatch, psx_unknown_dispatch, and interrupt check.
     full_c += "extern void psx_dispatch(CPUState* cpu, uint32_t addr);\n";

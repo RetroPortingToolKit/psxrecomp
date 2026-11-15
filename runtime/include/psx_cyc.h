@@ -358,4 +358,6 @@ extern uint32_t psx_cyc_lwc2_read(CPUState* cpu, uint32_t addr);
 }
 #endif
 
+#include "psx_block_edge.h"
+
 #endif /* PSX_CYC_H */

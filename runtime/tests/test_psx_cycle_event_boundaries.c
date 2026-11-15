@@ -5,6 +5,8 @@
  */
 
 #include "psx_cycles.h"
+#include "psx_cycle_freeze.h"
+#include "cpu_state.h"
 
 #include <stdint.h>
 int g_boot_state_cpu_timing_restored;
@@ -16,16 +18,20 @@ int g_ls_mode = 0;
 int g_precise_mode = 0;
 int g_psx_call_bail = 0;
 uint32_t i_mask = 0;
+uint32_t i_stat = 0;
 uint64_t g_guest_store_count = 0;
 uint64_t g_mmio_access_count = 0;
 
 static uint32_t s_cd_cycles_remaining = 5;
+static uint32_t s_device_calls;
+static uint32_t s_vblank_phase;
 static int s_cd_ready = 0;
 static uint32_t s_dma_ready_cycles = 0;
 
 void sio_advance(uint32_t cycles) { (void)cycles; }
 
 void cdrom_advance(uint32_t cycles) {
+    s_device_calls++;
     if (s_cd_ready) return;
     if (cycles >= s_cd_cycles_remaining) {
         s_cd_cycles_remaining = 0;
@@ -40,16 +46,18 @@ void dma_advance(uint32_t cycles) {
 }
 
 void timers_advance(uint32_t cycles) { (void)cycles; }
-void interrupts_advance_cycles(uint32_t cycles) { (void)cycles; }
+void interrupts_advance_cycles(uint32_t cycles) { s_vblank_phase += cycles; }
 void interrupts_service_scheduled_events(void) {}
 
-uint32_t interrupts_cycles_to_vblank(void) { return UINT32_MAX; }
+uint32_t interrupts_cycles_to_vblank(void) { return 564480u - s_vblank_phase % 564480u; }
 uint32_t timers_cycles_to_irq(uint32_t mask) { (void)mask; return UINT32_MAX; }
 uint32_t cdrom_cycles_to_irq(uint32_t mask) {
-    (void)mask;
-    return s_cd_ready ? UINT32_MAX : s_cd_cycles_remaining;
+    return s_cd_ready || !(mask & (1u << 2)) ? UINT32_MAX : s_cd_cycles_remaining;
 }
-uint32_t dma_cycles_to_internal_event(void) { return UINT32_MAX; }
+static uint32_t s_dma_next_event = UINT32_MAX;
+static int s_cd_dma_active;
+uint32_t dma_cycles_to_internal_event(void) { return s_dma_next_event; }
+int dma_cdrom_transfer_active(void) { return s_cd_dma_active; }
 uint32_t dma_cycles_to_deliverable_irq(uint32_t mask) {
     (void)mask;
     return UINT32_MAX;
@@ -69,11 +77,41 @@ int  psx_selfcheck_enabled(void) { return 0; }
 void dirty_ram_ld_delay_discard(void) {}
 void dirty_ram_irq_ambient_resync_after_restore(void) {}
 
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+/* The delivery body is syntax-qualified separately; these are the inline
+ * edge policy's seam, not a substitute implementation of exception handling. */
+int psx_defer_switch_pending, g_psx_savestate_pending, g_ls_suppress_record;
+int psx_observation_wait_active;
+uint64_t psx_observation_block_edges, psx_observation_slow_edges;
+static unsigned s_edge_calls, s_wait_calls;
+void psx_observation_edge(CPUState *cpu, uint32_t pc, int wait_site) {
+    (void)cpu; (void)pc;
+    s_edge_calls++;
+    if (wait_site) s_wait_calls++;
+    psx_observation_wait_active = wait_site;
+    psx_devices_observe();
+}
+extern uint32_t psx_cycle_sample_period;
+extern void (*psx_cycle_sample_hook)(uint64_t, uint32_t);
+static unsigned s_samples;
+static void sample(uint64_t cycle, uint32_t periods) { (void)cycle; s_samples += periods; }
+#define VERIFY(c, text) do { if (!(c)) { fprintf(stderr, "FAIL %s\n", text); return 1; } } while (0)
+#endif
+
 int main(void) {
     /* NULL cpu: this test pins the scheduler boundary, not the CPU-state
      * rewind. psx_cycles_resync_after_restore guards that block on `if (cpu)`. */
     psx_cycles_resync_after_restore(NULL);
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    psx_cycle_sample_period = 4;
+    psx_cycle_sample_hook = sample;
+    for (unsigned n = 0; n < 5; n++) psx_advance_cycles(1);
+    VERIFY(!s_cd_ready && s_device_calls == 0, "CPU charges never service masked devices");
+    VERIFY(s_samples == 1, "periodic sampling runs independently of devices");
+    psx_devices_mmio_sync();
+#else
     psx_advance_cycles(5);
+#endif
 
     if (psx_get_cycle_count() != 5) {
         fprintf(stderr, "FAIL cycle count: expected 5 got %llu\n",
@@ -114,6 +152,84 @@ int main(void) {
         return 1;
     }
     s_spu_next_sample = UINT32_MAX; i_mask = 0;
+
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    /* MMIO side effects occur after its entry barrier: a newly armed event
+     * must replace the pre-write horizon before any edge can run past it. */
+    psx_devices_mmio_sync();
+    s_cd_ready = 0; s_cd_cycles_remaining = 3; i_mask = 1u << 2;
+    unsigned calls_before = s_device_calls;
+    psx_advance_cycles(2);
+    psx_devices_refresh_observation_deadline();
+    VERIFY(psx_next_service_cycle == 8 && psx_cycle_count == 7,
+           "MMIO mutation horizon uses the synchronized device clock");
+    VERIFY(s_device_calls == calls_before, "refresh does not step devices");
+    psx_advance_cycles(1);
+    VERIFY(!s_cd_ready, "deadline alone does not step devices before a CPU edge");
+    psx_devices_observe();
+    VERIFY(s_cd_ready && s_dma_ready_cycles == 2, "unmasked event retains D-1 + 1 causality");
+
+    /* IRQ masking cannot hide DMA publication into CPU-visible RAM. A CD
+     * transfer blocked on sector input must also observe masked CD readiness. */
+    i_mask = 0; s_cd_ready = 0; s_cd_cycles_remaining = 7;
+    s_dma_next_event = 3; s_cd_dma_active = 1;
+    psx_devices_refresh_observation_deadline();
+    VERIFY(psx_next_service_cycle == 11, "masked DMA RAM publication remains observable");
+    s_dma_next_event = UINT32_MAX;
+    psx_devices_refresh_observation_deadline();
+    VERIFY(psx_next_service_cycle == 15, "masked CD readiness bounds a dependent RAM transfer");
+    s_cd_dma_active = 0; i_mask = 1u << 2;
+
+    /* A latched source is not a new observation until guest acknowledgement.
+     * Unknown loops still have an unconditional frame boundary. */
+    s_cd_ready = 0; s_cd_cycles_remaining = 1; i_stat = i_mask;
+    psx_devices_refresh_observation_deadline();
+    VERIFY(psx_next_service_cycle == 564480, "latched IRQ cannot churn one-cycle checks");
+    i_stat = 0; s_cd_ready = 1; i_mask = 0;
+    psx_devices_refresh_observation_deadline();
+    CPUState cpu = {0};
+    calls_before = s_device_calls;
+    for (unsigned n = 0; n < 1000; n++) { psx_advance_cycles(1); PSX_BLOCK_EDGE(&cpu, 0x80010000u); }
+    VERIFY(s_edge_calls == 0 && s_device_calls == calls_before,
+           "ordinary and unrecognized loops have no out-of-line edge/device calls");
+    cpu.cop0[12] /* SR */ = 0x101u; cpu.cop0[13] /* CAUSE */ = 0x100u;
+    PSX_BLOCK_EDGE(&cpu, 0x80010000u);
+    VERIFY(s_edge_calls == 1, "software interrupt forces observation");
+    cpu.cop0[12] /* SR */ = 0; cpu.cop0[13] /* CAUSE */ = 0;
+    psx_defer_switch_pending = 1; PSX_BLOCK_EDGE(&cpu, 0x80010000u); psx_defer_switch_pending = 0;
+    g_psx_savestate_pending = 1; PSX_BLOCK_EDGE(&cpu, 0x80010000u); g_psx_savestate_pending = 0;
+    VERIFY(s_edge_calls == 3, "deferred thread and staged save force observation");
+    PSX_BLOCK_EDGE(&cpu, 0x8002E6C0u);
+    PSX_BLOCK_EDGE(&cpu, 0x80010000u);
+    VERIFY(s_wait_calls == 1 && !psx_observation_wait_active && s_edge_calls == 5,
+           "only audited anchor enters induction and departure resets once");
+    uint64_t now = psx_cycle_count;
+    psx_advance_cycles((uint32_t)(564480 - now));
+    VERIFY(s_vblank_phase == now, "charges do not advance frame state");
+    PSX_BLOCK_EDGE(&cpu, 0x80010000u);
+    VERIFY(s_vblank_phase == 564480 && s_edge_calls == 6, "unknown loop makes bounded frame progress");
+
+    PsxCycleFreeze save;
+    now = psx_cycle_count; calls_before = s_device_calls;
+    uint64_t sample_deadline = psx_next_cycle_sample;
+    VERIFY(psx_cycle_freeze_begin(&save, 0, NULL), "freeze starts");
+    psx_advance_cycles(1000); psx_devices_mmio_sync(); PSX_BLOCK_EDGE(&cpu, 0x8002E6C0u);
+    VERIFY(s_device_calls == calls_before && s_edge_calls == 6, "frozen rendering owns no observations");
+    psx_cycle_freeze_end(&save);
+    VERIFY(psx_cycle_count == now && psx_next_cycle_sample == sample_deadline,
+           "freeze restores clock and sampling cadence");
+    g_ls_replay_active = 1;
+    VERIFY(psx_cycle_replay_begin(123), "private replay starts");
+    psx_advance_cycles(100); psx_devices_mmio_sync(); PSX_BLOCK_EDGE(&cpu, 0x8002E6C0u);
+    VERIFY(psx_cycle_replay_end() == 223 && psx_cycle_count == now,
+           "private replay restores authoritative clock");
+    g_ls_replay_active = 0;
+    VERIFY(s_device_calls == calls_before && s_edge_calls == 6, "replay never observes authoritative devices");
+    psx_cycle_count = 50; psx_cycles_resync_after_restore(NULL);
+    VERIFY(psx_next_service_cycle == 0 && psx_next_cycle_sample == 0,
+           "restore rederives clock-dependent horizons");
+    fprintf(stderr, "PASS observation charges/edges, MMIO arm, IRQ/frame, waits, sample, freeze/replay/restore\n");
+#endif
 
     fprintf(stderr, "PASS cross-device deadline preserves D-1 + 1 causality; "
                     "idle skip bounded by the SPU sample deadline\n");

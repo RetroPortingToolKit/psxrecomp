@@ -2450,6 +2450,14 @@ if(BUILD_TESTING)
     add_test(NAME psx_cycle_event_boundaries_test
              COMMAND psx_cycle_event_boundaries_test)
 
+    if(Python3_EXECUTABLE AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND CMAKE_GENERATOR MATCHES "Ninja")
+        add_test(NAME observation_time_policy_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_observation_time.py"
+            --cc "${CMAKE_C_COMPILER}" --cmake "${CMAKE_COMMAND}"
+            --ninja "${CMAKE_MAKE_PROGRAM}")
+        set_tests_properties(observation_time_policy_test PROPERTIES RUN_SERIAL TRUE)
+    endif()
+
     # idle_skip store-counter loops: PsyQ v_wait skips, near misses do not.
     add_executable(idle_skip_store_counter_test
         tests/test_idle_skip_store_counter.c
