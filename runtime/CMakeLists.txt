@@ -414,6 +414,8 @@ if(BUILD_TESTING)
         if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
             # Production fixtures test_static_code_validity.c and test_static_native_entry.c.
             add_test(NAME static_code_validity_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_static_code_validity.py --cc ${CMAKE_C_COMPILER})
+            # test_headroom_counters.c compiles production history and RPC.
+            add_test(NAME headroom_counters_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_headroom_counters.py --cc ${CMAKE_C_COMPILER})
             # test_display_history.c is built by the production-adapter runner.
             add_test(NAME display_history_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_display_history.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME rfe_host_reads_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_host_reads.py --cc ${CMAKE_C_COMPILER})

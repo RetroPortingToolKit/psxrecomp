@@ -20,6 +20,7 @@
 #include "debug_bulk_write.h"
 #include "host_launch_timing.h"
 #include "host_sampler.h"
+#include "headroom_counters.h"
 #include "psx_static_calls.h"
 #include "psx_direct_memory.h"
 #include "savestate.h"
@@ -5568,6 +5569,61 @@ static void handle_host_profile(int id, const char *json)
     snprintf(buf + n, cap - n, "]}");
     send_fmt("%s", buf);
     free(buf);
+}
+
+static void handle_hr_counters(int id,const char *json)
+{
+    PsxHeadroomFrame current,row;
+    psx_headroom_totals(&current);
+    const uint64_t seq=psx_headroom_sequence();
+    const uint64_t oldest=seq>PSX_HEADROOM_CAP?seq-PSX_HEADROOM_CAP:0;
+    int count=json_get_int(json,"n",0),frames=json_get_int(json,"frames",0);
+    int requested=json_get_int(json,"from",-1);
+    uint64_t from=requested>=0?(uint64_t)requested:oldest;
+    if(frames>0){count=frames;from=seq>(uint64_t)frames?seq-(uint64_t)frames:0;}
+    if(count<0)count=0;if(count>128)count=128;
+    if(from<oldest)from=oldest;if(from>seq)from=seq;
+    if((uint64_t)count>seq-from)count=(int)(seq-from);
+    const size_t cap=16384u+(size_t)count*(PSX_HR_COUNT*24u+192u);
+    char *out=(char *)malloc(cap);if(!out){send_err(id,"alloc failed");return;}
+    size_t n=(size_t)snprintf(out,cap,"{\"id\":%d,\"ok\":true,\"schema\":1,\"enabled\":%s,"
+        "\"frame\":%llu,\"cycles\":%llu,\"seq\":%llu,\"oldest\":%llu,\"capacity\":%u,"
+        "\"history_from\":%llu,\"history_next\":%llu,\"history_limit\":128,",
+        id,psx_headroom_enabled()?"true":"false",(unsigned long long)current.frame,
+        (unsigned long long)current.cycles,(unsigned long long)seq,(unsigned long long)oldest,
+        PSX_HEADROOM_CAP,(unsigned long long)from,(unsigned long long)(from+count));
+    for(unsigned i=0;i<PSX_HR_COUNT;++i)
+        n+=(size_t)snprintf(out+n,cap-n,"\"%s\":%llu,",psx_headroom_field_names[i],
+            (unsigned long long)current.values[i]);
+    n+=(size_t)snprintf(out+n,cap-n,"\"memory_supported\":%s,\"coverage\":{"
+        "\"memory\":\"generated-native-span-sites; widths aggregated\","
+        "\"callers\":\"sampled last-entered guest function\","
+        "\"gpu_hold\":\"explicit hold drain calls; automatic catch-up uses deadline source\","
+        "\"deadline\":\"earliest advertised at service entry; ties keep scheduler priority\","
+        "\"block_edges\":\"logical IRQ observations; native excludes frozen/replay\"},"
+        "\"missing\":[\"all-helper memory totals\",\"per-width memory totals\","
+        "\"exact memory caller totals\",\"implicit GPU-hold service context\"],"
+        "\"fields\":[",
+#if defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS
+        "true"
+#else
+        "false"
+#endif
+        );
+    for(unsigned i=0;i<PSX_HR_COUNT;++i)
+        n+=(size_t)snprintf(out+n,cap-n,"%s\"%s\"",i?",":"",psx_headroom_field_names[i]);
+    n+=(size_t)snprintf(out+n,cap-n,"],\"history\":[");
+    for(int i=0;i<count;++i) {
+        if(!psx_headroom_get(from+(uint64_t)i,&row))break;
+        n+=(size_t)snprintf(out+n,cap-n,"%s{\"seq\":%llu,\"frame\":%llu,\"cycles\":%llu,"
+            "\"resets\":[\"0x%llX\",\"0x%llX\"],\"counts\":[",i?",":"",
+            (unsigned long long)row.seq,(unsigned long long)row.frame,(unsigned long long)row.cycles,
+            (unsigned long long)row.resets[0],(unsigned long long)row.resets[1]);
+        for(unsigned k=0;k<PSX_HR_COUNT;++k)
+            n+=(size_t)snprintf(out+n,cap-n,"%s%llu",k?",":"",(unsigned long long)row.values[k]);
+        n+=(size_t)snprintf(out+n,cap-n,"]}");
+    }
+    snprintf(out+n,cap-n,"]}");send_fmt("%s",out);free(out);
 }
 
 static void handle_static_call_stats(int id, const char *json)
@@ -16606,6 +16662,7 @@ static const CmdEntry s_commands[] = {
     { "host_profile",      handle_host_profile },
     { "hr_profile_dump",   handle_hr_profile_dump },
     { "static_call_stats", handle_static_call_stats },
+    { "hr_counters",       handle_hr_counters },
     { "direct_memory_stats", handle_direct_memory_stats },
     { "host_span_ring",    handle_host_span_ring },
     { "frame_wall_ring",   handle_frame_wall_ring },

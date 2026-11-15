@@ -22,6 +22,7 @@ include("${PSXRECOMP_ROOT}/cmake/psx_observation_time.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_capture_jobs.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_native_idle_wait.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_present_images.cmake")
+option(PSX_HEADROOM_COUNTERS "Keep bounded per-frame cost counters in all builds" ON)
 include("${PSXRECOMP_ROOT}/cmake/psx_host_pacing.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_resident_preparation.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_openbios_read_job.cmake")
@@ -442,6 +443,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/debug_server.c
     ${PSXRECOMP_ROOT}/runtime/src/host_sampler.c
     ${PSXRECOMP_ROOT}/runtime/src/host_span_ring.c
+    ${PSXRECOMP_ROOT}/runtime/src/headroom_counters.c
     ${PSXRECOMP_ROOT}/runtime/src/debug_trace_ranges.c
     ${PSXRECOMP_ROOT}/runtime/src/dirty_ram_interp.c
     ${PSXRECOMP_ROOT}/runtime/src/draw_distance.c
@@ -1719,6 +1721,9 @@ function(psxrecomp_add_runtime_target target)
         endif()
     endif()
     psxrecomp_windows_manifest(${target})
+    if(NOT PSX_HEADROOM_COUNTERS)
+        target_compile_definitions(${target} PRIVATE PSX_DISABLE_HEADROOM_COUNTERS=1)
+    endif()
     psxrecomp_sha256_file(${target})
     set(_execution_contract
         "${PSXRECOMP_ROOT}/runtime/src/gte.cpp"

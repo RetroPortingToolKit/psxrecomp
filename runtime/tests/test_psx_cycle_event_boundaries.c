@@ -231,6 +231,34 @@ int main(void) {
     fprintf(stderr, "PASS observation charges/edges, MMIO arm, IRQ/frame, waits, sample, freeze/replay/restore\n");
 #endif
 
+#if !defined(PSX_DISABLE_HEADROOM_COUNTERS) || !PSX_DISABLE_HEADROOM_COUNTERS
+    extern uint32_t psx_cycle_sample_period;
+    extern void (*psx_cycle_sample_hook)(uint64_t,uint32_t);
+#ifndef VERIFY
+#define VERIFY(test, message) do { if(!(test)) { fprintf(stderr,"FAIL %s\n",message);return 1; } } while(0)
+#endif
+    /* Counting must reuse the scheduler's decisions and classify an actual
+     * service, including an SPU deadline, without changing its timeline. */
+    g_event_step_conservative=0;psx_cycle_sample_period=0;psx_cycle_sample_hook=NULL;
+    s_cd_ready=1;s_dma_next_event=UINT32_MAX;s_cd_dma_active=0;
+    uint64_t gpu_before=psx_hr_service_requests[PSX_HR_REQUEST_GPU_HOLD];
+    psx_devices_service_to_now_cause(PSX_HR_REQUEST_GPU_HOLD);
+    VERIFY(psx_hr_service_requests[PSX_HR_REQUEST_GPU_HOLD]==gpu_before+1,"explicit GPU hold service counted");
+    psx_next_service_cycle=UINT64_MAX;
+    psx_advance_cycles(2);
+    uint64_t mmio_before=psx_hr_service_requests[PSX_HR_REQUEST_MMIO];
+    psx_devices_mmio_sync();
+    VERIFY(psx_hr_service_requests[PSX_HR_REQUEST_MMIO]==mmio_before+1,"MMIO service counted");
+    s_spu_next_sample=3;i_mask=1u<<9;i_stat=0;
+    psx_devices_service_to_now();
+    uint64_t spu_before=psx_hr_service_deadlines[PSX_HR_DEADLINE_SPU];
+    psx_advance_cycles(3);psx_devices_service_to_now();
+    VERIFY(psx_hr_service_deadlines[PSX_HR_DEADLINE_SPU]>spu_before,"advertised SPU deadline counted");
+    uint64_t requests=0,deadlines=0;
+    for(unsigned i=0;i<PSX_HR_REQUEST_COUNT;++i)requests+=psx_hr_service_requests[i];
+    for(unsigned i=0;i<PSX_HR_DEADLINE_COUNT;++i)deadlines+=psx_hr_service_deadlines[i];
+    VERIFY(requests==psx_device_service_calls && deadlines==requests,"service classifications partition actual calls");
+#endif
     fprintf(stderr, "PASS cross-device deadline preserves D-1 + 1 causality; "
                     "idle skip bounded by the SPU sample deadline\n");
     return 0;

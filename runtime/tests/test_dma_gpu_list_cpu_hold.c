@@ -55,6 +55,9 @@ void psx_advance_cycles_slow(uint32_t cycles) {
     psx_cycle_count += cycles;
     psx_devices_service_to_now();
 }
+void psx_devices_service_to_now_cause(unsigned request) {
+    (void)request;psx_devices_service_to_now();
+}
 
 /* ---- memory ------------------------------------------------------------- */
 uint32_t g_psx_ram_size = 0x00200000u;

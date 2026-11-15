@@ -260,6 +260,9 @@ uint32_t g_plp_adv_max_chunk    = 0;
 uint64_t g_plp_adv_sum          = 0;
 uint64_t g_plp_svc_calls        = 0;
 uint64_t psx_device_service_calls = 0;
+uint64_t psx_hr_service_requests[PSX_HR_REQUEST_COUNT];
+uint64_t psx_hr_service_deadlines[PSX_HR_DEADLINE_COUNT];
+static unsigned s_hr_deadline_source=PSX_HR_DEADLINE_UNKNOWN;
 #define s_next_service_cycle psx_next_service_cycle
 #define s_in_device_service  psx_in_device_service
 static uint64_t s_next_watchdog        = 0;
@@ -315,14 +318,17 @@ uint64_t g_psx_cycle_fast_limit = 0;
  * exactly ON the nearest event so chained sequences (SIO byte -> ack -> next
  * byte; CD sector trains) replay event-by-event, and so events armed while
  * their IRQ is masked in I_MASK still process on time (games poll I_STAT). */
-static uint32_t devices_cycles_to_next_internal_event(void) {
+static uint32_t devices_cycles_to_next_internal_event(unsigned *source) {
     uint32_t best = interrupts_cycles_to_vblank();   /* frame pacing always */
-    uint32_t t = timers_cycles_to_irq(0xFFFFFFFFu);  if (t < best) best = t;
-    uint32_t c = cdrom_cycles_to_irq(0xFFFFFFFFu);   if (c < best) best = c;
-    uint32_t d = dma_cycles_to_internal_event();     if (d < best) best = d;
-    uint32_t s = sio_cycles_to_irq(0xFFFFFFFFu);     if (s < best) best = s;
-    uint32_t a = psx_spu_sample_event_cycles_to_next(); if (a < best) best = a;
+    unsigned reason=PSX_HR_DEADLINE_VBLANK;
+    uint32_t t = timers_cycles_to_irq(0xFFFFFFFFu);  if (t < best) {best=t;PSX_HR_SET(reason,PSX_HR_DEADLINE_TIMER);}
+    uint32_t c = cdrom_cycles_to_irq(0xFFFFFFFFu);   if (c < best) {best=c;PSX_HR_SET(reason,PSX_HR_DEADLINE_CD);}
+    uint32_t d = dma_cycles_to_internal_event();    if (d < best) {best=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_DMA);}
+    uint32_t s = sio_cycles_to_irq(0xFFFFFFFFu);     if (s < best) {best=s;PSX_HR_SET(reason,PSX_HR_DEADLINE_SIO);}
+    uint32_t a = psx_spu_sample_event_cycles_to_next(); if (a < best) {best=a;PSX_HR_SET(reason,PSX_HR_DEADLINE_SPU);}
     if (best == 0) best = 1;    /* due/overdue: process within one cycle */
+    if(source)PSX_HR_SET(*source,reason);
+    (void)reason;
     return best;
 }
 
@@ -362,22 +368,25 @@ void psx_devices_refresh_observation_deadline(void) {
      * acknowledges it. Frame pacing is unconditional, even with SR/IM masked. */
     uint32_t mask = i_mask & ~i_stat;
     uint32_t next = interrupts_cycles_to_vblank();
-    uint32_t d = timers_cycles_to_irq(mask); if (d < next) next = d;
-    d = cdrom_cycles_to_irq(mask); if (d < next) next = d;
-    d = dma_cycles_to_deliverable_irq(mask); if (d < next) next = d;
+    unsigned reason=PSX_HR_DEADLINE_VBLANK;
+    uint32_t d = timers_cycles_to_irq(mask); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_TIMER);}
+    d = cdrom_cycles_to_irq(mask); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_CD);}
+    d = dma_cycles_to_deliverable_irq(mask); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_DMA);}
     /* DMA publishes RAM and GPU data independently of interrupt delivery.
      * CPU RAM polling cannot defer these publications until a later frame.
      * A waiting CD DMA also depends on masked CD readiness becoming live. */
-    d = dma_cycles_to_internal_event(); if (d < next) next = d;
+    d = dma_cycles_to_internal_event(); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_DMA);}
     if (dma_cdrom_transfer_active()) {
-        d = cdrom_cycles_to_irq(0xFFFFFFFFu); if (d < next) next = d;
+        d = cdrom_cycles_to_irq(0xFFFFFFFFu); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_CD);}
     }
-    d = sio_cycles_to_irq(mask); if (d < next) next = d;
+    d = sio_cycles_to_irq(mask); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_SIO);}
     if (mask & (1u << IRQ_SPU)) {
-        d = psx_spu_sample_event_cycles_to_next(); if (d < next) next = d;
+        d = psx_spu_sample_event_cycles_to_next(); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_SPU);}
     }
     if (next == 0u) next = 1u;
     psx_next_service_cycle = s_devices_synced_cycle + (uint64_t)next;
+    PSX_HR_SET(s_hr_deadline_source,reason);
+    (void)reason;
 }
 #endif
 
@@ -385,21 +394,27 @@ static void psx_devices_recompute_deadline(void) {
 #if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
     psx_devices_refresh_observation_deadline();
 #else
-    uint32_t next = devices_cycles_to_next_internal_event();
-    if (next > PSX_DEADLINE_HARD_CAP) next = PSX_DEADLINE_HARD_CAP;
+    uint32_t next = devices_cycles_to_next_internal_event(&s_hr_deadline_source);
+    if (next > PSX_DEADLINE_HARD_CAP) {next=PSX_DEADLINE_HARD_CAP;PSX_HR_SET(s_hr_deadline_source,PSX_HR_DEADLINE_CAP);}
     if (psx_cycle_sample_period && s_next_cycle_sample > psx_cycle_count) {
         uint64_t d = s_next_cycle_sample - psx_cycle_count;
-        if (d < next) next = (uint32_t)d;
+        if (d < next) {next=(uint32_t)d;PSX_HR_SET(s_hr_deadline_source,PSX_HR_DEADLINE_SAMPLE);}
     }
     psx_next_service_cycle = psx_cycle_count + (uint64_t)next;
 #endif
 }
 
-void psx_devices_service_to_now(void) {
+void psx_devices_service_to_now_cause(unsigned request) {
     if (g_psx_guest_time_frozen) { psx_cycle_freeze_tick(); return; }
     if (s_in_device_service) return;                 /* device code charged cycles: absorb */
     if (g_plp_cycle_diag) g_plp_svc_calls++;
     psx_device_service_calls++;
+    if(request>=PSX_HR_REQUEST_COUNT)request=PSX_HR_REQUEST_OTHER;
+    PSX_HR_INC(psx_hr_service_requests[request]);
+    const unsigned deadline=(psx_next_service_cycle && psx_cycle_count>=psx_next_service_cycle)
+        ?s_hr_deadline_source:PSX_HR_DEADLINE_EARLY;
+    PSX_HR_INC(psx_hr_service_deadlines[deadline]);
+    (void)deadline;(void)request;
     g_psx_cycle_fast_limit = 0;
     s_in_device_service = 1;
     uint64_t target = psx_cycle_count;
@@ -412,7 +427,7 @@ void psx_devices_service_to_now(void) {
         while (psx_cycle_count < target) {
             uint32_t remaining = (uint32_t)(target - psx_cycle_count);
             uint32_t step = remaining;
-            uint32_t to_ev = devices_cycles_to_next_internal_event();
+            uint32_t to_ev = devices_cycles_to_next_internal_event(NULL);
             if (to_ev > 0 && to_ev < step) step = to_ev;
             if (step == 0) step = 1;
 #if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
@@ -457,6 +472,10 @@ void psx_devices_service_to_now(void) {
     }
 }
 
+void psx_devices_service_to_now(void) {
+    psx_devices_service_to_now_cause(PSX_HR_REQUEST_OTHER);
+}
+
 /* memory.c hook: called at the top of every device-MMIO read/write wrapper.
  * Catch devices up so the handler sees current state, then recompute the
  * deadline immediately (a write may re-arm a shorter event). Previously this
@@ -464,18 +483,19 @@ void psx_devices_service_to_now(void) {
  * advance through service_to_now even when already synced — MotK FMV pays
  * that on every GPU/CD/MDEC MMIO touch. Recompute here instead. */
 #if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
-void psx_devices_observe(void) {
+static void psx_devices_observe_cause(unsigned request) {
     psx_cyc_batch_flush();
     if (g_ls_replay_active || psx_in_device_service) return;
     if (g_psx_guest_time_frozen) { psx_cycle_freeze_tick(); return; }
-    if (s_devices_synced_cycle != psx_cycle_count) psx_devices_service_to_now();
+    if (s_devices_synced_cycle != psx_cycle_count) psx_devices_service_to_now_cause(request);
     else psx_devices_recompute_deadline();
 }
+void psx_devices_observe(void) { psx_devices_observe_cause(PSX_HR_REQUEST_OBSERVATION); }
 #endif
 
 void psx_devices_mmio_sync(void) {
 #if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
-    psx_devices_observe();
+    psx_devices_observe_cause(PSX_HR_REQUEST_MMIO);
     /* Handler side effects follow this entry barrier. Recompute from their
      * resulting state at the next edge, never from the pre-write schedule. */
     if (!psx_in_device_service && !g_psx_guest_time_frozen && !g_ls_replay_active)
@@ -484,7 +504,7 @@ void psx_devices_mmio_sync(void) {
     psx_cyc_batch_flush();
     if (g_psx_guest_time_frozen) { psx_cycle_freeze_tick(); return; }
     if (s_devices_synced_cycle != psx_cycle_count) {
-        psx_devices_service_to_now();
+        psx_devices_service_to_now_cause(PSX_HR_REQUEST_MMIO);
     } else {
         psx_devices_recompute_deadline();
     }

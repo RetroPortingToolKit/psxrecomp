@@ -53,6 +53,7 @@
 #include "autocompile.h"
 #include "code_provider.h"
 #include "host_span_ring.h"
+#include "headroom_counters.h"
 #ifdef PSX_HAS_OVERLAY_DISPATCH
 extern "C" void psx_overlay_static_get_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *);
 #endif
@@ -9226,6 +9227,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     /* Retained display history is independent of the listener and full CPU
      * tracing. Keep it after the pause/poll boundary and before frame advances. */
     debug_server_record_display_frame();
+    PSX_HEADROOM_RECORD_FRAME();
 #ifndef PSX_NO_DEBUG_TOOLS
     debug_server_record_frame();
     debug_server_check_watchpoints();

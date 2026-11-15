@@ -1137,6 +1137,7 @@ void psx_interrupt_delivery_diag(uint64_t *need_defer, uint64_t *need_irq,
 
 /* Hot-path attribution for post-load freeze probe (see psx_interrupt_check_path_diag). */
 static uint64_t s_irq_path_entry;
+uint64_t psx_hr_interrupt_at_calls;
 static uint64_t s_irq_path_fast_sr;
 static uint64_t s_irq_path_fast_none;
 static uint64_t s_irq_path_eval;
@@ -2396,6 +2397,7 @@ void psx_check_interrupts(CPUState *cpu) {
 #endif
 
 void psx_check_interrupts_at(CPUState* cpu, uint32_t resume_pc) {
+    PSX_HR_INC(psx_hr_interrupt_at_calls);
     uint32_t prev = s_compiled_interrupt_resume_pc;
     s_compiled_interrupt_resume_pc = resume_pc;
     psx_check_interrupts(cpu); /* flushes load-charge batch on entry */

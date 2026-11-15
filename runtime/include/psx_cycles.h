@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "headroom_counters.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,6 +46,7 @@ void     psx_icache_shadow_abort(void);
  * this at the top of every device-MMIO read/write. */
 void psx_devices_mmio_sync(void);
 void psx_devices_service_to_now(void);
+void psx_devices_service_to_now_cause(unsigned request);
 
 /* Rare/slow advance path (COSIM, conservative 1-cycle stepping, lockstep). */
 void psx_advance_cycles_slow(uint32_t cycles);

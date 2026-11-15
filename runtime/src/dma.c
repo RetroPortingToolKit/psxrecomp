@@ -1077,7 +1077,7 @@ static int submit_native_gpu_linked_list(void) {
     if (observed) s_native_stats.observed_words += word_count + node_count;
     else s_native_stats.direct_words += word_count + node_count;
     psx_advance_cycles(cycles);
-    psx_devices_service_to_now();
+    psx_devices_service_to_now_cause(PSX_HR_REQUEST_GPU_HOLD);
     s_native_stats.service_requests++;
     gpu_ll_complete(NULL, !terminated);
     record_gpu_hold(cyc0, host0, 0, cycles ? 1u : 0u);
@@ -1101,7 +1101,7 @@ static void hold_cpu_for_gpu_linked_list(void) {
             continue;
         }
         psx_advance_cycles(dma_gpu_ll_cycles_to_event(&gpu_linked_list));
-        psx_devices_service_to_now();
+        psx_devices_service_to_now_cause(PSX_HR_REQUEST_GPU_HOLD);
         steps++;
         if (gpu_linked_list.active && gpu_linked_list.total_words == moved) break;
     }

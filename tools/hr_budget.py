@@ -11,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 
 RULES = [  # (bucket, regex on exe symbol) - first match wins; order matters
-    ('debug_only', r'^(gpu_vram_peek|gr_vram_read|sw_vram_read|present_image_ring|debug_server|handle_|host_sampler|gcp_|wtrace|mmio_ring|ds_record|fntrace_ring|headless_present_image_ring|frame_fingerprint_|fp_ring|phase_sampler)'),
+    ('debug_only', r'^(gpu_vram_peek|gr_vram_read|sw_vram_read|present_image_ring|debug_server|handle_|host_sampler|psx_headroom|gcp_|wtrace|mmio_ring|ds_record|fntrace_ring|headless_present_image_ring|frame_fingerprint_|fp_ring|phase_sampler)'),
     ('static_bios_generated', r'^(SCPH1001_|OpenBIOS_)(func|alias|body)'),
     ('static_game_generated', r'^(func_[0-9A-Fa-f]{8}|psx_alias_body_|SCUS_|game_func_|psx_func_[0-9A-Fa-f]{8})'),
     ('pgxp_hooks', r'(^pgxp|^psx_pgxp|PGXP|_pgxp|precise_triangle|parse_vertex|note_store|alu_bitwise)'),
@@ -48,6 +48,28 @@ def nm_table(nm, exe):
             tab.append((int(p[0], 16) - base, p[2]))
     tab.sort()
     return tab
+
+
+def counter_budget(run):
+    before=run.get('before',{}).get('hr_counters',{})
+    after=run.get('after',{}).get('hr_counters',{})
+    frames=after.get('frame',0)-before.get('frame',0)
+    if not before.get('ok') or not after.get('ok') or frames<=0:
+        return {'available':False,'reason':'no valid hr_counters snapshot window'}
+    if not after.get('enabled',True):
+        return {'available':False,'reason':'new counters disabled by build overhead control'}
+    rows=[]
+    for key in after.get('fields',['dispatch','check_irq','check_irq_at','dev_svc']):
+        a,b=before.get(key),after.get(key)
+        if not isinstance(a,int) or not isinstance(b,int):continue
+        supported=not key.startswith(('load_','store_')) or after.get('memory_supported',True)
+        delta=b-a if b>=a and supported else None
+        rows.append({'counter':key,'delta':delta,'per_frame':delta/frames if delta is not None else None,
+                     'unit':'us' if key.endswith('host_us') else 'cycles' if key.endswith('cycles') else 'count',
+                     'reset':b<a,'supported':supported})
+    return {'available':True,'frames':frames,'frame_lo':before['frame'],'frame_hi':after['frame'],
+            'window':'counter snapshots bracket the timed host-sample window',
+            'coverage':after.get('coverage',{}),'missing':after.get('missing',[]),'rows':rows}
 
 
 def main():
@@ -118,7 +140,8 @@ def main():
            'guest_buckets': [{'pc': '0x%08X' % pc, 'exception': exc, 'bucket': bucket, 'samples': count,
                               'sampled_wall_us_per_frame': wall_us_per_frame * count / total}
                              for (pc, exc, bucket), count in guest_buckets.most_common()],
-           'us_per_frame_basis': 'bucket share x wall us/frame (%.1f); sampler is 1 kHz wall-clock on emu thread' % wall_us_per_frame,
+           'us_per_frame_basis': 'bucket share x wall us/frame (%.1f); emulation-thread samples, empirical rate %.1fHz' % (wall_us_per_frame,total/run['wall_s']),
+           'counter_budget': counter_budget(run),
            'buckets': [[b, c, 100.0 * c / total, wall_us_per_frame * c / total] for b, c in bucket_ct.most_common()],
            'top_symbols': [[s, c, 100.0 * c / total,
                             next((bk for bk, rx in RULES if re.search(rx, s)), 'module/exe_other')] for s, c in sym_ct.most_common(a.top)],
@@ -131,6 +154,13 @@ def main():
     for s, c, pct, b in res['top_symbols']:
         print('  %6d %5.2f%%  %-22s %s' % (c, pct, b, s[:90]))
     print('modules:', res['modules'][:15])
+    counters=res['counter_budget']
+    if counters['available']:
+        print('counters/frame over %d counter-snapshot frames:' % counters['frames'])
+        for row in counters['rows']:
+            value='%.3f'%row['per_frame'] if row['per_frame'] is not None else 'unavailable/reset'
+            print('  %-30s %16s %s' % (row['counter'],value,row['unit']))
+        if counters['missing']:print('counter coverage still missing:',counters['missing'])
 
 
 if __name__ == '__main__':
