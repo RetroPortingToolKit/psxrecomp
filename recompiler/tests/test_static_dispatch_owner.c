@@ -49,7 +49,7 @@ static void debug_server_trace_dispatch(uint32_t addr) { (void)addr; abort(); }
 static PsxRecompFunc psx_bios_hit_body(CPUState *cpu, uint32_t a, uint32_t p, PsxRecompFunc fn) {
     (void)cpu; (void)a; (void)p; return fn;
 }
-static void psx_unknown_dispatch(CPUState *cpu, uint32_t a, uint32_t p) {
+void psx_unknown_dispatch(CPUState *cpu, uint32_t a, uint32_t p) {
     (void)cpu; (void)a; (void)p; abort();
 }
 static void graph(CPUState *cpu, uint32_t addr) {
@@ -85,13 +85,14 @@ static int dirty_ram_dispatch_game_direct(CPUState *cpu, uint32_t addr) {
 static int dirty_ram_dispatch(CPUState *cpu, uint32_t addr, uint32_t stop) {
     (void)stop; hook('D'); ++fallback_calls; graph(cpu, addr); return 1;
 }
-static void psx_rfe_escape_check(CPUState *cpu) {
+void psx_rfe_escape_check(CPUState *cpu) {
     (void)cpu; if (escape) longjmp(escape_jmp, 1);
 }
-static void psx_check_interrupts_at(CPUState *cpu, uint32_t pc) {
+void psx_check_interrupts_at(CPUState *cpu, uint32_t pc) {
     (void)pc; if (boundary_redirect) cpu->pc = 0x80030000u;
 }
-static void psx_check_interrupts(CPUState *cpu) { (void)cpu; }
+void psx_check_interrupts(CPUState *cpu) { (void)cpu; }
+#undef PSX_BLOCK_EDGE
 #define PSX_BLOCK_EDGE(cpu, pc) psx_check_interrupts_at((cpu), (pc))
 
 #include "owner.inc"
