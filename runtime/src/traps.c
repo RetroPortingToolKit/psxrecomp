@@ -19,6 +19,7 @@
 #include "psx_fiber.h"   /* cross-platform fibers (Win32 fibers / POSIX ucontext) */
 #include "psx_scheduler.h" /* deterministic TCB scheduler carve-out (scaffolding) */
 #include "parity_trace.h"  /* general two-process control-flow parity ring */
+#include "psx_break_vector.h"
 
 /* RAM reader adapter for the parity trace (cpu->read_word takes only addr). */
 static uint32_t traps_parity_rw(void* ctx, uint32_t addr) {
@@ -1125,6 +1126,12 @@ void psx_break(CPUState* cpu, uint32_t code, uint32_t pc) {
     trap_crash(buf);
     fprintf(stderr, "%s\n", buf); fflush(stderr);
     exit(1);
+}
+
+/* An interpreted BREAK enters the guest's own exception vector when the guest
+ * owns it (psx_break_vector.h). Returns 0 when the caller must take psx_break. */
+int psx_break_enter_guest_vector(CPUState* cpu, uint32_t pc) {
+    return psx_break_vector_enter(cpu, pc, psx_get_in_exception());
 }
 
 void psx_arith_overflow(CPUState* cpu) {
