@@ -30,14 +30,18 @@ uint32_t overlay_watch_pagegen_sum(uint32_t phys,uint32_t len);
 #define FAST 0
 #endif
 
-static unsigned reads, custom_writes, flushes;
+static unsigned custom_reads, custom_writes, flushes;
+static unsigned helper_reads(void) {
+    PSXDirectMemoryStats *s=&g_psx_direct_memory_stats;
+    return (unsigned)(s->load_helper_ram+s->load_helper_scratch+s->load_helper_mmio+s->load_helper_other);
+}
 static unsigned helper_writes(void) {
     PSXDirectMemoryStats *s=&g_psx_direct_memory_stats;
     return (unsigned)(s->store_helper_ram+s->store_helper_scratch+s->store_helper_mmio+s->store_helper_other);
 }
-static uint32_t read_word(uint32_t a) { ++reads; return psx_read_word(a); }
-static uint16_t read_half(uint32_t a) { ++reads; return psx_read_half(a); }
-static uint8_t read_byte(uint32_t a) { ++reads; return psx_read_byte(a); }
+static uint32_t read_word(uint32_t a) { (void)a; ++custom_reads; return 0xFEDCBA98u; }
+static uint16_t read_half(uint32_t a) { (void)a; ++custom_reads; return 0xBA98u; }
+static uint8_t read_byte(uint32_t a) { (void)a; ++custom_reads; return 0x98u; }
 static void write_word(uint32_t a,uint32_t v) { (void)a; (void)v; ++custom_writes; }
 static void flush(void) { ++flushes; }
 uint32_t parity_host_frame(void) { return 7; }
@@ -52,7 +56,7 @@ static void require_helper(CPUState *cpu, uint32_t addr) {
 
 int main(void) {
     CPUState cpu = {0};
-    cpu.read_word=read_word; cpu.read_half=read_half; cpu.read_byte=read_byte;
+    cpu.read_word=psx_read_word; cpu.read_half=psx_read_half; cpu.read_byte=psx_read_byte;
     cpu.write_word=psx_write_word; cpu.write_half=psx_write_half; cpu.write_byte=psx_write_byte;
     uint8_t *ram=memory_get_ram_ptr(), *scratch=memory_get_scratchpad_ptr();
     uint32_t sr=0;
@@ -65,19 +69,26 @@ int main(void) {
     CHECK(helper_writes() == (FAST ? 0u : 3u));
     CHECK(psx_cyc_load_word(&cpu,0x80020000u,2,0)==0x78563412u);
     CHECK(psx_cyc_load_half(&cpu,0xA0220004u,2,0)==0xBC9Au);
-    CHECK(psx_cyc_load_byte(&cpu,0x00620006u,2,0)==0xDEu && reads==0);
+    CHECK(psx_cyc_load_byte(&cpu,0x00620006u,2,0)==0xDEu && helper_reads()==0);
 
     unsigned n=helper_writes();
     PSX_STORE_WORD(&cpu,0x9F800040u,0x10203040u);
     PSX_STORE_HALF(&cpu,0xBF800044u,0x5060u);
     PSX_STORE_BYTE(&cpu,0x1F800046u,0x70u);
     CHECK(helper_writes() == n + (FAST ? 0u : 3u));
-    n=reads;
+    n=helper_reads();
     CHECK(psx_cyc_load_word(&cpu,0xBF800040u,2,0)==0x10203040u);
     CHECK(psx_cyc_load_half(&cpu,0x1F800044u,2,0)==0x5060u);
     CHECK(psx_cyc_load_byte(&cpu,0x9F800046u,2,0)==0x70u);
-    CHECK(reads == n + (PSX_DIRECT_GUEST_MEMORY ? 0u : 3u));
+    CHECK(helper_reads() == n + (PSX_DIRECT_GUEST_MEMORY ? 0u : 3u));
     CHECK(g_guest_store_count==6u);
+    // New scratch eligibility cannot bypass a caller-supplied bus reader.
+    cpu.read_word=read_word; cpu.read_half=read_half; cpu.read_byte=read_byte;
+    CHECK(psx_cyc_load_word(&cpu,0x1F800040u,2,0)==0xFEDCBA98u);
+    CHECK(psx_cyc_load_half(&cpu,0xBF800044u,2,0)==0xBA98u);
+    CHECK(psx_cyc_load_byte(&cpu,0x9F800046u,2,0)==0x98u && custom_reads==3);
+    cpu.read_word=psx_read_word; cpu.read_half=psx_read_half; cpu.read_byte=psx_read_byte;
+
 
     // Store-count and final-store metadata are still the idle-loop contract.
     g_psx_track_last_store=1;
@@ -117,12 +128,12 @@ int main(void) {
 
     int *read_guards[]={&g_ls_mode,&g_ls_replay_active,&g_dma_exec_depth,&g_ram_read_watch_active};
     for(unsigned i=0;i<sizeof read_guards/sizeof read_guards[0];++i) {
-        *read_guards[i]=1; n=reads;
+        *read_guards[i]=1; n=helper_reads();
         CHECK(psx_cyc_load_word(&cpu,0x1F800040u,2,0)==0x10203040u);
-        CHECK(reads==n+1); *read_guards[i]=0;
+        CHECK(helper_reads()==n+1); *read_guards[i]=0;
     }
-    g_ds_recording=1; n=reads;
-    CHECK(psx_cyc_load_word(&cpu,0x1F800040u,2,0)==0x10203040u && reads==n+1);
+    g_ds_recording=1; n=helper_reads();
+    CHECK(psx_cyc_load_word(&cpu,0x1F800040u,2,0)==0x10203040u && helper_reads()==n+1);
     g_ds_recording=0;
 
     // IsC is owned by the memory system's actual SR pointer. The original

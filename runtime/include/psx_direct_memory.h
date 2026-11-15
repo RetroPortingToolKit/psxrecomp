@@ -25,6 +25,9 @@ void psx_direct_memory_get_stats(PSXDirectMemoryStats *out);
  * Registration, clear, restore and first execution keep using their original
  * owners. Every protected page goes through the complete canonical writer. */
 extern uint8_t *g_psx_scratchpad;
+uint32_t psx_read_word(uint32_t addr);
+uint16_t psx_read_half(uint32_t addr);
+uint8_t psx_read_byte(uint32_t addr);
 void psx_write_word(uint32_t addr, uint32_t value);
 void psx_write_half(uint32_t addr, uint16_t value);
 void psx_write_byte(uint32_t addr, uint8_t value);
