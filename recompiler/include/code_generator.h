@@ -555,6 +555,23 @@ private:
         const ControlFlowGraph& cfg,
         std::map<uint32_t, std::vector<uint32_t>>& out_edges);
 
+    // MIPS-I load delay across a branch: a GPR load (LB/LH/LW/LBU/LHU) or a
+    // COP2 move (MFC2/CFC2) in a conditional branch's or j's delay slot is
+    // still invisible to the first instruction at the branch's successor.
+    // scan_delay_slot_loads() finds the slots whose in-function successor
+    // reads the destination; translate_basic_block() then defers the
+    // writeback through the function-scope psx_dsl_<slot> temp and
+    // psx_dslp_<slot> flag, retiring it after the successor's first
+    // instruction. dsl_decls() is the declaration block for those temps.
+    struct DelaySlotLoad {
+        uint32_t rt = 0;
+        std::set<uint32_t> dependent;   // successor block leaders that read rt first
+    };
+    std::map<uint32_t, DelaySlotLoad> dsl_sites_;              // delay-slot addr -> site
+    std::map<uint32_t, std::vector<uint32_t>> dsl_flush_at_;  // successor -> delay-slot addrs
+    void scan_delay_slot_loads(const ControlFlowGraph& cfg);
+    std::string dsl_decls() const;
+
     // Control flow translation
     // Main-EXE opcode guard for bltz_sites, bgez_sites and branch_keep_sites
     // (exits 1 on a mismatch; overlay mode keeps vanilla code).
