@@ -940,7 +940,35 @@ void interrupts_init(void) {
     reset_dirty_snapshot_scope();
 }
 
+/* Set by an IRQ_TIMING section load; the next resync keeps those fields. */
+static int s_resume_timing_from_state;
+
+void interrupts_resume_timing_get(PsxIrqResumeTiming *out) {
+    if (!out) return;
+    out->cooldown_until = post_exception_cooldown_until;
+    out->sio_seq_seen = last_sio_seq_seen;
+    out->sio_progress_cycle = last_sio_progress_cycle;
+    out->defer_from = s_defer_switch_from;
+    out->defer_target = s_defer_switch_target;
+    out->defer_pending = s_defer_switch_pending ? 1u : 0u;
+}
+
+void interrupts_resume_timing_set(const PsxIrqResumeTiming *in) {
+    if (!in) return;
+    post_exception_cooldown_until = in->cooldown_until;
+    last_sio_seq_seen = in->sio_seq_seen;
+    last_sio_progress_cycle = in->sio_progress_cycle;
+    s_defer_switch_from = in->defer_from;
+    s_defer_switch_target = in->defer_target;
+    s_defer_switch_pending = in->defer_pending ? 1 : 0;
+    s_resume_timing_from_state = 1;
+}
+
 void interrupts_resync_after_restore(void) {
+    const int keep_timing = s_resume_timing_from_state;
+    PsxIrqResumeTiming kept;
+    s_resume_timing_from_state = 0;
+    interrupts_resume_timing_get(&kept);
     /* Absolute guest-cycle timestamps from the pre-load timeline are invalid
      * once psx_cycle_count rewinds (typical: save → play N seconds → load).
      * Leaving post_exception_cooldown_until in the future blocks every IRQ
@@ -989,6 +1017,15 @@ void interrupts_resync_after_restore(void) {
     /* Drop mid-quantum present armed before the rewind — do not finish_frame
      * against the restored tip with a stale pending count. */
     gpu_vblank_clear_deferred_present();
+    /* A state written for checkpoint resume carried these on its clock. */
+    if (keep_timing) {
+        post_exception_cooldown_until = kept.cooldown_until;
+        last_sio_seq_seen = kept.sio_seq_seen;
+        last_sio_progress_cycle = kept.sio_progress_cycle;
+        s_defer_switch_from = kept.defer_from;
+        s_defer_switch_target = kept.defer_target;
+        s_defer_switch_pending = kept.defer_pending ? 1 : 0;
+    }
 }
 
 void interrupts_log_last_vblank_irqctx(const char *tag)

@@ -38,6 +38,20 @@ void interrupts_init(void);
  * catches up to the pre-load host timeline (warm-reload picture freeze). */
 void interrupts_resync_after_restore(void);
 
+/* Checkpoint resume: the IRQ delivery state that interrupts_resync_after_restore
+ * otherwise resets (its IRQ_TIMING section). Absolute cycles are on the
+ * restored clock. A set keeps these fields through the next resync. */
+typedef struct PsxIrqResumeTiming {
+    uint64_t cooldown_until;      /* post-exception IRQ cooldown deadline */
+    uint32_t sio_seq_seen;        /* last SIO sequence the VBlank defer saw */
+    uint64_t sio_progress_cycle;  /* cycle of that SIO progress */
+    uint32_t defer_from;          /* deferred thread switch: interrupted TCB */
+    uint32_t defer_target;        /* deferred thread switch: target TCB */
+    uint32_t defer_pending;       /* 1 = a deferred switch is waiting */
+} PsxIrqResumeTiming;
+void interrupts_resume_timing_get(PsxIrqResumeTiming *out);
+void interrupts_resume_timing_set(const PsxIrqResumeTiming *in);
+
 /* Netplay diag: last VBLANK irqctx exit/restore (+ v0) for peer diff. */
 void interrupts_log_last_vblank_irqctx(const char *tag);
 

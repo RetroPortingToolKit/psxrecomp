@@ -354,7 +354,14 @@ void dirty_ram_ld_delay_flush(CPUState *cpu) {
     cpu->gpr[0] = 0;
 }
 
+/* Set by a CPU_EXEC section load; the next discard keeps the restored value. */
+static int s_ld_pend_from_state = 0;
+
 void dirty_ram_ld_delay_discard(void) {
+    if (s_ld_pend_from_state) {
+        s_ld_pend_from_state = 0;
+        return;
+    }
     s_ld_pend_armed = 0;
     s_ld_pend_age   = 0;
     s_ld_pend_rt    = 0;
@@ -375,6 +382,12 @@ void dirty_ram_ld_delay_restore(const DirtyRamLoadDelay *in) {
     s_ld_pend_val = in->val;
     s_ld_pend_age = in->age;
     s_ld_pend_armed = in->armed;
+}
+
+void dirty_ram_ld_delay_restore_from_state(const DirtyRamLoadDelay *in) {
+    if (!in) return;
+    dirty_ram_ld_delay_restore(in);
+    s_ld_pend_from_state = 1;
 }
 
 void dirty_ram_irq_ambient_resync_after_restore(void) {

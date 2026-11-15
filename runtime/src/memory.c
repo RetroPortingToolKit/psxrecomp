@@ -1025,6 +1025,18 @@ uint64_t g_kseg2_ignored_writes;
 /* Cache control register (KSEG2: 0xFFFE0130). */
 static uint32_t cache_ctrl;
 
+void memory_control_get(uint32_t out[PSX_MEMORY_CONTROL_WORDS]) {
+    memcpy(out, mem_ctrl, sizeof mem_ctrl);
+    out[16] = ram_size_reg;
+    out[17] = cache_ctrl;
+}
+
+void memory_control_set(const uint32_t in[PSX_MEMORY_CONTROL_WORDS]) {
+    memcpy(mem_ctrl, in, sizeof mem_ctrl);
+    ram_size_reg = in[16];
+    cache_ctrl = in[17];
+}
+
 /* Pointer to cpu->cop0[12] (SR).  Set once at init.
  * Used by write functions to check the IsC (Isolate Cache) bit: while it is
  * set, a CPU store goes to the caches and never reaches the bus (isc_store). */

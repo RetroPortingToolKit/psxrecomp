@@ -48,6 +48,8 @@ psx_sched_escape_t g_sched_escape;
  * latched at the last YIELD_TO_TCB, restored if the target's top-level dispatch
  * returns. Zero = no pending return target (top-level pc==0 is a real exit). */
 static uint32_t g_sched_return_tcb = 0;
+uint32_t psx_scheduler_return_tcb(void) { return g_sched_return_tcb; }
+void psx_scheduler_set_return_tcb(uint32_t tcb) { g_sched_return_tcb = tcb; }
 
 /* sched_escape_ring (plan step 8) — always-on record of every structured
  * scheduler escape, queryable via the `sched_escape_ring` debug command. This

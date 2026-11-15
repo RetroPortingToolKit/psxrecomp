@@ -94,6 +94,12 @@ typedef struct DirtyRamLoadDelay {
 void dirty_ram_ld_delay_save(DirtyRamLoadDelay *out);
 void dirty_ram_ld_delay_restore(const DirtyRamLoadDelay *in);
 
+/* Checkpoint resume: put back the pending load a state carried (its
+ * CPU_EXEC section) and keep it through the next
+ * dirty_ram_ld_delay_discard(), which psx_cycles_resync_after_restore calls
+ * after every load. Without the section the load is dropped as before. */
+void dirty_ram_ld_delay_restore_from_state(const DirtyRamLoadDelay *in);
+
 /* Re-anchor host-only dirty IRQ pump ambient (entry-poll stride + 4096-insn
  * gap) after snap restore. Not in boot_state — peers that drifted through FMV
  * otherwise entered the post-FMV dirty wait on opposite poll phases. */
