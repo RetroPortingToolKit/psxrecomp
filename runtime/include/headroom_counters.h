@@ -128,14 +128,37 @@ extern uint64_t psx_hr_runtime_fast_loads[3]; /* u8/u16/u32; legacy value leaves
  * forwarding callback increments both lanes; never sum them as memory accesses.
  * Backing regions/internal raw-buffer operations are opaque at this boundary. */
 extern uint64_t psx_hr_bus_callbacks[2][3]; /* load/store, u8/u16/u32 */
-static inline void psx_headroom_bus_callback(unsigned store, uint32_t width) {
-    if(store<2u && (width==1u || width==2u || width==4u))
-        PSX_HR_INC(psx_hr_bus_callbacks[store][width==4u?2u:width==2u?1u:0u]);
+static inline void psx_headroom_bus_width(uint64_t (*counts)[3], unsigned store, uint32_t width) {
+    if(counts && store<2u && (width==1u || width==2u || width==4u))
+        PSX_HR_INC(counts[store][width==4u?2u:width==2u?1u:0u]);
+    (void)counts;
     (void)store;(void)width;
 }
+static inline void psx_headroom_bus_callback(unsigned store, uint32_t width) {
+    psx_headroom_bus_width(psx_hr_bus_callbacks,store,width);
+}
 #if (defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS) || \
-    defined(PSX_COSIM) || defined(PSX_OVERLAY_DLL_BUILD)
+    defined(PSX_COSIM)
 #define PSX_HR_CUSTOM_BUS_CALLBACK(actual, canonical, store, width) ((void)0)
+#elif defined(PSX_OVERLAY_DLL_BUILD)
+/* Function identities belong to the executable, not a DLL-local shim. The
+ * existing overlay callback table supplies these and the host counter bridge. */
+extern uint32_t (*g_psx_overlay_psx_read_word)(uint32_t);
+extern uint16_t (*g_psx_overlay_psx_read_half)(uint32_t);
+extern uint8_t (*g_psx_overlay_psx_read_byte)(uint32_t);
+extern void (*g_psx_overlay_psx_write_word)(uint32_t,uint32_t);
+extern void (*g_psx_overlay_psx_write_half)(uint32_t,uint16_t);
+extern void (*g_psx_overlay_psx_write_byte)(uint32_t,uint8_t);
+#if defined(_WIN32)
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
+#endif
+void psx_overlay_note_bus_callback(unsigned store,uint32_t width);
+#define PSX_HR_CUSTOM_BUS_CALLBACK(actual, canonical, store, width) do { \
+    if ((actual) != g_psx_overlay_##canonical) \
+        psx_overlay_note_bus_callback((store), (width)); \
+} while (0)
 #else
 #define PSX_HR_CUSTOM_BUS_CALLBACK(actual, canonical, store, width) do { \
     if ((actual) != (canonical)) psx_headroom_bus_callback((store), (width)); \

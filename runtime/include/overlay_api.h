@@ -129,8 +129,9 @@
  * v33: guarded load/store effective-address adapter on the master layout.
  * v34: frozen, activation-only immediate selectors on the v33 layout.
  * v35: append native replacement forwarding to v34; old X6 v31 and
- *      experimental v32 caches remain incompatible. */
-#define PSX_OVERLAY_ABI_VERSION 35
+ *      experimental v32 caches remain incompatible.
+ * v36: host canonical bus identities and shared callback-width counters. */
+#define PSX_OVERLAY_ABI_VERSION 36
 
 /* Process-lifetime overlay candidate capacity.  Every accepted manifest F
  * record consumes one slot, even when another DLL carries an identical
@@ -398,6 +399,17 @@ typedef struct OverlayCallbacks {
     uint32_t (*mod_immediate_select)(uint32_t group);
     /* Native function replacements (ABI v35). */
     int (*mod_try_function_replacement)(CPUState *cpu, uint32_t address);
+    /* Host-owned callback dispatch accounting (ABI v36). These identities let
+     * DLL fallback paths distinguish canonical helpers from custom callbacks.
+     * The same host array feeds retained per-frame history; NULL is the host
+     * counter-OFF build. Private callback internals remain outside this lane. */
+    uint32_t (*bus_read_word)(uint32_t);
+    uint16_t (*bus_read_half)(uint32_t);
+    uint8_t (*bus_read_byte)(uint32_t);
+    void (*bus_write_word)(uint32_t,uint32_t);
+    void (*bus_write_half)(uint32_t,uint16_t);
+    void (*bus_write_byte)(uint32_t,uint8_t);
+    uint64_t (*bus_callback_widths)[3];
 } OverlayCallbacks;
 
 #ifdef __cplusplus

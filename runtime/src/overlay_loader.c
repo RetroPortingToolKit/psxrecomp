@@ -2537,6 +2537,17 @@ static void init_callbacks(void) {
     /* Address of the header inline → out-of-line copy in this TU (host side). */
     s_callbacks.cpu_charge         = overlay_cpu_charge;
     s_callbacks.gte_execute          = gte_execute;
+    s_callbacks.bus_read_word=psx_read_word;
+    s_callbacks.bus_read_half=psx_read_half;
+    s_callbacks.bus_read_byte=psx_read_byte;
+    s_callbacks.bus_write_word=psx_write_word;
+    s_callbacks.bus_write_half=psx_write_half;
+    s_callbacks.bus_write_byte=psx_write_byte;
+#if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
+    s_callbacks.bus_callback_widths=NULL;
+#else
+    s_callbacks.bus_callback_widths=psx_hr_bus_callbacks;
+#endif
     s_callbacks.psx_syscall          = psx_syscall;
     s_callbacks.psx_native_bad_entry = psx_native_bad_entry;
     s_callbacks.psx_unknown_dispatch = psx_unknown_dispatch;
