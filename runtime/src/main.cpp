@@ -21527,6 +21527,11 @@ session_reboot:
     }
 
 #if PSX_REQUIRED_HOST_PROFILES
+#if defined(PSX_ORACLE_BUILD)
+    if(net_cfg.enabled){
+        std::fprintf(stderr,"psxrecomp: this diagnostic execution backend has no qualified netplay host profile\n");return 1;
+    }
+#endif
     if(net_cfg.enabled&&!psx_host_fp_environment_set_default()){
         std::fprintf(stderr,"psxrecomp: canonical simulation FP setup failed\n");return 1;
     }
