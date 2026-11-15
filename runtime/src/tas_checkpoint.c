@@ -13,6 +13,7 @@
 #include "savestate.h"
 #include "source_stateio_identity.h"
 #include "source_tas_stateio.h"
+#include "timers.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -182,6 +183,13 @@ static int perturb(const char *field) {
         interrupts_resume_timing_set(&t);
     } else if (!strcmp(field, "sched")) {
         psx_scheduler_set_return_tcb(psx_scheduler_return_tcb() ^ 0x4u);
+    } else if (!strcmp(field, "timer2")) {
+        uint16_t counter[3], target[3];
+        uint32_t mode[3], frac[3];
+        int32_t irq_line[3];
+        timers_get_snapshot(counter, mode, target, irq_line, frac);
+        counter[2] = (uint16_t)(counter[2] + 1u);
+        timers_set_snapshot(counter, mode, target, irq_line, frac);
     } else if (!strcmp(field, "memctrl")) {
         uint32_t w[PSX_MEMORY_CONTROL_WORDS];
         memory_control_get(w);
@@ -221,7 +229,7 @@ int tas_checkpoint_resume(CPUState *cpu, const char *state_path, const char *man
         !source_tas_stateio_find_field(text, "state_sha256", want_sha, sizeof want_sha))
         return refuse(reason, reason_cap, "malformed manifest");
     if (perturb_field && *perturb_field && strcmp(perturb_field, "ram") &&
-        strcmp(perturb_field, "irq_timing") && strcmp(perturb_field, "sched") &&
+        strcmp(perturb_field, "irq_timing") && strcmp(perturb_field, "sched") && strcmp(perturb_field, "timer2") &&
         strcmp(perturb_field, "memctrl"))
         return refuse(reason, reason_cap, "unknown PSX_TAS_PERTURB_RESTORE field");
 

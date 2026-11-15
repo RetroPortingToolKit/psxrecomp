@@ -45,11 +45,12 @@ void psx_kernel_bless_note_range(uint32_t p,uint32_t n) { (void)p; (void)n; }
 void gte_canonicalize_cpu_state(CPUState* cpu) { cpu->gpr[0]=0; }
 uint32_t interrupts_get_cycles_since_vblank(void) { return 42; }
 void interrupts_set_cycles_since_vblank(uint32_t n) { (void)n; ++device_restores; }
+static uint16_t fixture_timer_counter[3];
 void timers_get_snapshot(uint16_t c[3],uint32_t m[3],uint16_t t[3],int32_t irq[3],uint32_t f[3]) {
-    memset(c,0,6); memset(m,0,12); memset(t,0,6); memset(irq,0,12); memset(f,0,12);
+    memcpy(c,fixture_timer_counter,6); memset(m,0,12); memset(t,0,6); memset(irq,0,12); memset(f,0,12);
 }
 void timers_set_snapshot(const uint16_t c[3],const uint32_t m[3],const uint16_t t[3],const int32_t irq[3],const uint32_t f[3]) {
-    (void)c;(void)m;(void)t;(void)irq;(void)f; ++device_restores;
+    memcpy(fixture_timer_counter,c,6); (void)m;(void)t;(void)irq;(void)f; ++device_restores;
 }
 #define MODULE(name) uint32_t name##_snapshot_bytes(void){return 4;} \
     void name##_snapshot_write(uint8_t* p){memset(p,0,4);} \

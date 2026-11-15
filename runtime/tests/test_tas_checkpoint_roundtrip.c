@@ -70,6 +70,8 @@ static void seed(CPUState *cpu) {
     memset(&fixture_irq_timing, 0, sizeof fixture_irq_timing);
     fixture_irq_timing.cooldown_until = 987654000u;
     fixture_irq_timing.sio_seq_seen = 9;
+    fixture_timer_counter[1] = 0x0777u;
+    fixture_timer_counter[2] = 0x1234u;
     for (uint32_t i = 0; i < PSX_MEMORY_CONTROL_WORDS; i++) fixture_memctrl[i] = 0x1F000000u + i;
     for (size_t i = 0; i < sizeof card[0]; i++) card[0][i] = (uint8_t)(i ^ 0x5Au);
 }
@@ -81,6 +83,7 @@ static void scramble(CPUState *cpu) {
     fixture_return_tcb = 0;
     memset(&fixture_irq_timing, 0, sizeof fixture_irq_timing);
     memset(fixture_memctrl, 0, sizeof fixture_memctrl);
+    memset(fixture_timer_counter, 0, sizeof fixture_timer_counter);
     s_frame_count = 0;
 }
 
@@ -187,6 +190,9 @@ int main(void) {
     set_env("PSX_TAS_PERTURB_RESTORE", "sched");
     check(resume(&cpu, state, reason) && fixture_return_tcb != TCB_BASE + 0xC0u,
           "a sched perturbation changes the restored TCB");
+    set_env("PSX_TAS_PERTURB_RESTORE", "timer2");
+    check(resume(&cpu, state, reason) && fixture_timer_counter[2] == 0x1235u &&
+          fixture_timer_counter[1] == 0x0777u, "a timer2 perturbation changes only counter 2");
     set_env("PSX_TAS_PERTURB_RESTORE", NULL);
 
     for (unsigned i = 0; i < sizeof files / sizeof files[0]; i++) remove(files[i]);
