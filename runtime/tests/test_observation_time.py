@@ -23,6 +23,8 @@ def main():
     parser.add_argument('--cmake', required=True)
     parser.add_argument('--ninja', required=True)
     parser.add_argument('--edge-assembly-only', action='store_true')
+    parser.add_argument('--clock-only', action='store_true')
+    parser.add_argument('--overlay-charge-source', type=Path)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     inc = root/'runtime/include'
@@ -30,16 +32,28 @@ def main():
         temp = Path(temp)
         (temp/'psx_observation_config.h').write_text(
             '#define PSX_OBSERVATION_WAIT_SITE(pc) ((pc) == 0x8002E6C0u)\n')
-        probe = temp/'edge_probe.c'
-        probe.write_text('#include "cpu_state.h"\nvoid emitted_common_edge(CPUState *cpu, uint32_t pc) { PSX_BLOCK_EDGE(cpu, pc); }\n')
-        asm = temp/'edge_probe.s'
-        run([args.cc, '-std=c11', '-O2', '-S', '-DPSX_NO_DEBUG_TOOLS',
-             '-DPSX_OBSERVATION_TIME=1', '-I'+str(inc), '-I'+str(temp),
-             str(probe), '-o', str(asm)])
-        assembly = asm.read_text()
-        assert 'psx_block_edge' not in assembly and 'psx_observation_delivery_pending' not in assembly, assembly
-        assert 'psx_observation_edge' in assembly, assembly
-        print('PASS O2 emitted edge contains inline policy and only conditional observation fallback')
+        # Exercise the actual callback without linking the entire overlay loader.
+        overlay_source = args.overlay_charge_source or root/'runtime/src/overlay_loader.c'
+        overlay_text = overlay_source.read_text(encoding='utf-8')
+        start = overlay_text.index('static void overlay_cpu_charge(')
+        opening = overlay_text.index('{', start)
+        end, depth = opening + 1, 1
+        while depth:
+            depth += (overlay_text[end] == '{') - (overlay_text[end] == '}')
+            end += 1
+        overlay_charge = temp/'overlay_charge_probe.h'
+        overlay_charge.write_text('#include "psx_cycles.h"\n'+overlay_text[start:end]+'\n')
+        if not args.clock_only:
+            probe = temp/'edge_probe.c'
+            probe.write_text('#include "cpu_state.h"\nvoid emitted_common_edge(CPUState *cpu, uint32_t pc) { PSX_BLOCK_EDGE(cpu, pc); }\n')
+            asm = temp/'edge_probe.s'
+            run([args.cc, '-std=c11', '-O2', '-S', '-DPSX_NO_DEBUG_TOOLS',
+                 '-DPSX_OBSERVATION_TIME=1', '-I'+str(inc), '-I'+str(temp),
+                 str(probe), '-o', str(asm)])
+            assembly = asm.read_text()
+            assert 'psx_block_edge' not in assembly and 'psx_observation_delivery_pending' not in assembly, assembly
+            assert 'psx_observation_edge' in assembly, assembly
+            print('PASS O2 emitted edge contains inline policy and only conditional observation fallback')
         if args.edge_assembly_only:
             return
         # Reuse the maintained event-boundary fixture under both policies.
@@ -48,6 +62,7 @@ def main():
                 exe = temp/f'clock-{opt}-{int(native)}.exe'
                 defs = ['-DPSX_OBSERVATION_TIME=1'] if native else []
                 run([args.cc, '-std=c11', '-O'+opt, '-DPSX_NO_DEBUG_TOOLS',
+                     '-DPSX_TEST_OVERLAY_CHARGE=1', '-include', str(overlay_charge),
                      '-I'+str(inc), '-I'+str(temp), *defs,
                      str(root/'runtime/tests/test_psx_cycle_event_boundaries.c'),
                      str(root/'runtime/src/psx_cycles.c'), '-o', str(exe)])
@@ -63,6 +78,9 @@ def main():
                  str(root/'runtime/src/psx_cycles.c'), str(root/'runtime/src/timers.c'),
                  str(root/'runtime/src/psx_video_timing.c'), '-o', str(exe)])
             run([str(exe)])
+        if args.clock_only:
+            print('PASS O0/O2 reference/native clocks, actual overlay callback and production timer differential')
+            return
         # These compile real bodies; they do not establish runtime IRQ/PCM parity.
         for source in ['interrupts.c', 'interrupts_block_audio.c', 'spu_observation_time.c']:
             run([args.cc, '-std=c11', '-O0', '-fsyntax-only', '-DPSX_NO_DEBUG_TOOLS',
