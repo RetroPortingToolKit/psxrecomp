@@ -610,6 +610,14 @@ void gpu_ws_set_nw_left_hud_packet_range(uint32_t lo, uint32_t hi);
 void gpu_ws_begin_linked_list(void);
 void gpu_ws_end_linked_list(void);
 void gpu_ws_prepass_linked_list(uint32_t start_addr);
+/* Native submission classifies the immutable packet copy as it is gathered.
+ * Finalize whole-list UI grouping before submitting those same packet bytes. */
+void gpu_ws_native_list_begin(void);
+void gpu_ws_native_list_node(uint32_t addr, uint32_t header,
+                             const uint32_t *words);
+void gpu_ws_native_list_end(void);
+void gpu_submit_gp0_node(uint32_t addr, uint32_t count,
+                          const uint32_t *words);
 void gpu_ws_validate_linked_list_header(uint32_t addr, uint32_t header);
 void gpu_ws_validate_linked_list_node(uint32_t addr, uint32_t num_words);
 void gpu_ws_restore_linked_list_rank(uint32_t rank);

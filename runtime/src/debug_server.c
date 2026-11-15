@@ -12425,6 +12425,8 @@ static void handle_dma_hold_stats(int id, const char *json)
 {
     (void)json;
     DMAGpuHoldStats st;
+    DMAGpuNativeStats native;
+    dma_debug_get_gpu_native(&native);
     uint64_t host_nodes,host_words;
     extern void dma_debug_host_draw(uint64_t*,uint64_t*);
     dma_debug_host_draw(&host_nodes,&host_words);
@@ -12432,13 +12434,19 @@ static void handle_dma_hold_stats(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":true,\"frame\":%llu,\"count\":%llu,\"held_cycles\":%llu,"
              "\"host_us\":%llu,\"words\":%llu,\"steps\":%llu,\"exc_count\":%llu,"
              "\"exc_held_cycles\":%llu,\"exc_host_us\":%llu,"
-             "\"host_draw_nodes\":%llu,\"host_draw_words\":%llu}",
+             "\"host_draw_nodes\":%llu,\"host_draw_words\":%llu,"
+             "\"native_lists\":%llu,\"native_nodes\":%llu,\"native_words\":%llu,"
+             "\"native_direct_words\":%llu,\"native_service_requests\":%llu,"
+             "\"native_fallbacks\":%llu}",
              id, (unsigned long long)s_frame_count,
              (unsigned long long)st.count, (unsigned long long)st.held_cycles,
              (unsigned long long)st.host_us, (unsigned long long)st.words,
              (unsigned long long)st.steps, (unsigned long long)st.exc_count,
              (unsigned long long)st.exc_held_cycles, (unsigned long long)st.exc_host_us,
-             (unsigned long long)host_nodes,(unsigned long long)host_words);
+             (unsigned long long)host_nodes,(unsigned long long)host_words,
+             (unsigned long long)native.lists, (unsigned long long)native.nodes,
+             (unsigned long long)native.words, (unsigned long long)native.direct_words,
+             (unsigned long long)native.service_requests, (unsigned long long)native.fallbacks);
 }
 
 /* dma_hold_ring: newest `count` held kicks (default 256, max ring cap),

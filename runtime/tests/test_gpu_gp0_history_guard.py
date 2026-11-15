@@ -231,6 +231,8 @@ uint64_t psx_cycle_count = 0;
 uint32_t g_debug_last_store_pc = 0x80012340u;
 uint32_t g_psx_ram_size = 0x00200000u;
 uint32_t g_psx_ram_mask = 0x001FFFFFu;
+int gte_nclip_zero_positive(int32_t mac0, uint32_t pc)
+{ (void)mac0; (void)pc; return 0; }
 void psx_video_timing_set_pal(int pal) { (void)pal; }
 GrBackend gr_backend(void) { return GR_BACKEND_SOFTWARE; }
 int gl_renderer_texture_banks_supported(void) { return 0; }
