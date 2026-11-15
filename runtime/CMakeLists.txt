@@ -612,6 +612,13 @@ if(BUILD_TESTING)
                 --sdl-root "${PSX_GL_READBACK_SDL_ROOT}"
                 --output "${CMAKE_CURRENT_BINARY_DIR}/gl-display-history-results")
         set_tests_properties(gl_display_history_test PROPERTIES LABELS "gpu;opengl;hardware" TIMEOUT 180)
+        add_test(NAME gl_presentation_rate_test
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_readback_region.py"
+                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_presentation_rate.c"
+                --compiler-bin "${PSX_GL_READBACK_COMPILER_BIN}"
+                --sdl-root "${PSX_GL_READBACK_SDL_ROOT}"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-presentation-rate-results")
+        set_tests_properties(gl_presentation_rate_test PROPERTIES LABELS "gpu;opengl;hardware" TIMEOUT 180)
     else()
         message(STATUS "gl_readback_region_test: not registered (requires MinGW, SDL3 headers/static library in PSX_GL_READBACK_SDL_ROOT and gcc.exe/g++.exe in PSX_GL_READBACK_COMPILER_BIN)")
     endif()
