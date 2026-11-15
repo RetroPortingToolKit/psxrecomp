@@ -8352,34 +8352,6 @@ static void handle_rewind_status(int id, const char *json)
              (unsigned)psx_rewind_snap_count());
 }
 
-/* Explicit scripted lifecycle operations use the same entry points as the
- * local panel. Ordinary observation remains the read-only status command. */
-static void handle_rewind_control(int id, const char *json)
-{
-    char op[16];
-    int ok = 1;
-    if (!json_get_str(json, "op", op, sizeof op)) {
-        send_err(id, "missing op"); return;
-    }
-    if (!strcmp(op, "open")) {
-        if (!psx_rewind_is_open()) ok = psx_rewind_toggle();
-    } else if (!strcmp(op, "close")) {
-        if (psx_rewind_is_open()) ok = psx_rewind_cancel();
-    } else if (!strcmp(op, "move")) {
-        int delta = json_get_int(json, "delta", 0);
-        if (delta < -200) delta = -200;
-        if (delta > 200) delta = 200;
-        ok = psx_rewind_is_open() && psx_rewind_snap_count() != 0;
-        if (ok) psx_rewind_move(delta);
-    } else if (!strcmp(op, "accept")) {
-        ok = psx_rewind_accept();
-    } else {
-        send_err(id, "op must be open|close|move|accept"); return;
-    }
-    if (!ok) { send_err(id, "rewind operation unavailable"); return; }
-    handle_rewind_status(id, json);
-}
-
 static void handle_overlay_status(int id, const char *json)
 {
     int open, slot, unavailable;
@@ -16806,7 +16778,6 @@ static const CmdEntry s_commands[] = {
     { "press",             handle_press },
     { "pad_status",        handle_pad_status },
     { "rewind_status",     handle_rewind_status },
-    { "rewind_control",    handle_rewind_control },
     { "overlay_status",    handle_overlay_status },
     { "overlay_image",     handle_overlay_image },
     { "clear_input",       handle_clear_input },
