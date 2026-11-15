@@ -1167,7 +1167,7 @@ extern "C" int pgxp_native_import_sxy(uint32_t reg, const PGXPNativeWord *word) 
 
 extern "C" void pgxp_native_clobber(CPUState *cpu, uint32_t gpr_mask,
                                      uint32_t gte_mask) {
-    if (!cpu || s_suppress != 0) return;
+    if (!cpu || !g_pgxp_active) return;
     flush_plain_writes();
     psx_pgxp_plain_mask &= ~gpr_mask;
     for (uint32_t r = 1; r < 32u; ++r) {

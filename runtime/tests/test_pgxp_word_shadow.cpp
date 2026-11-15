@@ -298,6 +298,27 @@ int main() {
     CHECK(!pgxp_native_publish_words(inputs, receipts, 2));
     CHECK(!pgxp_native_import_sxy(14, &receipts[0]));
     check_attributes(new_generation, capture(Address, Packed));
+    // Disabled native clobbers follow the same active gate as full hooks:
+    // do not revive generation-invalid shadows merely by resetting a slot.
+    pgxp_set_source_tracking(0); pgxp_set_enabled(0);
+    machine.gpr[5] = Packed; machine.gte_data[16] = 321;
+    pgxp_native_clobber(&machine, 1u << 5, 1u << 16);
+    CHECK(pgxp_debug_shadow(1, 5, &live, &value, &flags, &sx, &sy, &sz) && !live);
+    CHECK(pgxp_debug_shadow(2, 16, &live, &value, &flags, &sx, &sy, &sz) && !live);
+    // Source-only recording is active even with visual precision disabled.
+    CHECK(pgxp_set_source_tracking(1));
+    CHECK(pgxp_tag_word_source(Address, Packed, 919));
+    psx_pgxp_load(&machine, 0x8C250000u, Address, Packed); // lw a1,0(at)
+    pgxp_suppress_begin(); machine.gpr[5] = Packed ^ 1u;
+    pgxp_native_clobber(&machine, 1u << 5, 0);
+    pgxp_suppress_end(); machine.gpr[5] = Packed;
+    psx_pgxp_store(&machine, 0xAC250000u, Other, Packed);
+    CHECK(pgxp_load_source(Other, Packed) == 919); // suppression preserves lineage
+    pgxp_native_clobber(&machine, 1u << 5, 1u << 16);
+    psx_pgxp_store(&machine, 0xAC250000u, Other, Packed);
+    CHECK(pgxp_load_source(Other, Packed) == 0); // active native overwrite ends it
+    CHECK(pgxp_debug_shadow(2, 16, &live, &value, &flags, &sx, &sy, &sz));
+    CHECK(live && value == 321 && flags == 0);
     gpu_bytes = 0; // pages retained on the host are not guest allocations
     CHECK(!pgxp_capture_word_shadow(Arena, Packed, &refused));
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");
