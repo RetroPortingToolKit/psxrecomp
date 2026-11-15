@@ -260,11 +260,11 @@ std::string CodeGenerator::translate_sw(uint32_t instr, const std::string& memor
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
-    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); cpu->write_word({}, {});", memory_addr, reg_name(rt));
+    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); PSX_STORE_WORD(cpu, {}, {});", memory_addr, reg_name(rt));
     if (offset == 0) {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_word({}, {});", reg_name(rs), reg_name(rt));
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_WORD(cpu, {}, {});", reg_name(rs), reg_name(rt));
     } else {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_word({} + {}, {});",
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_WORD(cpu, {} + {}, {});",
                           reg_name(rs), offset, reg_name(rt));
     }
 }
@@ -533,11 +533,11 @@ std::string CodeGenerator::translate_sb(uint32_t instr, const std::string& memor
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
-    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); cpu->write_byte({}, (uint8_t){});", memory_addr, reg_name(rt));
+    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); PSX_STORE_BYTE(cpu, {}, (uint8_t){});", memory_addr, reg_name(rt));
     if (offset == 0) {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_byte({}, (uint8_t){});", reg_name(rs), reg_name(rt));
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_BYTE(cpu, {}, (uint8_t){});", reg_name(rs), reg_name(rt));
     } else {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_byte({} + {}, (uint8_t){});",
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_BYTE(cpu, {} + {}, (uint8_t){});",
                           reg_name(rs), offset, reg_name(rt));
     }
 }
@@ -547,11 +547,11 @@ std::string CodeGenerator::translate_sh(uint32_t instr, const std::string& memor
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
-    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t){});", memory_addr, reg_name(rt));
+    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {}, (uint16_t){});", memory_addr, reg_name(rt));
     if (offset == 0) {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t){});", reg_name(rs), reg_name(rt));
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {}, (uint16_t){});", reg_name(rs), reg_name(rt));
     } else {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_half({} + {}, (uint16_t){});",
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {} + {}, (uint16_t){});",
                           reg_name(rs), offset, reg_name(rt));
     }
 }
@@ -1726,12 +1726,12 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
             int16_t offset = get_imm16(instr);
             std::string store_pc = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr));
             if (!memory_addr.empty())
-                return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
+                return store_pc + fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
                                    memory_addr, reg_name(rt), comment);
             if (offset == 0)
-                return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
+                return store_pc + fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
                                    reg_name(rs), reg_name(rt), comment);
-            return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_half({} + {}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
+            return store_pc + fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {} + {}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
                                reg_name(rs), offset, reg_name(rt), comment);
         } else if (!config_.overlay_mode) {
             fmt::print(stderr, "ERROR: [widescreen.backdrop] x site 0x{:08X} is not "
@@ -1868,10 +1868,10 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
             : std::string(reg_name(rs));
         std::string store_pc = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr));
         if (opcode == 0x28)  // sb
-            return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_byte({0}, (uint8_t)psx_game_option_store({0}, (int){1}));{2}",
+            return store_pc + fmt::format("psx_store_cycle_barrier(); PSX_STORE_BYTE(cpu, {0}, (uint8_t)psx_game_option_store({0}, (int){1}));{2}",
                                aexpr, reg_name(rt), comment);
         if (opcode == 0x29)  // sh
-            return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_half({0}, (uint16_t)psx_game_option_store({0}, (int){1}));{2}",
+            return store_pc + fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {0}, (uint16_t)psx_game_option_store({0}, (int){1}));{2}",
                                aexpr, reg_name(rt), comment);
         fmt::print(stderr, "ERROR: [persist_options] init site 0x{:08X} is not sb/sh "
                    "(opcode 0x{:02X})\n", addr, opcode);
@@ -2095,7 +2095,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                         : fmt::format("{} + {}", reg_name(rs), offset);
                     code = gte_stall + swc2_store_pc + fmt::format(
                         "{{ uint32_t _pgxa = {}; uint32_t _pgxv = {}; "
-                        "psx_store_cycle_barrier(); cpu->write_word(_pgxa, _pgxv); "
+                        "psx_store_cycle_barrier(); PSX_STORE_WORD(cpu, _pgxa, _pgxv); "
                         "gte_precision_store_word(_pgxa, {}); "
                         "PGXP_COP2(0x{:08X}u, _pgxv, _pgxa); }}  /* swc2 gte[{}], {}({}) */",
                         swc2_addr, value, rt, instr, rt, offset, reg_name(rs));
@@ -3885,7 +3885,7 @@ void CodeGenerator::emit_unaligned_helpers(std::ostream& ss, bool as_inline) con
     ss << "        case 2: word = (word & 0xFF000000u) | (rt_value >> 8); break;\n";
     ss << "        default: word = rt_value; break;\n";
     ss << "    }\n";
-    ss << "    cpu->write_word(aligned_addr, word);\n";
+    ss << "    PSX_STORE_WORD(cpu, aligned_addr, word);\n";
     ss << "}\n";
     ss << "\n";
     ss << "/* SWR: Store Word Right - stores the low bytes of rt_value into memory.\n";
@@ -3902,7 +3902,7 @@ void CodeGenerator::emit_unaligned_helpers(std::ostream& ss, bool as_inline) con
     ss << "        case 2: word = (word & 0x0000FFFFu) | (rt_value << 16); break;\n";
     ss << "        default: word = (word & 0x00FFFFFFu) | (rt_value << 24); break;\n";
     ss << "    }\n";
-    ss << "    cpu->write_word(aligned_addr, word);\n";
+    ss << "    PSX_STORE_WORD(cpu, aligned_addr, word);\n";
     ss << "}\n";
     ss << "\n";
 }
@@ -3913,6 +3913,7 @@ std::string CodeGenerator::build_shared_decls_header(const std::vector<Generated
     h << "/* Generated by PSXRecomp - shared declarations for split full.c shards. DO NOT EDIT. */\n";
     h << "#pragma once\n";
     h << "#include \"psx_runtime.h\"\n\n";
+    h << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n\n";
     emit_runtime_externs(h);
     emit_unaligned_helpers(h, /*as_inline=*/true);
     if (!gen_funcs.empty()) {
@@ -3937,7 +3938,7 @@ std::string CodeGenerator::generate_file(
     // Include the generic PSX runtime header.
     // This provides CPUState, GTE/trap declarations, and call_by_address().
     ss << "#include \"psx_runtime.h\"\n\n";
-    ss << "#include \"psx_native_span.h\"\n\n";
+    ss << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n\n";
     emit_runtime_externs(ss);
     emit_unaligned_helpers(ss, /*as_inline=*/false);
 

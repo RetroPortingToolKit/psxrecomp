@@ -7,6 +7,7 @@
 
 static uint8_t ram[PSX_MAIN_RAM_BACKING_BYTES];
 uint8_t *g_psx_ram = ram;
+PSXDirectMemoryStats g_psx_direct_memory_stats;
 uint32_t g_psx_ram_mask = PSX_MAIN_RAM_RETAIL_BYTES - 1u;
 int g_ls_mode, g_ls_replay_active, g_event_step_conservative;
 volatile int g_ds_recording;

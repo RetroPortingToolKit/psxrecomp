@@ -11,7 +11,7 @@
 
 static PSX_BSS ParityEntry s_ring[PARITY_RING_CAP];
 static uint64_t    s_seq      = 0;
-static uint32_t    s_armed    = 0;
+uint32_t g_parity_trace_armed = 0;
 static uint32_t    s_frozen   = 0;
 
 static uint32_t    s_watched_tcb   = 0;
@@ -60,7 +60,7 @@ void parity_trace_config(uint32_t watched_tcb, uint32_t trigger_target,
     s_rseq = 0;
 }
 
-void parity_trace_arm(int on)        { s_armed = on ? 1u : 0u; }
+void parity_trace_arm(int on)        { g_parity_trace_armed = on ? 1u : 0u; }
 void parity_trace_reset(void)        {
     s_seq = 0; s_frozen = 0; memset(s_ring, 0, sizeof(s_ring));
     s_rseq = 0; memset(s_rring, 0, sizeof(s_rring));
@@ -69,7 +69,7 @@ void parity_trace_reset(void)        {
     }
     s_last_current_tcb = 0;
 }
-int  parity_trace_is_armed(void)     { return (int)s_armed; }
+int  parity_trace_ig_parity_trace_armed(void)     { return (int)g_parity_trace_armed; }
 int  parity_trace_is_frozen(void)    { return (int)s_frozen; }
 uint64_t parity_trace_total(void)    { return s_seq; }
 
@@ -91,7 +91,7 @@ void parity_trace_record(parity_kind_t kind, uint32_t pc, uint32_t ra,
                          uint32_t sp, uint32_t target,
                          parity_read_word_fn read_word, void* ctx)
 {
-    if (!s_armed || s_frozen || !read_word) return;
+    if (!g_parity_trace_armed || s_frozen || !read_word) return;
 
     /* current TCB = *(*(0x108)) — the PSX kernel TCBH chain. */
     uint32_t tcbh = read_word(ctx, 0x00000108u);
@@ -135,7 +135,7 @@ void parity_trace_record(parity_kind_t kind, uint32_t pc, uint32_t ra,
 
 void parity_trace_note_write(uint32_t addr, uint32_t width, uint32_t writer_pc)
 {
-    if (!s_armed || s_frozen) return;
+    if (!g_parity_trace_armed || s_frozen) return;
     uint32_t pa    = addr & 0x1FFFFFFFu;
     uint32_t pa_hi = pa + (width ? width : 1u);
     for (int i = 0; i < s_watch_count; i++) {
@@ -152,7 +152,7 @@ void parity_trace_note_write(uint32_t addr, uint32_t width, uint32_t writer_pc)
 
 void parity_trace_note_read(uint32_t addr, uint32_t value, uint32_t reader_pc)
 {
-    if (!s_armed || s_frozen) return;
+    if (!g_parity_trace_armed || s_frozen) return;
     uint32_t pa = addr & 0x1FFFFFFFu;
     for (int i = 0; i < s_watch_count; i++) {
         if (!s_watch[i]) continue;

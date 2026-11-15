@@ -89,6 +89,12 @@ static inline void psx_store_cycle_barrier(void) { overlay_flush_cycles(); }
 static inline void psx_store_cycle_barrier(void) { }
 #endif
 
+/* Generated stores keep one portable callback contract. Native span builds
+ * may replace these macros after the shared declarations have been included. */
+#define PSX_STORE_WORD(cpu, addr, value) ((cpu)->write_word((addr), (value)))
+#define PSX_STORE_HALF(cpu, addr, value) ((cpu)->write_half((addr), (value)))
+#define PSX_STORE_BYTE(cpu, addr, value) ((cpu)->write_byte((addr), (value)))
+
 /* Faithful exception-return (fix B) — defined in runtime/src/interrupts.c. The
  * interrupted-thread resume PC is the REAL guest PC, stored in COP0.EPC and (by the
  * BIOS handler) in the thread's TCB EPC slot — never a sentinel, never a single

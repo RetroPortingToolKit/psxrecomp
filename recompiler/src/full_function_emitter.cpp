@@ -2648,7 +2648,7 @@ EmitStats FullFunctionEmitter::emit(
     full_c += fmt::format("#define psx_dispatch      {}psx_dispatch\n", g_sym_prefix);
     full_c += fmt::format("#define psx_dispatch_call {}psx_dispatch_call\n\n", g_sym_prefix);
     full_c += "#include \"cpu_state.h\"\n\n";
-    full_c += "#include \"psx_native_span.h\"\n\n";
+    full_c += "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n\n";
 
     // Forward declare psx_dispatch, psx_unknown_dispatch, and interrupt check.
     full_c += "extern void psx_dispatch(CPUState* cpu, uint32_t addr);\n";

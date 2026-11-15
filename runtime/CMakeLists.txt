@@ -55,6 +55,15 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME psx_${_span_mode}_span_test COMMAND psx_${_span_mode}_span_test)
     endforeach()
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        find_package(Python3 COMPONENTS Interpreter)
+        if(Python3_Interpreter_FOUND)
+            add_test(NAME direct_guest_memory
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_direct_guest_memory.py
+                    --cc ${CMAKE_C_COMPILER})
+        endif()
+    endif()
     add_executable(audio_sync_target_test tests/test_audio_sync_target.c src/audio_sync.c)
     target_include_directories(audio_sync_target_test PRIVATE include)
     add_test(NAME audio_sync_target_test COMMAND audio_sync_target_test)
