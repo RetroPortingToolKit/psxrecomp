@@ -48,6 +48,7 @@ extern void iso_close(void* handle);
 /* Multi-track TOC accessors (CD-DA / multi-track discs). track is 1-based. */
 extern int iso_cdda_track_count(void* handle);
 extern int iso_track_count(void* handle);
+extern int iso_track_is_audio(void* handle, int track);
 extern uint32_t iso_cdda_track_start_lba(void* handle, int track);
 extern uint32_t iso_cdda_track_pregap_lba(void* handle, int track);
 extern int iso_cdda_track_is_audio(void* handle, int track);
@@ -2106,6 +2107,24 @@ static int pause_complete_delay_cycles(void) {
     return (int)cycles;
 }
 
+/* Audio-only media cannot satisfy a data read. PSX-SPX ("CDROM - Error
+ * Codes"): ReadN/ReadS on an audio CD answer stat|error and error code 40h
+ * instead of starting a read. The check depends on the media only, not on
+ * the Setmode byte: a title that probes a disc with a data read to tell its
+ * own disc from a music CD (Vib-Ribbon does this with ReadS on track 1) must
+ * get the same answer whatever mode it wrote last. Mixed-mode game discs have
+ * a data track, so they keep their data path. */
+static int reject_audio_disc_data_read(void) {
+    int tracks = iso_handle ? iso_track_count(iso_handle) : 0;
+    if (tracks <= 0) return 0;
+    for (int track = 1; track <= tracks; ++track)
+        if (!iso_track_is_audio(iso_handle, track)) return 0;
+    response_push(stat_reg | CDSTAT_ERROR);
+    response_push(0x40);
+    set_irq(CDIRQ_ERROR);
+    return 1;
+}
+
 static void exec_command(uint8_t cmd) {
 #if !defined(PSX_NO_DEBUG_TOOLS) && !defined(_WIN32)
     /* Self-stop trap: PSX_CD_TRAP_CMD=<byte> makes the process SIGSTOP
@@ -2205,6 +2224,7 @@ static void exec_command(uint8_t cmd) {
             set_irq(CDIRQ_ERROR);
             break;
         }
+        if (reject_audio_disc_data_read()) break;
         if (read_continues_current_stream()) break;   /* ACKed inside */
         start_read_stream(cmd);
         response_push(stat_reg);
@@ -2532,6 +2552,7 @@ static void exec_command(uint8_t cmd) {
             set_irq(CDIRQ_ERROR);
             break;
         }
+        if (reject_audio_disc_data_read()) break;
         if (read_continues_current_stream()) break;   /* ACKed inside */
         start_read_stream(cmd);
         response_push(stat_reg);
