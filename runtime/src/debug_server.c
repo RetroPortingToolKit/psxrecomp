@@ -21,6 +21,7 @@
 #include "host_launch_timing.h"
 #include "host_sampler.h"
 #include "psx_static_calls.h"
+#include "psx_direct_memory.h"
 #include "savestate.h"
 #include "host_span_ring.h"
 #include "guest_cycle_profile.h"
@@ -5567,24 +5568,59 @@ static void handle_host_profile(int id, const char *json)
     free(buf);
 }
 
-/* Raw form of the existing host-profile history. Schema 2 is portable little
- * endian: rva:u64, frame:u32, in_pass:u32, guest_pc:u32, flags:u32. */
 static void handle_static_call_stats(int id, const char *json)
 {
     (void)json;
+    extern uint64_t g_disp_tail_seq;
     PsxStaticCallStats stats;
     psx_static_call_get_stats(&stats);
     send_fmt("{\"id\":%d,\"ok\":true,\"validity_queries\":%llu,"
              "\"validity_hits\":%llu,\"validity_verifies\":%llu,"
-             "\"fast_entries\":%llu,\"fast_misses\":%llu,\"text_memcmp_calls\":%llu}",
+             "\"fast_entries\":%llu,\"fast_misses\":%llu,\"text_memcmp_calls\":%llu,\"dispatch_iterations\":%llu}",
              id, (unsigned long long)stats.validity_queries,
              (unsigned long long)stats.validity_hits,
              (unsigned long long)stats.validity_verifies,
              (unsigned long long)stats.fast_entries,
              (unsigned long long)stats.fast_misses,
-             (unsigned long long)dirty_ram_text_compare_calls());
+             (unsigned long long)dirty_ram_text_compare_calls(),
+             (unsigned long long)g_disp_tail_seq);
 }
 
+static void handle_direct_memory_stats(int id, const char *json)
+{
+    (void)json;
+    PSXDirectMemoryStats stats;
+    psx_direct_memory_get_stats(&stats);
+    send_fmt("{\"id\":%d,\"ok\":true,\"scope\":\"generated-native-span-accesses\",\"widths\":\"byte-half-word\","
+             "\"load_inline_ram\":%llu,"
+             "\"load_inline_scratch\":%llu,"
+             "\"load_helper_ram\":%llu,"
+             "\"load_helper_scratch\":%llu,"
+             "\"load_helper_mmio\":%llu,"
+             "\"load_helper_other\":%llu,"
+             "\"store_inline_ram\":%llu,"
+             "\"store_inline_scratch\":%llu,"
+             "\"store_helper_ram\":%llu,"
+             "\"store_helper_scratch\":%llu,"
+             "\"store_helper_mmio\":%llu,"
+             "\"store_helper_other\":%llu}",
+             id,
+             (unsigned long long)stats.load_inline_ram,
+             (unsigned long long)stats.load_inline_scratch,
+             (unsigned long long)stats.load_helper_ram,
+             (unsigned long long)stats.load_helper_scratch,
+             (unsigned long long)stats.load_helper_mmio,
+             (unsigned long long)stats.load_helper_other,
+             (unsigned long long)stats.store_inline_ram,
+             (unsigned long long)stats.store_inline_scratch,
+             (unsigned long long)stats.store_helper_ram,
+             (unsigned long long)stats.store_helper_scratch,
+             (unsigned long long)stats.store_helper_mmio,
+             (unsigned long long)stats.store_helper_other);
+}
+
+/* Raw form of the existing host-profile history. Schema 2 is portable little
+ * endian: rva:u64, frame:u32, in_pass:u32, guest_pc:u32, flags:u32. */
 static void handle_hr_profile_dump(int id, const char *json)
 {
     char path[512];
@@ -12490,11 +12526,18 @@ static void handle_pgxp_hook_stats(int id, const char *json)
     pgxp_get_hook_stats(&s);
     send_fmt("{\"id\":%d,\"ok\":true,\"active_only\":true,"
              "\"alu\":%llu,\"load\":%llu,\"store\":%llu,\"cop2\":%llu,"
-             "\"muldiv\":%llu,\"plain_batches\":%llu,\"plain_registers\":%llu}",
+             "\"muldiv\":%llu,\"plain_batches\":%llu,\"plain_registers\":%llu,"
+             "\"native_words_captured\":%llu,\"native_words_published\":%llu,"
+             "\"native_sxy_imports\":%llu,\"native_clobbers\":%llu,\"native_gpr_imports\":%llu}",
              id, (unsigned long long)s.alu, (unsigned long long)s.load,
              (unsigned long long)s.store, (unsigned long long)s.cop2,
              (unsigned long long)s.muldiv, (unsigned long long)s.plain_batches,
-             (unsigned long long)s.plain_registers);
+             (unsigned long long)s.plain_registers,
+             (unsigned long long)s.native_words_captured,
+             (unsigned long long)s.native_words_published,
+             (unsigned long long)s.native_sxy_imports,
+             (unsigned long long)s.native_clobbers,
+             (unsigned long long)s.native_gpr_imports);
 }
 
 static void handle_dma_hold_stats(int id, const char *json)
@@ -16621,6 +16664,7 @@ static const CmdEntry s_commands[] = {
     { "host_profile",      handle_host_profile },
     { "hr_profile_dump",   handle_hr_profile_dump },
     { "static_call_stats", handle_static_call_stats },
+    { "direct_memory_stats", handle_direct_memory_stats },
     { "host_span_ring",    handle_host_span_ring },
     { "frame_wall_ring",   handle_frame_wall_ring },
     { "pgxp_miss_ring",    handle_pgxp_miss_ring },
