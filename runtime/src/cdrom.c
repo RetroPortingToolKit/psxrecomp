@@ -3332,6 +3332,16 @@ int cdrom_data_read_active(void) {
     return reading && !xa_stream_active;
 }
 
+/* Fast Loading inputs: the drive is delivering data sectors now, not
+ * XA-ADPCM audio (mode bit 6 on or an XA stream decoding) and not CD-DA. */
+int cdrom_data_load_read_now(void) {
+    return reading && !xa_stream_active && !(mode_reg & 0x40) && !cdda_playing;
+}
+
+int cdrom_xa_mode_enabled(void) {
+    return (mode_reg & 0x40) != 0;
+}
+
 int cdrom_resident_complete_read(uint32_t lba, uint32_t sectors,
     const uint8_t* last_user_data, int (*commit)(void*), void* context) {
     uint8_t raw[RAW_SECTOR_SIZE];

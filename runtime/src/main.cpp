@@ -26,6 +26,7 @@
 #include "device_trace.h"    /* general two-process device-event cycle ring */
 #include "psx_interpreter.h"
 #include "cdrom.h"
+#include "turbo_loads_gate.h"
 #include "fntrace.h"
 #include "render_pass_projection.h"
 #include "text_xlate.h"
@@ -2895,11 +2896,11 @@ static int g_turbo_audio_sink_config_enabled = 0;
  * a symmetric release debounce rides through tiny late-sector/IRQ gaps. This
  * changes host presentation/pacing only; guest cycles and input sampling keep
  * advancing normally. */
-#define TURBO_LOADS_ENGAGE_FRAMES  4
 #define TURBO_LOADS_RELEASE_FRAMES 6
 /* Zero multiplier retains the historical uncapped turbo behavior. */
 static int g_turbo_load_wall_multiplier = 0;
 static int g_turbo_load_release_frames = TURBO_LOADS_RELEASE_FRAMES;
+static bool g_fast_loading_optout = false;   /* game.toml [runtime] fast_loading_optout */
 static SDL_AudioDeviceID sdl_audio_device;
 static uint64_t audio_host_closes, audio_stream_clears, audio_bridge_inits;
 static void audio_clear_tracked(SDL_AudioDeviceID device) {
@@ -9675,31 +9676,28 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     int logical_load_active = fntrace_is_game_started() &&
         (cdrom_load_in_progress() || cdrom_savestate_cd_wait_active());
     int load_run_value = 0;
-    static int load_run = 0;
-    static int release_run = 0;
+    static TurboLoadsGate s_turbo_gate;
     if (g_turbo_loads_enabled && !psx_netplay_active() &&
         !psx_selfcheck_resim_active()) {
-        /* Require a short sustained predicate on entry, then retain turbo over
-         * a short false gap after it has engaged. Netplay / selfcheck keep
-         * wall-pacing off via their own gates; turbo engage hysteresis must
-         * not leak host ambient across resim passes. */
-        if (logical_load_active) {
-            if (load_run < (1 << 20)) load_run++;
-            if (load_run >= TURBO_LOADS_ENGAGE_FRAMES || release_run > 0) {
-                turbo_loads_active = 1;
-                release_run = g_turbo_load_release_frames;
-            }
-        } else {
-            load_run = 0;
-            if (release_run > 0) {
-                turbo_loads_active = 1;
-                release_run--;
-            }
-        }
-        load_run_value = load_run;
+        /* Engage only for sustained data loads (turbo_loads_gate.h). The old
+         * rule engaged on any read held for 4 vblanks plus the burst tail, so
+         * short reads while the player has control ran accelerated with few
+         * presents. XA-ADPCM streaming, CD-DA and FMV (24-bit display) never
+         * count. Netplay / selfcheck keep wall-pacing off via their own gates;
+         * the gate state must not leak host ambient across resim passes. */
+        const int started = fntrace_is_game_started();
+        const int media = gpu_display_is_depth24();
+        const int data_read = started && !media && cdrom_data_load_read_now();
+        const int load_hold = started && !media && cdrom_load_in_progress() &&
+                              !cdrom_xa_mode_enabled();
+        if (started && cdrom_savestate_cd_wait_active())
+            turbo_loads_active = 1;   /* post-load CD wait: unchanged */
+        else
+            turbo_loads_active = turbo_loads_gate_step(&s_turbo_gate, data_read, load_hold,
+                                                       g_turbo_load_release_frames);
+        load_run_value = turbo_loads_gate_window_reads(&s_turbo_gate);
     } else {
-        load_run = 0;
-        release_run = 0;
+        turbo_loads_gate_reset(&s_turbo_gate);
     }
     /* HLE boot-skip window: from reset until the game entry PC first
      * dispatches, run unpaced so the (shell-skipped) BIOS kernel init +
@@ -18170,6 +18168,7 @@ int main(int argc, char** argv) {
             }
             if (!gc.discs.empty()) resolved_disc = gc.discs.front();
             if (gc.runtime.has_memcard_dir)  memcard_dir   = gc.runtime.memcard_dir;
+            g_fast_loading_optout = gc.runtime.fast_loading_optout;
             if (gc.runtime.has_window_title) window_title  = gc.runtime.window_title;
             if (gc.runtime.has_debug_port)   debug_port    = gc.runtime.debug_port;
             /* On-the-fly string translation / localization (framework feature —
@@ -20486,7 +20485,10 @@ int main(int argc, char** argv) {
             if (g_mod_controller_mode_override[i] >= 0)
                 player_mode[i] = g_mod_controller_mode_override[i];
         }
-        if (g_mod_load_wall_multiplier >= 0) {
+        if (g_mod_load_wall_multiplier >= 0 && g_fast_loading_optout) {
+            std::fprintf(stdout, "psxrecomp: Fast Loading is off for this title "
+                         "(game.toml [runtime] fast_loading_optout)\n");
+        } else if (g_mod_load_wall_multiplier >= 0) {
             g_turbo_loads_enabled = 1;
             g_turbo_load_wall_multiplier = g_mod_load_wall_multiplier;
             g_turbo_load_release_frames = g_mod_load_release_frames;

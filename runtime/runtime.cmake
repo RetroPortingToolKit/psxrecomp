@@ -485,6 +485,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/cue_sheet.cpp
     ${PSXRECOMP_ROOT}/runtime/src/disc_path.cpp
     ${PSXRECOMP_ROOT}/runtime/src/cdrom.c
+    ${PSXRECOMP_ROOT}/runtime/src/turbo_loads_gate.c
     ${PSXRECOMP_ROOT}/runtime/src/spu.c
     ${PSXRECOMP_ROOT}/runtime/src/spu_shadow.c
     ${PSXRECOMP_ROOT}/runtime/src/audio_shadow.c
