@@ -193,7 +193,7 @@ typedef struct {
 void dma_debug_get_gpu_hold(DMAGpuHoldStats *out_stats,
                             const DMAGpuHoldEntry **out_ring);
 typedef struct {
-    uint64_t lists, nodes, words, direct_words, service_requests, fallbacks;
+    uint64_t lists, nodes, words, direct_words, observed_words, service_requests, fallbacks;
 } DMAGpuNativeStats;
 void dma_debug_get_gpu_native(DMAGpuNativeStats *out);
 

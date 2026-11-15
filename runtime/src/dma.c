@@ -982,14 +982,14 @@ static int submit_native_gpu_linked_list(void) {
     extern int g_ls_mode, g_ram_read_watch_active;
     extern volatile int g_ds_recording;
     extern uint8_t *memory_get_ram_ptr(void);
-    /* Precise diagnostic reads and speculative rendering keep their existing
-     * paths. No player-facing runtime backend selector is introduced. */
+    /* Non-authoritative replays/frozen passes retain their existing transaction
+     * path. Observing a live operation must not change its simulation model. */
     if (gpu_linked_list.active || psx_in_device_service || g_ls_replay_active ||
-        g_psx_guest_time_frozen || g_event_step_conservative ||
-        g_ls_mode || g_ds_recording || g_ram_read_watch_active) {
+        g_psx_guest_time_frozen) {
         s_native_stats.fallbacks++;
         return 0;
     }
+    const int observed = g_ls_mode || g_ds_recording || g_ram_read_watch_active;
     const uint64_t cyc0 = psx_cycle_count, host0 = hold_host_ticks();
     const uint8_t *ram = memory_get_ram_ptr();
     const uint32_t head = psx_mod_gpu_dma_resolve_address(channels[2].madr);
@@ -1001,7 +1001,8 @@ static int submit_native_gpu_linked_list(void) {
     gpu_ws_native_list_begin();
     while (node_count < max_nodes) {
         address = psx_mod_gpu_dma_resolve_address(address);
-        const uint32_t header = native_list_read(address, ram);
+        const uint32_t header = observed ? gpu_ll_read_word(NULL, address)
+                                          : native_list_read(address, ram);
         const uint32_t count = header >> 24;
         NativeGpuNode *nodes = (NativeGpuNode *)native_list_reserve(s_native_nodes,
             &s_native_node_capacity, node_count + 1u, sizeof *s_native_nodes);
@@ -1010,16 +1011,24 @@ static int submit_native_gpu_linked_list(void) {
             &s_native_word_capacity, word_count + count + 1u, sizeof *s_native_words);
         if (words) s_native_words = words;
         if (!nodes || !words) {
-            s_native_stats.fallbacks++;
-            return 0; /* No renderer commands or guest effects were published. */
+            /* Allocation pressure cannot silently select another timing model
+             * on just one peer. No draws/effects have been published yet. */
+            psx_fatal_halt("Native GPU submission allocation failed");
+            return 1;
         }
         NativeGpuNode *node = &s_native_nodes[node_count++];
         node->address = address;
         node->header = header;
         node->offset = word_count;
-        for (uint32_t i = 0; i < count; ++i) {
-            const uint32_t source = psx_mod_gpu_dma_resolve_address(address + 4u + i * 4u);
-            s_native_words[word_count + i] = native_list_read(source, ram);
+        if (observed) {
+            for (uint32_t i = 0; i < count; ++i)
+                s_native_words[word_count + i] = gpu_ll_read_word(NULL,
+                    psx_mod_gpu_dma_resolve_address(address + 4u + i * 4u));
+        } else {
+            for (uint32_t i = 0; i < count; ++i) {
+                const uint32_t source = psx_mod_gpu_dma_resolve_address(address + 4u + i * 4u);
+                s_native_words[word_count + i] = native_list_read(source, ram);
+            }
         }
         gpu_ws_native_list_node(address, header, s_native_words + word_count);
         if (native_list_host_node(address, s_native_words + word_count, count)) {
@@ -1065,7 +1074,8 @@ static int submit_native_gpu_linked_list(void) {
     s_native_stats.lists++;
     s_native_stats.nodes += node_count;
     s_native_stats.words += word_count + node_count;
-    s_native_stats.direct_words += word_count + node_count;
+    if (observed) s_native_stats.observed_words += word_count + node_count;
+    else s_native_stats.direct_words += word_count + node_count;
     psx_advance_cycles(cycles);
     psx_devices_service_to_now();
     s_native_stats.service_requests++;

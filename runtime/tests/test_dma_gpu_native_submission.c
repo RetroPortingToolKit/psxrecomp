@@ -6,6 +6,22 @@
 #undef psx_read_word
 #undef main
 
+#include <setjmp.h>
+#include <stdlib.h>
+
+static int fail_allocation, expect_allocation_halt;
+static jmp_buf allocation_halt;
+/* Only production modules rename realloc; the fixture calls the real CRT. */
+void *fixture_realloc(void *p, size_t bytes) {
+    return fail_allocation ? NULL : realloc(p, bytes);
+}
+void psx_fatal_halt(const char *reason) {
+    if (expect_allocation_halt && strstr(reason, "allocation failed"))
+        longjmp(allocation_halt, 1);
+    fprintf(stderr, "Unexpected halt: %s\n", reason);
+    abort();
+}
+
 int g_ls_mode, g_ram_read_watch_active;
 volatile int g_ds_recording;
 static uint64_t helper_reads, native_nodes;
@@ -47,6 +63,29 @@ int main(void) {
     const DMAGpuHoldEntry *last = &ring[(hold.count - 1u) & (DMA_GPU_HOLD_RING_CAP - 1u)];
     CHECK(last->words == 6 && last->steps == 1, "native operation retained per-word services");
 
+    /* Reading/recording diagnostics must observe the selected native operation,
+     * rather than change its simulation model to the per-word reference. */
+    for (int mode = 0; mode < 4; ++mode) {
+        dma_debug_get_gpu_native(&st);
+        const uint64_t lists0 = st.lists;
+        g_ls_mode = mode == 0;
+        g_ds_recording = mode == 1;
+        g_ram_read_watch_active = mode == 2;
+        g_event_step_conservative = mode == 3;
+        helper_reads = 0;
+        CHECK(!kick(0), "observed native kick left an active list");
+        dma_debug_get_gpu_native(&st);
+        dma_debug_get_gpu_hold(&hold, &ring);
+        last = &ring[(hold.count - 1u) & (DMA_GPU_HOLD_RING_CAP - 1u)];
+        CHECK(st.lists == lists0 + 1u && last->steps == 1u,
+              "diagnostic mode %d changed the selected native submission model", mode);
+        CHECK(psx_cycle_count == 1006u && s_gp0_n == 3u &&
+              s_gp0[0] == 0xE1000001u && s_gp0[2] == 0x01000003u,
+              "diagnostic mode %d changed native output/time", mode);
+    }
+    g_ls_mode = g_ds_recording = g_ram_read_watch_active = g_event_step_conservative = 0;
+    helper_reads = 0;
+
     /* A cyclic guest list remains bounded by the established node limit. */
     dma_init(); s_gp0_n = 0; psx_cycle_count = s_serviced_to = 1000;
     psx_next_service_cycle = UINT64_MAX;
@@ -71,6 +110,19 @@ int main(void) {
     CHECK(s_gp0_n == 2 && s_gp0[0] == 0xE1000001u && s_gp0[1] == 0xE2000002u,
           "native payload did not wrap through the live RAM geometry");
     CHECK(helper_reads == 0, "wrapped native list used helper reads");
+
+    /* Resource failure refuses the operation before effects, rather than
+     * silently changing the negotiated simulation model. */
+    fail_allocation = expect_allocation_halt = 1;
+    if (setjmp(allocation_halt) == 0) {
+        kick(0);
+        CHECK(0, "allocation failure neither halted nor refused the operation");
+    } else {
+        CHECK(s_gp0_n == 0 && psx_cycle_count == 1000u,
+              "allocation failure published draws/time before refusal");
+        CHECK(!dma_gpu_linked_list_active(), "allocation failure started the reference walker");
+    }
+    fail_allocation = expect_allocation_halt = 0;
     dma_init();
     if (failures) return 1;
     puts("PASS: native GPU submission preserves products, bounded lists and direct reads");

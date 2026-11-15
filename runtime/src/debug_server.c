@@ -12436,7 +12436,7 @@ static void handle_dma_hold_stats(int id, const char *json)
              "\"exc_held_cycles\":%llu,\"exc_host_us\":%llu,"
              "\"host_draw_nodes\":%llu,\"host_draw_words\":%llu,"
              "\"native_lists\":%llu,\"native_nodes\":%llu,\"native_words\":%llu,"
-             "\"native_direct_words\":%llu,\"native_service_requests\":%llu,"
+             "\"native_direct_words\":%llu,\"native_observed_words\":%llu,\"native_service_requests\":%llu,"
              "\"native_fallbacks\":%llu}",
              id, (unsigned long long)s_frame_count,
              (unsigned long long)st.count, (unsigned long long)st.held_cycles,
@@ -12446,6 +12446,7 @@ static void handle_dma_hold_stats(int id, const char *json)
              (unsigned long long)host_nodes,(unsigned long long)host_words,
              (unsigned long long)native.lists, (unsigned long long)native.nodes,
              (unsigned long long)native.words, (unsigned long long)native.direct_words,
+             (unsigned long long)native.observed_words,
              (unsigned long long)native.service_requests, (unsigned long long)native.fallbacks);
 }
 
