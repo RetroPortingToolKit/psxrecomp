@@ -146,9 +146,9 @@ static void observer(void){
     CHECK(np_host_gate_observer_init(&viewer,&cb,&cat,0x101,identity));
     CHECK(np_host_gate_packet(&a,&p));CHECK(np_host_gate_note(&viewer,&p,8));
     CHECK(viewer.error==NP_HOST_BAD_DATA);
-    cb.build[0]^=1;CHECK(np_host_gate_observer_init(&viewer,&cb,&cat,0x101,identity));
+    cb.build[0]^=2;CHECK(np_host_gate_observer_init(&viewer,&cb,&cat,0x101,identity));
     for(unsigned i=0;i<200&&!viewer.error;++i){np_host_gate_packet(&a,&p);np_host_gate_note(&viewer,&p,0);}
-    CHECK(viewer.error==NP_HOST_ARTIFACT);cb.build[0]^=1;
+    CHECK(viewer.error==NP_HOST_ARTIFACT);cb.build[0]^=2;
     rules[1].flags&=~PSX_HOST_PROFILE_OBSERVER;
     CHECK(np_host_gate_observer_init(&viewer,&cb,&cat,0x101,identity));
     for(unsigned i=0;i<200&&!viewer.error;++i){np_host_gate_packet(&a,&p);np_host_gate_note(&viewer,&p,0);np_host_gate_packet(&b,&p);np_host_gate_note(&viewer,&p,8);}
