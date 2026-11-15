@@ -1408,14 +1408,14 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
  * the device read executes exactly once. */
 static uint32_t mmio_read32(uint32_t addr) {
     if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 4)) return 0;
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 0);
     uint32_t v = mmio_read32_impl(addr);
     debug_server_trace_mmio_read(addr, v, 4);
     return v;
 }
 
 static void mmio_write32(uint32_t addr, uint32_t val) {
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 1);
     SHADOW_NOTE_MMIO();
     debug_server_trace_mmio_write(addr, val, 4);
     /* Memory control: 0x1F801000..0x1F801020 */
@@ -1531,14 +1531,14 @@ static uint16_t mmio_read16_impl(uint32_t addr) {
 
 static uint16_t mmio_read16(uint32_t addr) {
     if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 2)) return 0;
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 0);
     uint16_t v = mmio_read16_impl(addr);
     debug_server_trace_mmio_read(addr, (uint32_t)v, 2);
     return v;
 }
 
 static void mmio_write16(uint32_t addr, uint16_t val) {
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 1);
     SHADOW_NOTE_MMIO();
     debug_server_trace_mmio_write(addr, (uint32_t)val, 2);
     /* Memory control: 0x1F801000..0x1F80103C — halfword lane RMW. */
@@ -1651,14 +1651,14 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
 
 static uint8_t mmio_read8(uint32_t addr) {
     if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 1)) return 0;
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 0);
     uint8_t v = mmio_read8_impl(addr);
     debug_server_trace_mmio_read(addr, (uint32_t)v, 1);
     return v;
 }
 
 static void mmio_write8(uint32_t addr, uint8_t val) {
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 1);
     SHADOW_NOTE_MMIO();
     debug_server_trace_mmio_write(addr, (uint32_t)val, 1);
     /* Memory control: 0x1F801000..0x1F80103C — byte lane RMW. Tomba2's late

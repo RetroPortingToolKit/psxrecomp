@@ -354,7 +354,35 @@ static void snapshot_stream_identity(void) {
     CHECK(cdrom_get_stream_start_lba()==-1);
 }
 
+static void absolute_observation_deadlines(void) {
+    setup(); reading = 0; pending.pending = 0; pending_present_due = 0;
+    cdda_playing = 0; cdrom_lid_reset(&s_lid);
+    irq_enable = 7; irq_flag = CDIRQ_ACK; cdrom_intc_request_latched = 1;
+    CHECK(cdrom_cycles_to_internal_event() == UINT32_MAX);
+    cdrom_intc_request_latched = 0;
+    cdrom_irq_present_due = psx_cycle_count + 17;
+    CHECK(cdrom_cycles_to_internal_event() == 17);
+    psx_cycle_count += 17; cdrom_advance(17);
+    CHECK(cdrom_intc_request_latched);
+    CHECK(cdrom_cycles_to_internal_event() == UINT32_MAX);
+    cdda_playing = 1; cdda_delay = 23;
+    CHECK(cdrom_cycles_to_internal_event() == 23);
+    cdda_playing = 0;
+    s_lid.physical_open = 1; s_lid.close_due = psx_cycle_count + 41;
+    CHECK(cdrom_cycles_to_internal_event() == 41);
+    psx_cycle_count += 41; cdrom_advance(41);
+    CHECK(!s_lid.physical_open && cdrom_cycles_to_internal_event() == UINT32_MAX);
+    irq_flag = 0; pending.pending = 1; pending.due_cyc = psx_cycle_count + 31;
+    CHECK(cdrom_cycles_to_internal_event() == 31);
+    psx_cycle_count += 32;
+    CHECK(cdrom_cycles_to_internal_event() == 1);
+    irq_flag = CDIRQ_ACK; /* completed drive work waits for a guest ack */
+    CHECK(cdrom_cycles_to_internal_event() == UINT32_MAX);
+    puts("PASS actual CD response/CDDA/lid/held-pending absolute deadlines");
+}
+
 int main(void) {
+    absolute_observation_deadlines();
     resident_header_cursor_and_restore();
     resident_declines_atomically();
     pause_read_resumes_position();
