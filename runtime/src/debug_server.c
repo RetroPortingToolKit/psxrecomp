@@ -20,6 +20,7 @@
 #include "debug_bulk_write.h"
 #include "host_launch_timing.h"
 #include "host_sampler.h"
+#include "psx_static_calls.h"
 #include "savestate.h"
 #include "host_span_ring.h"
 #include "guest_cycle_profile.h"
@@ -5568,6 +5569,22 @@ static void handle_host_profile(int id, const char *json)
 
 /* Raw form of the existing host-profile history. Schema 2 is portable little
  * endian: rva:u64, frame:u32, in_pass:u32, guest_pc:u32, flags:u32. */
+static void handle_static_call_stats(int id, const char *json)
+{
+    (void)json;
+    PsxStaticCallStats stats;
+    psx_static_call_get_stats(&stats);
+    send_fmt("{\"id\":%d,\"ok\":true,\"validity_queries\":%llu,"
+             "\"validity_hits\":%llu,\"validity_verifies\":%llu,"
+             "\"fast_entries\":%llu,\"fast_misses\":%llu,\"text_memcmp_calls\":%llu}",
+             id, (unsigned long long)stats.validity_queries,
+             (unsigned long long)stats.validity_hits,
+             (unsigned long long)stats.validity_verifies,
+             (unsigned long long)stats.fast_entries,
+             (unsigned long long)stats.fast_misses,
+             (unsigned long long)dirty_ram_text_compare_calls());
+}
+
 static void handle_hr_profile_dump(int id, const char *json)
 {
     char path[512];
@@ -16603,6 +16620,7 @@ static const CmdEntry s_commands[] = {
     { "pgxp_shadow",       handle_pgxp_shadow },
     { "host_profile",      handle_host_profile },
     { "hr_profile_dump",   handle_hr_profile_dump },
+    { "static_call_stats", handle_static_call_stats },
     { "host_span_ring",    handle_host_span_ring },
     { "frame_wall_ring",   handle_frame_wall_ring },
     { "pgxp_miss_ring",    handle_pgxp_miss_ring },

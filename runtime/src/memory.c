@@ -566,6 +566,12 @@ void dirty_ram_clear_image_baseline(void) {
  * never frees it). Intentional data patches by the translation layer are blessed
  * into it via dirty_ram_text_bless so they are not mistaken for self-modifying
  * code — see dirty_ram_text_native_ok / dirty_ram_text_bless. */
+static uint64_t text_validation_revision = 1;
+static void text_validation_note_bulk_range(uint32_t first, uint32_t last);
+static uint64_t text_compare_calls;
+uint64_t dirty_ram_text_validation_revision(void) { return text_validation_revision; }
+uint64_t dirty_ram_text_compare_calls(void) { return text_compare_calls; }
+
 static uint8_t *text_ref_image = NULL;
 uint32_t g_psx_text_write_lo = 0, g_psx_text_write_hi = 0;
 static uint32_t text_modified_bitmap[DIRTY_RAM_BITMAP_WORDS];
@@ -583,6 +589,7 @@ void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
                                    uint32_t len) {
     if (!bytes || len == 0 || phys_lo >= RAM_LIVE) return;
     if (len > RAM_LIVE - phys_lo) len = RAM_LIVE - phys_lo;
+    ++text_validation_revision;
     text_ref_image = (uint8_t *)bytes;  /* runtime-owned mutable heap buffer */
     g_psx_text_write_lo = phys_lo;
     g_psx_text_write_hi = phys_lo + len;
@@ -643,6 +650,7 @@ int dirty_ram_text_native_ok(uint32_t phys) {
      * route it to psx_unknown_dispatch. A genuine code overwrite still diverges. */
     uint32_t n = 256;
     if (n > g_psx_text_write_hi - phys) n = g_psx_text_write_hi - phys;
+    ++text_compare_calls;
     if (memcmp(ram + phys, text_ref_image + (phys - g_psx_text_write_lo), n) == 0)
         return 1;
 
@@ -701,6 +709,7 @@ int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
             }
             if (clean) continue;
         }
+        ++text_compare_calls;
         if (memcmp(ram + phys, text_ref_image + (phys - g_psx_text_write_lo), len) != 0) {
             uint32_t off = 0;
             const uint8_t *live = ram + phys;
@@ -763,6 +772,7 @@ void dirty_ram_text_bless(uint32_t phys, const uint8_t *bytes, uint32_t len) {
     const uint8_t *src = bytes + (lo - phys);
     if (memcmp(ref, src, hi - lo) == 0) return;                     /* already in sync */
     memcpy(ref, src, hi - lo);
+    ++text_validation_revision;
     /* Re-open the affected pages: clear the sticky diverged bit so the next
      * dispatch re-runs the compare against the now-updated reference. */
     uint32_t first_page = lo >> DIRTY_RAM_PAGE_SHIFT;
@@ -790,6 +800,9 @@ void dirty_ram_mark_executable_range(uint32_t phys, uint32_t len) {
 
     uint32_t first_page = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t last_page = end >> DIRTY_RAM_PAGE_SHIFT;
+    /* Bulk DMA/EXE loaders may bypass individual store notifications. Only
+     * invalidate watched code pages; unrelated DMA does not alter its proof. */
+    text_validation_note_bulk_range(first_page, last_page);
     for (uint32_t page = first_page; page <= last_page; page++) {
         dirty_ram_bitmap[page >> 5] |= (1u << (page & 31u));
     }
@@ -863,6 +876,7 @@ uint32_t dirty_ram_get_bitmap_word_count(void) {
 }
 
 void dirty_ram_set_bitmap_words(const uint32_t* words, uint32_t count) {
+    ++text_validation_revision;
     memset(dirty_ram_bitmap, 0, sizeof(dirty_ram_bitmap));
     if (count > DIRTY_RAM_LIVE_BITMAP_WORDS) count = DIRTY_RAM_LIVE_BITMAP_WORDS;
     for (uint32_t i = 0; i < count; i++)
@@ -889,7 +903,20 @@ void dirty_ram_set_bitmap_words(const uint32_t* words, uint32_t count) {
 uint32_t g_psx_overlay_watch_bitmap[DIRTY_RAM_BITMAP_WORDS];
 static uint32_t overlay_page_gen[DIRTY_RAM_PAGE_COUNT];
 
+static void text_validation_note_bulk_range(uint32_t first, uint32_t last) {
+#if defined(PSX_NATIVE_STATIC_CALLS) && PSX_NATIVE_STATIC_CALLS
+    for (uint32_t pg = first; pg <= last; ++pg) {
+        if (g_psx_overlay_watch_bitmap[pg >> 5] & (1u << (pg & 31u))) {
+            if (++overlay_page_gen[pg] == 0) ++text_validation_revision;
+        }
+    }
+#else
+    (void)first; (void)last;
+#endif
+}
+
 void dirty_ram_reset_for_boot(void) {
+    ++text_validation_revision;
     memset(dirty_ram_bitmap, 0, sizeof(dirty_ram_bitmap));
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
@@ -914,6 +941,7 @@ void overlay_watch_set_range(uint32_t phys, uint32_t len) {
 
 void overlay_watch_clear_range(uint32_t phys, uint32_t len) {
     if (len == 0 || phys >= RAM_LIVE) return;
+    ++text_validation_revision;
     uint32_t end = phys + len - 1u;
     if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
     uint32_t fp = phys >> DIRTY_RAM_PAGE_SHIFT;
@@ -936,11 +964,25 @@ uint32_t overlay_watch_pagegen_sum(uint32_t phys, uint32_t len) {
     return sum;
 }
 
+/* Unlike the legacy u32 sum, this witness cannot alias when several page
+ * counters add past UINT32_MAX. An individual page wrap changes the revision. */
+uint64_t overlay_watch_pagegen_sum64(uint32_t phys, uint32_t len) {
+    if (!len || phys >= RAM_LIVE) return 0;
+    uint32_t end = phys + len - 1u;
+    if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
+    uint64_t sum = 0;
+    for (uint32_t page = phys >> DIRTY_RAM_PAGE_SHIFT;
+         page <= (end >> DIRTY_RAM_PAGE_SHIFT); ++page)
+        sum += overlay_page_gen[page];
+    return sum;
+}
+
 /* Savestate restores RAM via memcpy and never hits the store chokepoint that
  * bumps overlay_page_gen. Without this, ENTRY_VALID overlays keep the gen-gated
  * fast path and run native code against restored bytes they were not validated
  * for — hang / freeze after the restored frame presents. */
 void dirty_ram_text_guard_resync_after_restore(void) {
+    ++text_validation_revision;
     /* text_diverged_bitmap is sticky: once a page's entry bytes fail the
      * reference compare, native stays blocked forever. That is correct for
      * forward sim, but after a savestate/RB rewind the restored RAM may
@@ -980,7 +1022,7 @@ void dirty_ram_text_guard_resync_after_restore(void) {
 
 void overlay_watch_invalidate_after_ram_restore(void) {
     for (uint32_t pg = 0; pg < DIRTY_RAM_PAGE_COUNT; pg++)
-        overlay_page_gen[pg]++;
+        if (++overlay_page_gen[pg] == 0) ++text_validation_revision;
     extern void overlay_loader_note_code_write(void);
     extern void overlay_loader_resync_validation_after_restore(void);
     overlay_loader_note_code_write();
@@ -991,6 +1033,11 @@ void overlay_watch_invalidate_after_ram_restore(void) {
 
 static inline void overlay_watch_note_write(uint32_t phys, uint32_t size) {
     uint32_t pg = phys >> DIRTY_RAM_PAGE_SHIFT;
+    if (size > 1u && phys <= UINT32_MAX - (size - 1u)) {
+        const uint32_t last = phys + size - 1u;
+        if ((last >> DIRTY_RAM_PAGE_SHIFT) != pg)
+            overlay_watch_note_write(last, 1u);
+    }
     if (pg >= (RAM_LIVE >> DIRTY_RAM_PAGE_SHIFT)) return;
     /* Never attach pre-write PC evidence to post-write bytes, including for
      * completely unknown/self-modifying code. This is deliberately a compact
@@ -1005,7 +1052,7 @@ static inline void overlay_watch_note_write(uint32_t phys, uint32_t size) {
         g_dirty_ram_exec_page_bitmap[pg >> 5] &= ~(1u << (pg & 31u));
     }
     if ((g_psx_overlay_watch_bitmap[pg >> 5] >> (pg & 31u)) & 1u) {
-        overlay_page_gen[pg]++;
+        if (++overlay_page_gen[pg] == 0) ++text_validation_revision;
         /* Also invalidate generation-aware negative overlay lookups: bytes in
          * a manifested code page may now match a previously absent variant.
          * Keep this separate from g_dirty_ram_code_gen: interpreter widescreen

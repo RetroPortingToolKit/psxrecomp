@@ -24,6 +24,7 @@
  */
 
 #include "dirty_ram_interp.h"
+#include "psx_static_calls.h"
 #include "cpu_state.h"
 #include "debug_server.h"
 #include "interrupts.h"
@@ -1435,6 +1436,18 @@ int dirty_ram_xprobe_json(char *out, int cap) {
  * In the BIOS-only build psx_dispatch_game_compiled does not exist, and the
  * two callers below are themselves gated behind the same macro. */
 #ifdef PSX_HAS_GAME_DISPATCH
+static int run_compiled_game_entry(CPUState *cpu, uint32_t target) {
+    g_mixed_depth++;
+    ls_func_enter(target, cpu);
+    int prev_phase = g_exec_phase;
+    g_exec_phase = 3;
+    int r = psx_dispatch_game_compiled(cpu, target);
+    g_exec_phase = prev_phase;
+    ls_func_exit(target, cpu, r);
+    g_mixed_depth--;
+    return r;
+}
+
 static int interp_enter_compiled(CPUState *cpu, uint32_t target) {
     if (target == 0x8001A954u) site_note(&g_site_interp);
     /* Decline when the target page no longer matches the static game image.
@@ -1447,15 +1460,7 @@ static int interp_enter_compiled(CPUState *cpu, uint32_t target) {
         g_psx_call_bail = 1;
         return 1;
     }
-    g_mixed_depth++;
-    ls_func_enter(target, cpu);
-    int prev_phase = g_exec_phase;
-    g_exec_phase = 3;
-    int r = psx_dispatch_game_compiled(cpu, target);
-    g_exec_phase = prev_phase;
-    ls_func_exit(target, cpu, r);
-    g_mixed_depth--;
-    return r;
+    return run_compiled_game_entry(cpu, target);
 }
 #endif /* PSX_HAS_GAME_DISPATCH */
 
@@ -2658,57 +2663,8 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
  * PSX_RECURSION_LIMIT. One-shot. NOT a fix — the upstream bogus-pointer divergence
  * still needs the oracle; this converts a hard crash into a catchable, diagnosed
  * bail (Rule 15: make the failure observable). */
-int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
-    extern int g_psx_dispatch_depth;
-    extern void psx_fatal_halt(const char *reason);
-    /* `addr` is architectural: the interpreter runs at exactly this PC, so a
-     * retail RAM-mirror PC (0x807xxxxx) keeps its own $ra/EPC while fetch_word
-     * and the dirty/overlay page checks fold it to the bytes it executes
-     * (psx_memory.h: CODE vs BYTES identity). Never canonicalize it here. */
-#ifndef PSX_NO_DEBUG_TOOLS
-    /* A0/B0/C0 kernel-vector stubs are runtime-written, so calls to them
-     * land HERE, not in the static dispatcher — which meant the bioscall
-     * ring (debug_server_trace_dispatch) never saw a single vector call on
-     * a BIOS whose stubs stay dirty (OpenBIOS bring-up: ring total 0 while
-     * the guest hammered B0). Feed the same observer from this path. */
-    {
-        uint32_t vphys = addr & 0x1FFFFFFFu;
-        if (vphys == 0xA0u || vphys == 0xB0u || vphys == 0xC0u) {
-            extern void debug_server_trace_dispatch(uint32_t func_addr);
-            debug_server_trace_dispatch(vphys);
-        }
-    }
-#endif
-    static int  s_rec_guard = 0;
-    static int  s_rec_limit = 0;
-    if (s_rec_limit == 0) {
-        const char *e = getenv("PSX_RECURSION_LIMIT");
-        s_rec_limit = (e && *e) ? atoi(e) : 256;
-        if (s_rec_limit < 32) s_rec_limit = 32;
-    }
-    if (!s_rec_guard && g_psx_dispatch_depth > s_rec_limit) {
-        s_rec_guard = 1;   /* one-shot: first trip wins the report */
-        psx_fatal_halt("dispatch recursion guard tripped — runaway self-call "
-                       "(see dispatch_depth + dirty_block cycle for the recursing PC)");
-    }
-    /* Game-start detection for the dirty-RAM interpreter path.
-     * When dispatch_count == 0 (all code runs interpreted), the native
-     * dispatch path's fntrace_record() never fires, so widescreen/mouselook/
-     * CD-speed-switch are never engaged.  This one-shot check closes the gap
-     * with the SAME semantics as the native path: latch only on the exact
-     * game entry PC.  A broader match (any phys >= 0x10000) fires during
-     * BIOS boot — the shell/kernel run relocated RAM code above 0x10000 —
-     * and the handoff's baseline/scratch clears then corrupt the boot
-     * (observed: MoH SLUS-00974 garbage-jump/VBLANK-wedge, 2026-08-06). */
-    fntrace_maybe_mark_game_started(cpu, addr);
-    if (addr == 0x8001A954u)      site_note(&g_site_dd954);   /* loop head re-dispatch */
-    else if (addr == 0x80046264u) site_note(&g_site_dd264);   /* loop tail re-dispatch */
-    int prev = g_dirty_interp_active;
-    g_dirty_interp_active = 1;
-    int prev_phase = g_exec_phase;
-    g_exec_phase = 1;
-    int r = dirty_ram_dispatch_inner(cpu, addr, stop_addr);
-
+static int dirty_ram_finish_dispatch(CPUState *cpu, uint32_t addr,
+                                     int r, int prev, int prev_phase) {
     /* pc=0 producer tripwire: the dirty path reported "handled" yet published a
      * null PC — the abnormal-exit source we're hunting (MMX6 boot wedge). Latch
      * full context the first time; count every occurrence. */
@@ -2772,6 +2728,60 @@ int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
     g_dirty_interp_active = prev;
     g_exec_phase = prev_phase;
     return r;
+}
+
+int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
+    extern int g_psx_dispatch_depth;
+    extern void psx_fatal_halt(const char *reason);
+    /* `addr` is architectural: the interpreter runs at exactly this PC, so a
+     * retail RAM-mirror PC (0x807xxxxx) keeps its own $ra/EPC while fetch_word
+     * and the dirty/overlay page checks fold it to the bytes it executes
+     * (psx_memory.h: CODE vs BYTES identity). Never canonicalize it here. */
+#ifndef PSX_NO_DEBUG_TOOLS
+    /* A0/B0/C0 kernel-vector stubs are runtime-written, so calls to them
+     * land HERE, not in the static dispatcher — which meant the bioscall
+     * ring (debug_server_trace_dispatch) never saw a single vector call on
+     * a BIOS whose stubs stay dirty (OpenBIOS bring-up: ring total 0 while
+     * the guest hammered B0). Feed the same observer from this path. */
+    {
+        uint32_t vphys = addr & 0x1FFFFFFFu;
+        if (vphys == 0xA0u || vphys == 0xB0u || vphys == 0xC0u) {
+            extern void debug_server_trace_dispatch(uint32_t func_addr);
+            debug_server_trace_dispatch(vphys);
+        }
+    }
+#endif
+    static int  s_rec_guard = 0;
+    static int  s_rec_limit = 0;
+    if (s_rec_limit == 0) {
+        const char *e = getenv("PSX_RECURSION_LIMIT");
+        s_rec_limit = (e && *e) ? atoi(e) : 256;
+        if (s_rec_limit < 32) s_rec_limit = 32;
+    }
+    if (!s_rec_guard && g_psx_dispatch_depth > s_rec_limit) {
+        s_rec_guard = 1;   /* one-shot: first trip wins the report */
+        psx_fatal_halt("dispatch recursion guard tripped — runaway self-call "
+                       "(see dispatch_depth + dirty_block cycle for the recursing PC)");
+    }
+    /* Game-start detection for the dirty-RAM interpreter path.
+     * When dispatch_count == 0 (all code runs interpreted), the native
+     * dispatch path's fntrace_record() never fires, so widescreen/mouselook/
+     * CD-speed-switch are never engaged.  This one-shot check closes the gap
+     * with the SAME semantics as the native path: latch only on the exact
+     * game entry PC.  A broader match (any phys >= 0x10000) fires during
+     * BIOS boot — the shell/kernel run relocated RAM code above 0x10000 —
+     * and the handoff's baseline/scratch clears then corrupt the boot
+     * (observed: MoH SLUS-00974 garbage-jump/VBLANK-wedge, 2026-08-06). */
+    fntrace_maybe_mark_game_started(cpu, addr);
+    if (addr == 0x8001A954u)      site_note(&g_site_dd954);   /* loop head re-dispatch */
+    else if (addr == 0x80046264u) site_note(&g_site_dd264);   /* loop tail re-dispatch */
+    int prev = g_dirty_interp_active;
+    g_dirty_interp_active = 1;
+    int prev_phase = g_exec_phase;
+    g_exec_phase = 1;
+    int r = dirty_ram_dispatch_inner(cpu, addr, stop_addr);
+
+    return dirty_ram_finish_dispatch(cpu, addr, r, prev, prev_phase);
 }
 
 void dirty_ram_span_get(uint32_t *lo, uint32_t *hi) {
@@ -3102,6 +3112,39 @@ int psx_slice_block_impl(CPUState *cpu, uint32_t block_addr, uint32_t bcyc, int 
     return 1;
 }
 
+/* A static transfer can enter its native body without the BIOS-table miss,
+ * overlay discovery and interpreter-routing layers. The generated flat owner
+ * has already run every mod/BIOS/override hook and retains all stop/return/RFE
+ * processing after this call. No host call graph mirrors guest recursion. */
+int dirty_ram_dispatch_game_direct(CPUState *cpu, uint32_t addr) {
+#if defined(PSX_HAS_GAME_DISPATCH) && defined(PSX_NATIVE_STATIC_CALLS) && PSX_NATIVE_STATIC_CALLS
+    extern int g_psx_dispatch_depth;
+    if (!cpu || !fntrace_is_game_started() || g_precise_mode ||
+        g_ls_replay_active || g_psx_dispatch_depth != 1 ||
+        psx_get_in_exception() || span_forced(addr & 0x1FFFFFFFu)) return 0;
+    if (!psx_game_text_native_ok(addr)) {
+        psx_static_call_note_entry(0);
+        return 0;
+    }
+#ifndef PSX_NO_DEBUG_TOOLS
+    xprobe_event(cpu->gpr[31], XOP_DD, XSITE_DD, addr, 0u,
+                 cpu->gpr[29], cpu->gpr[31], 0);
+#endif
+    if (addr == 0x8001A954u)      site_note(&g_site_dd954);
+    else if (addr == 0x80046264u) site_note(&g_site_dd264);
+    int prev = g_dirty_interp_active;
+    g_dirty_interp_active = 1;
+    int prev_phase = g_exec_phase;
+    g_exec_phase = 1;
+    const int handled = run_compiled_game_entry(cpu, addr);
+    psx_static_call_note_entry(handled);
+    return dirty_ram_finish_dispatch(cpu, addr, handled, prev, prev_phase);
+#else
+    (void)cpu; (void)addr;
+    return 0;
+#endif
+}
+
 static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
     /* phys = CODE identity (segment-stripped PC: compiled-body and overlay
      * lookups, per-PC telemetry). ram_phys = BYTE identity (the live-geometry
@@ -3139,17 +3182,8 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
      * native-safe. Dirty overlay pages and pages whose text bytes diverged from
      * the original EXE image fall through to interpret the live RAM bytes. */
     if (!forced && psx_game_text_native_ok(addr)) {
-        g_mixed_depth++;
-        {
-            ls_func_enter(addr, cpu);
-            int prev_phase = g_exec_phase;
-            g_exec_phase = 3;
-            int _gc = psx_dispatch_game_compiled(cpu, addr);
-            g_exec_phase = prev_phase;
-            ls_func_exit(addr, cpu, _gc);
-            g_mixed_depth--;
-            if (_gc) return 1;
-        }
+        int _gc = run_compiled_game_entry(cpu, addr);
+        if (_gc) return 1;
         clean_game_text_miss = psx_game_address_in_text(addr) ? 1 : 0;
     } else if (!forced && psx_game_address_in_text(addr)) {
         /* RAM at a game-text address diverged from the static EXE image

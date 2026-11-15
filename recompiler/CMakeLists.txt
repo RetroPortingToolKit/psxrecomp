@@ -1564,6 +1564,12 @@ if(BUILD_TESTING)
 endif()
 
 # ---- test-registration completeness guard -----------------------------------
+if(BUILD_TESTING AND Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    # test_static_dispatch_owner.c compiles the real emitted owner in this runner.
+    add_test(NAME static_dispatch_owner_test COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_static_dispatch_owner.py
+        --cc ${CMAKE_C_COMPILER} --bios-recompiler $<TARGET_FILE:psxrecomp-bios>)
+endif()
 if(BUILD_TESTING)
     add_executable(fast_forward_policy_test ../runtime/tests/test_fast_forward.c)
     target_include_directories(fast_forward_policy_test PRIVATE ../runtime/include)

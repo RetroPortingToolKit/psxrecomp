@@ -1857,6 +1857,9 @@ void FullFunctionEmitter::emit_dispatch(
     out += "extern int (*g_psx_func_override_hook)(CPUState* cpu, uint32_t phys);\n\n";
     out += "#ifdef PSX_HAS_GAME_DISPATCH\n";
     out += "extern int psx_game_address_in_text(uint32_t addr);\n";
+    out += "#ifndef PSX_BIOS_MODULE_BUILD\n";
+    out += "extern int dirty_ram_dispatch_game_direct(CPUState*, uint32_t);\n";
+    out += "#endif\n";
     out += "#endif\n\n";
 
     // Forward declarations for all emitted functions.
@@ -2264,6 +2267,7 @@ void FullFunctionEmitter::emit_dispatch(
     out += "        psx_check_interrupts(cpu);\n";
     out += "    }\n";
     out += "}\n\n";
+    out += "/* PSX_NATIVE_STATIC_OWNER_V1: all hooks precede static entry. */\n";
     out += "static void psx_dispatch_impl(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {\n";
     out += "    /* Tail-call trampoline: functions signal tail calls by setting\n";
     out += "     * cpu->pc to the target and returning. We loop here to re-dispatch\n";
@@ -2314,6 +2318,11 @@ void FullFunctionEmitter::emit_dispatch(
         out += "            found = 1;\n";
         out += "        }\n";
     out += "#ifdef PSX_HAS_GAME_DISPATCH\n";
+    out += "#if defined(PSX_NATIVE_STATIC_CALLS) && PSX_NATIVE_STATIC_CALLS && !defined(PSX_BIOS_MODULE_BUILD)\n";
+    out += "        if (!found && psx_game_address_in_text(addr))\n";
+    out += "            found = dirty_ram_dispatch_game_direct(cpu, addr);\n";
+    out += "#endif\n";
+
     out += "        /* Game EXEs can overlap the BIOS shell copy window at\n";
     out += "         * physical 0x30000-0x5AFFF. If the target belongs to the\n";
     out += "         * active game text range, route it through the game/dirty-RAM\n";
