@@ -312,9 +312,31 @@ bool emit_game_dispatch(const std::vector<GameDispatchUnit>& units,
     ds << "        extern int psx_vsync_query_hle_try(CPUState* cpu, uint32_t addr);\n";
     ds << "        if (psx_vsync_query_hle_try(cpu, addr)) return 1;\n";
     ds << "    }\n";
+    ds << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS\n";
+    ds << "    psx_native_tail_note_body(cpu, entry->fn);\n";
+    ds << "#endif\n";
     ds << "    entry->fn(cpu);\n";
     ds << "    return 1;\n";
     ds << "}\n";
+    ds << "\n/* PSX_NATIVE_TAIL_GAME_V1: same entry policy as the portable dispatcher. */\n";
+    ds << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS\n";
+    ds << "int psx_game_native_tail_enter(CPUState* cpu, uint32_t addr, PsxNativeTailBody body) {\n";
+    ds << "    const PsxGameDispatchEntry* entry = psx_game_find_entry(addr);\n";
+    ds << "    if (!entry || entry->fn != body) return 0;\n";
+    ds << "    if (entry->range_count == 0 || !PSX_STATIC_CODE_VALID(\n";
+    ds << "            &k_psx_game_validity[entry - k_psx_game_dispatch],\n";
+    ds << "            &k_psx_game_code_ranges[entry->range_index].lo, entry->range_count, addr)) return 0;\n";
+    ds << "    psx_check_interrupts_dispatch_entry(cpu, addr);\n";
+    if (cps)
+        ds << "    cpu->pc = entry->resume_pc;\n";
+    ds << "    /* load_accel: cycle-faithful VSync(-1) query (config-gated). */\n";
+    ds << "    {\n";
+    ds << "        extern int psx_vsync_query_hle_try(CPUState* cpu, uint32_t addr);\n";
+    ds << "        if (psx_vsync_query_hle_try(cpu, addr)) return 2;\n";
+    ds << "    }\n";
+    ds << "    return 1;\n";
+    ds << "}\n";
+    ds << "#endif\n";
 
     // Non-destructive companion to psx_dispatch_game_compiled: is `addr` a PC
     // the top-level dispatch can re-enter (a compiled function entry, or a CPS

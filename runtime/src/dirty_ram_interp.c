@@ -29,6 +29,7 @@
 #include "debug_server.h"
 #include "interrupts.h"
 #include "psx_cycles.h"
+#include "psx_cycle_freeze.h"
 #include "psx_icache.h"
 #include "psx_instr_cost.h"  /* psx_instr_base_cycles — single-source cycle cost */
 #include "psx_memory.h"
@@ -1436,7 +1437,13 @@ int dirty_ram_xprobe_json(char *out, int cap) {
  * In the BIOS-only build psx_dispatch_game_compiled does not exist, and the
  * two callers below are themselves gated behind the same macro. */
 #ifdef PSX_HAS_GAME_DISPATCH
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+static void native_tail_before_entry(void);
+#endif
 static int run_compiled_game_entry(CPUState *cpu, uint32_t target) {
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+    native_tail_before_entry();
+#endif
     g_mixed_depth++;
     ls_func_enter(target, cpu);
     int prev_phase = g_exec_phase;
@@ -3112,6 +3119,27 @@ int psx_slice_block_impl(CPUState *cpu, uint32_t block_addr, uint32_t bcyc, int 
     return 1;
 }
 
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+/* Values, never pointers into an owner/body stack frame. Nested owners save
+ * and replace the scope; only an outer stop-free owner can enable it. */
+typedef struct {
+    CPUState *cpu;
+    PsxNativeTailHooks hooks;
+    PsxNativeTailBody body;
+    uint32_t entry;
+    int enabled, finish, outer_active, outer_phase;
+} PsxNativeTailScope;
+static PsxNativeTailScope s_native_tail;
+static int s_native_tail_entry_pending;
+static void native_tail_before_entry(void) {
+    /* All native handoffs consume a fresh owner permission. A longjmp, legacy
+     * BIOS owner, interpreter or module cannot inherit an abandoned scope. */
+    if (!s_native_tail_entry_pending) s_native_tail.enabled = 0;
+    s_native_tail_entry_pending = 0;
+}
+static int native_tail_observers_active(void);
+#endif
+
 /* A static transfer can enter its native body without the BIOS-table miss,
  * overlay discovery and interpreter-routing layers. The generated flat owner
  * has already run every mod/BIOS/override hook and retains all stop/return/RFE
@@ -3138,12 +3166,109 @@ int dirty_ram_dispatch_game_direct(CPUState *cpu, uint32_t addr) {
     g_exec_phase = 1;
     const int handled = run_compiled_game_entry(cpu, addr);
     psx_static_call_note_entry(handled);
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+    if (s_native_tail.enabled && s_native_tail.cpu == cpu) {
+        addr = s_native_tail.entry;
+        if (!s_native_tail.finish) {
+            g_dirty_interp_active = prev; g_exec_phase = prev_phase;
+            return handled;
+        }
+    }
+#endif
     return dirty_ram_finish_dispatch(cpu, addr, handled, prev, prev_phase);
 #else
     (void)cpu; (void)addr;
     return 0;
 #endif
 }
+
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+int dirty_ram_dispatch_game_chain(CPUState *cpu, uint32_t addr, int allowed,
+                                 PsxNativeTailHooks hooks) {
+    const PsxNativeTailScope saved = s_native_tail;
+    s_native_tail.cpu = cpu;
+    s_native_tail.hooks = hooks;
+    s_native_tail.body = NULL;
+    s_native_tail.entry = addr;
+    s_native_tail.enabled = allowed && hooks != NULL;
+    s_native_tail.finish = 1;
+    s_native_tail.outer_active = g_dirty_interp_active;
+    s_native_tail.outer_phase = g_exec_phase;
+    s_native_tail_entry_pending = 1;
+    const int result = dirty_ram_dispatch_game_direct(cpu, addr);
+    s_native_tail_entry_pending = 0;
+    s_native_tail = saved;
+    return result;
+}
+
+void psx_native_tail_note_body(CPUState *cpu, PsxNativeTailBody body) {
+    if (s_native_tail.enabled && s_native_tail.cpu == cpu) s_native_tail.body = body;
+}
+
+int psx_native_tail_prepare(CPUState *cpu, uint32_t target,
+                            PsxNativeTailBody caller, PsxNativeTailBody body) {
+    extern int g_psx_dispatch_depth, g_ds_recording;
+    /* A raw host call into a generated function is not a CPS transfer from
+     * this owner. Match its actual dispatched body, never a return address. */
+    if (!s_native_tail.enabled || s_native_tail.cpu != cpu ||
+        s_native_tail.body != caller || !cpu || cpu->pc != target ||
+        g_psx_dispatch_depth != 1 || g_mixed_depth != 1 ||
+        g_precise_mode || g_ls_replay_active || g_psx_guest_time_frozen || g_ds_recording ||
+        g_psx_call_bail || psx_get_in_exception() || native_tail_observers_active() ||
+        g_psx_cyc_local_acc || span_forced(target & 0x1FFFFFFFu) ||
+        g_dirty_ram_insns_run - s_last_dirty_irq_pump_insns >= 4096u)
+        return 0;
+    /* This is the old post-body boundary. Any RFE/nonlocal escape still owns
+     * the transfer; the new path cannot carry it into a callee. */
+    const uint64_t gap = g_dirty_ram_insns_run - s_last_dirty_irq_pump_insns;
+    if (gap > g_dirty_pump_max_gap_insns) g_dirty_pump_max_gap_insns = gap;
+    psx_rfe_escape_check(cpu);
+    const int active = g_dirty_interp_active, phase = g_exec_phase;
+    g_dirty_interp_active = s_native_tail.outer_active;
+    g_exec_phase = s_native_tail.outer_phase;
+    s_native_tail.entry = target;
+    s_native_tail.finish = 1;
+    const PsxNativeTailScope scope = s_native_tail;
+    const int handled = scope.hooks(cpu, target);
+    /* A nested owner may have disabled/replaced its own permission. Its C
+     * return restores this still-live stop-free owner's value-only scope. */
+    s_native_tail = scope;
+    int ready = 0;
+    if (handled) s_native_tail.finish = 0;
+    if (!handled) {
+        if (fntrace_is_game_started() && !g_precise_mode && !g_ls_replay_active &&
+            !psx_get_in_exception() && !span_forced(target & 0x1FFFFFFFu) &&
+            !native_tail_observers_active() && !g_ds_recording) {
+            if (psx_game_text_native_ok(target)) {
+#ifndef PSX_NO_DEBUG_TOOLS
+                xprobe_event(cpu->gpr[31], XOP_DD, XSITE_DD, target, 0u,
+                             cpu->gpr[29], cpu->gpr[31], 0);
+#endif
+                if (target == 0x8001A954u) site_note(&g_site_dd954);
+                else if (target == 0x80046264u) site_note(&g_site_dd264);
+                g_dirty_interp_active = 1;
+                g_exec_phase = 3;
+                ready = psx_game_native_tail_enter(cpu, target, body);
+            } else psx_static_call_note_entry(0);
+        }
+        if (!ready) {
+            /* Hooks may have replaced the code. Use the live-byte backend
+             * in this same logical entry; do not repeat side-effecting hooks. */
+            const int enabled = s_native_tail.enabled;
+            s_native_tail.enabled = 0;
+            dirty_ram_dispatch(cpu, target, 0);
+            s_native_tail.enabled = enabled;
+            s_native_tail.finish = 0;
+        } else {
+            if (ready == 1) s_native_tail.body = body;
+            psx_static_call_note_entry(1);
+        }
+    }
+    g_dirty_interp_active = active;
+    g_exec_phase = phase;
+    return ready == 1 ? 1 : -1;
+}
+#endif
 
 static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
     /* phys = CODE identity (segment-stripped PC: compiled-body and overlay
@@ -4256,6 +4381,13 @@ static void lsf_replay_and_compare(CPUState *native_post, uint32_t frame,
 
     lsf_compare_regs(&rep, native_post, frame, entry_pc, steps);
 }
+
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+static int native_tail_observers_active(void) {
+    return g_ls_mode || s_ls_frame_hi || s_lsf_frame_hi || s_ls_shadow_owner ||
+           s_lsf_active || s_ls_prev_valid;
+}
+#endif
 
 void ls_func_enter(uint32_t entry_pc, CPUState *cpu) {
     if (s_lsf_frame_hi == 0 || s_lsf_div.found || !cpu) return;

@@ -397,6 +397,8 @@ public:
 private:
     const PS1Executable& exe_;
     CodeGenConfig config_;
+    std::string native_tail_caller_;
+    bool native_tail_signature_ = true; // alias bodies have an extra entry argument
     uint32_t code_seg_;  // set from the image in the constructor; see set_code_segment()
     std::set<uint32_t> known_functions_;  // Addresses of functions in this compilation unit
     std::string last_ranges_manifest_;

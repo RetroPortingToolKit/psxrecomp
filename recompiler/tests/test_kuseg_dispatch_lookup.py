@@ -138,7 +138,7 @@ def compile_and_run(compiler, harness, sources, include):
         subprocess.run([binary], check=True, cwd=tmp)
 
 
-def compile_only(compiler, sources, includes):
+def compile_only(compiler, sources, includes, native_tail=False, opt='-O0'):
     """Compile `sources` without linking (syntax and declarations only)."""
     if os.path.basename(compiler).lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
         command = [compiler, "/nologo", "/Zs"] + ["/I" + i for i in includes] + sources
@@ -146,7 +146,15 @@ def compile_only(compiler, sources, includes):
         command = [compiler, "-std=c11", "-fsyntax-only",
                    "-Werror=implicit-function-declaration"] + \
                   [a for i in includes for a in ("-I", i)] + sources
-    r = subprocess.run(command, capture_output=True, text=True)
+    if native_tail:
+        # Compile real generated products through musttail lowering, not only
+        # front-end syntax. Objects remain in the existing temporary product.
+        command.remove('-fsyntax-only')
+        command[1:1] = ['-c', opt, '-DPSX_NO_DEBUG_TOOLS',
+                        '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_NATIVE_STATIC_CALLS=1',
+                        '-DPSX_NATIVE_TAIL_CHAINS=1']
+    r = subprocess.run(command, capture_output=True, text=True,
+                       cwd=os.path.dirname(sources[0]) if native_tail else None)
     return r.returncode == 0, r.stdout + r.stderr
 
 
@@ -242,6 +250,7 @@ def main():
                     default=os.path.normpath(os.path.join(HERE, "..", "build",
                                                           "psxrecomp-game")))
     ap.add_argument("--compiler", default=os.environ.get("CC") or shutil.which("cc") or shutil.which("gcc"))
+    ap.add_argument('--native-tail', action='store_true', help='compile eligible JAL and alias fallback products with supported musttail ABI')
     args = ap.parse_args()
     if not os.path.isfile(args.recompiler):
         raise SystemExit("recompiler not found: %s (build it first)" % args.recompiler)
@@ -275,6 +284,14 @@ def main():
         check("psx_icache_fetch(cpu, 0x00010000u)" in home, "fetch tags are KUSEG")
         check(not re.search(r"0x8001[0-9A-F]{4}u", home),
               "no KSEG0 PC of the image appears in the KUSEG bodies")
+        if args.native_tail:
+            check('PSX_TRY_NATIVE_TAIL(' in home, 'ordinary known JAL emits a guaranteed-tail candidate')
+            ordinary_dir = os.path.join(tmp, 'kuseg')
+            for opt in ('-O0', '-O2'):
+                ok, output = compile_only(args.compiler,
+                    sorted(os.path.join(ordinary_dir, n) for n in os.listdir(ordinary_dir) if n.endswith('.c')),
+                    [ordinary_dir, os.path.join(ROOT, 'runtime', 'include')], native_tail=True, opt=opt)
+                check(ok, 'actual generated ordinary musttail products compile '+opt+':\n'+output[-3000:])
         keys = [a & PHYS_MASK for a, _, _ in rows]
         check(keys == sorted(keys), "dispatch table is sorted by physical address")
 
@@ -413,6 +430,16 @@ def main():
             ok, out = compile_only(args.compiler, sources, [adir, os.path.join(ROOT, "runtime", "include")])
             check(ok, "every alias body is declared in the shared header and the variant "
                   "output compiles:\n" + out[-3000:])
+            if args.native_tail:
+                for host in hosts:
+                    alias_body = re.search(r'^void '+re.escape(host)+r'\(CPUState\* cpu, uint32_t entry\)\s*\{(.*?)^\}', afull, re.M | re.S)
+                    check(alias_body and 'PSX_TRY_NATIVE_TAIL(' not in alias_body.group(1),
+                          'two-argument alias body keeps its portable CPS transfer')
+                for opt in ('-O0', '-O2'):
+                    ok, output = compile_only(args.compiler, sources,
+                        [adir, os.path.join(ROOT, 'runtime', 'include')], native_tail=True, opt=opt)
+                    check(ok, 'actual generated alias fallback products compile '+opt+':\n'+output[-3000:])
+
 
         # -- a table spanning 2 MiB or more takes the binary-search form ------
         wide_src, _, _ = generate(args.recompiler, tmp, "kuseg_wide", LOAD, LOAD,

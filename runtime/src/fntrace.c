@@ -129,8 +129,14 @@ static uint32_t s_spdom_prev_sp = 0;
  * splash reload loop was invisible without it). Dumped via `disp_ring`. */
 DispTailEntry g_disp_tail[DISP_TAIL_CAP];
 uint64_t      g_disp_tail_seq = 0;
+uint64_t      g_psx_owner_dispatch_count;
 
-void fntrace_record(CPUState* cpu, uint32_t target) {
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+static void fntrace_record_entry(CPUState* cpu, uint32_t target)
+#else
+void fntrace_record(CPUState* cpu, uint32_t target)
+#endif
+{
     /* The BIOS has completed the PS-X EXE load by the time it dispatches the
      * entry point. Apply the validated plan before the first guest instruction. */
     mod_runtime_on_dispatch(target);
@@ -306,6 +312,20 @@ void fntrace_arm_from_env(const char *env_name) {
         p = end;
     }
 }
+
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+void fntrace_record(CPUState* cpu, uint32_t target) {
+    ++g_psx_owner_dispatch_count;
+    fntrace_record_entry(cpu, target);
+}
+
+/* Every logical entry keeps the same history/mod/translation observers. It
+ * simply did not enter a physical owner iteration. */
+void fntrace_record_tail(CPUState* cpu, uint32_t target) {
+    fntrace_record_entry(cpu, target);
+}
+
+#endif
 
 void fntrace_clear(void) {
     g_fntrace_seq = 0;

@@ -8,7 +8,7 @@ import tempfile
 
 
 def function(source, name):
-    start = source.index('static void ' + name + '(')
+    start = re.search(r'\bstatic (?:void|int) ' + re.escape(name) + r'\(', source).start()
     brace = source.index('{', start)
     depth = 0
     tokens = re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|[{}]', re.S)
@@ -39,17 +39,18 @@ def main():
         source = dispatch.read_text(encoding='utf-8')
         if 'PSX_NATIVE_STATIC_OWNER_V1' not in source:
             raise RuntimeError('regenerate BIOS output with the current emitter first')
-        owner = function(source, 'psx_dispatch_check_return_boundary') + function(source, 'psx_dispatch_impl')
+        owner = (function(source, 'psx_dispatch_chain_hooks') if 'PSX_NATIVE_TAIL_OWNER_V1' in source else '') + function(source, 'psx_dispatch_check_return_boundary') + function(source, 'psx_dispatch_impl')
         # Substitute the table size together with the fixture's one-entry BIOS
         # table. The emitted control flow and hook/backend order stay intact.
         owner, changed = re.subn(r'int lo = 0, hi = \d+ - 1;', 'int lo = 0, hi = 1 - 1;', owner)
         assert changed == 1
         (work / 'owner.inc').write_text(owner, encoding='utf-8')
         for opt in ('-O0', '-O2'):
-            for native, module in ((0, 0), (1, 0), (1, 1)):
+            for native, module, tail in ((0, 0, 0), (1, 0, 0), (1, 1, 0), (1, 0, 1)):
+                if tail and 'PSX_NATIVE_TAIL_OWNER_V1' not in source: continue
                 exe = work / ('owner.exe' if os.name == 'nt' else 'owner')
                 cmd = [args.cc, '-std=c11', opt, '-DPSX_HAS_GAME_DISPATCH',
-                       f'-DPSX_NATIVE_STATIC_CALLS={native}', '-I', str(work),
+                       f'-DPSX_NATIVE_STATIC_CALLS={native}', f'-DPSX_NATIVE_TAIL_CHAINS={tail}', '-I', str(work),
                        '-I', str(root / 'runtime/include')]
                 if module: cmd.append('-DPSX_BIOS_MODULE_BUILD')
                 subprocess.run(cmd + [str(root / 'recompiler/tests/test_static_dispatch_owner.c'),

@@ -12,7 +12,7 @@
 const char *const psx_headroom_field_names[PSX_HR_COUNT]={PSX_HR_FIELDS(PSX_HR_NAME)};
 #undef PSX_HR_NAME
 _Static_assert(PSX_HR_COUNT<=128,"reset mask covers every counter");
-extern uint64_t s_frame_count,g_disp_tail_seq;
+extern uint64_t s_frame_count,g_disp_tail_seq,g_psx_owner_dispatch_count;
 extern uint64_t g_spu_render_blocks,g_spu_sample_deadline_queries;
 extern uint64_t g_spu_sample_service_checks,g_spu_sample_service_pumps;
 extern void psx_interrupt_check_path_diag(uint64_t*,uint64_t*,uint64_t*,uint64_t*,uint64_t*,uint64_t*);
@@ -25,7 +25,11 @@ void psx_headroom_totals(PsxHeadroomFrame *out) {
     memset(out,0,sizeof *out);
     out->frame=s_frame_count;out->cycles=psx_get_cycle_count();
     uint64_t *v=out->values;
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+    v[PSX_HR_DISPATCH]=g_psx_owner_dispatch_count;
+#else
     v[PSX_HR_DISPATCH]=g_disp_tail_seq;
+#endif
     psx_interrupt_check_path_diag(&v[PSX_HR_CHECK_IRQ],&v[PSX_HR_IRQ_FAST_SR],
         &v[PSX_HR_IRQ_FAST_NONE],&v[PSX_HR_IRQ_MID],&v[PSX_HR_IRQ_EVAL],&v[PSX_HR_IRQ_DELIVER]);
     v[PSX_HR_CHECK_IRQ_AT]=psx_hr_interrupt_at_calls;
