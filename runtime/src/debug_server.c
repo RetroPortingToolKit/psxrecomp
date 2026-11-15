@@ -12421,6 +12421,20 @@ static void handle_irq_exc_stats(int id, const char *json)
 
 /* dma_hold_stats: cumulative totals for CPU holds on kicked GPU linked-list
  * walks (dma.c), split by kicks made inside an exception handler. */
+static void handle_pgxp_hook_stats(int id, const char *json)
+{
+    (void)json;
+    PGXPHookStats s;
+    pgxp_get_hook_stats(&s);
+    send_fmt("{\"id\":%d,\"ok\":true,\"active_only\":true,"
+             "\"alu\":%llu,\"load\":%llu,\"store\":%llu,\"cop2\":%llu,"
+             "\"muldiv\":%llu,\"plain_batches\":%llu,\"plain_registers\":%llu}",
+             id, (unsigned long long)s.alu, (unsigned long long)s.load,
+             (unsigned long long)s.store, (unsigned long long)s.cop2,
+             (unsigned long long)s.muldiv, (unsigned long long)s.plain_batches,
+             (unsigned long long)s.plain_registers);
+}
+
 static void handle_dma_hold_stats(int id, const char *json)
 {
     (void)json;
@@ -16752,6 +16766,7 @@ static const CmdEntry s_commands[] = {
     { "irqctx_ring",       handle_irqctx_ring },
     { "irq_exc_stats",     handle_irq_exc_stats },
     { "dma_hold_stats",    handle_dma_hold_stats },
+    { "pgxp_hook_stats",   handle_pgxp_hook_stats },
     { "dma_hold_ring",     handle_dma_hold_ring },
     { "sp_ring",           handle_sp_ring },
     { "disp_ring",         handle_disp_ring },

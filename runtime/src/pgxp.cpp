@@ -168,11 +168,19 @@ static int      s_deferred_invalidate = 0;
 
 /* Single hot-path gate for every hook. */
 static int g_pgxp_active = 0;
+extern "C" {
+int psx_pgxp_plain_enabled = 0;
+uint32_t psx_pgxp_plain_mask = 0;
+uint32_t psx_pgxp_plain_values[32] = {};
+}
+static void flush_plain_writes(void);
 static inline void recompute_active(void) {
     g_pgxp_active = ((s_enabled || s_source_tracking) && s_suppress == 0) ? 1 : 0;
+    psx_pgxp_plain_enabled = g_pgxp_active;
 }
 
 static PGXPStats s_stats;
+static PGXPHookStats s_hook_stats;
 static PGXPStoreRecord *s_store_ring = nullptr;   /* pgxp_store_ring; with s_ram */
 
 /* ------------------------------------------------------------------------- */
@@ -183,6 +191,7 @@ static void ck_wrapped(void);
 
 extern "C" void pgxp_invalidate_all(void) {
     if (s_suppress != 0) { s_deferred_invalidate = 1; return; }
+    psx_pgxp_plain_mask = 0;
     if (++s_gen == 0) {
         ck_wrapped();
         /* generation wrapped: physically clear so stale slots can't revive */
@@ -291,6 +300,7 @@ extern "C" int pgxp_mod_request_take(int *cpu_mode, int *culling) {
 }
 
 extern "C" void pgxp_suppress_begin(void) {
+    flush_plain_writes();
     ++s_suppress;
     recompute_active();
 }
@@ -307,6 +317,10 @@ extern "C" void pgxp_suppress_end(void) {
 
 extern "C" void pgxp_get_stats(PGXPStats *out) {
     if (out) *out = s_stats;
+}
+
+extern "C" void pgxp_get_hook_stats(PGXPHookStats *out) {
+    if (out) *out = s_hook_stats;
 }
 
 extern "C" void pgxp_note_rect_bypass(int all_precise) {
@@ -561,6 +575,7 @@ extern "C" int pgxp_restore_relocated_word_shadow(uint32_t destination,
 }
 
 extern "C" void pgxp_checkpoint_begin(void) {
+    flush_plain_writes();
     if (s_ck_depth++ != 0) return;             /* the outermost pass journals */
     s_ck_source_revision = s_source_revision;
     if (!s_ck_bits) {
@@ -589,6 +604,7 @@ extern "C" void pgxp_checkpoint_begin(void) {
 }
 
 extern "C" void pgxp_checkpoint_rollback(void) {
+    flush_plain_writes();
     if (s_ck_depth == 0) return;
     if (--s_ck_depth != 0) return;
     for (size_t i = s_ck_n; i-- > 0;) {
@@ -625,6 +641,7 @@ extern "C" void pgxp_checkpoint_rollback(void) {
 }
 
 extern "C" int pgxp_projective_scope_begin(PGXPProjectiveScope *scope) {
+    flush_plain_writes();
     if (!scope || scope->active) return 0;
     scope->saved_enabled = s_enabled;
     scope->saved_cpu_mode = s_cpu_mode;
@@ -641,6 +658,7 @@ extern "C" int pgxp_projective_scope_begin(PGXPProjectiveScope *scope) {
 }
 
 extern "C" void pgxp_projective_scope_end(PGXPProjectiveScope *scope) {
+    flush_plain_writes();
     if (!scope || !scope->active) return;
     s_cpu_mode = scope->saved_cpu_mode;
     if (!scope->saved_enabled) pgxp_set_enabled(0);
@@ -702,6 +720,23 @@ static inline int32_t  f_simm(uint32_t i)  { return (int32_t)(int16_t)(i & 0xFFF
 /* ------------------------------------------------------------------------- */
 
 static inline void sc_kill(PGXPScalar *s) { s->gen = 0; }
+/* Coalescing stores the last actual value, never a later CPU register value:
+ * the latter can have changed at a deferred guest load writeback. */
+static void flush_plain_writes(void) {
+#if defined(PSX_NATIVE_PRECISION_SLICES) && PSX_NATIVE_PRECISION_SLICES
+    const uint32_t mask = psx_pgxp_plain_mask;
+    if (!mask) return;
+    psx_pgxp_plain_mask = 0;
+    ++s_hook_stats.plain_batches;
+    for (uint32_t r = 1; r < 32; ++r) {
+        if (!(mask & (UINT32_C(1) << r))) continue;
+        ++s_hook_stats.plain_registers;
+        pv_reset(&s_gpr[r], psx_pgxp_plain_values[r]);
+        sc_kill(&s_gpr_s[r]);
+    }
+#endif
+}
+
 static inline void sc_set(PGXPScalar *s, double v, uint32_t value) {
     s->v = v; s->value = value; s->gen = s_gen;
 }
@@ -773,6 +808,8 @@ extern "C" void psx_pgxp_load(struct CPUState *cpu, uint32_t instr,
                               uint32_t addr, uint32_t value) {
     (void)cpu;
     if (!g_pgxp_active) return;
+    ++s_hook_stats.load;
+    flush_plain_writes();
     uint32_t rt = f_rt(instr);
     if (rt == 0) return;
     PGXPValue *dst = &s_gpr[rt];
@@ -828,6 +865,8 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
                                uint32_t addr, uint32_t value) {
     (void)cpu;
     if (!g_pgxp_active) return;
+    ++s_hook_stats.store;
+    flush_plain_writes();
     PGXPValue *dst = pgxp_ptr_w(addr);
     if (!dst) return;
     uint32_t rt = f_rt(instr);
@@ -927,6 +966,8 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
                               uint32_t value, uint32_t addr) {
     (void)cpu;
     if (!g_pgxp_active) return;
+    ++s_hook_stats.cop2;
+    flush_plain_writes();
 
     switch (f_op(instr)) {
     case 0x32: {                               /* LWC2: gte[rt] <- [addr]     */
@@ -1284,6 +1325,8 @@ extern "C" void psx_pgxp_alu(struct CPUState *cpu, uint32_t instr,
                              uint32_t result, uint32_t s1, uint32_t s2) {
     (void)cpu;
     if (!g_pgxp_active) return;
+    ++s_hook_stats.alu;
+    flush_plain_writes();
     int dst = -1;
     double v = 0.0;
     const int has = s_cpu_mode && alu_scalar(instr, result, s1, s2, &dst, &v);
@@ -1471,6 +1514,8 @@ extern "C" void psx_pgxp_muldiv(struct CPUState *cpu, uint32_t instr,
                                 uint32_t s1, uint32_t s2) {
     (void)cpu;
     if (!g_pgxp_active) return;
+    ++s_hook_stats.muldiv;
+    flush_plain_writes();
     /* Products/quotients of screen coordinates are not screen coordinates:
      * the half shadows of HI/LO are known-but-imprecise. The scalar tier
      * (cpu-mode) does carry a product or quotient when an operand is precise:
@@ -2036,6 +2081,7 @@ extern "C" int pgxp_store_flagged_gte_sxy(uint32_t addr, uint8_t reg,
 extern "C" int pgxp_debug_shadow(int space, uint32_t key, int *live,
                                  uint32_t *value, uint32_t *flags,
                                  int32_t *x16, int32_t *y16, uint16_t *z) {
+    flush_plain_writes();
     const PGXPValue *pv = nullptr;
     if (space == 0)                pv = pgxp_ptr(key);
     else if (space == 1 && key < 34) pv = &s_gpr[key];

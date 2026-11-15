@@ -292,6 +292,11 @@ typedef struct PGXPStats {
 } PGXPStats;
 
 void pgxp_get_stats(PGXPStats *out);
+/* Active instruction hooks only; inactive/suppressed calls are not counted. */
+typedef struct PGXPHookStats {
+    uint64_t alu, load, store, cop2, muldiv, plain_batches, plain_registers;
+} PGXPHookStats;
+void pgxp_get_hook_stats(PGXPHookStats *out);
 /* Count one geometry-corrected triangle with `precise` (0..3) precise
  * vertices. */
 void pgxp_note_triangle(int precise);

@@ -18,6 +18,8 @@ namespace PSXRecompV4 { class BiosAddressModel; }
 
 namespace PSXRecomp {
 
+class PgxpPlainSpan;
+
 // CPU state structure (registers + memory access)
 struct CPUState {
     // General purpose registers (32 total)
@@ -495,7 +497,8 @@ private:
     int detect_cull_bltz_sites(const ControlFlowGraph& cfg);
 
     // Instruction translation
-    std::string translate_instruction(uint32_t addr, uint32_t instr);
+    std::string translate_instruction(uint32_t addr, uint32_t instr,
+                                      PgxpPlainSpan* precision_span = nullptr);
     std::string translate_instruction_core(uint32_t addr, uint32_t instr,
         const std::string& memory_addr = "", uint32_t original_instruction = 0);
     // The [[draw_distance.clamp]] statement for (addr, instr), or "".

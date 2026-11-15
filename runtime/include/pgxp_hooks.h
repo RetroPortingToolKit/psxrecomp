@@ -63,6 +63,26 @@ void psx_pgxp_alu   (struct CPUState *cpu, uint32_t instr, uint32_t result, uint
 void psx_pgxp_muldiv(struct CPUState *cpu, uint32_t instr, uint32_t hi, uint32_t lo, uint32_t s1, uint32_t s2);
 void psx_pgxp_cop2  (struct CPUState *cpu, uint32_t instr, uint32_t value, uint32_t addr);
 
+/* Proven metadata-free ALU writes are coalesced until the next full hook.
+ * Values are captured at the architectural write, including load-delay pairs.
+ * Overlay DLLs retain the existing five-function callback ABI. */
+extern int psx_pgxp_plain_enabled;
+extern uint32_t psx_pgxp_plain_mask;
+extern uint32_t psx_pgxp_plain_values[32];
+
+#if defined(PSX_PGXP) && PSX_PGXP && \
+    defined(PSX_NATIVE_PRECISION_SLICES) && PSX_NATIVE_PRECISION_SLICES && \
+    !defined(PSX_OVERLAY_DLL_BUILD)
+#define PGXP_PLAIN_ALU(dst, instr, res, s1, s2) do { \
+    if (psx_pgxp_plain_enabled) { \
+        psx_pgxp_plain_values[(dst)] = (res); \
+        psx_pgxp_plain_mask |= UINT32_C(1) << (dst); \
+    } \
+} while (0)
+#else
+#define PGXP_PLAIN_ALU(dst, instr, res, s1, s2) PGXP_ALU(instr, res, s1, s2)
+#endif
+
 /* Forwarder table for overlay DLLs (OverlayCallbacks.pgxp). Appended-last
  * member semantics apply: a NULL pointer (older host) means "no shadowing". */
 typedef struct PGXPHooks {

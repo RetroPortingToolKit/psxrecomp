@@ -1119,6 +1119,51 @@ int main(void) {
         pgxp_set_tolerance(-1.0f);
     }
 
+    /* A same-value plain overwrite must end a previous vertex/source,
+     * including aliases, checkpoint scopes and suppressed replay. Run this
+     * fixture with both the full-hook and coalesced build selections. */
+    {
+        CPUState *cpu = nullptr;
+        pgxp_set_enabled(1);
+        pgxp_set_cpu_mode(1);
+        pgxp_set_source_tracking(1);
+        pgxp_invalidate_all();
+        pgxp_gte_push_sxy(98304, 0, 100, 1u);
+        CHECK(pgxp_tag_gte_source(2, 1u, 919));
+        psx_pgxp_cop2(cpu, MFC2(5, 14), 1u, 0);
+        PGXP_PLAIN_ALU(5u, ADDIU(0, 5, 1), 1u, 0u, 1u);
+        PGXP_PLAIN_ALU(5u, ADDIU(5, 5, 1), 2u, 1u, 1u);
+        PGXP_PLAIN_ALU(5u, ADDIU(5, 5, -1), 1u, 2u, UINT32_MAX);
+        psx_pgxp_store(cpu, SW(17, 5), ADDR_A, 1u);
+        CHECK(pgxp_load_source(ADDR_A, 1u) == 0);
+        int live; uint32_t word, flags; int32_t x, y; uint16_t z;
+        CHECK(pgxp_debug_shadow(1, 5, &live, &word, &flags, &x, &y, &z));
+        CHECK(live && word == 1u && flags == 0);
+        PGXP_PLAIN_ALU(6u, ADDIU(0, 6, 9), 9u, 0u, 9u);
+        pgxp_checkpoint_begin();
+        PGXP_PLAIN_ALU(6u, ADDIU(6, 6, 1), 10u, 9u, 1u);
+        pgxp_checkpoint_rollback();
+        CHECK(pgxp_debug_shadow(1, 6, &live, &word, &flags, &x, &y, &z));
+        CHECK(live && word == 9u && flags == 0);
+        PGXP_PLAIN_ALU(6u, ADDIU(0, 6, 12), 12u, 0u, 12u);
+        pgxp_suppress_begin();
+        PGXP_PLAIN_ALU(6u, ADDIU(0, 6, 99), 99u, 0u, 99u);
+        pgxp_suppress_end();
+        CHECK(pgxp_debug_shadow(1, 6, &live, &word, &flags, &x, &y, &z));
+        CHECK(live && word == 12u && flags == 0);
+        // A full ALU consumer must see the last captured write, independent
+        // of any later architectural deferred-load writeback.
+        PGXP_PLAIN_ALU(6u, ADDIU(0, 6, 0), 0u, 0u, 0u);
+        psx_pgxp_alu(cpu, SLL(6, 7, 16), 0u, 0u, 16u);
+        CHECK(pgxp_debug_shadow(1, 7, &live, &word, &flags, &x, &y, &z));
+        CHECK(live && flags == 1u); // full shift semantics create exact zero X
+        PGXP_PLAIN_ALU(6u, ADDIU(0, 6, 7), 7u, 0u, 7u);
+        pgxp_invalidate_all();
+        CHECK(pgxp_debug_shadow(1, 6, &live, &word, &flags, &x, &y, &z));
+        CHECK(!live);
+        pgxp_set_source_tracking(0);
+    }
+
     /* --- stats sanity: dataflow hits were counted --- */
     {
         PGXPStats st;

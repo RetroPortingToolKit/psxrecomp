@@ -1179,6 +1179,14 @@ if(BUILD_TESTING)
         src/psx_ram_geometry.c)
     target_include_directories(pgxp_test PRIVATE include)
     add_test(NAME pgxp_test COMMAND pgxp_test)
+    target_compile_definitions(pgxp_test PRIVATE PSX_PGXP=1)
+    add_executable(pgxp_slices_test tests/test_pgxp.cpp src/pgxp.cpp
+        src/psx_ram_geometry.c)
+    target_include_directories(pgxp_slices_test PRIVATE include)
+    target_compile_definitions(pgxp_slices_test PRIVATE
+        PSX_PGXP=1 PSX_NATIVE_PRECISION_SLICES=1)
+    add_test(NAME pgxp_slices_test COMMAND pgxp_slices_test)
+
 
     add_executable(pgxp_word_shadow_test tests/test_pgxp_word_shadow.cpp
         src/pgxp.cpp src/psx_ram_geometry.c)
@@ -1232,7 +1240,7 @@ if(BUILD_TESTING)
     endforeach()
 
     foreach(_pgxp_isolated_test
-            gte_register_access_test gte_hle_contract_test pgxp_test pgxp_session_test pgxp_session_hooks_test)
+            gte_register_access_test gte_hle_contract_test pgxp_test pgxp_slices_test pgxp_session_test pgxp_session_hooks_test)
         target_sources(${_pgxp_isolated_test} PRIVATE tests/pgxp_test_mod_memory.cpp)
     endforeach()
 

@@ -1016,12 +1016,33 @@ std::string CodeGenerator::draw_distance_clamp_prefix(uint32_t addr,
     return {};
 }
 
-std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) {
+std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr,
+                                                PgxpPlainSpan* precision_span) {
+    PgxpPlainSpan precision_input;
+    if (precision_span) {
+        precision_input = *precision_span;
+        if (config_.mod_instruction_sites.count(addr) ||
+            config_.mod_instruction_sites.count(runtime_pc(addr)))
+            precision_input.barrier();
+        /* Every early/special emission stays conservative. Only the ordinary
+         * single-hook ALU path below can publish a proven-plain result. */
+        precision_span->barrier();
+    }
     std::string clamp = draw_distance_clamp_prefix(addr, instr);
     const std::string hook = mod_instruction_call(addr, instr);
     const PSXRecompV4::ModImmediateSite* imm_site = find_mod_immediate_site(addr, instr);
-    const std::string body = imm_site ? mod_immediate_translation(addr, instr, *imm_site)
+    std::string body = imm_site ? mod_immediate_translation(addr, instr, *imm_site)
                                       : translate_instruction_core(addr, instr);
+    if (precision_span && !imm_site && hook.empty() && clamp.empty() && body.find("psx_") == std::string::npos &&
+        body.find("gte_") == std::string::npos) {
+        const auto hook = body.find("PGXP_ALU(");
+        if (hook != std::string::npos && body.find("PGXP_ALU(", hook + 1u) == std::string::npos) {
+            *precision_span = precision_input;
+            uint32_t destination;
+            if (precision_span->consume_alu(instr, destination))
+                body.replace(hook, 9u, fmt::format("PGXP_PLAIN_ALU({}u, ", destination));
+        }
+    }
     if (clamp.empty()) return hook + body;
     // The core translation carries its own indent; give the clamp the same.
     return hook + config_.indent + clamp + "\n" + body;
@@ -2104,6 +2125,7 @@ std::string CodeGenerator::translate_basic_block(
     const ControlFlowGraph& cfg) {
 
     std::stringstream ss;
+    PgxpPlainSpan precision_span;
 
     // Block label
     ss << fmt::format("block_{:08X}:\n", block.start_addr);
@@ -2384,7 +2406,8 @@ std::string CodeGenerator::translate_basic_block(
                     delayed_load_dest,
                     fmt::format("psx_ldd_{:08X}", delayed_load_addr));
             }
-            std::string emitted = translate_instruction(addr, instr);
+            if (extra_labels_.count(addr)) precision_span.barrier();
+            std::string emitted = translate_instruction(addr, instr, &precision_span);
             if (forward_to_lwlr) clear_lwlr_merge_forward();
             int load_dest = simple_load_dest(instr);
             bool defer_load = false;
