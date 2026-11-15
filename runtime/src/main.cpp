@@ -9,6 +9,7 @@
 
 #include "cpu_state.h"
 #include "mod_netplay.h"
+#include "netplay_host_startup.hpp"
 #include "mod_memory.h"
 #include "mod_texture_banks.h"
 #include "execution_profile.h"
@@ -4144,6 +4145,7 @@ static void shutdown_runtime(void) {
      * cache and capture files while the main thread performs synchronous
      * shutdown work, making the window appear frozen until that tree exits. */
     autocompile_shutdown();
+    (void)code_provider_session_end_interpreted();
     overlay_autocapture_shutdown();
     overlay_capture_wait_pending();
     overlay_capture_write_json();
@@ -4160,6 +4162,8 @@ static void shutdown_runtime(void) {
 /* Tear down the game window/GL/audio after a lobby soft-return. Leaves SDL
  * subsystems and the lobby WebSocket intact for the next launcher session. */
 static void teardown_game_session_keep_lobby(void) {
+    autocompile_shutdown();
+    (void)code_provider_session_end_interpreted();
     netplay_host_present_restore();
     psx_netplay_shutdown();
     psx_rewind_shutdown();
@@ -21496,6 +21500,7 @@ session_reboot:
             std::printf("psxrecomp: netplay requires guest_cycle_scale %u, batch profile %d on every peer\n",
                         psx_guest_cycle_scale_config(), g_psx_gcs_batch != 0);
         }
+#if !PSX_REQUIRED_HOST_PROFILES
         const int nrc = psx_netplay_start(&net_cfg);
         if (nrc != 0) {
             const char* const why = netplay_start_failure(nrc, net_cfg);
@@ -21518,8 +21523,14 @@ session_reboot:
                             ? "(ice)" : net_cfg.peer_hostport,
                         (unsigned)net_cfg.session_id);
         }
+#endif
     }
 
+#if PSX_REQUIRED_HOST_PROFILES
+    if(net_cfg.enabled&&!psx_host_fp_environment_set_default()){
+        std::fprintf(stderr,"psxrecomp: canonical simulation FP setup failed\n");return 1;
+    }
+#endif
     /* Initialize CPU state. */
     CPUState cpu;
     std::memset(&cpu, 0, sizeof(cpu));
@@ -21833,6 +21844,31 @@ session_reboot:
         }
     }
 
+#if PSX_REQUIRED_HOST_PROFILES
+    /* CPU/device/renderer setup and overlay-cache joins above have completed.
+     * Install initialized capabilities before transport or guest execution. */
+    if(net_cfg.enabled&&!psx_return_to_lobby_requested()){
+        const PsxBiosBackend *builtin_bios=nullptr;
+        for(uint32_t i=0;i<psx_bios_builtin_registry_count;++i)
+            if(psx_bios_active==psx_bios_builtin_registry[i])builtin_bios=psx_bios_active;
+        const uint32_t initialized=(cpu.read_word&&cpu.write_word&&cpu.read_half&&cpu.write_half&&
+            cpu.read_byte&&cpu.write_byte)?psx_host_compiled_backend():0u;
+        std::string host_error;
+        const bool host_ok=psx_install_required_host_profile(net_cfg,initialized,builtin_bios,
+            g_gl_active?1:(g_vk_active?2:0),psx_mod_texture_banks_supported(),host_error);
+        const int nrc=host_ok?psx_netplay_start(&net_cfg):-7;
+        if(nrc){
+            static char host_reason[256];
+            std::snprintf(host_reason,sizeof host_reason,"%s",host_ok?netplay_start_failure(nrc,net_cfg):host_error.c_str());
+            psx_lobby_set_last_error(host_reason);
+            std::fprintf(stderr,"psxrecomp: netplay refused: %s\n",host_reason);
+            if(!g_netplay_from_lobby)return 1;
+            netplay_soft_exit("netplay_host_profile_start_failed");
+            g_netplay_exit_reason_text=host_reason;
+        }else apply_netplay_local_viewport_aspect(net_cfg.enabled);
+    }
+#endif
+
     /* Delay-sync: do not free-run boot while HELLO/START is in flight.
      * Park until tick 0 pads are published, then enter the guest. */
     if (psx_netplay_active()) {
@@ -21843,6 +21879,15 @@ session_reboot:
         netplay_barrier_admit(-1);
         if (psx_return_to_lobby_requested())
             goto soft_return_lobby;
+#if PSX_REQUIRED_HOST_PROFILES
+        std::string settled_error;
+        if(!psx_log_required_host_profile_settled(psx_get_cycle_count(),psx_netplay_sim_tick(),settled_error)){
+            std::fprintf(stderr,"psxrecomp: netplay refused: %s\n",settled_error.c_str());
+            if(!g_netplay_from_lobby)return 1;
+            netplay_soft_exit("netplay_host_profile_unsettled");
+            goto soft_return_lobby;
+        }
+#endif
         netplay_host_present_uncap();
         /* Idle-skip advances guest cycles without CD/device aging in lockstep —
          * force off so both peers share the same CD FSM (dig_c folds CD). */

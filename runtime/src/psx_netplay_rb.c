@@ -9165,8 +9165,12 @@ void psx_netplay_rb_pump(void)
     /* §41: retransmit confirmed RESOLVED while peer lagging. */
     maybe_heartbeat_agreed_resolved();
 
-    while (rnet_session_take_rb_sync(s, &epoch, &mismatch, &load, &target, &cslot, &op,
-                                     &wire_flags)) {
+    for (;;) {
+        int source;
+        if(!psx_netplay_take_deferred_rb_sync(&epoch,&mismatch,&load,&target,&cslot,&op,&wire_flags,&source)){
+            if(!rnet_session_take_rb_sync(s,&epoch,&mismatch,&load,&target,&cslot,&op,&wire_flags))break;
+            source=rnet_session_rb_last_take_from(s);
+        }
         if (psx_netplay_content_note(epoch, mismatch, load, target, cslot, op, wire_flags))
             continue;
         if (op == RNET_RB_SYNC_OP_COMMIT) {
@@ -9177,7 +9181,7 @@ void psx_netplay_rb_pump(void)
                 (g_peer_commit_epoch != epoch || load > g_peer_commit_tick)) {
                 g_peer_commit_epoch = epoch;
                 g_peer_commit_tick = load;
-                apply_peer_resolved(rnet_session_rb_last_take_from(s), load);
+                apply_peer_resolved(source, load);
                 (void)maybe_abandon_tip_extend();
             }
             continue;
@@ -9294,7 +9298,7 @@ void psx_netplay_rb_pump(void)
                                 (unsigned)peer_frontier);
                         fflush(stderr);
                     }
-                    apply_peer_resolved(rnet_session_rb_last_take_from(s), peer_frontier);
+                    apply_peer_resolved(source, peer_frontier);
                     if (!g_agreed_valid || g_agreed_through < peer_frontier) {
                         g_agreed_through = peer_frontier;
                         g_agreed_span_lo = peer_frontier;

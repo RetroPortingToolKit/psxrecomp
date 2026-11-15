@@ -40,6 +40,9 @@
 #include "crc32.h"
 #include "netplay_hash_confirm.h"
 #include "netplay_content_gate.h"
+#include "netplay_host_gate.h"
+#include "host_session_nonce.h"
+#include "netplay_host_scope.h"
 #include "execution_identity.h"
 #include "netplay_input_hist.h"
 #include "netplay_state_digest.h"
@@ -456,6 +459,15 @@ uint32_t psx_netplay_sim_tick(void) { return 0; }
 int psx_netplay_content_note(uint32_t e, uint32_t a, uint32_t b, uint32_t seen,
                              uint8_t slot, uint8_t op, uint8_t flags)
 { (void)e;(void)a;(void)b;(void)seen;(void)slot;(void)op;(void)flags;return 0; }
+int psx_netplay_host_profile_register(const PSXHostCapabilities *c,const PSXHostProfileCatalog *p)
+{(void)c;(void)p;return 0;}
+const char *psx_netplay_host_profile_status(void){return "host_profile_netplay_unavailable";}
+int psx_netplay_host_profile_selection(PSXHostSelection *out){(void)out;return 0;}
+int psx_netplay_host_profile_failed(void){return 0;}
+int psx_netplay_host_profile_ready(void){return 0;}
+int psx_netplay_direct_loopback_scope(const PsxNetplayConfig *cfg){(void)cfg;return 0;}
+int psx_netplay_take_deferred_rb_sync(uint32_t *e,uint32_t *a,uint32_t *b,uint32_t *c,uint8_t *s,uint8_t *o,uint8_t *f,int *from)
+{(void)e;(void)a;(void)b;(void)c;(void)s;(void)o;(void)f;(void)from;return 0;}
 int psx_netplay_seat_count(void) { return 0; }
 int psx_netplay_sim_pad(int seat, PsxNetPad *out)
 {
@@ -1199,9 +1211,50 @@ static void np_sleep_ms(unsigned ms)
 
 static NpContentGate s_content;
 static uint32_t s_content_send_ms;
+static NpHostGate s_host_profile;
+static uint32_t s_host_send_ms;
+static int s_host_reported_error,s_host_registered;
+static PSXHostCapabilities s_host_startup;
+static PSXHostProfileRule s_host_rules[PSX_HOST_MAX_OFFERS];
+static uint32_t s_host_rule_count;
+static int s_host_local_only;
+int psx_netplay_host_profile_register(const PSXHostCapabilities *caps,const PSXHostProfileCatalog *cat){
+    if(g_np.session)return 0;
+    s_host_registered=0;s_host_rule_count=0;s_host_local_only=0;
+    if(!caps||!cat||!psx_host_caps_validate(caps,cat)||!caps->offer_count)return 0;
+    s_host_startup=*caps;memcpy(s_host_rules,cat->rules,cat->count*sizeof *cat->rules);
+    for(unsigned i=0;i<caps->offer_count;++i)for(unsigned j=0;j<cat->count;++j)
+        if(!strcmp(caps->offers[i].profile,cat->rules[j].profile)&&
+           (cat->rules[j].flags&PSX_HOST_PROFILE_DIRECT_LOOPBACK))s_host_local_only=1;
+    s_host_rule_count=cat->count;s_host_registered=1;return 1;
+}
+const char *psx_netplay_host_profile_status(void){
+    if(!s_host_profile.enabled&&!s_host_profile.error)return "host_profile_not_required";
+    return np_host_gate_ready(&s_host_profile)?"host_profile_ready":np_host_gate_error(&s_host_profile);
+}
+int psx_netplay_host_profile_selection(PSXHostSelection *out){
+    if(!out||!s_host_profile.match.sealed||s_host_profile.error)return 0;
+    *out=s_host_profile.match.selected;return 1;
+}
+int psx_netplay_host_profile_failed(void){return s_host_profile.enabled&&s_host_profile.error!=0;}
+int psx_netplay_host_profile_ready(void){return s_host_profile.enabled&&np_host_gate_ready(&s_host_profile);}
+static void np_host_report_error(void){
+    if(s_host_profile.error&&!s_host_reported_error){s_host_reported_error=1;
+        fprintf(stderr,"psxrecomp: netplay refused: %s; restart with a common qualified profile.\n",np_host_gate_error(&s_host_profile));
+        psx_lobby_set_last_error(np_host_gate_error(&s_host_profile));}
+}
+int psx_netplay_take_deferred_rb_sync(uint32_t *e,uint32_t *a,uint32_t *b,uint32_t *c,uint8_t *s,uint8_t *o,uint8_t *f,int *from){
+    NpHostControl p;
+    if(!e||!a||!b||!c||!s||!o||!f||!from||!np_host_gate_take_deferred(&s_host_profile,&p))return 0;
+    *e=p.epoch;*a=p.a;*b=p.b;*c=p.seen;*s=p.slot;*o=p.op;*f=p.flags;*from=p.from;return 1;
+}
 int psx_netplay_content_note(uint32_t epoch, uint32_t a, uint32_t b, uint32_t seen,
                              uint8_t slot, uint8_t op, uint8_t flags) {
     int was_mismatch=s_content.mismatch;
+    if(op==RNET_RB_SYNC_OP_IDENT){
+        NpHostPacket p={epoch,a,b,seen,slot,flags};
+        if(np_host_gate_note(&s_host_profile,&p,rnet_session_rb_last_take_from(g_np.session))){np_host_report_error();return 1;}
+    }
     /* Only a session with a content fingerprint consumes identity packets;
      * otherwise every RB_SYNC message keeps its existing meaning. */
     if(!s_content.enabled || op!=RNET_RB_SYNC_OP_IDENT || epoch!=NP_CONTENT_MAGIC) return 0;
@@ -4051,6 +4104,11 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     struct RNetIceAgent *guest_agent = NULL;
 
     if (!cfg || !cfg->enabled) return -1;
+#if PSX_REQUIRED_HOST_PROFILES
+    if(!cfg->host_profile_required){
+        psx_lobby_set_last_error("Host simulation profile startup is required.");return -6;
+    }
+#endif
     if (psx_mod_netplay_profile() && !psx_mod_netplay_is_active()) {
         fprintf(stderr, "psxrecomp: title netplay profile was not committed\n");
         return -1;
@@ -4062,6 +4120,15 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
         fprintf(stderr, "psxrecomp: trusted netplay profile forces delay-sync\n");
     }
     if (g_np.session) psx_netplay_shutdown();
+    memset(&s_host_profile,0,sizeof s_host_profile);
+    s_host_send_ms=0;s_host_reported_error=0;
+    if(cfg->host_profile_required && !s_host_registered){
+        s_host_profile.enabled=1;
+        s_host_profile.error=NP_HOST_STARTUP_MISSING;
+        fprintf(stderr,"psxrecomp: required host profile registration missing\n");
+        psx_lobby_set_last_error("host_profile_startup_missing");
+        s_host_registered=0;return -6;
+    }
     psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);
     psx_netplay_local_view_reset(&s_local_view);
 
@@ -4139,7 +4206,7 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
             mask = (slots >= 32) ? 0xffffffffu : ((1u << slots) - 1u);
         } else {
             /* Always treat the local seat as occupied; clamp to session width. */
-            mask |= (1u << (unsigned)local);
+            if(!cfg->spectator)mask |= (1u << (unsigned)local);
             if (slots < 32)
                 mask &= (1u << slots) - 1u;
         }
@@ -4156,10 +4223,26 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     char execution_content[65];
     char profile_content[65];
     if (!psx_execution_content_identity(cfg->content_fingerprint, execution_content) ||
-        !psx_mod_netplay_content_identity(execution_content, profile_content) ||
-        !np_content_init(&s_content, profile_content, rcfg.occupied_mask, local))
+        !psx_mod_netplay_content_identity(execution_content, profile_content))
         return -5;
+    if(cfg->host_profile_required &&
+       !psx_host_required_content_identity(profile_content,s_host_startup.build,profile_content))return -6;
+    if(!(cfg->spectator?np_content_observer_init(&s_content,profile_content,rcfg.occupied_mask):
+                         np_content_init(&s_content,profile_content,rcfg.occupied_mask,local)))return -5;
     s_content_send_ms = 0;
+    if(cfg->host_profile_required){
+        uint8_t identity[32],nonce[16];PSXHostProfileCatalog cat={s_host_rules,s_host_rule_count};
+        s_host_registered=0;
+        if(strlen(profile_content)!=64){s_host_profile.enabled=1;s_host_profile.error=NP_HOST_BAD_DATA;np_host_report_error();return -6;}
+        for(unsigned i=0;i<32;++i){unsigned value;
+            if(sscanf(profile_content+i*2,"%2x",&value)!=1)return -6;
+            identity[i]=(uint8_t)value;}
+        if(!psx_host_session_nonce(nonce)||!(cfg->spectator?np_host_gate_observer_init(&s_host_profile,&s_host_startup,&cat,rcfg.occupied_mask,identity):
+                              np_host_gate_init(&s_host_profile,&s_host_startup,&cat,rcfg.occupied_mask,(uint32_t)local,identity,nonce))){
+            if(!s_host_profile.error){s_host_profile.enabled=1;s_host_profile.error=NP_HOST_BAD_DATA;}
+            np_host_report_error();return -6;
+        }
+    }
     /* Host resolves auto (-1) before start; accept 0..PSX_MAX_PLAYERS-1. */
     in_player = cfg->input_player;
     if (in_player < 0 || in_player >= PSX_MAX_PLAYERS) in_player = 0;
@@ -4167,6 +4250,10 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     transport = resolve_transport(cfg);
     if (transport < 0)
         return -4;
+    if(cfg->host_profile_required&&s_host_local_only&&!np_registered_loopback_scope(cfg,transport)){
+        s_host_profile.error=NP_HOST_BAD_DATA;np_host_report_error();
+        psx_lobby_set_last_error("This qualified profile requires direct numeric loopback endpoints.");return -6;
+    }
     use_ice = (transport == 1);
     ice_hub = (transport == 2);
     if (ice_hub && !ice_hub_acquire(cfg, slots, local, hub_agents, &hub_seats, &guest_agent))
@@ -4724,6 +4811,8 @@ void psx_netplay_cold_reset(void)
 
 void psx_netplay_shutdown(void)
 {
+    memset(&s_host_profile,0,sizeof s_host_profile);
+    s_host_send_ms=0;s_host_reported_error=0;
     if (g_diag_file) {
         fclose(g_diag_file);
         g_diag_file = NULL;
@@ -5134,24 +5223,30 @@ static void np_note_save_complete(void)
 
 static void np_content_pump(void) {
     uint32_t now=np_mono_ms(); unsigned i;
-    if(!s_content.enabled || !rnet_session_is_running(g_np.session)) return;
-    if(!g_np.rollback) {
+    if((!s_content.enabled&&!s_host_profile.enabled) || !rnet_session_is_running(g_np.session)) return;
+    if(!g_np.rollback || (s_host_profile.enabled&&!np_host_gate_ready(&s_host_profile))) {
         rnet_u32 e,a,b,seen; rnet_u8 slot,op,flags;
         while(rnet_session_take_rb_sync(g_np.session,&e,&a,&b,&seen,&slot,&op,&flags))
-            (void)psx_netplay_content_note(e,a,b,seen,slot,op,flags);
+            if(!psx_netplay_content_note(e,a,b,seen,slot,op,flags) && g_np.rollback){
+                NpHostControl p={e,a,b,seen,slot,op,flags,rnet_session_rb_last_take_from(g_np.session)};
+                (void)np_host_gate_defer(&s_host_profile,&p);
+            }
     }
+    if(s_host_profile.enabled){
+        np_host_gate_deadline(&s_host_profile,now);np_host_report_error();
+        /* Replay SAME frozen bytes for late observers; no new CPU probing,
+         * profile renegotiation or live implementation changes. */
+        const uint32_t period=np_host_gate_ready(&s_host_profile)?500u:100u;
+        if(!s_host_profile.observer&&(!s_host_send_ms||now-s_host_send_ms>=period)){
+            s_host_send_ms=now;
+            for(i=0;i<3;++i){NpHostPacket p;if(!np_host_gate_packet(&s_host_profile,&p))break;
+                rnet_session_send_rb_sync(g_np.session,p.epoch,p.a,p.b,p.seen,p.slot,RNET_RB_SYNC_OP_IDENT,p.flags);}
+        }
+    }
+    if(!s_content.enabled||g_np.spectator)return;
     // Keep answering during early gameplay so a dropped final ACK cannot
     // strand the peer. No guest-derived or local presentation data is sent.
-    if(np_content_ready(&s_content) && rnet_session_sim_tick(g_np.session)>90) {
-        int all_advanced=1;
-        for(i=0;i<9;++i) {
-            rnet_u32 tip=0;
-            if(i==s_content.local || !(s_content.occupied&(1u<<i))) continue;
-            if(!rnet_session_remote_tip(g_np.session,(int)i,&tip) || tip<=90) all_advanced=0;
-        }
-        if(all_advanced) return;
-    }
-    if(s_content_send_ms && now-s_content_send_ms<100) return;
+    if(s_content_send_ms && now-s_content_send_ms<(np_content_ready(&s_content)?500u:100u)) return;
     s_content_send_ms=now;
     for(i=0;i<4;++i)
         rnet_session_send_rb_sync(g_np.session,NP_CONTENT_MAGIC,s_content.words[i*2],
@@ -5174,13 +5269,19 @@ static void np_pump_session(void)
         for (burst = 0; burst < 12; burst++)
             rnet_session_pump(g_np.session);
     }
+    /* No rollback state/media work or load application before host agreement.
+     * Startup IDENT draining is transport-independent and happens here first. */
+    if(s_host_profile.enabled&&!np_host_gate_ready(&s_host_profile)){
+        np_content_pump();
+        if(!np_host_gate_ready(&s_host_profile)||!np_content_ready(&s_content))return;
+    }
     np_drain_peer_frame_commits();
     if (g_np.rollback) {
         np_rollback_reconcile_wire();
         psx_netplay_rb_pump();
     }
     np_content_pump();
-    if(!np_content_ready(&s_content)) return;
+    if(!np_content_ready(&s_content)||!np_host_gate_ready(&s_host_profile)) return;
     np_guest_handle_probe();
     np_maybe_stage_target_save();
     np_apply_ready_state();
@@ -5296,6 +5397,7 @@ static int np_try_admit_load_barrier_unconfirmed(void)
  * the next tick's clock; the realigned seat forked from every other). */
 int psx_netplay_live_realign_admit(void)
 {
+    if(psx_netplay_active()&&!np_host_gate_ready(&s_host_profile))return 0;
     if (!psx_netplay_active() || !g_np.rollback || g_np.xfer != NP_XFER_NONE)
         return 1;
     if (g_np.needs_advance)
@@ -5320,6 +5422,10 @@ int psx_netplay_poll_admit(void)
         return 0;
     }
 
+    if (!np_host_gate_ready(&s_host_profile)) {
+        np_sched_set_admit_stall(np_host_gate_error(&s_host_profile));
+        return 0;
+    }
     if (!np_content_ready(&s_content)) {
         np_sched_set_admit_stall(s_content.mismatch ? "content_mismatch" : "content_agreement");
         return 0;
@@ -5799,6 +5905,8 @@ void psx_netplay_admit_wait_info(char *stall_out, size_t stall_cap,
         }
         if (!np_content_ready(&s_content))
             snprintf(phase,sizeof(phase),"%s",s_content.mismatch ? "content_mismatch" : "content_agreement");
+        if (!np_host_gate_ready(&s_host_profile))
+            snprintf(phase,sizeof(phase),"%s",np_host_gate_error(&s_host_profile));
         /* Rollback episode: try_admit is skipped so last_stall stays "ok" —
          * surface the RB FSM phase instead. */
         if (!phase[0] && g_np.rollback && psx_netplay_rb_active()) {

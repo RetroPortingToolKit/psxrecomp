@@ -471,6 +471,36 @@ static int cand_selected_for_diff(const Candidate *c) {
  * guest clocks. */
 static int s_load_freeze = 0;
 
+/* Bit0 seals dispatch/load policy; increments of2 own an in-flight prepare.
+ * The CAS prevents a concurrent prepare from passing a check then mapping a
+ * DLL after startup sealing succeeds. No mapped module is unloaded here. */
+#ifdef _WIN32
+static volatile LONG s_session_gate;
+static int session_gate_read(void) { return (int)InterlockedCompareExchange(&s_session_gate, 0, 0); }
+static int session_gate_cas(int old, int next) { return InterlockedCompareExchange(&s_session_gate, next, old) == old; }
+#else
+static int s_session_gate;
+static int session_gate_read(void) { return __atomic_load_n(&s_session_gate, __ATOMIC_SEQ_CST); }
+static int session_gate_cas(int old, int next) { return __atomic_compare_exchange_n(&s_session_gate, &old, next, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
+#endif
+static int s_session_dispatch_seen;
+static unsigned s_session_dispatch_depth;
+int overlay_loader_session_interpreted_sealed(void) { return session_gate_read() & 1; }
+int overlay_loader_session_can_seal_interpreted(void) {
+    return !s_session_dispatch_seen && !s_session_dispatch_depth && session_gate_read() == 0;
+}
+int overlay_loader_session_set_interpreted(int sealed) {
+    if (sealed) {
+        if (overlay_loader_session_interpreted_sealed()) return 1;
+        return overlay_loader_session_can_seal_interpreted() && session_gate_cas(0, 1);
+    }
+    if (s_session_dispatch_depth) return 0;
+    if (session_gate_read() == 0) return 1;
+    if (!session_gate_cas(1, 0)) return 0;
+    s_session_dispatch_seen = 0;
+    return 1;
+}
+
 void overlay_loader_set_load_freeze(int freeze)
 {
     s_load_freeze = freeze ? 1 : 0;
@@ -479,7 +509,7 @@ int overlay_loader_load_frozen(void) { return s_load_freeze; }
 
 static int overlay_loads_allowed(void)
 {
-    if (s_load_freeze)
+    if (s_load_freeze || overlay_loader_session_interpreted_sealed())
         return 0;
     {
         extern int psx_netplay_is_resimulating(void);
@@ -3116,6 +3146,8 @@ const OverlayCallbacks *overlay_loader_callbacks(void) {
 
 void overlay_loader_init(const char *cache_dir, const char *game_id,
                          uint32_t config_hash) {
+    if (overlay_loader_session_interpreted_sealed() || s_session_dispatch_depth) return;
+    s_session_dispatch_seen = 0;
     {
         const char *perf = getenv("PSX_RUNTIME_PERF_DIAG");
         s_native_hot_enabled = perf && perf[0] && perf[0] != '0';
@@ -3537,7 +3569,7 @@ static int published_path_valid(const char *dll_path, char *canon,
     return 1;
 }
 
-OverlayPreparedImage *overlay_loader_prepare_published(const char *dll_path) {
+static OverlayPreparedImage *overlay_prepare_published_impl(const char *dll_path) {
     char canon[768];
     if (!published_path_valid(dll_path, canon, sizeof(canon))) return NULL;
     OverlayPreparedImage *image =
@@ -3575,6 +3607,17 @@ OverlayPreparedImage *overlay_loader_prepare_published(const char *dll_path) {
         free(image);
         return NULL;
     }
+    return image;
+}
+
+OverlayPreparedImage *overlay_loader_prepare_published(const char *dll_path) {
+    int gate;
+    do {
+        gate = session_gate_read();
+        if (gate & 1) return NULL;
+    } while (!session_gate_cas(gate, gate + 2));
+    OverlayPreparedImage *image = overlay_prepare_published_impl(dll_path);
+    do { gate = session_gate_read(); } while (!session_gate_cas(gate, gate - 2));
     return image;
 }
 
@@ -3996,6 +4039,8 @@ static int overlay_find_by_range(uint32_t seg, uint32_t phys) {
 static int overlay_loader_dispatch_seg(CPUState *cpu, uint32_t addr);
 
 int overlay_loader_dispatch(CPUState *cpu, uint32_t addr) {
+    s_session_dispatch_seen = 1;
+    if (overlay_loader_session_interpreted_sealed()) return 0;
     /* Overlay dispatch is a no-op when the overlay loader is inactive
      * (overlay_cache=false): there are no candidates to match, so this must
      * return 0 (dispatch to interp). This guard is also a HARD SAFETY:
@@ -4009,7 +4054,9 @@ int overlay_loader_dispatch(CPUState *cpu, uint32_t addr) {
      * overlay-off + CPS game hit this and wedged at boot before any game code ran
      * (found via Ape Escape, the only overlay-off title). Fail closed here. */
     if (!s_active) return 0;
+    s_session_dispatch_depth++;
     int ran = overlay_loader_dispatch_seg(cpu, addr);
+    s_session_dispatch_depth--;
     /* KUSEG/KSEG1 dispatches, split by outcome (docs/SEGMENT_AWARE_CODE.md
      * §5.7): run by a shard compiled for their segment, or left to the
      * interpreter (none is cached or valid yet). The interpreted ones are
