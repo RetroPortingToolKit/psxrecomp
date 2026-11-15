@@ -332,6 +332,31 @@ static void psx_save_context_to_tcb(CPUState* cpu, uint32_t tcb, uint32_t resume
     debug_server_log_thread_event(1, cpu, tcb, tcb, resume_pc);
 }
 
+/* Critical fast paths omit guest exception entry, but the kernel's saved
+ * context is observable when a thread block is reused. Capture the incoming
+ * context, then apply the kernel's saved IEp/IM2 and SYS01 result changes.
+ * The caller retains the legacy live CPU continuation contract. */
+static void psx_save_critical_context(CPUState* cpu, uint32_t resume_pc,
+                                      uint32_t func)
+{
+    if (!cpu->read_word || !cpu->write_word) return;
+    uint32_t tcb = psx_current_tcb_ptr(cpu);
+    if (!tcb || !psx_is_valid_tcb(cpu, tcb)) return;
+    uint32_t incoming_sr = cpu->cop0[12];
+    const uint32_t saved_enable_bits = (1u << 2) | (1u << 10); /* IEp, IM2 */
+    psx_save_context_to_tcb(cpu, tcb, resume_pc);
+    uint32_t saved_sr = cpu->read_word(tcb + 0x94u);
+    if (func == 1) {
+        cpu->write_word(tcb + 0x94u, saved_sr & ~saved_enable_bits);
+        cpu->write_word(tcb + 0x10u,
+            (incoming_sr & 0x401u) == 0x401u ? 1u : 0u);
+    } else {
+        cpu->write_word(tcb + 0x94u, saved_sr | saved_enable_bits);
+    }
+    cpu->write_word(tcb + 0x98u,
+        (cpu->cop0[13] & ~(0x80000000u | 0x7Cu)) | (8u << 2));
+}
+
 static uint32_t psx_restore_context_from_tcb(CPUState* cpu, uint32_t tcb)
 {
     uint32_t save = tcb + 8u;
@@ -991,6 +1016,7 @@ int psx_syscall(CPUState* cpu, uint32_t code) {
 
     switch (func) {
         case 1: /* EnterCriticalSection: disable interrupts */
+            psx_save_critical_context(cpu, cpu->pc + 4u, func);
             cpu->cop0[12] = sr & ~1u; /* clear IEc (bit 0) */
             cpu->gpr[2] = sr & 1u; /* return old IEc */
             g_pc0_reason = PSX_PC0_CRIT_SECTION;
@@ -1003,6 +1029,7 @@ int psx_syscall(CPUState* cpu, uint32_t code) {
             return 0;
 
         case 2: /* ExitCriticalSection: enable interrupts */
+            psx_save_critical_context(cpu, cpu->pc + 4u, func);
             cpu->cop0[12] = sr | 0x0401u; /* set IEc (bit 0) + IM[2] (bit 10) */
             /* SYS(02h) has no return value: it preserves the caller's v0.
              * SDK wrappers can return an earlier BIOS result through this
