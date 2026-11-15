@@ -32,7 +32,7 @@ void psx_write_half(uint32_t a,uint16_t v) {std::memcpy(ram+(a&0x1FFFFE),&v,2);}
 void psx_write_byte(uint32_t a,uint8_t v) {ram[a&0x1FFFFF]=v;}
 }
 constexpr uint32_t Input=0x80001000,Plain=0x80002000,Output=0x80003000,Probe=0x80004000;
-struct Product {CPUState cpu;unsigned char bytes[sizeof ram];PGXPWordShadow words[68];uint64_t sources[68],alu,cycles;};
+struct Product {CPUState cpu;unsigned char bytes[sizeof ram];PGXPWordShadow words[70];uint64_t sources[70],alu,cycles;};
 static Product reference,candidate;
 static bool equal(const PGXPWordShadow&a,const PGXPWordShadow&b) {
     return a.address==b.address&&a.value==b.value&&a.valid==b.valid&&a.flags==b.flags&&a.x16==b.x16&&
@@ -56,6 +56,7 @@ static void run(Product& result,bool native,unsigned variant) {
     if(!pgxp_native_capture_words(&addr,&packed,&receipt,1)||!pgxp_native_import_sxy(14,&receipt))std::abort();
     cpu.gte_data[14]=packed;cpu.gte_data[15]=packed;
     if(variant&8)psx_write_half(Input,9); // stale X, matching Y must survive the load
+    if(variant&16)cpu.gte_data[14]^=1; // source validation by MFC2 must remain observable
     psx_cycle_count=0;PGXPHookStats before{},after{};pgxp_get_hook_stats(&before);
     if(native)flow_candidate(&cpu);else flow_reference(&cpu);
     pgxp_get_hook_stats(&after);result.alu=after.alu-before.alu;result.cycles=psx_cycle_count;
@@ -65,7 +66,7 @@ static void run(Product& result,bool native,unsigned variant) {
         if(!pgxp_capture_word_shadow(address,value,&result.words[n]))std::abort();
         result.sources[n++]=pgxp_load_source(address,value);
     };
-    for(unsigned i=0;i<4;++i)capture(out+4*i,psx_read_word(out+4*i));
+    for(unsigned i=0;i<6;++i)capture(out+4*i,psx_read_word(out+4*i));
     for(unsigned r=0;r<32;++r) {
         const uint32_t address=Probe+r*4;psx_write_word(address,cpu.gpr[r]);
         psx_pgxp_store(&cpu,(0x2Bu<<26)|(r<<16),address,cpu.gpr[r]);capture(address,cpu.gpr[r]);
@@ -76,13 +77,13 @@ static void run(Product& result,bool native,unsigned variant) {
     }
 }
 int main() {
-    for(unsigned v=0;v<16;++v) {
+    for(unsigned v=0;v<32;++v) {
         run(reference,false,v);run(candidate,true,v);
         if(std::memcmp(&reference.cpu,&candidate.cpu,sizeof(CPUState))||
            std::memcmp(reference.bytes,candidate.bytes,sizeof ram)||reference.cycles!=candidate.cycles) {
             std::fprintf(stderr,"FAIL variant%u guest product differs\n",v);return 1;
         }
-        for(unsigned i=0;i<68;++i)if(!equal(reference.words[i],candidate.words[i])||reference.sources[i]!=candidate.sources[i]) {
+        for(unsigned i=0;i<70;++i)if(!equal(reference.words[i],candidate.words[i])||reference.sources[i]!=candidate.sources[i]) {
             std::fprintf(stderr,"FAIL variant%u precision product%u flags%X/%X source%llu/%llu\n",v,i,
                 reference.words[i].flags,candidate.words[i].flags,(unsigned long long)reference.sources[i],(unsigned long long)candidate.sources[i]);return 1;
         }
@@ -90,5 +91,5 @@ int main() {
         if(!v)std::printf("Generated GTE-to-packet ALU hooks reference/native: %llu/%llu\n",
             (unsigned long long)reference.alu,(unsigned long long)candidate.alu);
     }
-    std::puts("PASS:16 generated GTE/CPU/memory/packet+68precision/lineage products (aliases and stale halves)");
+    std::puts("PASS:32 generated GTE/CPU/memory/packet+70precision/lineage products (aliases,stale sources,partial/delayed loads)");
 }

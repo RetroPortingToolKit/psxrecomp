@@ -3041,6 +3041,14 @@ void CodeGenerator::prepare_precision_dataflow(const ControlFlowGraph& cfg) {
         f.boundary = b.is_exit || kind == ControlFlowType::JumpLink ||
             kind == ControlFlowType::JumpLinkReg || kind == ControlFlowType::JumpRegister ||
             kind == ControlFlowType::Return;
+        // The discovery graph stores only in-function edges. An omitted tail
+        // target is still an observable caller boundary on that branch arm.
+        if (kind == ControlFlowType::Branch)
+            f.successors = {b.exit_instr.target, b.exit_instr.address + 8u};
+        else if (kind == ControlFlowType::Jump)
+            f.successors = {b.exit_instr.target};
+        else if (kind == ControlFlowType::None)
+            f.successors = {b.end_addr + 4u};
         uint32_t end = b.end_addr;
         if (b.exit_instr.has_delay_slot) end = std::max(end, b.exit_instr.address + 4u);
         if (end < address || end - address > 0x40000u) return;
@@ -3060,7 +3068,7 @@ void CodeGenerator::prepare_precision_dataflow(const ControlFlowGraph& cfg) {
             // Keep both sides of a load-delay pair opaque. Its register value
             // writeback is deliberately reordered by the maintained emitter.
             const uint32_t op = *word >> 26, rt = (*word >> 16) & 31u;
-            if (rt && (op == 0x20 || op == 0x21 || op == 0x23 || op == 0x24 || op == 0x25)) {
+            if (rt && op >= 0x20 && op <= 0x26) {
                 if (const auto next = exe_.read_word(pc + 4u)) {
                     if (pgxp_flow_effect(*next).uses & (UINT64_C(1) << rt)) {
                         i.opaque = true;

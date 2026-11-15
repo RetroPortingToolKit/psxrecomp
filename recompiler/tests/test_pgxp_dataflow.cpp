@@ -43,5 +43,10 @@ int main() {
     CHECK(pgxp_dead_alu_flow({hilo}).empty());
     CHECK(!pgxp_flow_effect(i(0x23,4,8)).pure_alu);
     CHECK(!pgxp_flow_effect(i(0x2B,4,8)).pure_alu);
+    PgxpFlowBlock partial{0,{{0,r(9,0,8,0x21)},{4,i(0x22,4,8,1)},
+        {8,i(0x26,4,8,2)},{12,i(0x2B,4,8)}},{},true};
+    CHECK(pgxp_dead_alu_flow({partial}).empty()); // pre-merge rt is a precision input
+    CHECK(pgxp_flow_effect(i(0x22,4,8,1)).uses==(UINT64_C(1)<<8));
+    CHECK(pgxp_flow_effect(i(0x26,4,8,2)).uses==(UINT64_C(1)<<8));
     std::puts("PASS: precision CFG joins/loops/GTE arithmetic/aliases/unknown edges/delay/HI-LO");
 }

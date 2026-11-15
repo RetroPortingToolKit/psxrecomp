@@ -54,7 +54,12 @@ inline PgxpFlowEffect pgxp_flow_effect(uint32_t word) {
     if (op >= 0x20 && op <= 0x26) {
         // Every load stays hooked: consuming a tracked word may invalidate its
         // source halves/lineage. The EA itself consumes no GPR precision.
-        e.defines = reg(rt); return e;
+        e.defines = reg(rt);
+        // Partial word merges consume the old rt. The maintained hook currently
+        // resets partially merged shadows, but do not bake that limitation into
+        // the compiler's provenance proof or cross a load-delay forwarding pair.
+        if (op == 0x22 || op == 0x26) e.uses = reg(rt);
+        return e;
     }
     if (op == 0x28 || op == 0x29 || op == 0x2A || op == 0x2B || op == 0x2E) {
         e.uses = reg(rt); return e;

@@ -45,9 +45,18 @@ def program():
     r(14, 0, 10, 0x21)  # dead coordinate copy, destructive queue must end lineage
     i(15, 0, 10, 12); i(13, 10, 10, 8); i(43, 4, 10, 8)
     i(35, 7, 15); words.append(0); i(43, 4, 15, 12)
+    r(8, 0, 16, 0x21); i(0x22, 5, 16, 1); i(0x26, 5, 16, 2); i(43, 4, 16, 16)
+    i(0x23, 5, 18); i(0x22, 5, 18, 1); i(43, 4, 18, 20)  # load-delay merge forwarding
     words += [0x03E00008, 0]
     for index, label in branches:
         words[index] |= (labels[label] - index - 1) & 65535
+    # A conditional tail-transfer is deliberately absent from the first
+    # function's local CFG successor list. Its old s3 must remain caller-live.
+    words += [0] * (64-len(words))
+    i(9, 0, 19, 0x1357); i(4, 6, 0, 62); words.append(0)
+    i(9, 0, 19, 0x2468); words += [0x03E00008, 0]
+    words += [0] * (128-len(words))
+    i(43, 4, 19, 24); words += [0x03E00008, 0]
     return base, words
 
 
@@ -64,7 +73,7 @@ def main():
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
             struct.pack_into('<I', header, offset, value)
         exe = work / 'flow.psx'; exe.write_bytes(header + struct.pack('<%dI' % len(words), *words))
-        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n', encoding='utf-8')
+        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n', encoding='utf-8')
         out = work / 'generated'
         run([a.recompiler, exe, '--seeds', seeds, '--out-dir', out])
         sources = sorted(out.glob('*_full*.c'))
@@ -72,16 +81,24 @@ def main():
         dead_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_DEAD_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
         if not {words[1], words[4], words[21]} <= dead_words:
             raise RuntimeError('actual CFG emitter failed to remove cross-block control/dead-copy hooks')
-        for word in words[7:15] + [words[18]]:
+        for word in words[7:15] + [words[18], words[28]]:
             if word in dead_words:
                 raise RuntimeError('actual emitter removed live coordinate arithmetic 0x%08X' % word)
+        if words[64] in dead_words:
+            raise RuntimeError('actual emitter lost a conditional external caller boundary')
+        print('Actual emitted precision hooks: %d dead-ALU markers, %d retained ALU hooks' %
+              (len(re.findall(r'PGXP_FLOW_DEAD_ALU\(', text)),
+               len(re.findall(r'PGXP_(?:PLAIN_)?ALU\(', text))), flush=True)
         common = ['-O2', '-ffunction-sections', '-fdata-sections', '-DPSX_PGXP=1',
                   '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_NO_DEBUG_TOOLS=1',
                   '-I', str(ROOT/'runtime/include'), '-I', str(out)]
         objects = []
         for selected, name in ((0, 'reference'), (1, 'candidate')):
             c = work / (name+'.c')
-            c.write_text(text.replace('func_80010000(', 'flow_'+name+'('), encoding='utf-8')
+            names = set(re.findall(r'\b(?:func_|psx_alias_body_)[0-9A-Fa-f]{8}\b', text))
+            aliases = ''.join('#define %s %s\n' % (symbol, 'flow_'+name if symbol=='func_80010000'
+                              else 'flow_'+name+'_'+symbol) for symbol in sorted(names))
+            c.write_text(aliases+text, encoding='utf-8')
             obj = work / (name+'.o')
             run([a.cc, *common, '-DPSX_PGXP_DATAFLOW='+str(selected), '-c', c, '-o', obj])
             objects.append(obj)
