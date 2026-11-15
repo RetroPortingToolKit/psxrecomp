@@ -59,6 +59,11 @@ void psx_headroom_totals(PsxHeadroomFrame *out) {
     v[PSX_HR_SPU_QUERIES]=g_spu_sample_deadline_queries;
     v[PSX_HR_SPU_CHECKS]=g_spu_sample_service_checks;
     v[PSX_HR_SPU_PUMPS]=g_spu_sample_service_pumps;
+    PSXMemoryWidthStats widths;psx_memory_get_width_stats(&widths);
+    _Static_assert(sizeof widths==36u*sizeof(uint64_t),"memory width getter field contract");
+    memcpy(v+PSX_HR_MEM_INLINE_LOAD_RAM_U8,&widths,sizeof widths);
+    memcpy(v+PSX_HR_MEM_RUNTIME_FAST_LOAD_RAM_U8,psx_hr_runtime_fast_loads,sizeof psx_hr_runtime_fast_loads);
+    v[PSX_HR_SVC_GPU_IMPLICIT]=psx_hr_gpu_hold_implicit_services;
 }
 
 #if !defined(PSX_DISABLE_HEADROOM_COUNTERS) || !PSX_DISABLE_HEADROOM_COUNTERS

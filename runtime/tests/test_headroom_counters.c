@@ -13,16 +13,20 @@ uint64_t s_frame_count,g_disp_tail_seq,psx_device_service_calls;
 uint64_t psx_hr_service_requests[PSX_HR_REQUEST_COUNT];
 uint64_t psx_hr_service_deadlines[PSX_HR_DEADLINE_COUNT];
 uint64_t psx_hr_interrupt_at_calls=9;
+uint64_t psx_hr_gpu_hold_implicit_services=900;
+uint64_t psx_hr_runtime_fast_loads[3]={800,801,802};
+static uint64_t width_base=700;
 uint64_t psx_observation_block_edges=1000,psx_observation_slow_edges=20;
 uint64_t g_spu_render_blocks=8,g_spu_sample_deadline_queries=9;
 uint64_t g_spu_sample_service_checks=10,g_spu_sample_service_pumps=11;
 uint64_t psx_get_cycle_count(void) { return s_frame_count*100u; }
 static void fill(void *out,unsigned n,uint64_t base) {
-    uint64_t values[12];assert(n<=12);
+    uint64_t values[36];assert(n<=36);
     for(unsigned i=0;i<n;++i)values[i]=base+i;
     memcpy(out,values,n*sizeof *values);
 }
 void psx_direct_memory_get_stats(PSXDirectMemoryStats *out) { fill(out,12,100); }
+void psx_memory_get_width_stats(PSXMemoryWidthStats *out) { fill(out,36,width_base); }
 void pgxp_get_hook_stats(PGXPHookStats *out) { fill(out,12,200); }
 void dma_debug_get_gpu_hold(DMAGpuHoldStats *out,const DMAGpuHoldEntry **ring) { assert(!ring);fill(out,8,300); }
 void dma_debug_get_gpu_native(DMAGpuNativeStats *out) { fill(out,7,400); }
@@ -60,8 +64,11 @@ int main(void) {
     for(unsigned i=0;i<7;++i)assert(out.values[PSX_HR_NATIVE_LISTS+i]==400+i);
     for(unsigned i=0;i<5;++i)assert(out.values[PSX_HR_VALID_QUERIES+i]==500+i);
     assert(out.values[PSX_HR_MEMCMP]==600 && out.values[PSX_HR_SPU_PUMPS]==11);
+    for(unsigned i=0;i<36;++i)assert(out.values[PSX_HR_MEM_INLINE_LOAD_RAM_U8+i]==700+i);
+    for(unsigned i=0;i<3;++i)assert(out.values[PSX_HR_MEM_RUNTIME_FAST_LOAD_RAM_U8+i]==800+i);
+    assert(out.values[PSX_HR_SVC_GPU_IMPLICIT]==900);
     for(unsigned i=0;i<PSX_HEADROOM_CAP+17;++i) {
-        s_frame_count=i%100;g_disp_tail_seq+=3;PSX_HEADROOM_RECORD_FRAME();
+        s_frame_count=i%100;g_disp_tail_seq+=3;width_base+=2;PSX_HEADROOM_RECORD_FRAME();
     }
 #if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
     assert(!psx_headroom_enabled() && psx_headroom_sequence()==0 && !psx_headroom_get(0,&out));
@@ -69,6 +76,7 @@ int main(void) {
     assert(psx_headroom_enabled() && psx_headroom_sequence()==PSX_HEADROOM_CAP+17);
     assert(!psx_headroom_get(16,&out));
     assert(psx_headroom_get(17,&out) && out.seq==17 && out.frame==17 && out.values[PSX_HR_DISPATCH]==3);
+    assert(out.values[PSX_HR_MEM_HELPER_LOAD_MMIO_U16]==2);
     g_disp_tail_seq=1;PSX_HEADROOM_RECORD_FRAME();
     assert(psx_headroom_get(psx_headroom_sequence()-1,&out));
     assert(out.values[PSX_HR_DISPATCH]==1 && (out.resets[0]&(UINT64_C(1)<<PSX_HR_DISPATCH)));

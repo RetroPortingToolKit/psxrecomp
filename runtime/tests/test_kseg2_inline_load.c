@@ -24,6 +24,7 @@
 #include "kernel_patch_ranges.h"
 #include "psx_bios_image.h"
 #include "psx_cyc.h"
+#include "psx_direct_memory.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -120,6 +121,25 @@ int main(void) {
     (void)psx_cyc_load_word(&cpu, 0xFFFE0130u, 2u, 0u);
     check(g_kseg2_ignored_reads == before, "cache control is read, not ignored");
 
-    puts("PASS: KSEG2 word and half loads read 0 and are counted; RAM and cache control unchanged");
+    /* The legacy header fast path and runtime byte/LWC2 path must stay
+     * visible when native generated spans do not own these reads. */
+    check(psx_cyc_load_byte(&cpu,0x80001000u,2u,0u)==0x78u,"legacy byte reads RAM");
+    check(psx_cyc_lwc2_read(&cpu,0x80001000u)==RAM_WORD,"legacy LWC2 reads RAM");
+#if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
+    check(!psx_hr_runtime_fast_loads[0] && !psx_hr_runtime_fast_loads[1] &&
+          !psx_hr_runtime_fast_loads[2],"disabled control removes runtime fast counting");
+    const PSXMemoryWidthStats zero={0};
+    check(!memcmp(&zero,&g_psx_memory_width_stats,sizeof zero),"disabled control removes canonical counting");
+#else
+    check(psx_hr_runtime_fast_loads[0]==1 && psx_hr_runtime_fast_loads[1]==2 &&
+          psx_hr_runtime_fast_loads[2]==3,"legacy fast values split by width");
+    check(g_psx_memory_width_stats.helper_access[0][PSX_MEM_RAM][PSX_MEM_U32]==0,
+          "fast RAM values do not also count as canonical helper entries");
+    check(g_psx_memory_width_stats.helper_access[0][PSX_MEM_OTHER][PSX_MEM_U8]==1 &&
+          g_psx_memory_width_stats.helper_access[0][PSX_MEM_OTHER][PSX_MEM_U16]==2 &&
+          g_psx_memory_width_stats.helper_access[0][PSX_MEM_OTHER][PSX_MEM_U32]==3,
+          "KSEG2 and cache-control helper entries retain original class/width");
+#endif
+    puts("PASS: KSEG2 guards and disjoint legacy-fast/canonical class-width counts");
     return 0;
 }

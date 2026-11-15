@@ -185,6 +185,12 @@ uint32_t psx_gpu_packet_key(uint32_t address) {
 uint8_t *g_psx_ram = ram;
 uint8_t *g_psx_scratchpad = scratchpad;
 PSXDirectMemoryStats g_psx_direct_memory_stats;
+PSXMemoryWidthStats g_psx_memory_width_stats;
+uint64_t psx_hr_runtime_fast_loads[3];
+
+void psx_memory_get_width_stats(PSXMemoryWidthStats *out) {
+    if (out) *out = g_psx_memory_width_stats;
+}
 
 void psx_direct_memory_get_stats(PSXDirectMemoryStats *out) {
     if (out) *out = g_psx_direct_memory_stats;
@@ -1747,6 +1753,7 @@ static uint32_t psx_read_word_raw(uint32_t addr);
  * exception context (ISR work replays live), never under DMA (DMA writes
  * poison the window via ds_note_dma_write instead). */
 uint32_t psx_read_word(uint32_t addr) {
+    psx_memory_note_helper_width(addr, 0u, 4u);
     if (g_ls_mode == 2) return ls_read_hook(addr, 4, 0u);
     if (g_ds_recording && g_dma_exec_depth == 0 && !psx_get_in_exception())
         ds_note_read(addr, 4);
@@ -2065,6 +2072,7 @@ static void render_pass_store(uint32_t addr, uint32_t val, uint32_t width) {
 
 static void psx_write_word_raw(uint32_t addr, uint32_t val);
 void psx_write_word(uint32_t addr, uint32_t val) {
+    psx_memory_note_helper_width(addr, 1u, 4u);
     extern void (*g_overlay_flush_pending_cycles)(void);
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
     if (g_psx_render_pass_active) { render_pass_store(addr, val, 4); return; }
@@ -2232,6 +2240,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
 
 static uint16_t psx_read_half_raw(uint32_t addr);
 uint16_t psx_read_half(uint32_t addr) {
+    psx_memory_note_helper_width(addr, 0u, 2u);
     if (g_ls_mode == 2) return (uint16_t)ls_read_hook(addr, 2, 0u);
     if (g_ds_recording && g_dma_exec_depth == 0 && !psx_get_in_exception())
         ds_note_read(addr, 2);
@@ -2280,6 +2289,7 @@ static uint16_t psx_read_half_raw(uint32_t addr) {
 
 static void psx_write_half_raw(uint32_t addr, uint16_t val);
 void psx_write_half(uint32_t addr, uint16_t val) {
+    psx_memory_note_helper_width(addr, 1u, 2u);
     extern void (*g_overlay_flush_pending_cycles)(void);
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
     if (g_psx_render_pass_active) { render_pass_store(addr, val, 2); return; }
@@ -2361,6 +2371,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
 
 static uint8_t psx_read_byte_raw(uint32_t addr);
 uint8_t psx_read_byte(uint32_t addr) {
+    psx_memory_note_helper_width(addr, 0u, 1u);
     if (g_ls_mode == 2) return (uint8_t)ls_read_hook(addr, 1, 0u);
     if (g_ds_recording && g_dma_exec_depth == 0 && !psx_get_in_exception())
         ds_note_read(addr, 1);
@@ -2603,7 +2614,10 @@ uint8_t psx_cyc_load_byte(CPUState* cpu, uint32_t addr, uint32_t rt, uint32_t re
     psx_cyc_load_timing(cpu, addr, 1u, rt, reg_mask);
 #if defined(PSX_NO_DEBUG_TOOLS) && !defined(PSX_COSIM)
     uint32_t phys;
-    if (psx_cyc_main_ram_fast_addr(addr, 1u, &phys)) return ram[phys];
+    if (psx_cyc_main_ram_fast_addr(addr, 1u, &phys)) {
+        PSX_HR_RUNTIME_FAST_LOAD(0);
+        return ram[phys];
+    }
 #endif
     return psx_read_byte(addr);
 }
@@ -2620,6 +2634,7 @@ uint32_t psx_cyc_lwc2_read(CPUState* cpu, uint32_t addr) {
 #if defined(PSX_NO_DEBUG_TOOLS) && !defined(PSX_COSIM)
     uint32_t phys;
     if (psx_cyc_main_ram_fast_addr(addr, 4u, &phys)) {
+        PSX_HR_RUNTIME_FAST_LOAD(2);
         return (uint32_t)ram[phys]
              | ((uint32_t)ram[phys + 1] << 8)
              | ((uint32_t)ram[phys + 2] << 16)
@@ -2637,6 +2652,7 @@ uint8_t  psx_guest_read_byte(uint32_t addr) { return psx_read_byte(addr); }
 
 static void psx_write_byte_raw(uint32_t addr, uint8_t val);
 void psx_write_byte(uint32_t addr, uint8_t val) {
+    psx_memory_note_helper_width(addr, 1u, 1u);
     extern void (*g_overlay_flush_pending_cycles)(void);
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
     if (g_psx_render_pass_active) { render_pass_store(addr, val, 1); return; }

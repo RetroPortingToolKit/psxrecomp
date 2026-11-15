@@ -32,11 +32,12 @@ def main():
                     assert len(replies)==2
                     first,last=replies
                     assert first['enabled']==(not disabled) and len(first['history'])==(0 if disabled else 128)
-                    assert last['history']==[] and first['missing']
+                    assert last['history']==[] and first['missing'] and first['canonical_memory_supported']
                     assert len(first['fields'])==len(set(first['fields'])) and not first['memory_supported']
                     for row in first['history']:
                         assert len(row['counts'])==len(first['fields'])
                         assert row['counts'][first['fields'].index('dispatch')]==3
+                        assert row['counts'][first['fields'].index('mem_helper_load_mmio_u16')]==2
                     subprocess.run(common+[str(runtime/'tests/test_psx_cycle_event_boundaries.c'),
                         str(runtime/'src/psx_cycles.c'),'-o',str(exe)],check=True)
                     subprocess.run([str(exe)],check=True,timeout=30)

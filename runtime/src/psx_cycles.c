@@ -260,6 +260,8 @@ uint32_t g_plp_adv_max_chunk    = 0;
 uint64_t g_plp_adv_sum          = 0;
 uint64_t g_plp_svc_calls        = 0;
 uint64_t psx_device_service_calls = 0;
+uint32_t psx_hr_gpu_hold_depth;
+uint64_t psx_hr_gpu_hold_implicit_services;
 uint64_t psx_hr_service_requests[PSX_HR_REQUEST_COUNT];
 uint64_t psx_hr_service_deadlines[PSX_HR_DEADLINE_COUNT];
 static unsigned s_hr_deadline_source=PSX_HR_DEADLINE_UNKNOWN;
@@ -410,6 +412,12 @@ void psx_devices_service_to_now_cause(unsigned request) {
     if (g_plp_cycle_diag) g_plp_svc_calls++;
     psx_device_service_calls++;
     if(request>=PSX_HR_REQUEST_COUNT)request=PSX_HR_REQUEST_OTHER;
+#if !defined(PSX_DISABLE_HEADROOM_COUNTERS) || !PSX_DISABLE_HEADROOM_COUNTERS
+    if (psx_hr_gpu_hold_depth && request != PSX_HR_REQUEST_GPU_HOLD) {
+        ++psx_hr_gpu_hold_implicit_services;
+        request = PSX_HR_REQUEST_GPU_HOLD;
+    }
+#endif
     PSX_HR_INC(psx_hr_service_requests[request]);
     const unsigned deadline=(psx_next_service_cycle && psx_cycle_count>=psx_next_service_cycle)
         ?s_hr_deadline_source:PSX_HR_DEADLINE_EARLY;
@@ -1017,6 +1025,7 @@ void psx_idle_note_check(CPUState *cpu, uint32_t check_pc) {
  * would try to replay a bogus gap. Re-anchor devices at the restored cycle and
  * force a fresh deadline on the next charge. */
 void psx_cycles_resync_after_restore(CPUState *cpu) {
+    PSX_HR_SET(psx_hr_gpu_hold_depth, 0u);
     if (g_psx_cyc_local_acc) *g_psx_cyc_local_acc = 0;
     g_psx_cyc_local_acc    = NULL;
     g_psx_cyc_batch        = 0;
@@ -1074,6 +1083,7 @@ void psx_cycles_resync_after_restore(CPUState *cpu) {
 }
 
 void psx_cycles_reset_for_boot(void) {
+    PSX_HR_SET(psx_hr_gpu_hold_depth, 0u);
     if (g_psx_cyc_local_acc) *g_psx_cyc_local_acc = 0;
     g_psx_cyc_local_acc    = NULL;
     g_psx_cyc_batch        = 0;

@@ -5595,14 +5595,16 @@ static void handle_hr_counters(int id,const char *json)
     for(unsigned i=0;i<PSX_HR_COUNT;++i)
         n+=(size_t)snprintf(out+n,cap-n,"\"%s\":%llu,",psx_headroom_field_names[i],
             (unsigned long long)current.values[i]);
-    n+=(size_t)snprintf(out+n,cap-n,"\"memory_supported\":%s,\"coverage\":{"
-        "\"memory\":\"generated-native-span-sites; widths aggregated\","
-        "\"callers\":\"sampled last-entered guest function\","
-        "\"gpu_hold\":\"explicit hold drain calls; automatic catch-up uses deadline source\","
+    n+=(size_t)snprintf(out+n,cap-n,"\"memory_supported\":%s,\"canonical_memory_supported\":true,\"coverage\":{"
+        "\"memory\":\"legacy12 generated-site totals; widths below are disjoint value paths\","
+        "\"memory_widths\":\"native inline RAM/scratch, canonical psx_read/write helper entries, legacy runtime fast RAM; u8/u16/u32\","
+        "\"helper_sources\":\"CPU, BIOS, interpreter, host and device callers of canonical helpers; observer/replay entries count even if substituted/refused\","
+        "\"callers\":\"schema2 host samples carry last-entered guest function and exception; group helper time by guest operation\","
+        "\"gpu_hold\":\"explicit drains and implicit catch-up inside synchronous GPU hold; implicit count is a subset\","
         "\"deadline\":\"earliest advertised at service entry; ties keep scheduler priority\","
         "\"block_edges\":\"logical IRQ observations; native excludes frozen/replay\"},"
-        "\"missing\":[\"all-helper memory totals\",\"per-width memory totals\","
-        "\"exact memory caller totals\",\"implicit GPU-hold service context\"],"
+        "\"excluded\":[\"untraced raw peeks\",\"direct host/device buffer access\"],"
+        "\"missing\":[\"custom/private bus callback memory widths\"],"
         "\"fields\":[",
 #if defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS
         "true"

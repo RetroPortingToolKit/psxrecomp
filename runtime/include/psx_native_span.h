@@ -65,15 +65,18 @@ static inline const uint8_t *psx_native_span_load_view(CPUState *cpu,
     return view;
 }
 
-static inline void psx_native_span_note_load(uint32_t addr, const uint8_t *view) {
+static inline void psx_native_span_note_load(uint32_t addr, const uint8_t *view, uint32_t width) {
 #if !defined(PSX_OVERLAY_DLL_BUILD) && !defined(PSX_COSIM)
     if (!view) { psx_direct_note_helper(addr, 0); return; }
-    if ((addr & 0x1FFFFFFFu) < PSX_MAIN_RAM_WINDOW_BYTES)
+    if ((addr & 0x1FFFFFFFu) < PSX_MAIN_RAM_WINDOW_BYTES) {
         ++g_psx_direct_memory_stats.load_inline_ram;
-    else
+        psx_memory_note_inline_width(0u, PSX_MEM_RAM, width);
+    } else {
         ++g_psx_direct_memory_stats.load_inline_scratch;
+        psx_memory_note_inline_width(0u, PSX_MEM_SCRATCH, width);
+    }
 #else
-    (void)addr; (void)view;
+    (void)addr; (void)view; (void)width;
 #endif
 }
 
@@ -81,7 +84,7 @@ static inline uint32_t psx_native_span_word(CPUState *cpu, uint32_t addr,
                                            uint32_t rt, uint32_t deps) {
     const uint8_t *ram = psx_native_span_load_view(cpu, addr, 4u);
     (void)rt; (void)deps;
-    psx_native_span_note_load(addr, ram);
+    psx_native_span_note_load(addr, ram, 4u);
     if (!ram) return cpu->read_word(addr);
     return (uint32_t)ram[0] | ((uint32_t)ram[1] << 8)
          | ((uint32_t)ram[2] << 16) | ((uint32_t)ram[3] << 24);
@@ -90,7 +93,7 @@ static inline uint16_t psx_native_span_half(CPUState *cpu, uint32_t addr,
                                            uint32_t rt, uint32_t deps) {
     const uint8_t *ram = psx_native_span_load_view(cpu, addr, 2u);
     (void)rt; (void)deps;
-    psx_native_span_note_load(addr, ram);
+    psx_native_span_note_load(addr, ram, 2u);
     if (!ram) return cpu->read_half(addr);
     return (uint16_t)((uint16_t)ram[0] | ((uint16_t)ram[1] << 8));
 }
@@ -98,7 +101,7 @@ static inline uint8_t psx_native_span_byte(CPUState *cpu, uint32_t addr,
                                           uint32_t rt, uint32_t deps) {
     const uint8_t *ram = psx_native_span_load_view(cpu, addr, 1u);
     (void)rt; (void)deps;
-    psx_native_span_note_load(addr, ram);
+    psx_native_span_note_load(addr, ram, 1u);
     return ram ? *ram : cpu->read_byte(addr);
 }
 static inline uint32_t psx_native_span_lwc2(CPUState *cpu, uint32_t addr) {

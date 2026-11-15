@@ -54,7 +54,47 @@ enum { PSX_HR_DEADLINE_VBLANK, PSX_HR_DEADLINE_TIMER, PSX_HR_DEADLINE_CD,
  X(VALID_QUERIES,validity_queries) X(VALID_HITS,validity_hits) X(VALID_VERIFIES,validity_verifies) \
  X(STATIC_ENTRIES,static_fast_entries) X(STATIC_MISSES,static_fast_misses) X(MEMCMP,text_memcmp_calls) \
  X(SPU_BLOCKS,spu_render_blocks) X(SPU_QUERIES,spu_sample_queries) \
- X(SPU_CHECKS,spu_sample_checks) X(SPU_PUMPS,spu_sample_pumps)
+ X(SPU_CHECKS,spu_sample_checks) X(SPU_PUMPS,spu_sample_pumps) \
+ X(MEM_INLINE_LOAD_RAM_U8,mem_inline_load_ram_u8) \
+ X(MEM_INLINE_LOAD_RAM_U16,mem_inline_load_ram_u16) \
+ X(MEM_INLINE_LOAD_RAM_U32,mem_inline_load_ram_u32) \
+ X(MEM_INLINE_LOAD_SCRATCH_U8,mem_inline_load_scratch_u8) \
+ X(MEM_INLINE_LOAD_SCRATCH_U16,mem_inline_load_scratch_u16) \
+ X(MEM_INLINE_LOAD_SCRATCH_U32,mem_inline_load_scratch_u32) \
+ X(MEM_INLINE_STORE_RAM_U8,mem_inline_store_ram_u8) \
+ X(MEM_INLINE_STORE_RAM_U16,mem_inline_store_ram_u16) \
+ X(MEM_INLINE_STORE_RAM_U32,mem_inline_store_ram_u32) \
+ X(MEM_INLINE_STORE_SCRATCH_U8,mem_inline_store_scratch_u8) \
+ X(MEM_INLINE_STORE_SCRATCH_U16,mem_inline_store_scratch_u16) \
+ X(MEM_INLINE_STORE_SCRATCH_U32,mem_inline_store_scratch_u32) \
+ X(MEM_HELPER_LOAD_RAM_U8,mem_helper_load_ram_u8) \
+ X(MEM_HELPER_LOAD_RAM_U16,mem_helper_load_ram_u16) \
+ X(MEM_HELPER_LOAD_RAM_U32,mem_helper_load_ram_u32) \
+ X(MEM_HELPER_LOAD_SCRATCH_U8,mem_helper_load_scratch_u8) \
+ X(MEM_HELPER_LOAD_SCRATCH_U16,mem_helper_load_scratch_u16) \
+ X(MEM_HELPER_LOAD_SCRATCH_U32,mem_helper_load_scratch_u32) \
+ X(MEM_HELPER_LOAD_MMIO_U8,mem_helper_load_mmio_u8) \
+ X(MEM_HELPER_LOAD_MMIO_U16,mem_helper_load_mmio_u16) \
+ X(MEM_HELPER_LOAD_MMIO_U32,mem_helper_load_mmio_u32) \
+ X(MEM_HELPER_LOAD_OTHER_U8,mem_helper_load_other_u8) \
+ X(MEM_HELPER_LOAD_OTHER_U16,mem_helper_load_other_u16) \
+ X(MEM_HELPER_LOAD_OTHER_U32,mem_helper_load_other_u32) \
+ X(MEM_HELPER_STORE_RAM_U8,mem_helper_store_ram_u8) \
+ X(MEM_HELPER_STORE_RAM_U16,mem_helper_store_ram_u16) \
+ X(MEM_HELPER_STORE_RAM_U32,mem_helper_store_ram_u32) \
+ X(MEM_HELPER_STORE_SCRATCH_U8,mem_helper_store_scratch_u8) \
+ X(MEM_HELPER_STORE_SCRATCH_U16,mem_helper_store_scratch_u16) \
+ X(MEM_HELPER_STORE_SCRATCH_U32,mem_helper_store_scratch_u32) \
+ X(MEM_HELPER_STORE_MMIO_U8,mem_helper_store_mmio_u8) \
+ X(MEM_HELPER_STORE_MMIO_U16,mem_helper_store_mmio_u16) \
+ X(MEM_HELPER_STORE_MMIO_U32,mem_helper_store_mmio_u32) \
+ X(MEM_HELPER_STORE_OTHER_U8,mem_helper_store_other_u8) \
+ X(MEM_HELPER_STORE_OTHER_U16,mem_helper_store_other_u16) \
+ X(MEM_HELPER_STORE_OTHER_U32,mem_helper_store_other_u32) \
+ X(MEM_RUNTIME_FAST_LOAD_RAM_U8,mem_runtime_fast_load_ram_u8) \
+ X(MEM_RUNTIME_FAST_LOAD_RAM_U16,mem_runtime_fast_load_ram_u16) \
+ X(MEM_RUNTIME_FAST_LOAD_RAM_U32,mem_runtime_fast_load_ram_u32) \
+ X(SVC_GPU_IMPLICIT,service_gpu_hold_implicit)
 
 enum {
 #define PSX_HR_FIELD(id, name) PSX_HR_##id,
@@ -75,6 +115,19 @@ extern "C" {
 extern uint64_t psx_hr_service_requests[PSX_HR_REQUEST_COUNT];
 extern uint64_t psx_hr_service_deadlines[PSX_HR_DEADLINE_COUNT];
 extern uint64_t psx_hr_interrupt_at_calls;
+extern uint32_t psx_hr_gpu_hold_depth;
+extern uint64_t psx_hr_gpu_hold_implicit_services;
+extern uint64_t psx_hr_runtime_fast_loads[3]; /* u8/u16/u32; legacy value leaves */
+#if defined(PSX_COSIM) || defined(PSX_OVERLAY_DLL_BUILD)
+#define PSX_HR_RUNTIME_FAST_LOAD(width_index) ((void)0)
+#else
+#define PSX_HR_RUNTIME_FAST_LOAD(width_index) PSX_HR_INC(psx_hr_runtime_fast_loads[width_index])
+#endif
+/* Context covers the charge as well as the explicit drain. It changes only
+ * observability; synchronous restore/soft-exit cleanup may clear it early. */
+#define PSX_HR_GPU_HOLD_BEGIN() PSX_HR_INC(psx_hr_gpu_hold_depth)
+#define PSX_HR_GPU_HOLD_END() PSX_HR_SET(psx_hr_gpu_hold_depth, \
+    psx_hr_gpu_hold_depth ? psx_hr_gpu_hold_depth - 1u : 0u)
 extern const char *const psx_headroom_field_names[PSX_HR_COUNT];
 void psx_headroom_totals(PsxHeadroomFrame *out);
 void psx_headroom_record_frame(void);

@@ -25,6 +25,7 @@ def remove_function(source, name):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cc", default=memory_fixture.default_cc())
+    parser.add_argument("--headroom-disabled", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     # Reuse the existing production-memory fixture. Link the real parity and
@@ -42,7 +43,8 @@ def main():
         (work / "harness_common.h").write_text(memory_fixture.HARNESS_COMMON_H, encoding="utf-8")
         (work / "stubs.c").write_text(stubs, encoding="utf-8")
         (work / "trace.c").write_text(memory_fixture.TRACE_COUNTING_C, encoding="utf-8")
-        for direct, production in ((0, True), (1, True), (1, False)):
+        policies = ((1, True),) if args.headroom_disabled else ((0, True), (1, True), (1, False))
+        for direct, production in policies:
             for opt in ("-O0", "-O2"):
                 exe = work / ("fixture.exe" if os.name == "nt" else "fixture")
                 argv = [args.cc, "-std=c11", opt, "-ffunction-sections", "-fdata-sections",
@@ -50,6 +52,8 @@ def main():
                         "-I", str(work), "-I", str(root / "runtime/include")]
                 if production:
                     argv += ["-DPSX_NO_DEBUG_TOOLS=1"]
+                if args.headroom_disabled:
+                    argv += ["-DPSX_DISABLE_HEADROOM_COUNTERS=1"]
                 argv += [str(root / "runtime/tests/test_direct_guest_memory.c")]
                 argv += [str(root / "runtime/src" / name) for name in
                          ("memory.c", "psx_ram_geometry.c", "kernel_patch_ranges.c",

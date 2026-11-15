@@ -1076,8 +1076,10 @@ static int submit_native_gpu_linked_list(void) {
     s_native_stats.words += word_count + node_count;
     if (observed) s_native_stats.observed_words += word_count + node_count;
     else s_native_stats.direct_words += word_count + node_count;
+    PSX_HR_GPU_HOLD_BEGIN();
     psx_advance_cycles(cycles);
     psx_devices_service_to_now_cause(PSX_HR_REQUEST_GPU_HOLD);
+    PSX_HR_GPU_HOLD_END();
     s_native_stats.service_requests++;
     gpu_ll_complete(NULL, !terminated);
     record_gpu_hold(cyc0, host0, 0, cycles ? 1u : 0u);
@@ -1092,6 +1094,7 @@ static void hold_cpu_for_gpu_linked_list(void) {
     const uint64_t host0 = hold_host_ticks();
     const uint32_t words0 = gpu_linked_list.total_words;
     uint32_t steps = 0;
+    PSX_HR_GPU_HOLD_BEGIN();
     while (gpu_linked_list.active && ((channels[2].chcr >> 24) & 1u) &&
            channel_enabled(2)) {
         const uint32_t moved = gpu_linked_list.total_words;
@@ -1105,6 +1108,7 @@ static void hold_cpu_for_gpu_linked_list(void) {
         steps++;
         if (gpu_linked_list.active && gpu_linked_list.total_words == moved) break;
     }
+    PSX_HR_GPU_HOLD_END();
     record_gpu_hold(cyc0, host0, words0, steps);
 }
 

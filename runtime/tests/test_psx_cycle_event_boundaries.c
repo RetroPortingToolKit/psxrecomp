@@ -254,10 +254,32 @@ int main(void) {
     uint64_t spu_before=psx_hr_service_deadlines[PSX_HR_DEADLINE_SPU];
     psx_advance_cycles(3);psx_devices_service_to_now();
     VERIFY(psx_hr_service_deadlines[PSX_HR_DEADLINE_SPU]>spu_before,"advertised SPU deadline counted");
+    uint64_t implicit_before=psx_hr_gpu_hold_implicit_services;
+    gpu_before=psx_hr_service_requests[PSX_HR_REQUEST_GPU_HOLD];
+    PSX_HR_GPU_HOLD_BEGIN();
+    VERIFY(psx_hr_gpu_hold_depth==1,"GPU hold enters attribution context");
+    psx_next_service_cycle=0;
+    psx_advance_cycles(1);
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    /* This policy defers automatic device work; the generic catch-up entry
+     * must still inherit the synchronous hold's attribution context. */
+    psx_devices_service_to_now();
+#endif
+    PSX_HR_GPU_HOLD_END();
+    VERIFY(!psx_hr_gpu_hold_depth,"GPU hold context ends after catch-up");
+    VERIFY(psx_hr_gpu_hold_implicit_services==implicit_before+1 &&
+           psx_hr_service_requests[PSX_HR_REQUEST_GPU_HOLD]==gpu_before+1,
+           "implicit GPU-hold service counted in hold request partition");
+    uint64_t other_before=psx_hr_service_requests[PSX_HR_REQUEST_OTHER];
+    psx_devices_service_to_now();
+    VERIFY(psx_hr_service_requests[PSX_HR_REQUEST_OTHER]==other_before+1,
+           "GPU hold context cannot leak into later ordinary work");
     uint64_t requests=0,deadlines=0;
     for(unsigned i=0;i<PSX_HR_REQUEST_COUNT;++i)requests+=psx_hr_service_requests[i];
     for(unsigned i=0;i<PSX_HR_DEADLINE_COUNT;++i)deadlines+=psx_hr_service_deadlines[i];
     VERIFY(requests==psx_device_service_calls && deadlines==requests,"service classifications partition actual calls");
+    PSX_HR_GPU_HOLD_BEGIN();psx_cycles_reset_for_boot();PSX_HR_GPU_HOLD_END();
+    VERIFY(!psx_hr_gpu_hold_depth,"reset/early-clear cannot leak or underflow hold context");
 #endif
     fprintf(stderr, "PASS cross-device deadline preserves D-1 + 1 causality; "
                     "idle skip bounded by the SPU sample deadline\n");

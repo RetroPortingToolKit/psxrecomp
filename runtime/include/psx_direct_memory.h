@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include "cpu_state.h"
 #include "psx_memory.h"
+#include "headroom_counters.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,6 +21,47 @@ typedef struct PSXDirectMemoryStats {
 } PSXDirectMemoryStats;
 extern PSXDirectMemoryStats g_psx_direct_memory_stats;
 void psx_direct_memory_get_stats(PSXDirectMemoryStats *out);
+
+/* M0 width counts, separate from the existing generated-site totals above.
+ * access 0=load/1=store; region RAM/scratch/MMIO/other; width u8/u16/u32.
+ * Inline and canonical helper entries are disjoint execution paths. A native
+ * generated fallback is also a canonical entry when its callback is psx_*;
+ * do not add the generated fallback totals to these helper counts.
+ * Host/device/BIOS/interpreter calls through psx_read/write_* are included.
+ * Raw peeks, private overlay callbacks and substituted bus readers are not.
+ * This accounting is host-only and removed by the M0 overhead control. */
+enum { PSX_MEM_RAM, PSX_MEM_SCRATCH, PSX_MEM_MMIO, PSX_MEM_OTHER };
+enum { PSX_MEM_U8, PSX_MEM_U16, PSX_MEM_U32 };
+typedef struct PSXMemoryWidthStats {
+    uint64_t inline_access[2][2][3];
+    uint64_t helper_access[2][4][3];
+} PSXMemoryWidthStats;
+extern PSXMemoryWidthStats g_psx_memory_width_stats;
+void psx_memory_get_width_stats(PSXMemoryWidthStats *out);
+
+static inline void psx_memory_note_inline_width(unsigned store, unsigned region,
+                                                uint32_t width) {
+    PSX_HR_INC(g_psx_memory_width_stats.inline_access[store][region]
+        [width == 4u ? PSX_MEM_U32 : width == 2u ? PSX_MEM_U16 : PSX_MEM_U8]);
+    (void)store; (void)region; (void)width;
+}
+static inline void psx_memory_note_helper_width(uint32_t address, unsigned store,
+                                                uint32_t width) {
+#if !defined(PSX_DISABLE_HEADROOM_COUNTERS) || !PSX_DISABLE_HEADROOM_COUNTERS
+    const uint32_t phys = address & 0x1FFFFFFFu;
+    unsigned region = PSX_MEM_OTHER;
+    if (address < 0xC0000000u) {
+        if (phys < PSX_MAIN_RAM_WINDOW_BYTES) region = PSX_MEM_RAM;
+        else if (phys >= 0x1F800000u && phys < 0x1F800400u) region = PSX_MEM_SCRATCH;
+        else if (phys >= 0x1F801000u && phys < 0x1F804000u) region = PSX_MEM_MMIO;
+    }
+    ++g_psx_memory_width_stats.helper_access[store][region]
+        [width == 4u ? PSX_MEM_U32 : width == 2u ? PSX_MEM_U16 : PSX_MEM_U8];
+#else
+    (void)address; (void)store; (void)width;
+#endif
+}
+
 
 /* Borrow the maintained observer state rather than a second page registry.
  * Registration, clear, restore and first execution keep using their original
@@ -101,10 +143,13 @@ static inline uint8_t *psx_direct_store_view(uint32_t address, uint32_t width) {
 }
 
 static inline void psx_direct_note_store(uint32_t addr, uint32_t value, uint32_t width) {
-    if ((addr & 0x1FFFFFFFu) < PSX_MAIN_RAM_WINDOW_BYTES)
+    if ((addr & 0x1FFFFFFFu) < PSX_MAIN_RAM_WINDOW_BYTES) {
         ++g_psx_direct_memory_stats.store_inline_ram;
-    else
+        psx_memory_note_inline_width(1u, PSX_MEM_RAM, width);
+    } else {
         ++g_psx_direct_memory_stats.store_inline_scratch;
+        psx_memory_note_inline_width(1u, PSX_MEM_SCRATCH, width);
+    }
     ++g_guest_store_count;
     if (!g_psx_track_last_store) return;
     g_guest_last_store_addr = width == 4u ? addr : UINT32_MAX;

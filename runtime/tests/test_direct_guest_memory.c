@@ -54,6 +54,64 @@ static void require_helper(CPUState *cpu, uint32_t addr) {
     CHECK(helper_writes() == n + 1);
 }
 
+
+/* Actual canonical and generated value paths, including their width partition.
+ * Reset only this host-only fixture's counters; production never arms them. */
+static void check_memory_widths(CPUState *cpu) {
+    static const uint32_t addresses[4]={0x80120000u,0xBF800100u,0x1F801000u,0xC0120000u};
+    memset(&g_psx_memory_width_stats,0,sizeof g_psx_memory_width_stats);
+    for(unsigned region=0;region<4;++region) {
+        uint32_t a=addresses[region];
+        psx_write_byte(a,0x12u);psx_write_half(a,0x3456u);psx_write_word(a,0x789ABCDEu);
+        (void)psx_read_byte(a);(void)psx_read_half(a);(void)psx_read_word(a);
+    }
+#if !defined(PSX_DISABLE_HEADROOM_COUNTERS) || !PSX_DISABLE_HEADROOM_COUNTERS
+    for(unsigned access=0;access<2;++access)
+        for(unsigned region=0;region<4;++region)
+            for(unsigned width=0;width<3;++width)
+                CHECK(g_psx_memory_width_stats.helper_access[access][region][width]==1);
+#endif
+    (void)psx_cyc_load_byte(cpu,addresses[0],2,0);
+    (void)psx_cyc_load_half(cpu,addresses[0],2,0);
+    (void)psx_cyc_load_word(cpu,addresses[0],2,0);
+    PSX_STORE_BYTE(cpu,addresses[0],0x12u);
+    PSX_STORE_HALF(cpu,addresses[0],0x3456u);
+    PSX_STORE_WORD(cpu,addresses[0],0x789ABCDEu);
+    (void)psx_cyc_load_byte(cpu,addresses[1],2,0);
+    (void)psx_cyc_load_half(cpu,addresses[1],2,0);
+    (void)psx_cyc_load_word(cpu,addresses[1],2,0);
+    PSX_STORE_BYTE(cpu,addresses[1],0x12u);
+    PSX_STORE_HALF(cpu,addresses[1],0x3456u);
+    PSX_STORE_WORD(cpu,addresses[1],0x789ABCDEu);
+#if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
+    const PSXMemoryWidthStats zero={0};
+    CHECK(!memcmp(&zero,&g_psx_memory_width_stats,sizeof zero));
+#else
+    for(unsigned width=0;width<3;++width) {
+        CHECK(g_psx_memory_width_stats.inline_access[0][PSX_MEM_RAM][width]==1);
+        CHECK(g_psx_memory_width_stats.inline_access[1][PSX_MEM_RAM][width]==FAST);
+        CHECK(g_psx_memory_width_stats.inline_access[0][PSX_MEM_SCRATCH][width]==!!PSX_DIRECT_GUEST_MEMORY);
+        CHECK(g_psx_memory_width_stats.inline_access[1][PSX_MEM_SCRATCH][width]==FAST);
+        CHECK(g_psx_memory_width_stats.helper_access[0][PSX_MEM_RAM][width]==1);
+        CHECK(g_psx_memory_width_stats.helper_access[1][PSX_MEM_RAM][width]==1+!FAST);
+        CHECK(g_psx_memory_width_stats.helper_access[0][PSX_MEM_SCRATCH][width]==1+!PSX_DIRECT_GUEST_MEMORY);
+        CHECK(g_psx_memory_width_stats.helper_access[1][PSX_MEM_SCRATCH][width]==1+!FAST);
+    }
+#endif
+    /* Raw inspection and custom callbacks are explicitly outside canonical
+     * helper counts; the old generated fallback totals still cover that site. */
+    PSXMemoryWidthStats before=g_psx_memory_width_stats;
+    extern uint32_t psx_peek_word_untraced(uint32_t);
+    (void)psx_peek_word_untraced(addresses[0]);
+    cpu->read_word=read_word;
+    (void)psx_cyc_load_word(cpu,addresses[1],2,0);
+    cpu->read_word=psx_read_word;
+    cpu->write_word=write_word;
+    PSX_STORE_WORD(cpu,addresses[0],0);
+    cpu->write_word=psx_write_word;
+    CHECK(!memcmp(&before,&g_psx_memory_width_stats,sizeof before));
+}
+
 int main(void) {
     CPUState cpu = {0};
     cpu.read_word=psx_read_word; cpu.read_half=psx_read_half; cpu.read_byte=psx_read_byte;
@@ -221,6 +279,7 @@ int main(void) {
     CHECK(stats.load_inline_ram>=3 && stats.store_helper_ram>0);
     CHECK((stats.store_inline_ram>0)==FAST && (stats.store_inline_scratch>0)==FAST);
     CHECK((stats.load_inline_scratch>0)==!!PSX_DIRECT_GUEST_MEMORY);
-    printf("PASS: direct=%d fast=%d bytes, aliasing, IsC, card/parity, kernel, overlay, text and restore\n",PSX_DIRECT_GUEST_MEMORY,FAST);
+    check_memory_widths(&cpu);
+    printf("PASS: direct=%d fast=%d bytes, observers, memory classes/widths and restore\n",PSX_DIRECT_GUEST_MEMORY,FAST);
     return 0;
 }
