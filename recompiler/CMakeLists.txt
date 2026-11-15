@@ -723,6 +723,32 @@ if(BUILD_TESTING)
                          ${CMAKE_CURRENT_BINARY_DIR}/draw_distance_interp_stderr.txt)
     endif()
 
+    # R3000A load delay in the dirty-RAM interpreter: MFC2/CFC2 and game-RAM
+    # loads show the old value to the delay-slot instruction, including a
+    # branch-delay-slot MFC2 into the branch target. Twin of
+    # cop2_delay_slot_load.
+    if(NOT MSVC)
+        add_executable(interp_load_delay_test
+            ../runtime/tests/test_interp_load_delay.c
+            ../runtime/src/ws_aspect_cone_math.c)
+        target_include_directories(interp_load_delay_test PRIVATE
+            ../runtime/include
+            ../runtime/src)
+        target_compile_options(interp_load_delay_test PRIVATE
+            -O2 -flto -ffunction-sections -fdata-sections)
+        if(APPLE)
+            target_link_options(interp_load_delay_test PRIVATE
+                -flto -Wl,-dead_strip)
+        else()
+            target_link_options(interp_load_delay_test PRIVATE
+                -flto -Wl,--gc-sections)
+        endif()
+        if(NOT WIN32)
+            target_link_libraries(interp_load_delay_test PRIVATE m)
+        endif()
+        add_test(NAME interp_load_delay_test COMMAND interp_load_delay_test)
+    endif()
+
     # [[mod_immediate.sites]] runtime store, selectors and word substitution
     # (mod_immediate.c). The interpreter call site is pinned by
     # runtime/tests/test_interp_mod_immediate_guards.py.

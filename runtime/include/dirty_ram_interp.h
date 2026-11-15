@@ -70,10 +70,11 @@ void dirty_ram_span_last_failure(DirtyRamSpanFailure *out);
 void dirty_ram_span_get(uint32_t *lo, uint32_t *hi);
 void dirty_ram_span_set(uint32_t lo, uint32_t hi);
 
-/* Retire a deferred R3000A load-delay writeback (see dirty_ram_interp.c). The
- * interpreter defers a load's destination-register write past the delay-slot
- * instruction, as hardware does; call this anywhere control leaves the
- * interpreter or an exception is delivered, so no register write is dropped. */
+/* End an R3000A load-delay window (see dirty_ram_interp.c). The interpreter
+ * writes a load's (or MFC2/CFC2's) destination at once and shows the old value
+ * only to the instruction in the delay slot; call this anywhere control leaves
+ * the interpreter or an exception is delivered, so the window does not outlive
+ * the instruction stream it belongs to. */
 void dirty_ram_ld_delay_flush(CPUState* cpu);
 
 /* Drop a deferred load-delay writeback WITHOUT applying it. Required on
@@ -90,6 +91,7 @@ void dirty_ram_ld_delay_discard(void);
 typedef struct DirtyRamLoadDelay {
     uint32_t rt, val, age;
     int      armed;
+    uint32_t old, next, seq;   /* hidden value, delay-slot PC, arming step */
 } DirtyRamLoadDelay;
 void dirty_ram_ld_delay_save(DirtyRamLoadDelay *out);
 void dirty_ram_ld_delay_restore(const DirtyRamLoadDelay *in);

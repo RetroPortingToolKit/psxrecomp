@@ -360,22 +360,58 @@ int psx_exec_phase(void) { return g_exec_phase; }
  * permanently unformatted; the send side transmitted one byte 128x).
  *
  * Contract: on a same-register conflict the LOAD wins (it retires later),
- * matching the compiled emitter. Pending state is flushed on interpreter exit
- * and before exception delivery, where the pipeline would have drained. */
-static uint32_t s_ld_pend_rt    = 0;
-static uint32_t s_ld_pend_val   = 0;
-static uint32_t s_ld_pend_age   = 0;  /* 0 = armed; 1 = delay slot has run */
+ * matching the compiled emitter.
+ *
+ * Game RAM and MFC2/CFC2 too (PSX-SPX geometrytransformationenginegte, "GTE
+ * Load Delay Slots"). The value delay used to be limited to BIOS code, and
+ * MFC2/CFC2 were never deferred, because a deferred write had to be carried
+ * across every compiled/interpreted hand-off. Tekken 2's (USA Rev 1) fighter
+ * vertex loop (0x80072890) is software-pipelined around the delay:
+ * `bgtz t9,L; mfc2 t0,SZ1` with `mtc2 t0,VXY0` as L's first instruction, which
+ * must see the OLD t0. An eager MFC2 fed the depth into VXY0 and the fighters
+ * exploded into spikes whenever this loop ran interpreted.
+ *
+ * So the write is now EAGER everywhere, and only the one instruction that
+ * architecturally sits in the delay slot is shown the old value: the load
+ * leaves a token {rt, old, new, PC of its delay slot}. When the next
+ * interpreted instruction is exactly that PC and rt still holds the loaded
+ * value, rt is set back to the old value for that instruction alone and the
+ * loaded value is put back after it. Anything else that runs first (compiled
+ * code, an exception handler, another entry) sees the loaded value, exactly as
+ * the eager interpreter always did, and makes the token stale. Nothing is
+ * ever written late, so no hand-off can be clobbered by a late write.
+ *
+ * A load in a branch's delay slot gets its token's PC from the branch once
+ * the branch commits (the transfer target or the fall-through), provided no
+ * other interpreted instruction ran in between and the branch went where it
+ * encodes. A call whose callee already ran inline drops the token. A branch
+ * shown the old value lands the load when its own delay slot starts. */
+enum { LD_ARMED = 0u, LD_HIDING = 1u, LD_UNRESOLVED = 2u };
+static uint32_t s_ld_pend_rt    = 0;  /* destination GPR                       */
+static uint32_t s_ld_pend_val   = 0;  /* loaded value (already in the GPR)     */
+static uint32_t s_ld_pend_old   = 0;  /* value the delay slot must see         */
+static uint32_t s_ld_pend_next  = 0;  /* PC of the delay-slot instruction      */
+static uint32_t s_ld_pend_seq   = 0;  /* s_ld_step of the arming instruction   */
+static uint32_t s_ld_pend_age   = 0;  /* LD_ARMED / LD_HIDING / LD_UNRESOLVED  */
 static int      s_ld_pend_armed = 0;
+static uint32_t s_ld_step       = 0;  /* exec_one_fetched entries              */
+static int      s_ld_in_delay_slot = 0; /* set by exec_delay_slot for one call */
 
-/* Retire a deferred load writeback. Call wherever the interpreter stops
- * stepping instructions (hand-off to compiled code, exception entry), since
- * nothing downstream knows about the pending register write. */
+/* The delay-slot instruction is done (or something else ran first): the load
+ * has landed. Restores the loaded value only while it is hidden. */
+static inline void ld_delay_land(CPUState *cpu) {
+    if (s_ld_pend_armed && s_ld_pend_age == LD_HIDING && s_ld_pend_rt != 0u)
+        cpu->gpr[s_ld_pend_rt] = s_ld_pend_val;
+    s_ld_pend_armed = 0;
+    s_ld_pend_age   = LD_ARMED;
+    cpu->gpr[0] = 0;
+}
+
+/* Drop the token where the interpreter stops stepping instructions (hand-off
+ * to compiled code, exception entry): the loaded value is already in place. */
 void dirty_ram_ld_delay_flush(CPUState *cpu) {
     if (!s_ld_pend_armed) return;
-    s_ld_pend_armed = 0;
-    s_ld_pend_age   = 0;
-    if (s_ld_pend_rt != 0u) cpu->gpr[s_ld_pend_rt] = s_ld_pend_val;
-    cpu->gpr[0] = 0;
+    ld_delay_land(cpu);
 }
 
 /* Set by a CPU_EXEC section load; the next discard keeps the restored value. */
@@ -387,9 +423,13 @@ void dirty_ram_ld_delay_discard(void) {
         return;
     }
     s_ld_pend_armed = 0;
-    s_ld_pend_age   = 0;
+    s_ld_pend_age   = LD_ARMED;
     s_ld_pend_rt    = 0;
     s_ld_pend_val   = 0;
+    s_ld_pend_old   = 0;
+    s_ld_pend_next  = 0;
+    s_ld_pend_seq   = 0;
+    s_ld_in_delay_slot = 0;
 }
 
 void dirty_ram_ld_delay_save(DirtyRamLoadDelay *out) {
@@ -398,6 +438,9 @@ void dirty_ram_ld_delay_save(DirtyRamLoadDelay *out) {
     out->val = s_ld_pend_val;
     out->age = s_ld_pend_age;
     out->armed = s_ld_pend_armed;
+    out->old = s_ld_pend_old;
+    out->next = s_ld_pend_next;
+    out->seq = s_ld_pend_seq;
 }
 
 void dirty_ram_ld_delay_restore(const DirtyRamLoadDelay *in) {
@@ -406,6 +449,10 @@ void dirty_ram_ld_delay_restore(const DirtyRamLoadDelay *in) {
     s_ld_pend_val = in->val;
     s_ld_pend_age = in->age;
     s_ld_pend_armed = in->armed;
+    s_ld_pend_old = in->old;
+    s_ld_pend_next = in->next;
+    s_ld_pend_seq = in->seq;
+    s_ld_in_delay_slot = 0;
 }
 
 void dirty_ram_ld_delay_restore_from_state(const DirtyRamLoadDelay *in) {
@@ -1555,6 +1602,7 @@ static void exec_delay_slot(CPUState *cpu, uint32_t pc) {
     uint32_t dummy_next = 0;
     const int outer_slot = s_in_delay_slot;
     s_in_delay_slot = 1;
+    s_ld_in_delay_slot = 1; /* a load here: its delay slot is the transfer target */
     (void)exec_one_fetched(cpu, pc, insn, &dummy_next);
     s_in_delay_slot = outer_slot;
     g_dirty_ram_insns_run++;
@@ -1564,45 +1612,44 @@ static void exec_delay_slot(CPUState *cpu, uint32_t pc) {
      * pair costs both, matching hardware. No separate charge here. */
 }
 
-/* Load-delay shim around the decoder (see dirty_ram_ld_delay_flush above).
- * Wrapping here keeps every individual load case untouched: the inner decoder
- * still writes gpr[rt] eagerly, and we roll that write back by one instruction
- * so the delay-slot instruction observes the architecturally-correct value. */
+/* Load-delay shim around the decoder (see the load-delay section above).
+ * Every individual load case stays untouched and writes gpr[rt] at once; this
+ * wrapper shows the old value to the one instruction in the delay slot. */
 static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
                                   uint32_t *next_pc_out, uint32_t original_instruction);
 
 static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
                             uint32_t *next_pc_out) {
-    /* A load's writeback becomes visible to the instruction AFTER its delay
-     * slot: load at N, hidden from N+1, visible from N+2. s_ld_pend_age tracks
-     * that: 0 = armed by the instruction just executed, 1 = the delay slot has
-     * now run, so retire it before executing anything else.
-     *
-     * Doing the retire HERE (rather than after the slot returns) is what makes
-     * branches correct: a branch's own delay slot is executed nested inside
-     * exec_one_fetched_inner, and re-enters this wrapper — by then age is 1, so
-     * the slot correctly observes the loaded value. */
-    if (s_ld_pend_armed && s_ld_pend_age != 0u) {
-        s_ld_pend_armed = 0;
-        if (s_ld_pend_rt != 0u) cpu->gpr[s_ld_pend_rt] = s_ld_pend_val;
-        cpu->gpr[0] = 0;
+    const uint32_t ld_step = ++s_ld_step;
+    const int ld_in_slot = s_ld_in_delay_slot;
+    s_ld_in_delay_slot = 0;
+    int ld_hiding = 0;
+    if (s_ld_pend_armed && s_ld_pend_age == LD_HIDING) {
+        /* Nested inside the delay-slot instruction: it is a branch or jump
+         * starting its own delay slot, so the load has landed. */
+        ld_delay_land(cpu);
     } else if (s_ld_pend_armed) {
+        const uint32_t nx_op = op_field(insn);
+        const uint32_t nx_fn = funct_field(insn);
         /* LWL/LWR exemption. `lwl rt,x` immediately followed by `lwr rt,y` is
          * THE unaligned-load idiom every MIPS compiler emits, and MIPS-I
          * explicitly permits the pair back-to-back: the second half merges with
          * the first's result rather than the pre-load register. Hiding the
-         * pending write here would make the merge read a stale rt and silently
-         * corrupt every unaligned load (it wedged Tomba 2 at boot). Retire the
-         * write early so the partner sees it — this is forwarding, not a
-         * shortcut around the delay slot. */
-        const uint32_t nx_op = op_field(insn);
-        const int is_lwlr = (nx_op == 0x22u || nx_op == 0x26u);
-        if (is_lwlr && rt_field(insn) == s_ld_pend_rt) {
-            s_ld_pend_armed = 0;
-            if (s_ld_pend_rt != 0u) cpu->gpr[s_ld_pend_rt] = s_ld_pend_val;
-            cpu->gpr[0] = 0;
+         * loaded value here would make the merge read a stale rt and silently
+         * corrupt every unaligned load (it wedged Tomba 2 at boot): forwarding.
+         * SYSCALL/BREAK in the slot: the exception drains the pipeline, so the
+         * handler sees the loaded value. */
+        const int is_lwlr = (nx_op == 0x22u || nx_op == 0x26u) &&
+                            rt_field(insn) == s_ld_pend_rt;
+        const int is_trap = nx_op == 0x00u && (nx_fn == 0x0Cu || nx_fn == 0x0Du);
+        if (s_ld_pend_age == LD_ARMED && dirty_ram_same_pc(pc, s_ld_pend_next) &&
+            cpu->gpr[s_ld_pend_rt] == s_ld_pend_val && !is_lwlr && !is_trap) {
+            cpu->gpr[s_ld_pend_rt] = s_ld_pend_old; /* this IS the delay slot */
+            s_ld_pend_age = LD_HIDING;
+            ld_hiding = 1;
         } else {
-            s_ld_pend_age = 1u; /* this instruction IS the delay slot: stay hidden */
+            s_ld_pend_armed = 0; /* stale, or forwarded: the value is in place */
+            s_ld_pend_age   = LD_ARMED;
         }
     }
 
@@ -1612,23 +1659,31 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
      * guest's bytes (and the guard above) stay the original instruction. */
     if (g_psx_mod_immediate_live) insn = psx_mod_immediate_patch(pc, insn);
 
-    /* op 0x20..0x26 = LB/LH/LWL/LW/LBU/LHU/LWR. LWC2 (GTE, 0x32) targets a COP2
-     * register, not a GPR, so it needs no deferral here. */
+    /* op 0x20..0x26 = LB/LH/LWL/LW/LBU/LHU/LWR, and COP2 MFC2/CFC2 (op 0x12,
+     * rs 0/2), which write their GPR one instruction late exactly like LW.
+     * LWC2 (GTE, 0x32) targets a COP2 register, not a GPR, so it needs no
+     * delay here. Once limited to BIOS ROM and kernel RAM; the eager-write
+     * token above made game RAM safe. */
     const uint32_t ld_op = op_field(insn);
     const uint32_t ld_rt = rt_field(insn);
-    const uint32_t pc_phys = pc & 0x1FFFFFFFu;
-    /* OpenBIOS executes cardfasttrack both from ROM and from its low-RAM
-     * kernel copy (for example 0x3554..0x36D4). Its hand-written dependent
-     * load requires the real R3000A value delay. Game-owned dirty RAM crosses
-     * mixed compiled/interpreted boundaries that do not carry this pending
-     * writeback yet, so preserve the historical eager-value contract there. */
-    const int      in_bios_rom =
-        pc_phys >= 0x1FC00000u && pc_phys < 0x1FC80000u;
-    const int      in_bios_kernel_ram = pc_phys < 0x00010000u;
-    const int      is_ld = (in_bios_rom || in_bios_kernel_ram) &&
-                           (ld_op >= 0x20u && ld_op <= 0x26u) &&
+    const int      is_gte_read = ld_op == 0x12u &&
+                                 (rs_field(insn) == 0x00u || rs_field(insn) == 0x02u);
+    const int      is_ld = ((ld_op >= 0x20u && ld_op <= 0x26u) || is_gte_read) &&
                            (ld_rt != 0u);
     const uint32_t ld_before = is_ld ? cpu->gpr[ld_rt] : 0u;
+    /* Where this instruction transfers to if it is a branch or jump, for a
+     * load in its delay slot (registers as this instruction reads them). */
+    uint32_t ld_xfer_a = 0xFFFFFFFFu, ld_xfer_b = 0xFFFFFFFFu;
+    if ((ld_op >= 0x04u && ld_op <= 0x07u) ||
+        (ld_op == 0x01u && (ld_rt == 0x00u || ld_rt == 0x01u ||
+                            ld_rt == 0x10u || ld_rt == 0x11u))) {
+        ld_xfer_a = pc + 4u + ((uint32_t)simm16_field(insn) << 2);
+        ld_xfer_b = pc + 8u;
+    } else if (ld_op == 0x02u || ld_op == 0x03u) {
+        ld_xfer_a = ((pc + 4u) & 0xF0000000u) | ((insn & 0x03FFFFFFu) << 2);
+    } else if (ld_op == 0x00u && (funct_field(insn) == 0x08u || funct_field(insn) == 0x09u)) {
+        ld_xfer_a = cpu->gpr[rs_field(insn)];
+    }
 
     /* [[draw_distance.clamp]] (draw_distance.h): while a mod has the clamps
      * on, a listed main-EXE site clamps its register before it runs, exactly
@@ -1648,22 +1703,40 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
 
     const int rv = exec_one_fetched_inner(cpu, pc, insn, next_pc_out, original_instruction);
 
+    if (ld_hiding && s_ld_pend_armed && s_ld_pend_age == LD_HIDING) {
+        /* The delay-slot instruction has retired: the load lands. It wins a
+         * same-register write, except against a load in its delay slot, which
+         * retires later. */
+        s_ld_pend_armed = 0;
+        s_ld_pend_age   = LD_ARMED;
+        if (!(is_ld && ld_rt == s_ld_pend_rt)) cpu->gpr[s_ld_pend_rt] = s_ld_pend_val;
+        cpu->gpr[0] = 0;
+    }
+
     if (is_ld) {
         const uint32_t loaded = cpu->gpr[ld_rt];
         if (loaded != ld_before) {
-            /* Back-to-back loads: retire the older writeback before reusing the
-             * slot, otherwise its register write would be dropped entirely. */
-            if (s_ld_pend_armed && s_ld_pend_rt != ld_rt && s_ld_pend_rt != 0u)
-                cpu->gpr[s_ld_pend_rt] = s_ld_pend_val;
-            /* Undo the eager write; it becomes visible one instruction later.
-             * On a same-register conflict this naturally makes the LOAD win,
-             * matching what the compiled backend emits for a dependent pair. */
-            cpu->gpr[ld_rt] = ld_before;
+            /* The register keeps the loaded value; only the next instruction
+             * (pc + 4, or the branch target when this is a delay slot) is
+             * shown ld_before. */
             s_ld_pend_rt    = ld_rt;
             s_ld_pend_val   = loaded;
-            s_ld_pend_age   = 0u;
+            s_ld_pend_old   = ld_before;
+            s_ld_pend_seq   = ld_step;
+            s_ld_pend_next  = pc + 4u;
+            s_ld_pend_age   = ld_in_slot ? LD_UNRESOLVED : LD_ARMED;
             s_ld_pend_armed = 1;
-            cpu->gpr[0]     = 0;
+        }
+    } else if (s_ld_pend_armed && s_ld_pend_age == LD_UNRESOLVED) {
+        /* A load ran in this instruction's delay slot. Its own delay slot is
+         * where this transfer lands, if nothing else ran in between. */
+        if (rv == 1 && s_ld_pend_seq == ld_step + 1u && s_ld_step == ld_step + 1u &&
+            (cpu->pc == ld_xfer_a || cpu->pc == ld_xfer_b)) {
+            s_ld_pend_next = cpu->pc;
+            s_ld_pend_age  = LD_ARMED;
+        } else {
+            s_ld_pend_armed = 0;
+            s_ld_pend_age   = LD_ARMED;
         }
     }
     return rv;
