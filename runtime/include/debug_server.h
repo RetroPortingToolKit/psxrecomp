@@ -117,6 +117,9 @@ uint32_t debug_server_get_tcp_drops(void);
 /* Record the current frame's state into the ring buffer.
  * Call after vblank processing. */
 void debug_server_record_frame(void);
+/* Bounded exact display-image history, independent of listener/CPU tracing.
+ * Call once per vblank before advancing the shared frame number. */
+void debug_server_record_display_frame(void);
 /* Operator capture mark (hotkey, present thread): freeze the always-on display
  * and GP0 rings at this instant and save the presented native-wide frame, so a
  * transient glitch can be read back afterwards over TCP (capture_mark). */

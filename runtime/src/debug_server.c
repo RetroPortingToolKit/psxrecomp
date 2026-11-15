@@ -50,6 +50,8 @@
 #include "gpu_timeline.h"
 #include "gte_nclip_stats.h"
 #include "present_image_ring.h"
+#include "presentation_gpu.h"
+#include <stdatomic.h>
 #include "load_transition_ring.h"
 #include "cdrom.h"
 #include "psx_disc_tray.h"
@@ -10534,69 +10536,7 @@ static void handle_overlay_image(int id, const char *json)
  * display geometry of that frame, and the PNG is decoded from it with the
  * same scanout decode as screenshot_file — so 480-line interlaced displays
  * and depth24 (FMV) frames are served whole, not cropped or refused. */
-#define DISP_RING_CAP   64    /* full-VRAM entries are 1MB each; ~1s of
-                               * lookback for exact-frame forensics */
-/* The entire 1024x512 raw VRAM as the renderer sees it at this frame (GL: FBO
- * truth; SW and depth24: CPU truth), so an offline client can micro-cosim ANY
- * prim of the frame — rasterize it from the GP0 ring against the exact
- * same-frame texels/CLUTs — and attribute a bad pixel to sampling vs content.
- * Streamed texture pages and palette cycling make later peeks worthless; only
- * a same-frame capture is evidence. */
-typedef struct {
-    uint32_t frame;
-    uint8_t  valid;
-    GpuDisplayInfo di;            /* display geometry/depth at capture */
-    uint16_t *vram;               /* full 1024x512 */
-} DispRingEntry;
-static PSX_BSS DispRingEntry s_disp_ring[DISP_RING_CAP];
-/* Capture mark state (debug_server_capture_mark / capture_mark). */
-static int      s_capture_frozen = 0;
-static uint64_t s_capture_mark_frame = 0;
-static uint64_t s_capture_mark_count = 0;
-static char     s_capture_wide_path[512];
-static int      s_capture_wide_ok = 0;
-static uint16_t     *s_disp_ring_px = NULL;   /* one block for all entries */
-
-static void disp_ring_capture(void)
-{
-    /* Full-VRAM GL readback is intentionally expensive and can perturb the
-     * performance issue being measured. Keep the forensic ring default-on, but
-     * allow a controlled acceptance run to disable continuous capture while
-     * retaining the TCP server and one-shot screenshot command. */
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *e = getenv("PSX_DISPLAY_RING");
-        enabled = (!e || !*e || *e != '0') ? 1 : 0;
-    }
-    if (!enabled || s_capture_frozen) return;
-    if (!s_disp_ring_px) {
-        size_t vram = (size_t)1024 * 512;
-        s_disp_ring_px = (uint16_t *)malloc(DISP_RING_CAP * vram * sizeof(uint16_t));
-        if (!s_disp_ring_px) return;
-        for (int i = 0; i < DISP_RING_CAP; i++)
-            s_disp_ring[i].vram = s_disp_ring_px + (size_t)i * vram;
-    }
-    DispRingEntry *e = &s_disp_ring[(uint32_t)(s_frame_count % DISP_RING_CAP)];
-    e->frame = (uint32_t)s_frame_count;
-    e->valid = 0;
-    GpuDisplayInfo di;
-    gpu_get_display_info(&di);
-    if (di.disabled || di.width == 0 || di.height == 0) return;
-    gpu_timeline_note(GTL_DISP_CAPTURE, 0, di.display_x | (di.display_y << 16));
-    e->di = di;
-    /* GPU-side truth when the GL raster pipeline is live; CPU VRAM otherwise
-     * (the software backend's authoritative surface). depth24 always reads
-     * the CPU mirror: packed RGB888 MDEC bytes live there, not in the FBO
-     * (see screenshot_file). Runs on the present thread, where the GL context
-     * is current. Deferred: with the render thread on, the readback is
-     * recorded at this point of the command stream and filled in by the
-     * render thread (ring readers sync first). */
-    if (di.depth24 || !gl_renderer_fbo_peek_deferred(0, 0, 1024, 512, e->vram)) {
-        const uint16_t *v = gpu_get_vram();
-        memcpy(e->vram, v, (size_t)1024 * 512 * sizeof(uint16_t));
-    }
-    e->valid = 1;
-}
+#include "display_history.inc"
 
 /* Dump an entry's full-VRAM capture as a raw little-endian u16 blob
  * (1024x512 row-major). */
@@ -10614,6 +10554,7 @@ static void handle_display_ring_aux(int id, const char *json)
     if (!e->valid || e->frame != (uint32_t)f) {
         send_err(id, "frame not in display ring"); return;
     }
+    if (!disp_ring_materialize(e)) { send_err(id,"history readback failed"); return; }
     FILE *fp = fopen(path, "wb");
     if (!fp) { send_err(id, "cannot open file"); return; }
     size_t n1 = fwrite(e->vram, sizeof(uint16_t), (size_t)1024 * 512, fp);
@@ -10654,6 +10595,7 @@ static void handle_display_ring_get(int id, const char *json)
     if (!e->valid || e->frame != (uint32_t)f) {
         send_err(id, "frame not in display ring"); return;
     }
+    if (!disp_ring_materialize(e)) { send_err(id,"history readback failed"); return; }
     /* Same clamp and scanout decode as screenshot_file, against this frame's
      * VRAM snapshot. */
     uint32_t w = e->di.width;  if (w > 640) w = 640;
@@ -17838,10 +17780,6 @@ void debug_server_record_frame(void)
 
     /* Last function */
     strcpy(r->last_func, "(no tracking)");
-
-    /* Always-on display ring: raw display-area pixels for THIS frame number
-     * (pre-increment, matching what the `frame` command reports right now). */
-    disp_ring_capture();
 
     s_history_count = s_frame_count + 1;
     s_frame_count++;

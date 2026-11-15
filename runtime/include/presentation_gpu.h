@@ -33,6 +33,17 @@ uint64_t psx_presentation_gpu_snapshot(void);
  * With no render thread, executes immediately on the current GL owner. */
 typedef void (*PsxPresentationSnapshotReady)(void *user,uint64_t version);
 int psx_presentation_gpu_snapshot_async(PsxPresentationSnapshotReady ready,void *user);
+/* Full-VRAM forensic history owns a separate 64-version pool; the material
+ * pool and its four queued captures keep their existing capacity. Replace
+ * releases previous on the GL owner, before the ordered new capture. On zero,
+ * no reference or callback has transferred. No GPU->CPU read occurs here. */
+int psx_presentation_gpu_history_replace_async(uint64_t previous,
+    PsxPresentationSnapshotReady ready,void *user);
+/* Explicit export of one retained native-word image; never changes guest VRAM. */
+int psx_presentation_gpu_snapshot_read_vram(uint64_t version,uint16_t *out);
+/* Register before capture. Called after the render worker drains and before
+ * context-owned history images are destroyed, so CPU history can preserve them. */
+void psx_presentation_gpu_history_set_shutdown(void (*preserve)(void));
 /* Lifecycle/debug mutation only: acquire before locking producer-owned data. */
 void psx_presentation_gpu_acquire(void);
 int psx_presentation_gpu_retain(uint64_t version);

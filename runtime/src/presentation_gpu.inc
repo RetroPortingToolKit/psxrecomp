@@ -2,12 +2,15 @@
  * ordinary PS1 material shaders, with independent programs/VAOs and owned
  * surfaces. No native render transaction, replay scope or temporal image cache. */
 #define PGPU_VERSIONS 16
+#define PGPU_HISTORY_VERSIONS 64
 typedef struct PgpuVersion {
     uint64_t id, epoch;
     GLuint tex, fbo;
     uint32_t references;
 } PgpuVersion;
 static PgpuVersion s_pgpu_versions[PGPU_VERSIONS];
+static PgpuVersion s_pgpu_history[PGPU_HISTORY_VERSIONS];
+static void (*s_pgpu_history_preserve)(void);
 static uint64_t s_pgpu_next_id = 1;
 static GLuint s_pgpu_tex_prog, s_pgpu_geo_prog, s_pgpu_tex_vao, s_pgpu_geo_vao;
 static GLuint s_pgpu_tex_vbo, s_pgpu_geo_vbo, s_pgpu_color, s_pgpu_fbo, s_pgpu_stencil;
@@ -23,8 +26,11 @@ static PgpuClientWait pgpu_client_wait;
 typedef struct PgpuCapture {
     PsxPresentationSnapshotReady ready;
     void *user;
+    uint64_t previous;
+    int history;
 } PgpuCapture;
 static _Atomic unsigned s_pgpu_pending_captures;
+static _Atomic unsigned s_pgpu_pending_history;
 
 typedef void (APIENTRY *PgpuStencilFuncSeparate)(GLenum,GLenum,GLint,GLuint);
 typedef void (APIENTRY *PgpuStencilMaskSeparate)(GLenum,GLuint);
@@ -113,6 +119,8 @@ static PgpuVersion *pgpu_version(uint64_t id) {
     if(!id)return NULL;
     for(unsigned i=0;i<PGPU_VERSIONS;++i)
         if(s_pgpu_versions[i].id==id && s_pgpu_versions[i].references)return &s_pgpu_versions[i];
+    for(unsigned i=0;i<PGPU_HISTORY_VERSIONS;++i)
+        if(s_pgpu_history[i].id==id && s_pgpu_history[i].references)return &s_pgpu_history[i];
     return NULL;
 }
 void psx_presentation_gpu_set_provider(PsxPresentationProvider provider,void *user) {
@@ -186,20 +194,19 @@ static int pgpu_init(void) {
     s_pgpu_fbo=fbo;s_pgpu_color=color;s_pgpu_stencil=stencil;s_pgpu_scale=scale;
     return 1;
 }
-uint64_t psx_presentation_gpu_snapshot(void) {
-    GL_RT_SYNC("presentation_snapshot");
+static uint64_t pgpu_snapshot_pool(PgpuVersion *pool,unsigned capacity) {
     if(!pgpu_available())return 0;
     flush_cpu_upload();flush_flat_batch();flush_tex_batch();pack_flush();
-    for(unsigned i=0;i<PGPU_VERSIONS;++i) {
-        PgpuVersion *v=&s_pgpu_versions[i];
+    for(unsigned i=0;i<capacity;++i) {
+        PgpuVersion *v=&pool[i];
         if(v->id && v->epoch==s_pgpu_raw_epoch) {
             if(v->references==UINT32_MAX)return 0;
             ++v->references;return v->id;
         }
     }
     PgpuVersion *v=NULL;
-    for(unsigned i=0;i<PGPU_VERSIONS;++i)
-        if(!s_pgpu_versions[i].references) { v=&s_pgpu_versions[i];break; }
+    for(unsigned i=0;i<capacity;++i)
+        if(!pool[i].references) { v=&pool[i];break; }
     if(!v)return 0;
     PgpuState saved;pgpu_state_save(&saved);
     p_glBindBuffer(0x88EC,0);
@@ -216,23 +223,56 @@ uint64_t psx_presentation_gpu_snapshot(void) {
     v->epoch=s_pgpu_raw_epoch;v->id=s_pgpu_next_id++;v->references=1;
     pgpu_state_restore(&saved);return v->id;
 }
+uint64_t psx_presentation_gpu_snapshot(void) {
+    GL_RT_SYNC("presentation_snapshot");
+    return pgpu_snapshot_pool(s_pgpu_versions,PGPU_VERSIONS);
+}
 void psx_presentation_gpu_acquire(void) {GL_RT_SYNC("presentation_owner");}
 static void presentation_gpu_capture_record(const void *payload) {
     PgpuCapture capture;memcpy(&capture,payload,sizeof capture);
-    capture.ready(capture.user,psx_presentation_gpu_snapshot());
-    atomic_fetch_sub(&s_pgpu_pending_captures,1);
+    if(capture.previous)psx_presentation_gpu_release(capture.previous);
+    capture.ready(capture.user,capture.history
+        ? pgpu_snapshot_pool(s_pgpu_history,PGPU_HISTORY_VERSIONS)
+        : psx_presentation_gpu_snapshot());
+    atomic_fetch_sub(capture.history?&s_pgpu_pending_history:&s_pgpu_pending_captures,1);
 }
-int psx_presentation_gpu_snapshot_async(PsxPresentationSnapshotReady ready,void *user) {
+static int pgpu_snapshot_async(uint64_t previous,int history,
+    PsxPresentationSnapshotReady ready,void *user) {
     if(!ready)return 0;
     if(rth_record_mode()) {
-        if(atomic_load(&s_pgpu_pending_captures)>=4)return 0;
+        _Atomic unsigned *pending=history?&s_pgpu_pending_history:&s_pgpu_pending_captures;
+        if(atomic_load(pending)>=4)return 0;
         PgpuCapture *capture=(PgpuCapture *)rt_cmd_begin(RTH_PRESENTATION_CAPTURE,0,sizeof(PgpuCapture));
         if(!capture)return 0;
         capture->ready=ready;capture->user=user;
-        atomic_fetch_add(&s_pgpu_pending_captures,1);rt_cmd_commit();rt_kick();return 1;
+        capture->previous=previous;capture->history=history;
+        atomic_fetch_add(pending,1);rt_cmd_commit();rt_kick();return 1;
     }
     if(!pgpu_available())return 0;
-    ready(user,psx_presentation_gpu_snapshot());return 1;
+    if(previous)psx_presentation_gpu_release(previous);
+    ready(user,history?pgpu_snapshot_pool(s_pgpu_history,PGPU_HISTORY_VERSIONS)
+                      :psx_presentation_gpu_snapshot());return 1;
+}
+int psx_presentation_gpu_snapshot_async(PsxPresentationSnapshotReady ready,void *user) {
+    return pgpu_snapshot_async(0,0,ready,user);
+}
+int psx_presentation_gpu_history_replace_async(uint64_t previous,
+    PsxPresentationSnapshotReady ready,void *user) {
+    return pgpu_snapshot_async(previous,1,ready,user);
+}
+void psx_presentation_gpu_history_set_shutdown(void (*preserve)(void)) {
+    s_pgpu_history_preserve=preserve;
+}
+int psx_presentation_gpu_snapshot_read_vram(uint64_t id,uint16_t *out) {
+    GL_RT_SYNC("history_export");
+    PgpuVersion *v=pgpu_version(id);
+    if(!s_ctx || !v || !out)return 0;
+    PgpuState saved;pgpu_state_save(&saved);
+    p_glBindBuffer(0x88EB,0);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,v->fbo);
+    glPixelStorei(PSXGL_PACK_ROW_LENGTH,0);glPixelStorei(GL_PACK_ALIGNMENT,2);
+    glReadPixels(0,0,VRAM_W,VRAM_H,PSXGL_RED_INTEGER,GL_UNSIGNED_SHORT,out);
+    pgpu_state_restore(&saved);return 1;
 }
 int psx_presentation_gpu_retain(uint64_t id) {
     GL_RT_SYNC("presentation_retain");
@@ -395,11 +435,16 @@ int psx_presentation_gpu_read_rgba(uint8_t *out,size_t capacity,int x,int y,int 
     pgpu_state_restore(&saved);return 1;
 }
 static void presentation_gpu_shutdown(void) {
+    if(s_pgpu_history_preserve)s_pgpu_history_preserve();
     if(s_ctx) {
         if(s_pgpu_output_fence && p_glDeleteSync)p_glDeleteSync(s_pgpu_output_fence);
         for(unsigned i=0;i<PGPU_VERSIONS;++i) {
             if(s_pgpu_versions[i].fbo)p_glDeleteFramebuffers(1,&s_pgpu_versions[i].fbo);
             if(s_pgpu_versions[i].tex)glDeleteTextures(1,&s_pgpu_versions[i].tex);
+        }
+        for(unsigned i=0;i<PGPU_HISTORY_VERSIONS;++i) {
+            if(s_pgpu_history[i].fbo)p_glDeleteFramebuffers(1,&s_pgpu_history[i].fbo);
+            if(s_pgpu_history[i].tex)glDeleteTextures(1,&s_pgpu_history[i].tex);
         }
         if(s_pgpu_fbo)p_glDeleteFramebuffers(1,&s_pgpu_fbo);
         if(s_pgpu_color)glDeleteTextures(1,&s_pgpu_color);
@@ -412,6 +457,7 @@ static void presentation_gpu_shutdown(void) {
         if(s_pgpu_geo_vao)p_glDeleteVertexArrays(1,&s_pgpu_geo_vao);
     }
     memset(s_pgpu_versions,0,sizeof s_pgpu_versions);
+    memset(s_pgpu_history,0,sizeof s_pgpu_history);
     s_pgpu_tex_prog=s_pgpu_geo_prog=s_pgpu_tex_vao=s_pgpu_geo_vao=0;
     s_pgpu_tex_vbo=s_pgpu_geo_vbo=s_pgpu_color=s_pgpu_fbo=s_pgpu_stencil=0;
     s_pgpu_output=s_pgpu_ready=s_pgpu_init_failed=s_pgpu_scale=0;++s_pgpu_raw_epoch;

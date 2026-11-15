@@ -414,6 +414,8 @@ if(BUILD_TESTING)
         if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
             # Production fixtures test_static_code_validity.c and test_static_native_entry.c.
             add_test(NAME static_code_validity_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_static_code_validity.py --cc ${CMAKE_C_COMPILER})
+            # test_display_history.c is built by the production-adapter runner.
+            add_test(NAME display_history_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_display_history.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME rfe_host_reads_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_host_reads.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME rfe_irq_context_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_irq_context.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME rfe_syscall_depth_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_syscall_depth.py --cc ${CMAKE_C_COMPILER})
@@ -551,6 +553,13 @@ if(BUILD_TESTING)
                 --sdl-root "${PSX_GL_READBACK_SDL_ROOT}"
                 --output "${CMAKE_CURRENT_BINARY_DIR}/gl-readback-results")
         set_tests_properties(gl_readback_region_test PROPERTIES LABELS "gpu;opengl;hardware" TIMEOUT 180)
+        add_test(NAME gl_display_history_test
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_readback_region.py"
+                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_display_history.c"
+                --compiler-bin "${PSX_GL_READBACK_COMPILER_BIN}"
+                --sdl-root "${PSX_GL_READBACK_SDL_ROOT}"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-display-history-results")
+        set_tests_properties(gl_display_history_test PROPERTIES LABELS "gpu;opengl;hardware" TIMEOUT 180)
     else()
         message(STATUS "gl_readback_region_test: not registered (requires MinGW, SDL3 headers/static library in PSX_GL_READBACK_SDL_ROOT and gcc.exe/g++.exe in PSX_GL_READBACK_COMPILER_BIN)")
     endif()

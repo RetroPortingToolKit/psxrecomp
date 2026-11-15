@@ -9218,14 +9218,18 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     debug_server_set_fmv_quiet(mdec_recently_active(2));
     /* Debug server: pause gate, poll commands, record frame, check watchpoints. */
     debug_server_wait_if_paused();
-    debug_server_poll();
-    debug_server_record_frame();
-    debug_server_check_watchpoints();
-
 #else
     /* Release keeps TCP commands available without per-frame trace recording.
      * An unrequested server has no mutex/thread and polling returns at once. */
+#endif
     debug_server_poll();
+    /* Retained display history is independent of the listener and full CPU
+     * tracing. Keep it after the pause/poll boundary and before frame advances. */
+    debug_server_record_display_frame();
+#ifndef PSX_NO_DEBUG_TOOLS
+    debug_server_record_frame();
+    debug_server_check_watchpoints();
+#else
     extern uint64_t s_frame_count;
     s_frame_count++;
 #endif
