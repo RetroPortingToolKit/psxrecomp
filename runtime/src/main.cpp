@@ -6632,8 +6632,9 @@ static int host_pad_layer(uint16_t* buttons, uint8_t st[4], uint8_t* lt,
 #ifndef PSX_NO_DEBUG_TOOLS
     return debug_server_get_host_pad(buttons, st, lt, rt);
 #else
-    (void)buttons; (void)st; (void)lt; (void)rt;
-    return 0;
+    /* Core TCP input remains available in explicitly opted-in release QA.
+     * Headless shortcut/capture checks need the same virtual controller. */
+    return g_headless ? debug_server_get_host_pad(buttons, st, lt, rt) : 0;
 #endif
 }
 
@@ -8604,6 +8605,8 @@ static void rewind_host_pause_loop(void) {
         /* The guest is frozen; keep the debug endpoint live so injected
          * input, screenshots and status reads can drive the filmstrip. */
         debug_server_poll();
+#else
+        if (g_headless) debug_server_poll();
 #endif
         if (g_headless) {
             rewind_poll_nav((uint32_t)SDL_GetTicks());
