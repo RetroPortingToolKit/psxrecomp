@@ -571,8 +571,8 @@ int main() {
     seed_store(StoreReference);seed_store(StoreNative);
     pgxp_write_owned(StoreReference+2,8,2);psx_pgxp_store(&owner,0xa41b0000u,StoreReference+2,8);
     const auto half_expected=capture(StoreReference,0x00080008u),half_before=capture(StoreNative,Packed);
-    PSXPGXPOperationAccess partial{native_alias+2,0x102u,proof_bytes,0xa41b0000u};
-    pgxp_checkpoint_begin();CHECK(psx_pgxp_operation_begin(&owner,1u<<27,0,&partial,1,0,0,1));
+    PSXPGXPOperationAccess owned_partial{native_alias+2,0x102u,proof_bytes,0xa41b0000u};
+    pgxp_checkpoint_begin();CHECK(psx_pgxp_operation_begin(&owner,1u<<27,0,&owned_partial,1,0,0,1));
     pgxp_write_owned(StoreNative+2,8,2);psx_pgxp_operation_end(&owner,0,0,0,0,0);
     auto half_actual=capture(StoreNative,0x00080008u);half_actual.address=half_expected.address;
     check_attributes(half_expected,half_actual);pgxp_checkpoint_rollback();
@@ -580,7 +580,7 @@ int main() {
     // Do not bypass cold partial-word validation merely because both stores
     // and reads are integer. Full-word write then read is an owned safe case.
     pgxp_invalidate_word(StoreNative);
-    PSXPGXPOperationAccess partial_read[]={partial,{native_alias,4,proof_bytes,0}};
+    PSXPGXPOperationAccess partial_read[]={owned_partial,{native_alias,4,proof_bytes,0}};
     CHECK(!psx_pgxp_operation_begin(&owner,1u<<27,0,partial_read,2,0,1,1));
     CPUState proof{};proof.gpr[5]=7;pgxp_native_clobber(&proof,1u<<5,0);
     CHECK(pgxp_native_scalar_gpr(&proof,5,7.25,1));
