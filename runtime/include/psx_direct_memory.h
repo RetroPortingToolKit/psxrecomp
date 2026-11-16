@@ -124,7 +124,16 @@ static inline int psx_direct_pending_cycles(void) {
     void (*owner)(void)=PSX_DM_VALUE(g_overlay_flush_pending_cycles);
     return *g_psx_overlay_pending_cycles_p || (owner && owner!=overlay_flush_cycles);
 }
-static inline void psx_direct_callback_barrier(void) { overlay_flush_cycles(); }
+static inline void psx_direct_callback_barrier(void) {
+    overlay_flush_cycles();
+    /* Maintained module entry already publishes the previous owner. Still
+     * fail safely when an unproved/foreign scope reaches a private callback:
+     * that callback need not enter canonical memory to publish this owner. */
+    if(g_psx_overlay_memory_view){
+        void (*owner)(void)=PSX_DM_VALUE(g_overlay_flush_pending_cycles);
+        if(owner && owner!=overlay_flush_cycles)owner();
+    }
+}
 #else
 #define PSX_DM_VALUE(name) (name)
 #define PSX_DM_ARRAY(name) (name)

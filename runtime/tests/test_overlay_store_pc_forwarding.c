@@ -68,6 +68,7 @@ static PSXDirectMemoryStats direct_sites;
 static PSXMemoryWidthStats direct_widths;
 static void (*direct_flush_owner)(void);
 static unsigned direct_reads,direct_writes,direct_charges,direct_published;
+static unsigned foreign_pending,foreign_published,foreign_expected_current;
 static uint8_t *direct_byte_ptr(uint32_t a) {
     uint32_t p=a&0x1FFFFFFFu;
     if(p<0x00800000u)return direct_ram+(p&direct_mask);
@@ -93,7 +94,12 @@ static void direct_store_byte(uint32_t a,uint8_t v){direct_write(a,v,1);}
 static uint32_t direct_forward(uint32_t a){++custom_reads;return direct_word(a);}
 static void direct_forward_store(uint32_t a,uint32_t v){++custom_writes;direct_store_word(a,v);}
 static void direct_charge(uint32_t cycles){++direct_charges;direct_published+=cycles;}
-static void foreign_flush(void){}
+static void foreign_flush(void){foreign_published+=foreign_pending;foreign_pending=0;}
+static uint32_t foreign_custom_read(uint32_t a){
+    (void)a;assert(!s_pending_cycles && !foreign_pending);
+    assert(foreign_published==11 && direct_published==foreign_expected_current);
+    ++custom_reads;return 0xFEDCBA98u;
+}
 static void check_direct_memory(CPUState *cpu,OverlayCallbacks *callbacks){
     PSXDirectMemoryView view={0};view.bytes=sizeof view;
     view.native_spans=view.direct_memory=view.direct_stores=1;
@@ -157,8 +163,12 @@ static void check_direct_memory(CPUState *cpu,OverlayCallbacks *callbacks){
     assert(!psx_direct_store_view(0x80001000,4) && !psx_direct_store_view(0x80120FFF,2));
     assert(!psx_native_span_ram(0x801FFFFE,4) && !psx_native_span_ram(0xBF8003FF,2));
     assert(!psx_native_span_ram(0xC0120000,4) && !psx_direct_store_view(0x1F801000,4));
-    direct_flush_owner=foreign_flush;psx_cpu_charge(5);before=direct_reads;
-    (void)timed_word(cpu,aliases[0],2,0);assert(direct_reads==before+1 && !s_pending_cycles);direct_flush_owner=overlay_flush_cycles;
+    direct_flush_owner=foreign_flush;foreign_pending=11;psx_cpu_charge(5);
+    foreign_expected_current=direct_published+5;
+    cpu->read_word=foreign_custom_read;before=custom_reads;
+    assert(timed_word(cpu,aliases[0],2,0)==0xFEDCBA98u && custom_reads==before+1);
+    assert(!s_pending_cycles && !foreign_pending && foreign_published==11);
+    cpu->read_word=direct_word;direct_flush_owner=overlay_flush_cycles;
     /* A missing emitted store barrier must never make a pending write inline. */
     psx_cpu_charge(11);before=direct_writes;PSX_STORE_WORD(cpu,aliases[0],0x11223344u);
     assert(direct_writes==before+1 && !s_pending_cycles);
