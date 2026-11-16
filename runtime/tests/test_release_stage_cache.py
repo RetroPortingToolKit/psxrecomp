@@ -264,7 +264,7 @@ class ModCatalogStagingTest(unittest.TestCase):
 
     def _framework_source(self):
         src = os.path.join(self.tmp, 'fw_builtin')
-        for i in ('psx.enhancement.cd-speed', 'psx.enhancement.pgxp',
+        for i in ('psx.enhancement.cd-speed', 'psx.enhancement.hd-textures',
                   'psx.enhancement.fast-loading', 'psx.presentation.bezel'):
             touch(os.path.join(src, 'packages', i, '1.0.0', 'manifest.toml'))
         return src
