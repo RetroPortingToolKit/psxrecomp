@@ -271,6 +271,7 @@ static void rec_event(uint8_t k,uint32_t a,uint32_t v,uint32_t p,uint32_t r){(vo
     assert "debug_server_history_init();" in body("debug_server_set_cpu")
     main_source = (root / "runtime/src/main.cpp").read_text(encoding="utf-8")
     assert "#endif\n    debug_server_history_frame();" in main_source
+    assert "debug_server_set_fmv_quiet(mdec_recently_active(2));\n#ifndef PSX_NO_DEBUG_TOOLS" in main_source
     cases = r"""
 int main(void){
  cpu.gpr[31]=0x80001234;cpu.gpr[29]=0x80010000;cpu.gpr[16]=19;

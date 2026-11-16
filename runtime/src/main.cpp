@@ -9222,8 +9222,9 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         }
     } probe_scope{&probe_turbo, &probe_reached};
 
-#ifndef PSX_NO_DEBUG_TOOLS
+    /* Passive history uses the same established FMV quiet window in both builds. */
     debug_server_set_fmv_quiet(mdec_recently_active(2));
+#ifndef PSX_NO_DEBUG_TOOLS
     /* Debug server: pause gate, poll commands, record frame, check watchpoints. */
     debug_server_wait_if_paused();
 #else
