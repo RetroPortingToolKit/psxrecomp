@@ -126,6 +126,7 @@ static int    s_sym_initialized = 0;
  * activity (boot, FMV decode, save load) doesn't trip it; short enough
  * that real wedges dump within seconds. */
 #define WEDGE_WINDOW_TICKS 20u
+#define SPIN_CONFIRM_TICKS (2u * WEDGE_WINDOW_TICKS)
 /* Thresholds and the classifier live in freeze_dump_policy.{h,c} (unit-tested). */
 
 /* Per-ring caps for auto-dump. Newest-first window. The old 4-16K caps
@@ -168,6 +169,15 @@ typedef struct {
 static HbRingEntry s_ring[RING_CAP];
 static uint32_t    s_ring_head = 0;
 static uint32_t    s_ring_count = 0;
+
+/* Samples in a row, the newest included, that hold the same current_func,
+ * last_store_pc and dirty_ram_insns. A host pause sets it back to 0. */
+static uint32_t s_spin_pinned_ticks = 0;
+/* Times the values stood still for a window or more and then moved before
+ * two windows were full: waits that ended. It does not look at the frame rate
+ * or at MDEC, so a short still inside a video counts too. Reported in the
+ * heartbeat. */
+static uint32_t s_spin_waits_ended = 0;
 
 /* Automatic full dumps are bounded independently from deliberate fatal dumps.
  * The heartbeat JSON reports both written and suppressed event counts. */
@@ -818,6 +828,25 @@ static void heartbeat_write(void) {
     s_ring_head = (s_ring_head + 1) % RING_CAP;
     if (s_ring_count < RING_CAP) s_ring_count++;
 
+    /* The spin class needs the same three values in every sample, so count
+     * the samples in a row that hold them. s_ring_count is the number of
+     * samples since the last host pause; the one before `re` is live when it
+     * is 2 or more. A paused sample is not counted and ends nothing. */
+    if (!s_wedge_classification_paused) {
+        const HbRingEntry *prev = &s_ring[(s_ring_head + RING_CAP - 2u) % RING_CAP];
+        if (s_ring_count >= 2u &&
+            prev->current_func == re->current_func &&
+            prev->last_store_pc == re->last_store_pc &&
+            prev->dirty_ram_insns == re->dirty_ram_insns) {
+            if (s_spin_pinned_ticks < UINT32_MAX) s_spin_pinned_ticks++;
+        } else {
+            if (s_spin_pinned_ticks >= WEDGE_WINDOW_TICKS &&
+                s_spin_pinned_ticks < SPIN_CONFIRM_TICKS)
+                s_spin_waits_ended++;
+            s_spin_pinned_ticks = 1;
+        }
+    }
+
     /* ---- Wedge detection: bounded automatic dump ----
      * Walk back WEDGE_WINDOW_TICKS in the heartbeat ring (just pushed
      * above) and compute deltas. Trigger if any of:
@@ -831,6 +860,7 @@ static void heartbeat_write(void) {
     uint32_t wedge_kind = 0;  /* 0=healthy 1=hard 2=reentry storm 3=slow frames */
     if (s_wedge_classification_paused) {
         s_ring_count = 0;
+        s_spin_pinned_ticks = 0;
         s_last_wedge_kind = 0;
     } else if (s_ring_count >= WEDGE_WINDOW_TICKS) {
         /* The just-pushed tick is at (s_ring_head - 1); the window is the
@@ -860,6 +890,20 @@ static void heartbeat_write(void) {
                                                    lo, hi, guest_cycle_profile_oldest(),
                                                    gcp_sample_fn),
                                                mdec_recently_active);
+        }
+    }
+
+    /* A spin is confirmed only when the values have stood still for two
+     * whole windows with no colour decode in that time. A wait that ends
+     * inside the second window is counted in s_spin_waits_ended instead. */
+    if (wedge_kind == FREEZE_WEDGE_SPIN) {
+        if (s_spin_pinned_ticks < SPIN_CONFIRM_TICKS ||
+            s_ring_count < SPIN_CONFIRM_TICKS) wedge_kind = 0;
+        else {
+            const HbRingEntry *first = &s_ring[(s_ring_head + RING_CAP - SPIN_CONFIRM_TICKS) % RING_CAP];
+            uint64_t frames = frame >= first->frame_count ? frame-first->frame_count : 0;
+            if (mdec_recently_active((uint32_t)(frames > 0xfffffffeu ? 0xfffffffeu : frames)+1u))
+                wedge_kind = 0;
         }
     }
 
@@ -976,6 +1020,8 @@ static void heartbeat_write(void) {
         "  \"failed_freeze_dumps\":%u,\n"
         "  \"suppressed_freeze_events\":%u,\n"
         "  \"automatic_freeze_dump_limit\":%u,\n"
+        "  \"spin_pinned_ticks\":%u,\n"
+        "  \"spin_waits_ended\":%u,\n"
         "  \"fatal\":%s%s%s\n"
         "}\n",
         s_backend,
@@ -1039,6 +1085,8 @@ static void heartbeat_write(void) {
         s_dump_policy.failed_dumps,
         s_dump_policy.suppressed_events,
         (unsigned)FREEZE_DUMP_AUTO_LIMIT,
+        s_spin_pinned_ticks,
+        s_spin_waits_ended,
         g_psx_fatal_reason ? "\"" : "",
         g_psx_fatal_reason ? fatal_esc : "null",
         g_psx_fatal_reason ? "\"" : "");
