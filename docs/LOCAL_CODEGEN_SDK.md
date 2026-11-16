@@ -7,6 +7,27 @@ automation. This does **not** redistribute disc images.
 PGO (optional) runs **only on the user’s machine** during local rebuild when
 `game.toml` has `[pgo] enabled = true`. CI must not set `PSX_PGO`.
 
+## Managed shared overlay compiler (Windows thin products)
+
+A packaging tool can put one verified Clang subset in a shared versioned store. The
+product's `overlay_toolchain/compiler.txt` names its absolute `bin/clang.exe`.
+The companion `compiler-store.sha256` contains 64 lowercase hexadecimal digits
+and one LF. It is the SHA256 of the store's exact `SHA256SUMS.txt` bytes. The
+store directory is named `overlay-clang-<hash>`; the manifest has sorted UTF-8
+`<SHA256>  <relative-posix-path>\n` entries for all compiler files and notices.
+
+Startup checks the manifest and every member, including supporting libraries,
+before selecting the compiler. Missing or corrupt members stop startup and name
+the failed path. Repair or reinstall the store, or rebuild as
+portable. A host compiler or TCC cannot replace a failed managed store.
+
+Startup holds a shared Windows usage guard at `<store>.lock` until process exit.
+It opens with `GENERIC_READ`, `FILE_SHARE_READ`, and `OPEN_ALWAYS`. A packaging
+tool's repair must obtain an exclusive guard before quarantining a corrupt
+store; a running game prevents repair. The guard is outside the hashed manifest.
+Portable products omit `compiler-store.sha256` and keep their bundled compiler.
+Legacy absolute compiler paths without the marker retain their existing behavior.
+
 ## Where this sits now (bundled releases)
 
 Public releases are **bundled**: the title commits `generated/`, CI builds the
