@@ -10,13 +10,13 @@
 #include "psx_memory.h"
 #include "psx_direct_memory.h"
 
-#if (defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS) || defined(PSX_NATIVE_SPAN_ACCESS_ONLY)
+#if (defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS) || defined(PSX_OVERLAY_DLL_BUILD)
 #if defined(PSX_COSIM)
 #error Native CPU spans cannot be used by a faithful cycle oracle
 #endif
 
 static inline void psx_native_span_charge(uint32_t cycles) {
-#ifdef PSX_NATIVE_SPAN_ACCESS_ONLY
+#ifdef PSX_OVERLAY_DLL_BUILD
     (void)cycles; /* DLL retains its existing instruction-charge shim. */
 #else
     psx_cpu_charge(cycles);
@@ -110,7 +110,7 @@ static inline uint32_t psx_native_span_lwc2(CPUState *cpu, uint32_t addr) {
 /* Source-local aliases preserve the faithful generated text and leave the
  * reference/interpreter ABI untouched. This header never enters runtime TUs.
  */
-#ifndef PSX_NATIVE_SPAN_ACCESS_ONLY
+#ifndef PSX_OVERLAY_DLL_BUILD
 #define psx_cyc_step(cpu, deps) ((void)(cpu), (void)(deps))
 #define psx_icache_fetch(cpu, pc) ((void)(cpu), (void)(pc))
 #define psx_cyc_load_word psx_native_span_word

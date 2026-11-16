@@ -1,7 +1,5 @@
 #include "overlay_api.h"
-#define PSX_NATIVE_SPAN_ACCESS_ONLY 1
 #include "psx_native_span.h"
-#undef PSX_NATIVE_SPAN_ACCESS_ONLY
 #include "ws_cull_edge.h"   /* psx_ws_cull_bgez / psx_ws_clip_edge_x math */
 
 /* ---- Overlay dispatch shim (inserted by compile_overlays.py) ----------- */

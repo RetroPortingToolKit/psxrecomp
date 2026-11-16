@@ -12,6 +12,10 @@
 #include <string.h>
 #include <stdio.h>
 
+/* compile_overlays inserts its preamble AFTER generated headers. The memory
+ * helpers must exist on this first DLL include without build-only span flags. */
+#include "cpu_state.h"
+#include "psx_native_span.h"
 #include "overlay_dispatch_preamble.c.inc"
 
 /* Keep the real timed-shim entries, then exercise native span fallbacks in
@@ -19,8 +23,6 @@
 static uint32_t (*const timed_word)(CPUState*,uint32_t,uint32_t,uint32_t)=psx_cyc_load_word;
 static uint16_t (*const timed_half)(CPUState*,uint32_t,uint32_t,uint32_t)=psx_cyc_load_half;
 static uint8_t (*const timed_byte)(CPUState*,uint32_t,uint32_t,uint32_t)=psx_cyc_load_byte;
-#define PSX_NATIVE_CPU_SPANS 1
-#include "psx_native_span.h"
 
 /* Verbatim from code_generator.cpp's emitted extern block. Must still compile
  * once cpu_state.h has mapped the name onto the host pointer. */
