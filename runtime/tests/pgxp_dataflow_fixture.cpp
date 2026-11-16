@@ -26,6 +26,7 @@ extern "C" {
 uint8_t *g_psx_ram=ram,*g_psx_scratchpad=scratch;
 PSXDirectMemoryStats g_psx_direct_memory_stats;
 PSXMemoryWidthStats g_psx_memory_width_stats;
+uint64_t psx_hr_bus_callbacks[2][3];
 uint32_t g_debug_last_store_pc,g_debug_current_func_addr;
 volatile uint32_t g_psx_last_fn_entry; // Release's real entry observer writes this slot
 uint64_t psx_cycle_count,psx_next_service_cycle=UINT64_MAX;
@@ -67,7 +68,7 @@ void psx_write_byte(uint32_t a,uint8_t v) {debug_server_trace_write_check(a&0x1f
 constexpr uint32_t Input=0x80001000,Plain=0x80002000,Output=0x80003000,Probe=0x80004000;
 struct Product {CPUState cpu;unsigned char bytes[sizeof ram];PGXPWordShadow words[74];uint64_t sources[74],alu,cycles,operations,operation_loads,callbacks,callback_writes;
     uint64_t getter_loads,mixed_stores,cold_operations;unsigned history_count,store_count;
-    WriteHistory writes[256];PGXPStoreRecord stores[128];};
+    WriteHistory writes[256];PGXPStoreRecord stores[128];uint64_t bus_callbacks[2][3];};
 static Product reference,candidate;
 static uint64_t callback_reads,callback_writes;
 static void substituted_writer(uint32_t address,uint32_t value){++callback_writes;psx_write_word(address,value^(address==0x80020000u?1u:0u));}
@@ -106,7 +107,7 @@ static void run(Product& result,bool native,unsigned variant) {
     pgxp_set_trace_sources(&g_debug_last_store_pc,&frame_count);
     if(variant&8)psx_write_half(Input,9); // stale X, matching Y must survive the load
     if(variant&16)cpu.gte_data[14]^=1; // source validation by MFC2 must remain observable
-    history_count=0;
+    history_count=0;std::memset(psx_hr_bus_callbacks,0,sizeof psx_hr_bus_callbacks);
     const PGXPStoreRecord *store_ring=nullptr;uint32_t store_capacity=0;
     const uint64_t store_begin=pgxp_store_ring(&store_ring,&store_capacity);
     psx_cycle_count=0;PGXPHookStats before{},after{};pgxp_get_hook_stats(&before);
@@ -131,6 +132,10 @@ static void run(Product& result,bool native,unsigned variant) {
     pgxp_get_hook_stats(&cold_after);result.cold_operations=cold_after.operations-cold_before.operations;
 #endif
     pgxp_get_hook_stats(&after);result.alu=after.alu-before.alu;result.cycles=psx_cycle_count;result.operations=after.operations-before.operations;result.operation_loads=after.operation_loads-before.operation_loads;result.callbacks=callback_reads;result.callback_writes=callback_writes;
+    std::memcpy(result.bus_callbacks,psx_hr_bus_callbacks,sizeof psx_hr_bus_callbacks);
+    if(result.bus_callbacks[0][2]!=callback_reads || result.bus_callbacks[1][2]!=callback_writes) {
+        std::fputs("FAIL: substituted bus values/effects are not counted exactly once\n",stderr);std::abort();
+    }
     result.history_count=history_count;std::memcpy(result.writes,history,history_count*sizeof history[0]);
     const uint64_t store_end=pgxp_store_ring(&store_ring,&store_capacity);
     result.store_count=(unsigned)(store_end-store_begin);if(result.store_count>128)std::abort();
@@ -161,7 +166,8 @@ int main() {
         if(!v){std::fputs("RUN first native PGXP product\n",stderr);std::fflush(stderr);}
         run(candidate,true,v);
         if(std::memcmp(&reference.cpu,&candidate.cpu,sizeof(CPUState))||
-           std::memcmp(reference.bytes,candidate.bytes,sizeof ram)||reference.cycles!=candidate.cycles||reference.callbacks!=candidate.callbacks||reference.callback_writes!=candidate.callback_writes) {
+           std::memcmp(reference.bytes,candidate.bytes,sizeof ram)||reference.cycles!=candidate.cycles||reference.callbacks!=candidate.callbacks||reference.callback_writes!=candidate.callback_writes ||
+           std::memcmp(reference.bus_callbacks,candidate.bus_callbacks,sizeof reference.bus_callbacks)) {
             std::fprintf(stderr,"FAIL variant%u guest product differs\n",v);return 1;
         }
         if(reference.history_count!=candidate.history_count || reference.store_count!=candidate.store_count ||

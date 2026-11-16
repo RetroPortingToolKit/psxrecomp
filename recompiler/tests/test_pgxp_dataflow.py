@@ -167,7 +167,7 @@ def main():
         defined, undefined = nm_symbols(objects)
         provided = library_symbols(a.cc)
         stubs = {s for s in undefined-defined-provided if not s.startswith('__')}
-        if any('pgxp_operation' in s or 'pgxp_write_owned' in s for s in stubs):
+        if any('pgxp_operation' in s or 'pgxp_write_owned' in s or s=='psx_hr_bus_callbacks' for s in stubs):
             raise RuntimeError('candidate precision implementation is missing; cannot substitute a linker seam')
         result_exe = work/('products.exe' if os.name == 'nt' else 'products')
         for _ in range(20):
