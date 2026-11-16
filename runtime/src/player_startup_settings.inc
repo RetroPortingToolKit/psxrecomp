@@ -2,18 +2,27 @@
  * preferences override the title baseline; later CLI/environment paths retain priority. */
 static int g_player_geometry_set=0, g_player_texture_set=0;
 static int g_player_texture_window_batching=1;
+/* PGXP page: CPU propagation (explicit only) and precise culling. */
+static int g_player_pgxp_cpu_set=0, g_player_pgxp_culling=0;
 static void apply_extra_player_settings(const PSXRecompV4::UserSettings& prefs,
                                       bool& keep_intro,int& audio_buffer) {
+    /* Internal resolution, CRT filter, image filtering, post-processing,
+     * enhanced audio and rewind become this machine's session requests
+     * (host_enhancements.h); every session start resolves them over the
+     * title's baseline. */
+    psx_host_enh_player_clear();
+    g_player_pgxp_cpu_set=0; g_player_pgxp_culling=0;
     for (const auto& spec:PSXRecompV4::kExtraPlayerSettings) {
         const auto id=PSXRecompV4::player_setting_id(spec);
         auto found=prefs.extra_player_settings.find(id);
         if (found==prefs.extra_player_settings.end() || !PSXRecompV4::player_setting_valid(spec,found->second)) continue;
         const auto& value=found->second;
+        (void)psx_host_enh_player_set(id.c_str(),value.c_str());
         if (id=="video.antialiasing_mode") { g_video_post_aa=value=="off" ? 0 : value=="fxaa" ? 1 : 2; }
         if (id=="video.bloom") { g_video_bloom=static_cast<decltype(g_video_bloom)>(std::strtod(value.c_str(),nullptr)); }
         if (id=="video.post_shader") { g_video_post_shader=value; }
-        /* Resolution preferences replace the title baseline the Internal
-         * Resolution mod resolves over at each session start. */
+        /* Resolution preferences replace the title baseline the player's
+         * Internal resolution resolves over at each session start. */
         if (id=="video.supersample") { g_video_ss_milli=static_cast<int>(std::strtod(value.c_str(),nullptr)*1000.0+0.5); g_title_ss_milli=g_video_ss_milli; g_title_resolution.supersample_milli=g_video_ss_milli; }
         if (id=="video.pgxp_tolerance") { g_video_pgxp_tolerance=static_cast<decltype(g_video_pgxp_tolerance)>(std::strtod(value.c_str(),nullptr)); g_video_pgxp_tolerance_set=1; }
         if (id=="video.pgxp_position_fallback") { g_video_pgxp_position_fallback=value=="true"; g_video_pgxp_position_fallback_set=1; }
@@ -35,6 +44,8 @@ static void apply_extra_player_settings(const PSXRecompV4::UserSettings& prefs,
         if (id=="video.supersample_disable_at_lines") { g_video_ss_disable_at_lines=std::stoi(value); }
         if (id=="video.geometry_correction") { g_video_geometry_correction=value=="true"; g_player_geometry_set=1; }
         if (id=="video.perspective_texturing") { g_video_perspective_texturing=value=="true"; g_player_texture_set=1; }
+        if (id=="video.pgxp_cpu_mode") { g_video_pgxp_cpu_mode=value=="true"; g_player_pgxp_cpu_set=1; }
+        if (id=="video.pgxp_culling") { g_player_pgxp_culling=value=="true"; }
         if (id=="runtime.bios_hle_keep_intro") { keep_intro=value=="true"; }
         if (id=="audio.buffer_ms") { audio_buffer=std::stoi(value); }
         if (id=="controller.anti_deadzone") { controller_anti_deadzone=std::stoi(value); }
@@ -70,6 +81,22 @@ static std::map<std::string,std::string> player_settings_baseline(bool fast_boot
     values["video.supersample_disable_at_lines"]=player_setting_text(g_video_ss_disable_at_lines);
     values["video.geometry_correction"]=player_setting_flag(g_video_geometry_correction!=0);
     values["video.perspective_texturing"]=player_setting_flag(g_video_perspective_texturing!=0);
+    values["video.internal_resolution"]="4x";
+    static const char* const kScreens[]={"raw","crt","composite","trinitron"};
+    values["video.crt_filter"]=g_title_look.screen_kind>=0 && g_title_look.screen_kind<=3 ? kScreens[g_title_look.screen_kind] : "raw";
+    values["video.scanlines"]=player_setting_flag(g_title_look.scanlines!=0);
+    values["video.scanline_strength"]=player_setting_text(g_title_look.scanline_strength_pct/100.0);
+    values["video.antialiasing"]=player_setting_flag(g_title_look.present_linear!=0);
+    values["video.texture_filtering"]=g_title_look.texture_filter==PSX_TEXTURE_FILTER_BILINEAR ? "bilinear" :
+                                      g_title_look.texture_filter==PSX_TEXTURE_FILTER_XBR ? "xbr" : "nearest";
+    static const char* const kMovies[]={"nearest","bilinear","sharp","bicubic"};
+    values["video.fmv_filter"]=g_title_look.fmv_filter>=0 && g_title_look.fmv_filter<=3 ? kMovies[g_title_look.fmv_filter] : "nearest";
+    values["audio.spu_hq"]=player_setting_flag(g_title_look.spu_hq!=0);
+    values["video.rewind"]="false";
+    values["video.rewind_depth"]=player_setting_text(PSX_HOST_ENH_REWIND_DEPTH_DEFAULT);
+    values["video.rewind_interval"]=player_setting_text(PSX_HOST_ENH_REWIND_INTERVAL_DEFAULT);
+    values["video.pgxp_cpu_mode"]=player_setting_flag(g_video_pgxp_cpu_mode!=0);
+    values["video.pgxp_culling"]="false";
     values["runtime.bios_hle_keep_intro"]=player_setting_flag(keep_intro!=0);
     values["audio.buffer_ms"]=player_setting_text(audio_buffer);
     values["controller.anti_deadzone"]=player_setting_text(controller_anti_deadzone);

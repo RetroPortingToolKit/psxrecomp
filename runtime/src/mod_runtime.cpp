@@ -1776,9 +1776,6 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
         if (error) *error = s.error;
         return false;
     }
-    std::string migration_error;
-    if (!migrate_legacy_video_settings(s.manager, root.parent_path() / "settings.toml", &migration_error))
-        std::fprintf(stderr, "psxrecomp: %s\n", migration_error.c_str());
     /* A manifest that fails to parse used to be skipped in silence, so a mod
      * author's typo produced a mod that simply did not exist. Name every one. */
     for (const std::string& scan_error : s.manager.scan_errors())
@@ -1786,12 +1783,30 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
                      scan_error.c_str());
     /* state.toml may name a package this catalog does not hold (removed,
      * stripped from a release, or a builtin the title excludes). resolve()
-     * never visits it and save_state() keeps it; say so once. */
-    for (const std::string& dormant : s.manager.dormant_selections())
-        std::fprintf(stdout,
-                     "psxrecomp: mod selection kept but inactive: %s is not "
-                     "in this build's mod catalog\n",
-                     dormant.c_str());
+     * never visits it and save_state() keeps it; say so once. The former
+     * built-in setting mods are player settings now (settings.toml); their
+     * old selections are ignored, never migrated. */
+    static const char* const kFormerSettingMods[] = {
+        "psx.enhancement.internal-resolution", "psx.enhancement.crt-filter",
+        "psx.enhancement.image-filtering",     "psx.enhancement.enhanced-audio",
+        "psx.enhancement.post-processing",     "psx.enhancement.pgxp",
+        "psx.feature.rewind",
+    };
+    for (const std::string& dormant : s.manager.dormant_selections()) {
+        bool former_setting = false;
+        for (const char* id : kFormerSettingMods)
+            if (dormant == id) former_setting = true;
+        if (former_setting)
+            std::fprintf(stdout,
+                         "psxrecomp: mod selection ignored: %s is a player "
+                         "setting now (Settings), not a mod\n",
+                         dormant.c_str());
+        else
+            std::fprintf(stdout,
+                         "psxrecomp: mod selection kept but inactive: %s is not "
+                         "in this build's mod catalog\n",
+                         dormant.c_str());
+    }
     /* psx.hd-textures has a shared directory-resource contract, independent of
      * the title package id. Keep owner files outside the build-owned bundled
      * tree, and give the launcher a useful Open folder action on first use. */

@@ -78,11 +78,11 @@ int  psx_host_ui_capture_active(void);
 /* ---- P4: live video settings ---------------------------------------------
  * The session's video state an in-game menu (or the debug server's video_set)
  * may change. Screen model, scanlines, smoothing, texture and FMV filtering
- * and the internal resolution are the built-in CRT Filter, Image Filtering
- * and Internal Resolution mods (host_enhancements.h), changed live through
- * their mod options (psx_mod_set_option_live); the internal_resolution and
- * supersample_milli fields here are the session's effective values, for the
- * debug server and the restart bits, and are not player settings.
+ * are player settings (host_enhancements.h) that take effect at the next
+ * session start. The internal_resolution and supersample_milli fields here
+ * are the session's effective values; a changed internal_resolution is
+ * applied live when the backend can and saved as the player's
+ * video.internal_resolution.
  * psx_video_apply_live() applies what can change on a running game, saves the
  * player's PC/system fields (fullscreen, renderer, threads, frame generation)
  * to settings.toml, and returns PSX_VIDEO_RESTART_* bits for the fields that

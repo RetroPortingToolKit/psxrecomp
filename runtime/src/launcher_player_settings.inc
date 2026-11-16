@@ -152,10 +152,13 @@ int player_settings_option(void* context,const char* package,const char* feature
                   id=="video.fast_boot"?" Skips the boot animation only; kernel initialization and executable loading still run.":
                   id=="video.bios_hle"?" Computes supported BIOS kernel services in the host; this is separate from skipping the animation.":
                   id=="memcard.dir"?" Explicit per-card paths still take precedence.":
-                  id=="video.dynamic_resolution"?" Used while the Internal Resolution mod is enabled at Game default; a fixed choice there turns it off, and Auto or the mod's Dynamic resolution choice wins.":
-                  id=="video.supersample"?" Used while the Internal Resolution mod is enabled and its matching option is Game default.":
-                  id=="video.geometry_correction"||id=="video.perspective_texturing"?" Overrides the PGXP Precision mod's matching option.":
-                  spec->kind==PlayerKind::ResolutionFloor?" Use native,720p,1080p,4k,display,1x-32x or a fixed height. Used while the Internal Resolution mod is enabled and its Lowest resolution is Game default.":"");
+                  id=="video.internal_resolution"?" 1x is native; 4x is used until you choose. default keeps the game's own resolution. Hardware and memory limits may reduce the effective scale.":
+                  id=="video.dynamic_resolution"?" Steps the internal resolution down when frames would be missed, between the floor and the Internal resolution choice.":
+                  id=="video.crt_filter"?" raw shows the picture unfiltered.":
+                  id=="audio.spu_hq"?" On or off replaces the game's own choice.":
+                  id=="video.rewind"?" Needs a build with rewind; the Rewind hotkey steps back.":
+                  id=="video.pgxp_culling"?" Needs PGXP vertex correction. Never used in netplay.":
+                  spec->kind==PlayerKind::ResolutionFloor?" Use native,720p,1080p,4k,display,1x-32x or a fixed height.":"");
     if (spec->kind==PlayerKind::Boolean) out->type=RECOMP_MOD_OPTION_BOOLEAN;
     else if (spec->kind==PlayerKind::Integer) {
         out->type=RECOMP_MOD_OPTION_INTEGER;

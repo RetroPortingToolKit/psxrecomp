@@ -737,46 +737,35 @@ a build compiled with Vulkan support. `offer_vulkan` controls launcher
 visibility only; it defaults to false so game projects must explicitly expose
 Vulkan after validating their visuals and stability.
 
-### The game's look: title baseline and built-in mods
+### The game's look: title baseline and player settings
 
 These `[video]` / `[audio]` keys are the title's **baseline**: what a player
-sees and hears with the matching built-in mod at Game default (or off, except
-Internal Resolution, whose disabled state is native 1x). A player changes these
-through the framework's built-in mods, whose "Game default" option values keep the baseline
-(`runtime/include/host_enhancements.h`, docs/MOD_PACKAGES.md "Built-in host
-enhancements"):
+sees and hears until they choose otherwise. The player changes them with
+player settings of the same names in `settings.toml`, which the launcher
+draws on its Settings pages (`recompiler/src/player_settings.h`,
+`runtime/include/host_enhancements.h`, [Player Settings](PLAYER_SETTINGS.md)).
+A setting left unset keeps the title's value. These are settings, not mods.
 
-The paired compact Settings UI also exposes the existing built-in resolution
-and image-filtering controls. Explicit player vertex/perspective preferences
-(`[video] geometry_correction`, `perspective_texturing` in `settings.toml`, on
-the launcher's PGXP page) can override those PGXP visual choices independently
-of the mod's CPU/culling options. The Display page's Automatic resolution
-section keeps `dynamic_resolution`, `dynamic_resolution_min`,
-`match_display_max_lines`, `supersample` and `supersample_disable_at_lines` in
-`settings.toml`; they replace the title's baseline under the Internal
-Resolution mod. See [Player Settings](PLAYER_SETTINGS.md) for persistence and
-presets.
-
-| `game.toml` key | Built-in mod (option) |
+| `game.toml` key | Player setting (launcher page / heading) |
 |---|---|
-| `[video] crt_filter` (screen model) | CRT Filter (`psx.enhancement.crt-filter`: Screen model) |
-| `[video] scanlines`, `scanline_strength` | CRT Filter (Scanlines, Scanline strength) |
-| `[video] antialiasing` (linear present) | Image Filtering (`psx.enhancement.image-filtering`: Smoothing) |
-| `[video] texture_filtering` | Image Filtering (Texture filtering) |
-| `[video] fmv_filter` | Image Filtering (FMV filtering) |
-| `[audio] spu_hq` | Enhanced Audio (`psx.enhancement.enhanced-audio`) |
-| `[video] geometry_correction`, `perspective_texturing` | PGXP Precision (`psx.enhancement.pgxp`) |
+| `[video] internal_resolution` | Internal resolution (Display; Game default, 1x..32x, 4x when none is saved) |
+| `[video] crt_filter` (screen model), `scanlines`, `scanline_strength` | Display / CRT filter |
+| `[video] antialiasing` (linear present), `texture_filtering`, `fmv_filter` | Display / Image filtering |
+| `[video] dynamic_resolution`, `dynamic_resolution_min`, `match_display_max_lines`, `supersample`, `supersample_disable_at_lines` | Display / Automatic resolution |
+| `[video] antialiasing_mode`, `bloom`, `post_shader` (post-processing) | Display |
+| `[audio] spu_hq` | Enhanced audio (General) |
+| `[video] geometry_correction`, `perspective_texturing` | PGXP |
+| (none; player only) PGXP CPU propagation, precise culling | PGXP (`video.pgxp_cpu_mode`, `video.pgxp_culling`) |
 
-Local rewind has no `game.toml` key; it is the Rewind mod
-(`psx.feature.rewind`, below).
+Local rewind has no `game.toml` key; it is a player setting (General /
+Rewind, below).
 
-A `settings.toml` written before this change may still carry `antialiasing`,
-`texture_filtering`, `fmv_filter`, `crt_filter`, `scanlines`,
-`scanline_strength`, `rewind`,
-`rewind_depth`, `rewind_interval`, `supersampling`, `internal_resolution`, `[audio]
-spu_hq`, `[audio] frequency` or the `quality_*` keys. They are ignored, never
-an error, and the next save drops them. Current volume and buffer preferences
-remain supported.
+A `settings.toml` may still carry `supersampling`, `[audio] frequency` or the
+`quality_*` keys from older builds. They are ignored, never an error, and the
+next save drops them. A `mods.toml` that still selects a former setting mod
+package (`psx.enhancement.internal-resolution`, `crt-filter`,
+`image-filtering`, `enhanced-audio`, `post-processing`, `pgxp`,
+`psx.feature.rewind`) is ignored with one log line per package.
 
 **Audio sample rate.** The host audio device opens at the runtime's built-in
 rate (44.1 kHz, the SPU's own). It is not a player setting: the launcher has no
@@ -791,14 +780,11 @@ choices use current built-in features and preferences, not this legacy table.
 ### Internal resolution (`internal_resolution`, `supersampling`)
 
 The internal resolution is the title's `game.toml` baseline, and the player
-changes it with the built-in **Internal Resolution** mod
-(`psx.enhancement.internal-resolution`, docs/MOD_PACKAGES.md "Built-in host
-enhancements"). Fresh profiles enable it at **4x**, with fixed choices from
-**1x through 32x**. Saved selections keep their value, including the retained
-Game default, Native, 720p, 1080p, 1440p, 4K, 5K, 8K, Match display and **Auto**
-choices. It is not a Settings row and not a `settings.toml` key. Disabled means
-native 1x with dynamic resolution off. At Game default, the title's keys apply
-unchanged:
+changes it with the **Internal resolution** player setting
+(`settings.toml [video] internal_resolution`, the launcher's Display page).
+When no choice is saved it is **4x**, with fixed choices from **1x through
+32x** and **Game default**. A fixed choice turns dynamic resolution off.
+At Game default, the title's keys apply unchanged:
 
 ```toml
 [video]
@@ -824,7 +810,7 @@ A fixed `Nx` choice requests exactly N times native resolution per axis,
 independent of reference lines or the legacy supersample multiplier. The
 backend still enforces its texture-size limit and bounded allocation budget;
 32x is a selectable ceiling, not a hardware or frame-rate guarantee. The
-shared mod does not increase the memory budget for low-memory GPUs.
+setting does not increase the memory budget for low-memory GPUs.
 
 A legacy height preset is a target height. The runtime renders at the integer
 scale
@@ -847,15 +833,14 @@ switch or Lowest resolution row. A title may ship `internal_resolution =
 keeps either. `PSX_DYNRES=0|1` still overrides dynamic resolution for one run.
 
 Precedence for a session: `PSX_INTERNAL_RESOLUTION` (one run), then a title
-mod's `psx_mod_set_internal_resolution` request, then the Internal Resolution
-mod's effective choice (native when disabled), then the title's
-`internal_resolution` (or its legacy `supersampling` factor) only for an
-explicit Game default choice. Every session start restores the title's values
-before
-the mod's choice applies, so a rematch never inherits the last session's scale.
-The mod's option changes apply live from the in-game menu when the OpenGL
-backend can change its scale on a running game (otherwise at the next start),
-and never during a netplay match. The debug server's `video_set` changes the
+mod's `psx_mod_set_internal_resolution` request, then the player's Internal
+resolution setting (4x when none is saved), then the title's
+`internal_resolution` (or its legacy `supersampling` factor) only for a Game
+default choice. Every session start restores the title's values before the
+player's choice applies, so a rematch never inherits the last session's scale.
+A change from the in-game menu applies live when the OpenGL backend can change
+its scale on a running game (otherwise at the next start), is saved to
+`settings.toml`, and never applies during a netplay match. The debug server's `video_set` changes the
 session's effective internal resolution and supersample live; it saves
 nothing.
 
@@ -869,7 +854,7 @@ the pixels to show it. Native keeps the window exactly as before.
 `supersampling = N` (game.toml) renders at N times the native resolution per
 axis and downsamples to the window, 1 to 32; 1 (the default) is native and
 unchanged. It is the title's legacy form of the baseline: an
-`internal_resolution`, or the mod's choice, supersedes it. `settings.toml`
+`internal_resolution`, or the player's choice, supersedes it. `settings.toml`
 `window_width` accepts 640 to 7680.
 
 ### Bloom (`bloom`)
@@ -915,8 +900,8 @@ it becomes a scale: Match display on a 1080 px monitor with 2.0 asks for 2160
 lines (S = 9) and the present's area resolve brings it back to 1080, which is
 ordered-grid SSAA of everything, 2D included. Native and the legacy
 `supersampling` factor are left alone. Dynamic resolution takes the result as
-its ceiling and steps under it as before. It is the title's key only (the
-Internal Resolution mod applies it to the player's choice too);
+its ceiling and steps under it as before. The title sets it, and the player
+can replace it on the Automatic resolution section;
 `PSX_SUPERSAMPLE=<factor>` overrides it for one run.
 
 To make supersampling the elastic part only, set the dynamic resolution floor
@@ -944,7 +929,7 @@ filtered. The PS1 HUD is part of the same image and is filtered too. `fxaa` is o
 long edges. `PSX_AA_MODE=off|fxaa|fxaa_hq` overrides it for one run and the
 `post_aa` TCP command switches it live. The older boolean `antialiasing` key is
 unrelated: it is the linear present filter, the title's baseline for the
-Image Filtering mod's Smoothing.
+player's Image filtering / Smooth scaling setting.
 
 Not offered: MSAA. The hi-res surface *is* guest VRAM (texture pages, CLUTs,
 VRAM copies, readbacks and the mask stencil all sample or copy it between
@@ -1076,7 +1061,7 @@ texel's. It costs up to 13 texel fetches per pixel. JINC2 is not offered.
 `PSX_TEXTURE_FILTER=0..3` overrides it for one run (2 is the mod-only "stable
 world" minification filter) and the `texture_filter` TCP command switches it
 live. This key is the title's baseline; a player chooses nearest, bilinear or
-xBR through the Image Filtering mod.
+xBR with the Image filtering / Texture filtering setting.
 
 The runtime clamps N per backend:
 
@@ -1152,33 +1137,33 @@ Vulkan renderers ignore the key.
 `PSX_GL_TEXWIN_BATCH=0|1` overrides it for one run, and the TCP command
 `gl_texwin_batch on=<0|1>` switches it live.
 
-### Local rewind (the Rewind mod)
+### Local rewind (a player setting)
 
-Rewind is the framework's built-in **Rewind** mod (`psx.feature.rewind`), off
-by default: enabling it on the Mods page turns the ring on, with its **Rewind
-buffer** (snapshots kept: 50 / 100 / 150 / 200, default 50) and **Rewind
-interval** (frames between snapshots: 1 / 4 / 8 / 12 / 15, default 15)
-options; changes apply at the next start. The controller hotkey that opens it
-stays a player setting, `settings.toml [hotkeys] rewind_pad` (the launcher's
-Hotkeys page); the keyboard key is `config.ini [KeyMap] Rewind`. The old
-`[video] rewind / rewind_depth / rewind_interval` keys are ignored.
+Rewind is a player setting, off by default: `settings.toml [video] rewind`
+(the launcher's General page, Rewind section) turns the ring on, with its
+**Rewind buffer** (`rewind_depth`, snapshots kept: 50 / 100 / 150 / 200,
+default 50) and **Rewind interval** (`rewind_interval`, frames between
+snapshots: 1 / 4 / 8 / 12 / 15, default 15); changes apply at the next start.
+Other values are ignored. The controller hotkey that opens it is
+`settings.toml [hotkeys] rewind_pad` (the launcher's Hotkeys page); the
+keyboard key is `config.ini [KeyMap] Rewind`.
 
 **Off by default.** The ring holds whole *machine* snapshots — 2 MB main RAM
 + 1 MB VRAM + 512 KB SPU RAM, stored uncompressed — and captures one every
 interval frames (denser, toward 4, while an FMV runs). At the default depth
 that is a few hundred MB of resident memory plus a periodic multi-megabyte
 copy, which is not a cost to charge every host for a feature a session may
-never open; nothing is allocated until the mod is on.
+never open; nothing is allocated until the setting is on.
 
-`PSX_REWIND=1` / `PSX_REWIND=0` override the mod either way, and
+`PSX_REWIND=1` / `PSX_REWIND=0` override the setting either way, and
 `PSX_REWIND_DEPTH` / `PSX_REWIND_INTERVAL` / `PSX_REWIND_FMV_INTERVAL` override
 the tuning. A build configured with `-DPSX_REWIND=OFF` has no rewind at all,
-ignores all of these, and does not stage the Rewind package
-(`runtime.cmake` declines it like an `EXCLUDE_BUILTIN_MODS` entry).
+and ignores all of these; its Rewind row says it needs a build with
+rewind.
 
 Netplay rollback is a separate subsystem with its own ring and is unaffected by
-the mod; rewind is in fact suppressed while a netplay session is active (the
-mod is host-only, so it is no part of the netplay plan either).
+the setting; rewind is in fact suppressed while a netplay session is active (the
+setting is host-only, so it is no part of the netplay plan either).
 
 A title can also block Rewind while it is in a mode that must not be rewound,
 such as local split-screen multiplayer: a trusted mod plugin calls

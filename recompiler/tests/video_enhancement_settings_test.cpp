@@ -8,12 +8,13 @@
  *
  *   1. both default OFF (the faithful floor) when game.toml says nothing;
  *   2. game.toml [video] turns them on -- the title's baseline;
- *   3. settings.toml no longer carries them, nor any other look the built-in
- *      mods own (CRT Filter, Image Filtering, PGXP Precision, Internal
- *      Resolution), nor the audio sample rate: old keys are ignored, not
+ *   3. settings.toml carries the player's look (internal resolution, CRT
+ *      filter, image filtering, PGXP, enhanced audio, rewind) as player
+ *      settings and keeps them across a save; the retired keys (quality
+ *      presets, supersampling, the audio sample rate) are ignored, not
  *      errors, and a save drops them;
  *   4. game.toml internal_resolution "auto" (dynamic resolution), the title's
- *      baseline the Internal Resolution mod resolves over;
+ *      baseline the player's Internal resolution setting resolves over;
  *   5. a game.toml with the retired [quality.*] presets fails to load.
  */
 #include "config_loader.h"
@@ -149,12 +150,10 @@ static std::string read_text(const fs::path& p) {
     return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 }
 
-/* The look the built-in mods own is not a settings.toml key any more. A file
- * from before that change still loads -- its old keys are ignored, never an
- * error that would throw away the player's other settings -- and the next
- * save drops them, so they cannot come back as a hidden override. Automatic
- * resolution, its floor, the supersample multiplier and the two PGXP visual
- * corrections are launcher settings again: a save keeps exactly those. */
+/* The player's look is a set of settings.toml player settings. A save keeps
+ * each valid one; retired keys and values outside a setting's choices are
+ * ignored, never an error that would throw away the player's other settings,
+ * and the next save drops them. */
 static void test_retired_player_look_keys() {
     fs::path p = write_temp("psxrecomp_retired_look.toml",
         "[video]\n"
@@ -177,7 +176,7 @@ static void test_retired_player_look_keys() {
         "dynamic_resolution = true\n"
         "dynamic_resolution_min = \"1080p\"\n"
         "supersampling = 2\n"
-        "internal_resolution = \"4k\"\n"
+        "internal_resolution = \"8x\"\n"
         "supersample = 1.5\n"
         "window_width = 1600\n"
         "[audio]\n"
@@ -192,17 +191,19 @@ static void test_retired_player_look_keys() {
     fs::path out = fs::temp_directory_path() / "psxrecomp_retired_look_saved.toml";
     check(PSXRecompV4::save_user_settings(out, us), "save_user_settings writes");
     const std::string text = read_text(out);
-    for (const char* key : {"antialiasing", "texture_filtering", "fmv_filter", "crt_filter",
-                            "scanlines", "scanline_strength", "quality_", "rewind =", "rewind_depth",
-                            "rewind_interval", "spu_hq", "supersampling", "internal_resolution",
-                            "frequency", "[audio]"})
+    for (const char* key : {"quality_", "supersampling", "frequency"})
         check(text.find(key) == std::string::npos,
               (std::string("a save drops the retired key ") + key).c_str());
     /* Whole lines, so dynamic_resolution cannot match dynamic_resolution_min
      * and supersample cannot match supersampling. */
     for (const char* line : {"\ngeometry_correction = true\n", "\nperspective_texturing = true\n",
                              "\ndynamic_resolution = true\n", "\ndynamic_resolution_min = \"1080p\"\n",
-                             "\nsupersample = 1.5\n"})
+                             "\nsupersample = 1.5\n", "\ninternal_resolution = \"8x\"\n",
+                             "\nantialiasing = false\n", "\ntexture_filtering = \"bilinear\"\n",
+                             "\nfmv_filter = \"bicubic\"\n", "\ncrt_filter = \"crt\"\n",
+                             "\nscanlines = true\n", "\nscanline_strength = 0.",
+                             "\nrewind = true\n", "\nrewind_depth = 100\n",
+                             "\nrewind_interval = 4\n", "\n[audio]\n", "\nspu_hq = true\n"})
         check(text.find(line) != std::string::npos,
               (std::string("a save keeps the player setting ") + line).c_str());
     check(text.find("renderer") != std::string::npos &&
@@ -211,8 +212,8 @@ static void test_retired_player_look_keys() {
 }
 
 /* Internal resolution "auto" is Match display with dynamic resolution on. A
- * title can ship it as its baseline (the player chooses it through the
- * Internal Resolution mod); a dynamic-resolution floor never is. */
+ * title can ship it as its baseline (the player turns on Automatic
+ * resolution instead); a dynamic-resolution floor never is. */
 static void test_internal_resolution_auto() {
     fs::path p = write_game_toml("psxrecomp_ir_auto.toml",
         "[video]\n"

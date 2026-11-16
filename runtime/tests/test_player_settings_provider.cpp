@@ -1,6 +1,8 @@
 #include "config_loader.h"
 #include "player_settings.h"
 #include "recomp_launcher.h"
+#include "host_enhancements.h"
+#include "video_texture_filter.h"
 #include <map>
 #include <sstream>
 #include <iomanip>
@@ -22,10 +24,17 @@ static int g_video_pgxp_depth_buffer,g_video_fmv_chroma,g_video_texture_lod,g_vi
 static int g_video_accurate_blending,g_video_dithering=1,g_video_pgxp_color_correction,g_video_pgxp_seam;
 static int g_frame_generation_method,g_video_dynres_min=720,g_video_match_max_lines,g_video_ss_disable_at_lines;
 static int g_video_dynres;
-/* The baseline the Internal Resolution mod resolves over (host_enhancements.h). */
+/* The baseline the player's Internal resolution resolves over (host_enhancements.h). */
 static struct { int internal_resolution,dynamic_resolution,dynamic_resolution_min,supersample_milli; }
     g_title_resolution={0,0,720,1000};
 static int g_video_geometry_correction,g_video_perspective_texturing,controller_anti_deadzone;
+static int g_video_pgxp_cpu_mode;
+/* The title's look (main.cpp) and the player's host enhancement record
+ * (host_enhancements.c), observed instead of linked. */
+static PsxHostLook g_title_look={0,0,50,1,0,0,0,1};
+static std::map<std::string,std::string> g_host_enh_player;
+extern "C" void psx_host_enh_player_clear(void) { g_host_enh_player.clear(); }
+extern "C" int psx_host_enh_player_set(const char* id,const char* value) { g_host_enh_player[id]=value; return 1; }
 static bool g_jogcon_ffb_invert;
 static int g_title_select_shortcuts=1,g_player_title_select_allowed=1;
 static double g_fov_scale=1,g_mouse_sensitivity=1;
@@ -71,7 +80,11 @@ int main() {
         {"video.supersample_disable_at_lines","2160"},{"video.geometry_correction","true"},
         {"video.perspective_texturing","false"},{"runtime.bios_hle_keep_intro","true"},
         {"audio.buffer_ms","64"},{"controller.anti_deadzone","2048"},
-        {"controller.experimental_jogcon_force_feedback_invert","true"},{"controller.select_shortcuts","false"}
+        {"controller.experimental_jogcon_force_feedback_invert","true"},{"controller.select_shortcuts","false"},
+        {"video.internal_resolution","8x"},{"video.crt_filter","trinitron"},{"video.scanlines","true"},
+        {"video.scanline_strength","0.25"},{"video.antialiasing","false"},{"video.texture_filtering","xbr"},
+        {"video.fmv_filter","bicubic"},{"video.pgxp_cpu_mode","true"},{"video.pgxp_culling","true"},
+        {"audio.spu_hq","true"},{"video.rewind","true"},{"video.rewind_depth","100"},{"video.rewind_interval","4"}
     };
     int controls=0;
     std::map<std::string,std::string> placed; // option id -> "feature group/option group"
@@ -89,22 +102,32 @@ int main() {
             ++controls;
         }
     }
-    assert(controls==36);
-    /* The owner's layout: PGXP page for the two PGXP visual corrections, and
-     * one Automatic resolution section on the Display page. */
-    for(const char* id:{"video.geometry_correction","video.perspective_texturing"}) assert(placed.at(id)=="PGXP/PGXP");
+    assert(controls==49);
+    /* The launcher layout: Internal resolution on Display, the CRT filter,
+     * Image filtering and Automatic resolution sections on Display, the four
+     * PGXP settings on PGXP, and Enhanced audio and Rewind on General. */
+    for(const char* id:{"video.geometry_correction","video.perspective_texturing",
+                        "video.pgxp_cpu_mode","video.pgxp_culling"}) assert(placed.at(id)=="PGXP/PGXP");
+    assert(placed.at("video.internal_resolution")=="Display/Display");
+    for(const char* id:{"video.crt_filter","video.scanlines","video.scanline_strength"})
+        assert(placed.at(id)=="Display/CRT filter");
+    for(const char* id:{"video.antialiasing","video.texture_filtering","video.fmv_filter"})
+        assert(placed.at(id)=="Display/Image filtering");
+    assert(placed.at("audio.spu_hq")=="General/General");
+    for(const char* id:{"video.rewind","video.rewind_depth","video.rewind_interval"})
+        assert(placed.at(id)=="General/Rewind");
     for(const char* id:{"video.dynamic_resolution","video.dynamic_resolution_min","video.match_display_max_lines",
                         "video.supersample","video.supersample_disable_at_lines"})
         assert(placed.at(id)=="Display/Automatic resolution");
-    assert(std::count_if(placed.begin(),placed.end(),[](const auto& item){return item.second.rfind("PGXP/",0)==0;})==2);
+    assert(std::count_if(placed.begin(),placed.end(),[](const auto& item){return item.second.rfind("PGXP/",0)==0;})==4);
     assert(std::count_if(placed.begin(),placed.end(),[](const auto& item){return item.second=="Display/Automatic resolution";})==5);
-    assert(headings=="|Display|Automatic resolution");
+    assert(headings=="|Display|CRT filter|Image filtering|Automatic resolution");
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.geometry_correction","true"));
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"general","audio.buffer_ms","2147483648"));
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.pgxp_tolerance","nan"));
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.match_display_max_lines","1"));
     auto prefs=PSXRecompV4::load_user_settings(path);
-    assert(!prefs.parse_error && prefs.extra_player_settings.size()==29);
+    assert(!prefs.parse_error && prefs.extra_player_settings.size()==42);
     assert(prefs.has_fast_boot && prefs.fast_boot && prefs.has_bios_hle && prefs.bios_hle);
     assert(prefs.fov_scale==1.5 && !prefs.low_latency_input && prefs.mouse_sensitivity==2.5 && prefs.mouse_capture);
     assert(prefs.memcard_dir=="cards/test");
@@ -121,6 +144,9 @@ int main() {
     assert(!texture_batching && g_frame_generation_method==1 && g_video_dynres_min==PSX_IR_SCALE(2));
     assert(g_video_match_max_lines==1080 && g_video_ss_disable_at_lines==2160);
     assert(g_video_geometry_correction && !g_video_perspective_texturing && g_player_geometry_set && g_player_texture_set);
+    assert(g_video_pgxp_cpu_mode && g_player_pgxp_cpu_set && g_player_pgxp_culling);
+    assert(g_host_enh_player.at("video.internal_resolution")=="8x" && g_host_enh_player.at("video.crt_filter")=="trinitron");
+    assert(g_host_enh_player.at("audio.spu_hq")=="true" && g_host_enh_player.at("video.rewind_depth")=="100");
     PSXRecompV4::UserSettings old_snapshot;
     player_settings_merge(old_snapshot);
     assert(old_snapshot.extra_player_settings==prefs.extra_player_settings && old_snapshot.fast_boot);

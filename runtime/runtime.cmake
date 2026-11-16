@@ -520,18 +520,11 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_debug.c
     ${PSXRECOMP_ROOT}/runtime/src/debug_bulk_write.c
     ${PSXRECOMP_ROOT}/runtime/src/debug_server_policy.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_pgxp.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_internal_resolution.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_bezel.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_ram.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_hd_textures.c
     ${PSXRECOMP_ROOT}/runtime/src/host_enhancements.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_crt_filter.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_image_filtering.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_enhanced_audio.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_rewind.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_internal_resolution.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_post_processing.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_packages.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_media.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_runtime.cpp
@@ -1268,18 +1261,6 @@ endfunction()
 # this title declines to ship (runtime/psx_mod_catalog_select.cmake).
 function(_psxrt_stage_mod_catalog target preloaded_dir)
     set(_excluded_builtins ${ARGN})
-    # A build without local rewind (-DPSX_REWIND=OFF) has no ring for the
-    # built-in Rewind mod to arm, so the package is declined like any other
-    # excluded builtin: absent from the catalog and recorded as excluded for
-    # the release packager, rather than listed as a switch that does nothing.
-    # A title that overrides the id with its own package keeps it.
-    if(NOT PSXRECOMP_HAS_RBENGINE_SNAP AND
-       EXISTS "${PSXRECOMP_ROOT}/mods/builtin/packages/psx.feature.rewind" AND
-       NOT "psx.feature.rewind" IN_LIST _excluded_builtins AND
-       NOT (NOT preloaded_dir STREQUAL "" AND NOT preloaded_dir STREQUAL "NONE" AND
-            IS_DIRECTORY "${preloaded_dir}/packages/psx.feature.rewind"))
-        list(APPEND _excluded_builtins "psx.feature.rewind")
-    endif()
     set(_out "$<TARGET_FILE_DIR:${target}>")
     set(_ids "")
     set(_copy "")
