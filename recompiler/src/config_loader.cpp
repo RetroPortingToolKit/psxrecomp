@@ -3200,22 +3200,24 @@ UserSettings load_user_settings(const fs::path& path) {
             else if (m == "opengl") { s.renderer = 1; s.has_renderer = true; }
             else if (m == "vulkan") { s.renderer = 2; s.has_renderer = true; }
         });
-        // supersampling, internal_resolution, supersample, dynamic_resolution
-        // and dynamic_resolution_min are no longer player settings: the
-        // built-in Internal Resolution mod (psx.enhancement.internal-resolution)
-        // owns the internal resolution over the title's [video] baseline, Auto
-        // (dynamic resolution) included. Old keys are ignored, not errors, and
-        // the next save drops them (docs/config_schema.md).
+        // supersampling and internal_resolution are no longer player
+        // settings: the built-in Internal Resolution mod
+        // (psx.enhancement.internal-resolution) owns the internal resolution
+        // over the title's [video] baseline, Auto included. Old keys are
+        // ignored, not errors, and the next save drops them
+        // (docs/config_schema.md). dynamic_resolution, dynamic_resolution_min
+        // and supersample are player settings (player_settings.h), read below.
         if (v.contains("window_width")) try_get([&]{
             const auto n = toml::find<int64_t>(v, "window_width");
             if (n >= 640 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
         });
-        // antialiasing, texture_filtering, fmv_filter, crt_filter, scanlines,
-        // scanline_strength, geometry_correction and perspective_texturing
-        // are no longer player settings: they are the built-in CRT Filter,
-        // Image Filtering and PGXP Precision mods (mods/state.toml), over the
-        // title's [video] baseline. Old keys are ignored, not errors, and the
-        // next save drops them (docs/config_schema.md).
+        // antialiasing, texture_filtering, fmv_filter, crt_filter, scanlines
+        // and scanline_strength are no longer player settings: they are the
+        // built-in CRT Filter and Image Filtering mods (mods/state.toml), over
+        // the title's [video] baseline. Old keys are ignored, not errors, and
+        // the next save drops them (docs/config_schema.md).
+        // geometry_correction and perspective_texturing are player settings
+        // (player_settings.h, PGXP page), read below.
         if (v.contains("fov_scale")) try_get([&]{
             const auto& n = toml::find(v, "fov_scale");
             if (n.is_floating())     s.fov_scale = n.as_floating();

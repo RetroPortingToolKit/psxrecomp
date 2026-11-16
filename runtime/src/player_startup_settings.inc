@@ -12,7 +12,9 @@ static void apply_extra_player_settings(const PSXRecompV4::UserSettings& prefs,
         if (id=="video.antialiasing_mode") { g_video_post_aa=value=="off" ? 0 : value=="fxaa" ? 1 : 2; }
         if (id=="video.bloom") { g_video_bloom=static_cast<decltype(g_video_bloom)>(std::strtod(value.c_str(),nullptr)); }
         if (id=="video.post_shader") { g_video_post_shader=value; }
-        if (id=="video.supersample") { g_video_ss_milli=static_cast<int>(std::strtod(value.c_str(),nullptr)*1000.0+0.5); g_title_ss_milli=g_video_ss_milli; }
+        /* Resolution preferences replace the title baseline the Internal
+         * Resolution mod resolves over at each session start. */
+        if (id=="video.supersample") { g_video_ss_milli=static_cast<int>(std::strtod(value.c_str(),nullptr)*1000.0+0.5); g_title_ss_milli=g_video_ss_milli; g_title_resolution.supersample_milli=g_video_ss_milli; }
         if (id=="video.pgxp_tolerance") { g_video_pgxp_tolerance=static_cast<decltype(g_video_pgxp_tolerance)>(std::strtod(value.c_str(),nullptr)); g_video_pgxp_tolerance_set=1; }
         if (id=="video.pgxp_position_fallback") { g_video_pgxp_position_fallback=value=="true"; g_video_pgxp_position_fallback_set=1; }
         if (id=="video.pgxp_preserve_projection") { g_video_pgxp_preserve_projection=value=="true"; }
@@ -27,7 +29,8 @@ static void apply_extra_player_settings(const PSXRecompV4::UserSettings& prefs,
         if (id=="video.pgxp_depth_threshold") { g_video_pgxp_depth_threshold=static_cast<decltype(g_video_pgxp_depth_threshold)>(std::strtod(value.c_str(),nullptr)); }
         if (id=="video.texture_window_batching") { g_player_texture_window_batching=value=="true"; gl_renderer_set_texture_window_batching(g_player_texture_window_batching); }
         if (id=="video.frame_generation_method") { g_frame_generation_method=value=="redraw" ? 0 : 1; }
-        if (id=="video.dynamic_resolution_min") { psx_ir_parse(value.c_str(),&g_video_dynres_min); }
+        if (id=="video.dynamic_resolution") { g_video_dynres=value=="true"; g_title_resolution.dynamic_resolution=g_video_dynres; }
+        if (id=="video.dynamic_resolution_min") { psx_ir_parse(value.c_str(),&g_video_dynres_min); g_title_resolution.dynamic_resolution_min=g_video_dynres_min; }
         if (id=="video.match_display_max_lines") { g_video_match_max_lines=std::stoi(value); }
         if (id=="video.supersample_disable_at_lines") { g_video_ss_disable_at_lines=std::stoi(value); }
         if (id=="video.geometry_correction") { g_video_geometry_correction=value=="true"; g_player_geometry_set=1; }
@@ -61,6 +64,7 @@ static std::map<std::string,std::string> player_settings_baseline(bool fast_boot
     values["video.pgxp_depth_threshold"]=player_setting_text(g_video_pgxp_depth_threshold);
     values["video.texture_window_batching"]=player_setting_flag(g_player_texture_window_batching!=0);
     values["video.frame_generation_method"]=g_frame_generation_method==0 ? "redraw" : "reprojection";
+    values["video.dynamic_resolution"]=player_setting_flag(g_video_dynres!=0);
     values["video.dynamic_resolution_min"]=player_setting_text(g_video_dynres_min);
     values["video.match_display_max_lines"]=player_setting_text(g_video_match_max_lines);
     values["video.supersample_disable_at_lines"]=player_setting_text(g_video_ss_disable_at_lines);

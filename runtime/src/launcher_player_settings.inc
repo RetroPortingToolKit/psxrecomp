@@ -1,5 +1,5 @@
 /* The existing provider's typed option interface also presents host settings.
- * These two rows are not installed packages or activation plugins: they are
+ * These pages are not installed packages or activation plugins: they are
  * edited only on Settings and persist to settings.toml. No launcher ABI moves. */
 namespace {
 using PlayerPreferences = PSXRecompV4::UserSettings;
@@ -15,6 +15,15 @@ const PlayerSpec kExistingPlayerSettings[] = {
     {"controller","mouse_sensitivity","PS1 Mouse sensitivity (0.05-10)","General",PlayerKind::Number,0.05,10,""},
     {"controller","mouse_capture","Capture PS1 Mouse pointer","General",PlayerKind::Boolean,0,1,""},
 };
+/* One provider feature per page: its id, the page (the feature's group, and
+ * the spec's `page`) and its name. Each option's group is its heading. */
+struct PlayerSettingsPage { const char *id, *page, *name; };
+const PlayerSettingsPage kPlayerSettingsPages[] = {
+    {"general","General","Startup and input preferences"},
+    {"display","Display","Advanced graphics"},
+    {"pgxp","PGXP","PGXP preferences"},
+};
+constexpr int kPlayerSettingsPageCount=int(sizeof kPlayerSettingsPages/sizeof kPlayerSettingsPages[0]);
 std::filesystem::path s_player_settings_path;
 std::map<std::string,std::string> s_player_setting_values;
 std::string s_player_settings_error;
@@ -107,23 +116,23 @@ void player_settings_configure(const std::filesystem::path& path,
 
 bool player_settings_own(const char* package) { return package && !std::strcmp(package,kPlayerSettingsPackage); }
 const char* player_settings_page(const char* feature) {
-    if (feature && !std::strcmp(feature,"general")) return "General";
-    if (feature && !std::strcmp(feature,"display")) return "Display";
+    for (const auto& page:kPlayerSettingsPages) if (feature && !std::strcmp(feature,page.id)) return page.page;
     return "";
 }
 int player_settings_count(void* context) {
-    return s_player_settings_original->feature_count(context)+2;
+    return s_player_settings_original->feature_count(context)+kPlayerSettingsPageCount;
 }
 int player_settings_feature(void* context,int index,RecompLauncherCModFeature* out) {
     const int base=s_player_settings_original->feature_count(context);
     if (index<base) return s_player_settings_original->feature_get(context,index,out);
-    if (!out || index<base || index>=base+2) return 0;
+    if (!out || index<base || index>=base+kPlayerSettingsPageCount) return 0;
     *out={};
-    const char* page=index==base?"General":"Display";
+    const auto& info=kPlayerSettingsPages[index-base];
+    const char* page=info.page;
     std::snprintf(out->package_id,sizeof out->package_id,"%s",kPlayerSettingsPackage);
-    std::snprintf(out->id,sizeof out->id,"%s",index==base?"general":"display");
+    std::snprintf(out->id,sizeof out->id,"%s",info.id);
     std::snprintf(out->group,sizeof out->group,"%s",page);
-    std::snprintf(out->name,sizeof out->name,"%s",index==base?"Startup and input preferences":"Advanced graphics");
+    std::snprintf(out->name,sizeof out->name,"%s",info.name);
     std::snprintf(out->status,sizeof out->status,"Saved immediately. Applies on the next game launch; command-line and environment overrides still win.");
     out->enabled=1;
     each_player_setting([&](const PlayerSpec& spec) { out->option_count+=!std::strcmp(page,spec.page); });
@@ -137,13 +146,16 @@ int player_settings_option(void* context,const char* package,const char* feature
     const auto id=PSXRecompV4::player_setting_id(*spec);
     std::snprintf(out->id,sizeof out->id,"%s",id.c_str());
     std::snprintf(out->label,sizeof out->label,"%s",spec->label);
-    std::snprintf(out->group,sizeof out->group,"%s",spec->page);
+    std::snprintf(out->group,sizeof out->group,"%s",PSXRecompV4::player_setting_heading(*spec));
     std::snprintf(out->value,sizeof out->value,"%s",s_player_setting_values[id].c_str());
     std::snprintf(out->description,sizeof out->description,"Saved to [%s] %s. Applies next launch. Explicit command-line/environment overrides win.%s",spec->section,spec->key,
                   id=="video.fast_boot"?" Skips the boot animation only; kernel initialization and executable loading still run.":
                   id=="video.bios_hle"?" Computes supported BIOS kernel services in the host; this is separate from skipping the animation.":
                   id=="memcard.dir"?" Explicit per-card paths still take precedence.":
-                  spec->kind==PlayerKind::ResolutionFloor?" Use native,720p,1080p,4k,display,1x-32x or a fixed height.":"");
+                  id=="video.dynamic_resolution"?" Used while the Internal Resolution mod is enabled at Game default; a fixed choice there turns it off, and Auto or the mod's Dynamic resolution choice wins.":
+                  id=="video.supersample"?" Used while the Internal Resolution mod is enabled and its matching option is Game default.":
+                  id=="video.geometry_correction"||id=="video.perspective_texturing"?" Overrides the PGXP Precision mod's matching option.":
+                  spec->kind==PlayerKind::ResolutionFloor?" Use native,720p,1080p,4k,display,1x-32x or a fixed height. Used while the Internal Resolution mod is enabled and its Lowest resolution is Game default.":"");
     if (spec->kind==PlayerKind::Boolean) out->type=RECOMP_MOD_OPTION_BOOLEAN;
     else if (spec->kind==PlayerKind::Integer) {
         out->type=RECOMP_MOD_OPTION_INTEGER;

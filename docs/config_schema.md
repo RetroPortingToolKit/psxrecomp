@@ -748,8 +748,14 @@ enhancements"):
 
 The paired compact Settings UI also exposes the existing built-in resolution
 and image-filtering controls. Explicit player vertex/perspective preferences
-can override those PGXP visual choices independently of the mod's CPU/culling
-options. See [Player Settings](PLAYER_SETTINGS.md) for persistence and presets.
+(`[video] geometry_correction`, `perspective_texturing` in `settings.toml`, on
+the launcher's PGXP page) can override those PGXP visual choices independently
+of the mod's CPU/culling options. The Display page's Automatic resolution
+section keeps `dynamic_resolution`, `dynamic_resolution_min`,
+`match_display_max_lines`, `supersample` and `supersample_disable_at_lines` in
+`settings.toml`; they replace the title's baseline under the Internal
+Resolution mod. See [Player Settings](PLAYER_SETTINGS.md) for persistence and
+presets.
 
 | `game.toml` key | Built-in mod (option) |
 |---|---|
@@ -767,8 +773,7 @@ Local rewind has no `game.toml` key; it is the Rewind mod
 A `settings.toml` written before this change may still carry `antialiasing`,
 `texture_filtering`, `fmv_filter`, `crt_filter`, `scanlines`,
 `scanline_strength`, `rewind`,
-`rewind_depth`, `rewind_interval`, `supersampling`, `internal_resolution`,
-`dynamic_resolution`, `[audio]
+`rewind_depth`, `rewind_interval`, `supersampling`, `internal_resolution`, `[audio]
 spu_hq`, `[audio] frequency` or the `quality_*` keys. They are ignored, never
 an error, and the next save drops them. Current volume and buffer preferences
 remain supported.

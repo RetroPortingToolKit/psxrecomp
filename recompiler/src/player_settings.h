@@ -13,7 +13,12 @@ struct PlayerSettingSpec {
     PlayerSettingKind kind;
     double minimum, maximum;
     const char *choices;
+    /* Optional heading inside the page; null keeps the page name. Rows that
+     * share a heading are listed together. */
+    const char *heading;
 };
+
+inline constexpr const char kAutomaticResolution[] = "Automatic resolution";
 
 /* Runtime-only player overrides. Build addresses, timing constants, feature
  * declarations and operational compiler/cache settings are not preferences. */
@@ -21,7 +26,6 @@ inline const PlayerSettingSpec kExtraPlayerSettings[] = {
     {"video","antialiasing_mode","Post-process antialiasing","Display",PlayerSettingKind::Choice,0,0,"off,fxaa,fxaa_hq"},
     {"video","bloom","Bloom strength (0-2)","Display",PlayerSettingKind::Number,0,2,""},
     {"video","post_shader","Post-effect chain (.pfx)","Display",PlayerSettingKind::Text,0,0,""},
-    {"video","supersample","Supersample multiplier (1-4)","Display",PlayerSettingKind::Number,1,4,""},
     {"video","pgxp_tolerance","PGXP tolerance (-1 disables clamp)","Display",PlayerSettingKind::Number,-1,1e12,""},
     {"video","pgxp_position_fallback","PGXP position fallback","Display",PlayerSettingKind::Boolean,0,1,""},
     {"video","pgxp_preserve_projection","Preserve PGXP projection","Display",PlayerSettingKind::Boolean,0,1,""},
@@ -36,11 +40,13 @@ inline const PlayerSettingSpec kExtraPlayerSettings[] = {
     {"video","pgxp_depth_threshold","PGXP depth threshold","Display",PlayerSettingKind::Number,0,1e12,""},
     {"video","texture_window_batching","Texture-window batching","Display",PlayerSettingKind::Boolean,0,1,""},
     {"video","frame_generation_method","Smooth-motion method","Display",PlayerSettingKind::Choice,0,0,"redraw,reprojection"},
-    {"video","dynamic_resolution_min","Automatic-resolution floor","Display",PlayerSettingKind::ResolutionFloor,0,0,""},
-    {"video","match_display_max_lines","Display-match ceiling (0=none)","Display",PlayerSettingKind::Integer,0,8640,""},
-    {"video","supersample_disable_at_lines","Disable supersampling at height (0=never)","Display",PlayerSettingKind::Integer,0,8640,""},
-    {"video","geometry_correction","PGXP vertex correction","Display",PlayerSettingKind::Boolean,0,1,""},
-    {"video","perspective_texturing","Perspective-correct textures","Display",PlayerSettingKind::Boolean,0,1,""},
+    {"video","dynamic_resolution","Automatic resolution","Display",PlayerSettingKind::Boolean,0,1,"",kAutomaticResolution},
+    {"video","dynamic_resolution_min","Lowest resolution (floor)","Display",PlayerSettingKind::ResolutionFloor,0,0,"",kAutomaticResolution},
+    {"video","match_display_max_lines","Highest display lines (ceiling, 0=none)","Display",PlayerSettingKind::Integer,0,8640,"",kAutomaticResolution},
+    {"video","supersample","Supersample multiplier (1-4)","Display",PlayerSettingKind::Number,1,4,"",kAutomaticResolution},
+    {"video","supersample_disable_at_lines","Disable supersampling at display lines (0=never)","Display",PlayerSettingKind::Integer,0,8640,"",kAutomaticResolution},
+    {"video","geometry_correction","PGXP vertex correction","PGXP",PlayerSettingKind::Boolean,0,1,""},
+    {"video","perspective_texturing","Perspective-correct textures","PGXP",PlayerSettingKind::Boolean,0,1,""},
     {"runtime","bios_hle_keep_intro","Keep BIOS intro with kernel HLE","General",PlayerSettingKind::Boolean,0,1,""},
     {"audio","buffer_ms","Audio buffer (milliseconds)","General",PlayerSettingKind::Integer,30,500,""},
     {"controller","anti_deadzone","Analog anti-deadzone (0-32767)","General",PlayerSettingKind::Integer,0,32767,""},
@@ -48,6 +54,9 @@ inline const PlayerSettingSpec kExtraPlayerSettings[] = {
     {"controller","select_shortcuts","Enable fallback Select shortcuts","General",PlayerSettingKind::Boolean,0,1,""},
 };
 
+inline const char* player_setting_heading(const PlayerSettingSpec& spec) {
+    return spec.heading && *spec.heading ? spec.heading : spec.page;
+}
 inline std::string player_setting_id(const PlayerSettingSpec& spec) {
     return std::string(spec.section)+"."+spec.key;
 }

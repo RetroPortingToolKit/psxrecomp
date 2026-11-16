@@ -9,6 +9,7 @@
 #include <cassert>
 #include <fstream>
 #include <chrono>
+#include <algorithm>
 
 /* Startup's real apply function writes these ordinary runtime owners. The
  * renderer's setter is observed without creating a context or window. */
@@ -20,6 +21,10 @@ static int g_video_pgxp_position_fallback=1,g_video_pgxp_preserve_projection;
 static int g_video_pgxp_depth_buffer,g_video_fmv_chroma,g_video_texture_lod,g_video_aniso=1;
 static int g_video_accurate_blending,g_video_dithering=1,g_video_pgxp_color_correction,g_video_pgxp_seam;
 static int g_frame_generation_method,g_video_dynres_min=720,g_video_match_max_lines,g_video_ss_disable_at_lines;
+static int g_video_dynres;
+/* The baseline the Internal Resolution mod resolves over (host_enhancements.h). */
+static struct { int internal_resolution,dynamic_resolution,dynamic_resolution_min,supersample_milli; }
+    g_title_resolution={0,0,720,1000};
 static int g_video_geometry_correction,g_video_perspective_texturing,controller_anti_deadzone;
 static bool g_jogcon_ffb_invert;
 static int g_title_select_shortcuts=1,g_player_title_select_allowed=1;
@@ -47,7 +52,7 @@ int main() {
     original.feature_option_get=no_option;original.feature_set_option=no_set;original.feature_enable=no_enable;
     player_settings_configure(path,player_settings_baseline(false,false,false,100,"cards"));
     const auto* provider=player_settings_provider(&original);
-    assert(provider->feature_count(provider->ctx)==2);
+    assert(provider->feature_count(provider->ctx)==3);
     assert(!provider->feature_option_get(provider->ctx,kPlayerSettingsPackage,"invalid",0,nullptr));
     const std::map<std::string,std::string> edits={
         {"video.fov_scale","1.5"},{"video.fast_boot","true"},{"video.bios_hle","true"},
@@ -62,29 +67,44 @@ int main() {
         {"video.dithering","fine"},{"video.pgxp_color_correction","true"},
         {"video.pgxp_seam","wide"},{"video.pgxp_depth_threshold","2048.5"},
         {"video.texture_window_batching","false"},{"video.frame_generation_method","reprojection"},
-        {"video.dynamic_resolution_min","2x"},{"video.match_display_max_lines","1080"},
+        {"video.dynamic_resolution","true"},{"video.dynamic_resolution_min","2x"},{"video.match_display_max_lines","1080"},
         {"video.supersample_disable_at_lines","2160"},{"video.geometry_correction","true"},
         {"video.perspective_texturing","false"},{"runtime.bios_hle_keep_intro","true"},
         {"audio.buffer_ms","64"},{"controller.anti_deadzone","2048"},
         {"controller.experimental_jogcon_force_feedback_invert","true"},{"controller.select_shortcuts","false"}
     };
     int controls=0;
-    for(int i=0;i<2;++i) {
+    std::map<std::string,std::string> placed; // option id -> "feature group/option group"
+    std::string headings;                     // Display headings in order, collapsed
+    for(int i=0;i<3;++i) {
         RecompLauncherCModFeature feature{};assert(provider->feature_get(provider->ctx,i,&feature));
         for(int j=0;j<feature.option_count;++j) {
             RecompLauncherCModOption option{};
             assert(provider->feature_option_get(provider->ctx,feature.package_id,feature.id,j,&option));
+            placed[option.id]=std::string(feature.group)+"/"+option.group;
+            if(!std::strcmp(feature.id,"display") && (headings.empty() || headings.substr(headings.rfind('|')+1)!=option.group))
+                headings+=std::string("|")+option.group;
             auto edit=edits.find(option.id);assert(edit!=edits.end());
             assert(provider->feature_set_option(provider->ctx,feature.package_id,feature.id,option.id,edit->second.c_str()));
             ++controls;
         }
     }
-    assert(controls==35);
+    assert(controls==36);
+    /* The owner's layout: PGXP page for the two PGXP visual corrections, and
+     * one Automatic resolution section on the Display page. */
+    for(const char* id:{"video.geometry_correction","video.perspective_texturing"}) assert(placed.at(id)=="PGXP/PGXP");
+    for(const char* id:{"video.dynamic_resolution","video.dynamic_resolution_min","video.match_display_max_lines",
+                        "video.supersample","video.supersample_disable_at_lines"})
+        assert(placed.at(id)=="Display/Automatic resolution");
+    assert(std::count_if(placed.begin(),placed.end(),[](const auto& item){return item.second.rfind("PGXP/",0)==0;})==2);
+    assert(std::count_if(placed.begin(),placed.end(),[](const auto& item){return item.second=="Display/Automatic resolution";})==5);
+    assert(headings=="|Display|Automatic resolution");
+    assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.geometry_correction","true"));
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"general","audio.buffer_ms","2147483648"));
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.pgxp_tolerance","nan"));
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.match_display_max_lines","1"));
     auto prefs=PSXRecompV4::load_user_settings(path);
-    assert(!prefs.parse_error && prefs.extra_player_settings.size()==28);
+    assert(!prefs.parse_error && prefs.extra_player_settings.size()==29);
     assert(prefs.has_fast_boot && prefs.fast_boot && prefs.has_bios_hle && prefs.bios_hle);
     assert(prefs.fov_scale==1.5 && !prefs.low_latency_input && prefs.mouse_sensitivity==2.5 && prefs.mouse_capture);
     assert(prefs.memcard_dir=="cards/test");
@@ -92,7 +112,8 @@ int main() {
     apply_extra_player_settings(prefs,intro,audio);
     assert(intro && audio==64 && controller_anti_deadzone==2048 && g_jogcon_ffb_invert && !g_title_select_shortcuts);
     assert(g_video_post_aa==2 && g_video_bloom==0.75f && g_video_post_shader=="filters/test.pfx");
-    assert(g_video_ss_milli==1500 && g_title_ss_milli==1500);
+    assert(g_video_ss_milli==1500 && g_title_ss_milli==1500 && g_title_resolution.supersample_milli==1500);
+    assert(g_video_dynres && g_title_resolution.dynamic_resolution && g_title_resolution.dynamic_resolution_min==PSX_IR_SCALE(2));
     assert(g_video_pgxp_tolerance==-1 && g_video_pgxp_tolerance_set && !g_video_pgxp_position_fallback && g_video_pgxp_position_fallback_set);
     assert(g_video_pgxp_preserve_projection && g_video_pgxp_depth_buffer && g_video_fmv_chroma);
     assert(g_video_texture_lod==1 && g_video_aniso==8 && g_video_accurate_blending && g_video_dithering==2);
@@ -108,6 +129,6 @@ int main() {
     assert(PSXRecompV4::save_user_settings(path,old_snapshot));
     const auto again=PSXRecompV4::load_user_settings(path);
     assert(again.extra_player_settings==prefs.extra_player_settings && again.adaptive_view);
-    puts("PASS:35 actual provider edits -> TOML load -> startup owners; bounds/old snapshot/stub preservation");
+    puts("PASS:36 actual provider edits -> TOML load -> startup owners; bounds/old snapshot/stub preservation");
     return 0;
 }

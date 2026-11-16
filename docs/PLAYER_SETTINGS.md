@@ -1,13 +1,13 @@
 # Player Settings
 
-The launcher exposes General and Display preferences through the existing mod
+The launcher exposes General, Display and PGXP preferences through the existing mod
 provider interface. The reserved `psx.runtime.settings` entries are preferences,
 not installed mods. Values are validated by `recompiler/src/player_settings.h`,
 saved in executable-side `settings.toml`, and applied on startup and after Play.
 The provider merges a fresh file before each write and rejects malformed files;
 a stale launcher snapshot must not overwrite newer preference edits.
 
-The typed provider covers 35 values: seven existing preferences plus 28 additional
+The typed provider covers 36 values: seven existing preferences plus 29 additional
 runtime preferences. Existing launcher controls supply renderer, aspect, VSync,
 interpolation, interpolation rate and widescreen. Environment overrides remain
 authoritative. A title that disables fallback Select shortcuts cannot have them
@@ -17,10 +17,21 @@ CPU clock or enable gameplay timing hacks.
 The additional values include host audio buffering, input anti-deadzone, mouse
 capture and sensitivity, BIOS intro policy, render presentation, and visual
 filters. Exact accepted ranges and choices live in `kExtraPlayerSettings`.
-Missing values retain the title/runtime baseline. PGXP vertex and texture
-preferences override those visual choices independently; the mod's CPU and
-culling choices remain separate. Netplay and environment restrictions still
-take precedence.
+Missing values retain the title/runtime baseline. Each spec names its page
+(one provider feature per page: `general`, `display`, `pgxp`) and an optional
+heading, which the provider reports as the option's group. The PGXP page holds
+PGXP vertex correction and perspective-correct textures. These preferences
+override the PGXP Precision mod's matching visual choices independently; the
+mod's CPU and culling choices remain separate. The Display page's Automatic
+resolution section holds automatic resolution on/off, its floor
+(`dynamic_resolution_min`), its ceiling (`match_display_max_lines`, the display
+height Match display and Auto resolve against), the supersample multiplier and
+`supersample_disable_at_lines`. They replace the title's baseline that the
+Internal Resolution mod resolves over: they apply while that mod is enabled and
+its matching option is Game default (a fixed resolution choice turns automatic
+resolution off, Auto turns it on). The ceiling and the supersample height cut
+apply whatever the mod chooses. Netplay and environment restrictions still take
+precedence.
 
 The paired UI offers Faithful, Best and derived Custom states. Faithful uses
 native 1x resolution, sharp presentation, nearest texture/FMV filtering, normal
