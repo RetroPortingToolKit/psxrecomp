@@ -75,7 +75,7 @@ void psx_write_byte(uint32_t a,uint8_t v) {debug_server_trace_write_check(a&0x1f
 extern "C" {
 void flow_reference_func_80010700(CPUState*);void flow_candidate_func_80010700(CPUState*);
 void flow_reference_func_80010800(CPUState*);void flow_candidate_func_80010800(CPUState*);
-void flow_reference_func_80010900(CPUState*);void flow_candidate_func_80010900(CPUState*);
+void flow_reference_func_80010810(CPUState*);void flow_candidate_func_80010810(CPUState*);
 void fixture_regions_owner(CPUState*,uint32_t,uint32_t,int);
 unsigned fixture_regions_owner_calls(void);
 int psx_game_text_native_ok(uint32_t address) {
@@ -94,8 +94,9 @@ static unsigned region_entry[3],region_replacements,region_instruction,region_sa
 static unsigned region_mode,region_sample_receipts;
 static CPUState* region_cpu;
 extern "C" int psx_mod_function_entry(CPUState* cpu,uint32_t pc) {
-    if(pc<0x80010700u||pc>0x80010900u||(pc&255u))std::abort();
-    ++region_entry[(pc-0x80010700u)/256u];
+    const unsigned entry=pc==0x80010700u?0u:pc==0x80010800u?1u:pc==REGION_LOOP_PC?2u:3u;
+    if(entry==3u)std::abort();
+    ++region_entry[entry];
     if(cpu->pc)std::abort();
     return 0;
 }
@@ -123,7 +124,9 @@ extern "C" void psx_observation_sample(void) {
 extern "C" void psx_observation_edge(CPUState* cpu,uint32_t pc,int) {
     ++region_edges;++psx_observation_slow_edges;
     if(region_mode==2||region_mode==3) {
-        if(pc!=0x80010900u||region_entry[2]!=1u)std::abort();
+        if(pc!=REGION_LOOP_PC||region_entry[2]!=1u) {
+            std::fprintf(stderr,"FAIL loop observer pc%08X expected%08X entry%u\n",pc,REGION_LOOP_PC,region_entry[2]);std::abort();
+        }
         region_receipt(cpu,8,3);
     }
     psx_next_service_cycle=UINT64_MAX;g_psx_savestate_pending=0;
@@ -139,9 +142,9 @@ extern "C" void fixture_regions_dispatch(CPUState* cpu,uint32_t address,int sele
     } else if(address==0x80010800u) {
         cpu->pc=0;
         if(selected)flow_candidate_func_80010800(cpu);else flow_reference_func_80010800(cpu);
-    } else if(address==0x80010900u) {
+    } else if(address==REGION_LOOP_PC) {
         cpu->pc=0;
-        if(selected)flow_candidate_func_80010900(cpu);else flow_reference_func_80010900(cpu);
+        if(selected)flow_candidate_func_80010810(cpu);else flow_reference_func_80010810(cpu);
     } else {std::fprintf(stderr,"FAIL unowned CPS target %08X\n",address);std::abort();}
 }
 #endif
@@ -272,12 +275,12 @@ static void run_region(RegionProduct& out,bool selected,unsigned mode) {
     if(mode==1)psx_next_cycle_sample=((uint64_t)REGION_FIRST_CHARGE*21845u+65535u)/65536u+1u;
     if(mode==2||mode==3)g_psx_savestate_pending=1;
     PGXPHookStats before{},after{};pgxp_get_hook_stats(&before);
-    if(mode==3)flow_candidate_func_80010900(&cpu); // callback escape is observed before outer dispatch consumes its PC
+    if(mode==3)flow_candidate_func_80010810(&cpu); // callback escape is observed before outer dispatch consumes its PC
     else if(mode==4) {
         // A public IRQ/interior entry is canonical, and consumes no entry hook.
         cpu.pc=REGION_INTERIOR_PC;cpu.gpr[29]-=16;psx_write_word(cpu.gpr[29]+12,cpu.gpr[31]);
         if(selected)flow_candidate_func_80010700(&cpu);else flow_reference_func_80010700(&cpu);
-    } else fixture_regions_owner(&cpu,mode==2?0x80010900u:0x80010700u,0x80009000u,selected);
+    } else fixture_regions_owner(&cpu,mode==2?REGION_LOOP_PC:0x80010700u,0x80009000u,selected);
     pgxp_get_hook_stats(&after);out.alu=after.alu-before.alu;out.cycles=psx_cycle_count;out.fraction=g_psx_gcs_frac;
     std::memcpy(out.entries,region_entry,sizeof region_entry);out.replacements=region_replacements;
     out.instructions=region_instruction;out.samples=region_sample;out.receipts=region_sample_receipts;out.edges=region_edges;
@@ -291,7 +294,11 @@ static void run_region(RegionProduct& out,bool selected,unsigned mode) {
     }
 }
 static void region_products() {
+#if defined(PSX_TEST_PGXP_REGIONS_REMAINING)
+    for(unsigned mode:{2u,4u}) {
+#else
     for(unsigned mode:{0u,1u,2u,4u}) {
+#endif
         run_region(region_reference,false,mode);run_region(region_candidate,true,mode);
         auto& a=region_reference;auto& b=region_candidate;
         if(std::memcmp(&a.cpu,&b.cpu,sizeof a.cpu)||std::memcmp(a.bytes,b.bytes,sizeof ram)||
@@ -306,8 +313,14 @@ static void region_products() {
         }
         if(!b.cycles)std::abort();
         if(mode==1 && (b.samples!=1||b.receipts!=1||!b.fraction))std::abort();
-        if(mode==2 && (b.entries[2]!=1||b.replacements!=1||b.edges!=1||b.alu>=a.alu))std::abort();
-        if(mode==4 && (b.entries[0]||b.replacements||b.alu!=a.alu))std::abort();
+        if(mode==2 && (b.entries[2]!=1||b.replacements!=1||b.edges!=1||b.alu>=a.alu)) {
+            std::fprintf(stderr,"FAIL loop entry%u replacements%u edges%u ALU%llu/%llu\n",b.entries[2],b.replacements,b.edges,
+                (unsigned long long)a.alu,(unsigned long long)b.alu);std::abort();
+        }
+        if(mode==4 && (b.entries[0]||b.replacements||b.alu!=a.alu)) {
+            std::fprintf(stderr,"FAIL public entry hook%u replacements%u ALU%llu/%llu\n",b.entries[0],b.replacements,
+                (unsigned long long)a.alu,(unsigned long long)b.alu);std::abort();
+        }
         std::printf("PASS emitted regions mode%u clock%llu frac%u ALU%llu/%llu\n",mode,
             (unsigned long long)b.cycles,b.fraction,(unsigned long long)a.alu,(unsigned long long)b.alu);
     }
@@ -318,6 +331,7 @@ static void region_products() {
 }
 #endif
 int main() {
+#if !defined(PSX_TEST_PGXP_REGIONS_REMAINING)
     for(unsigned test=0;test<38;++test) {
         const unsigned v=test<32?test: test==32?32:test==33?64:test==34?128:test==35?192:test==36?256:512;
         if(!v){std::fputs("RUN first reference PGXP product\n",stderr);std::fflush(stderr);}
@@ -353,8 +367,11 @@ int main() {
         if(!v)std::printf("Generated GTE-to-packet ALU hooks reference/native: %llu/%llu\n",
             (unsigned long long)reference.alu,(unsigned long long)candidate.alu);
     }
+#endif
 #if defined(PSX_TEST_PGXP_REGIONS)
     region_products();
 #endif
+#if !defined(PSX_TEST_PGXP_REGIONS_REMAINING)
     std::puts("PASS:38 generated GTE/CPU/memory/packet+74precision/lineage products+ordered write/store records (aliases,stale sources,partial/delayed loads)");
+#endif
 }

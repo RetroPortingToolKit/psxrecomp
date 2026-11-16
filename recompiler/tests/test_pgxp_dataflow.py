@@ -89,7 +89,9 @@ def add_region_program(base,words):
           0x03e00008,0x27bd0010]
     words+=main
     words += [0]*(512-len(words));words += [0x3c028000,0x34421234,0x03e00008,0]
-    words += [0]*(576-len(words));words += [0x2694ffff,0x3c088000,0x25087000,0x1e80fffc,0,0x03e00008,0]
+    # Contiguous after the child JR/delay: NOP padding previously let discovery
+    # create an overlapping alias host, which cannot qualify a private entry.
+    words += [0x2694ffff,0x3c088000,0x25087000,0x1e80fffc,0,0x03e00008,0]
     return base,words
 
 
@@ -100,12 +102,15 @@ def main():
     ap.add_argument('--cxx', required=True)
     ap.add_argument('--work-dir', type=Path,
                     help='Retain generated sources, objects and executable for a focused diagnosis')
+    ap.add_argument('--reuse-passed-source', type=Path, help='O0 only: verify unchanged passed bodies and run remaining region cases')
     ap.add_argument('--regions', action='store_true', help='actual private CFG/owner/clock/opaque-entry products')
     ap.add_argument('--runtime-root', type=Path, default=ROOT, help='verified production headers/project root for test-only fixture worktree')
     ap.add_argument('--dispatch', type=Path, help='already verified actual normal BIOS dispatch for owner extraction')
     ap.add_argument('--opt', choices=('0','2'), default='2')
     ap.add_argument('--operations', action='store_true', help='qualify guarded whole integer operations and write ownership')
     a = ap.parse_args()
+    if a.reuse_passed_source and (not a.regions or a.opt!='0'):
+        ap.error('--reuse-passed-source is only for remaining O0 region products')
     with (nullcontext(str(a.work_dir)) if a.work_dir else
           tempfile.TemporaryDirectory(prefix='psx-pgxp-flow-')) as folder:
         work = Path(folder)
@@ -119,7 +124,7 @@ def main():
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
             struct.pack_into('<I', header, offset, value)
         exe = work / 'flow.psx'; exe.write_bytes(header + struct.pack('<%dI' % len(words), *words))
-        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n'+('0x80010700\n0x80010800\n0x80010900\n' if a.regions else ''), encoding='utf-8')
+        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n'+('0x80010700\n0x80010800\n0x80010810\n' if a.regions else ''), encoding='utf-8')
         out = work / 'generated'
         generate=[a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', a.runtime_root]
         if a.regions:
@@ -127,7 +132,7 @@ def main():
             config.write_text('[game]\nname="Precision Regions"\nid="TEST-00000"\nexe="flow.psx"\n'
                 'entry_pc="0x80010000"\nload_address="0x80010000"\nstack_base="0x801FFFF0"\n'
                 +'text_size="0x%X"\n'%(len(words)*4)+
-                '[recompiler]\nseeds="seeds.txt"\nout_dir="generated"\nmod_function_entry_funcs=["0x80010700","0x80010800","0x80010900"]\n'
+                '[recompiler]\nseeds="seeds.txt"\nout_dir="generated"\nmod_function_entry_funcs=["0x80010700","0x80010800","0x80010810"]\n'
                 'mod_instruction_sites=["0x80010804"]\n',encoding='utf-8')
             generate+=['--ws-config',config]
         run(generate, verbose=False)
@@ -181,16 +186,25 @@ def main():
             assert changed==1
             (work/'owner.inc').write_text(owner,encoding='utf-8')
             (work/'psx_observation_config.h').write_text('#pragma once\n#define PSX_OBSERVATION_WAIT_SITE(pc) 0\n',encoding='utf-8')
-            def body(address):
-                start=text.index('void func_'+address+'(CPUState* cpu)\n{')
-                stop=text.find('\nvoid func_',start+10)
-                return text[start:stop if stop>=0 else len(text)]
+            def body(address,source=text):
+                start=source.index('void func_'+address+'(CPUState* cpu)\n{')
+                return function('static '+source[start:],'func_'+address)
+            if a.reuse_passed_source:
+                passed=a.reuse_passed_source.read_text(encoding='utf-8')
+                for address in ('80010000','80010700','80010800'):
+                    if body(address)!=body(address,passed):
+                        raise RuntimeError('passed executing body changed; cannot reuse: '+address)
+                print('REUSE actual passed 38 GTE products + region modes0/1: exact executing body source equality verified',flush=True)
             main_body=body('80010700')
             charge=re.search(r'psx_native_span_charge\((\d+)u\)',main_body)
             assert charge and 'precision_block_80010700:' in main_body and 'psx_block_edge_materialize' in main_body
             assert 'psx_precision_block_edge_materialize' not in text
+            loop_body=body('80010810')
+            assert 'precision_block_80010810:' in loop_body
+            assert 'psx_mod_function_entry(cpu, 0x80010810u)' in loop_body
+            assert 'psx_alias_body_' not in loop_body[:loop_body.index('precision_block_80010810:')]
             (work/'region_case.h').write_text('#define REGION_FIRST_CHARGE '+charge[1]+'u\n'
-                '#define REGION_CONT_PC 0x80010730u\n#define REGION_INTERIOR_PC 0x80010724u\n'
+                '#define REGION_CONT_PC 0x80010730u\n#define REGION_INTERIOR_PC 0x80010724u\n#define REGION_LOOP_PC 0x80010810u\n'
                 '#define REGION_CODE_BASE 0x80010000u\n#define REGION_CODE_BYTES '+str(len(words)*4)+'u\n'
                 'static const unsigned char region_code[]={'+','.join(str(x) for x in struct.pack('<%dI'%len(words),*words))+'};\n',encoding='utf-8')
             for line in main_body.splitlines():
@@ -204,6 +218,7 @@ def main():
             common += ['-DPSX_TEST_PGXP_REGIONS=1','-DPSX_ENABLE_BLOCK_CYCLES=1','-DPSX_OBSERVATION_TIME=1',
                        '-DPSX_NATIVE_STATIC_CALLS=1','-DPSX_NATIVE_TAIL_CHAINS=0','-DPSX_HAS_GAME_DISPATCH',
                        '-fno-unwind-tables','-fno-asynchronous-unwind-tables','-I',str(work)]
+        if a.reuse_passed_source:common+=['-DPSX_TEST_PGXP_REGIONS_REMAINING=1']
         objects = []
         for selected, name in ((0, 'reference'), (1, 'candidate')):
             c = work / (name+'.c')
