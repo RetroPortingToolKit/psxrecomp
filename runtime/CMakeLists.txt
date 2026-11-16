@@ -195,6 +195,12 @@ if(BUILD_TESTING)
         src/netplay_exit_reason.c)
     target_include_directories(netplay_exit_reason_test PRIVATE include)
     add_test(NAME netplay_exit_reason_test COMMAND netplay_exit_reason_test)
+    # A LAN / Direct IP host refuses a guest on another build or game.
+    add_executable(netplay_lan_version_test
+        tests/test_netplay_lan_version.c
+        src/netplay_lan_version.c)
+    target_include_directories(netplay_lan_version_test PRIVATE include)
+    add_test(NAME netplay_lan_version_test COMMAND netplay_lan_version_test)
     add_executable(netplay_sim_pad_cache_test tests/test_netplay_sim_pad_cache.c)
     target_include_directories(netplay_sim_pad_cache_test PRIVATE include)
     target_compile_definitions(netplay_sim_pad_cache_test PRIVATE PSX_MAX_PLAYERS=4)
