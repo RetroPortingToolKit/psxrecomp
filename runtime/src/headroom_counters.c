@@ -6,6 +6,7 @@
 #include "dirty_ram_interp.h"
 #include "pgxp.h"
 #include "dma.h"
+#include <stddef.h>
 #include <string.h>
 
 #define PSX_HR_NAME(id, name) #name,
@@ -47,8 +48,28 @@ void psx_headroom_totals(PsxHeadroomFrame *out) {
     _Static_assert(sizeof memory==12u*sizeof(uint64_t),"memory getter field contract");
     memcpy(v+PSX_HR_LOAD_INLINE_RAM,&memory,sizeof memory);
     PGXPHookStats pgxp;pgxp_get_hook_stats(&pgxp);
-    _Static_assert(sizeof pgxp==12u*sizeof(uint64_t),"precision getter field contract");
-    memcpy(v+PSX_HR_PGXP_ALU,&pgxp,sizeof pgxp);
+    /* M0 history owns the established 12-field prefix. Later diagnostics
+     * stay in pgxp_hook_stats; they must not spill into the DMA lanes. */
+#define PSX_HR_PGXP_PREFIX_FIELD(member, id) \
+    _Static_assert(offsetof(PGXPHookStats,member)== \
+        (PSX_HR_##id-PSX_HR_PGXP_ALU)*sizeof(uint64_t),"precision prefix order"); \
+    _Static_assert(sizeof pgxp.member==sizeof(uint64_t),"precision prefix width")
+    PSX_HR_PGXP_PREFIX_FIELD(alu,PGXP_ALU);
+    PSX_HR_PGXP_PREFIX_FIELD(load,PGXP_LOAD);
+    PSX_HR_PGXP_PREFIX_FIELD(store,PGXP_STORE);
+    PSX_HR_PGXP_PREFIX_FIELD(cop2,PGXP_COP2);
+    PSX_HR_PGXP_PREFIX_FIELD(muldiv,PGXP_MULDIV);
+    PSX_HR_PGXP_PREFIX_FIELD(plain_batches,PGXP_BATCHES);
+    PSX_HR_PGXP_PREFIX_FIELD(plain_registers,PGXP_REGISTERS);
+    PSX_HR_PGXP_PREFIX_FIELD(native_words_captured,PGXP_CAPTURED);
+    PSX_HR_PGXP_PREFIX_FIELD(native_words_published,PGXP_PUBLISHED);
+    PSX_HR_PGXP_PREFIX_FIELD(native_sxy_imports,PGXP_SXY);
+    PSX_HR_PGXP_PREFIX_FIELD(native_clobbers,PGXP_CLOBBER);
+    PSX_HR_PGXP_PREFIX_FIELD(native_gpr_imports,PGXP_GPR);
+#undef PSX_HR_PGXP_PREFIX_FIELD
+    _Static_assert(offsetof(PGXPHookStats,operations)==12u*sizeof(uint64_t),"precision prefix size");
+    _Static_assert(PSX_HR_DMA_HOLDS-PSX_HR_PGXP_ALU==12,"precision history lanes contiguous");
+    memcpy(v+PSX_HR_PGXP_ALU,&pgxp,offsetof(PGXPHookStats,operations));
     DMAGpuHoldStats hold;dma_debug_get_gpu_hold(&hold,NULL);
     _Static_assert(sizeof hold==8u*sizeof(uint64_t),"hold getter field contract");
     memcpy(v+PSX_HR_DMA_HOLDS,&hold,sizeof hold);

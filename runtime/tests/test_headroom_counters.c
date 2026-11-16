@@ -17,6 +17,7 @@ uint64_t psx_hr_gpu_hold_implicit_services=900;
 uint64_t psx_hr_runtime_fast_loads[3]={800,801,802};
 uint64_t psx_hr_bus_callbacks[2][3]={{1000,1001,1002},{1003,1004,1005}};
 static uint64_t width_base=700;
+static PsxHeadroomFrame *prefix_probe;
 uint64_t psx_observation_block_edges=1000,psx_observation_slow_edges=20;
 uint64_t g_spu_render_blocks=8,g_spu_sample_deadline_queries=9;
 uint64_t g_spu_sample_service_checks=10,g_spu_sample_service_pumps=11;
@@ -28,8 +29,17 @@ static void fill(void *out,unsigned n,uint64_t base) {
 }
 void psx_direct_memory_get_stats(PSXDirectMemoryStats *out) { fill(out,12,100); }
 void psx_memory_get_width_stats(PSXMemoryWidthStats *out) { fill(out,36,width_base); }
-void pgxp_get_hook_stats(PGXPHookStats *out) { fill(out,12,200); }
-void dma_debug_get_gpu_hold(DMAGpuHoldStats *out,const DMAGpuHoldEntry **ring) { assert(!ring);fill(out,8,300); }
+void pgxp_get_hook_stats(PGXPHookStats *out) { fill(out,sizeof *out/sizeof(uint64_t),200); }
+void dma_debug_get_gpu_hold(DMAGpuHoldStats *out,const DMAGpuHoldEntry **ring) {
+    assert(!ring);
+    if(prefix_probe) {
+        /* Check BEFORE the DMA getter overwrites these lanes: copying the
+         * appended PGXP diagnostics with sizeof would otherwise be hidden. */
+        for(unsigned i=0;i<5;++i)assert(prefix_probe->values[PSX_HR_DMA_HOLDS+i]==0);
+        prefix_probe=NULL;
+    }
+    fill(out,8,300);
+}
 void dma_debug_get_gpu_native(DMAGpuNativeStats *out) { fill(out,7,400); }
 void psx_static_call_get_stats(PsxStaticCallStats *out) { fill(out,5,500); }
 uint64_t dirty_ram_text_compare_calls(void) { return 600; }
@@ -52,7 +62,11 @@ static void send_fmt(const char *fmt,...) {
 static void send_err(int id,const char *error) { (void)id;(void)error;abort(); }
 #include "headroom_rpc.inc"
 int main(void) {
-    PsxHeadroomFrame out;g_disp_tail_seq=5;psx_headroom_totals(&out);
+    PGXPHookStats extended;pgxp_get_hook_stats(&extended);
+    assert(extended.operations==212 && extended.operation_refusals==213 &&
+        extended.operation_alu==214 && extended.operation_loads==215 && extended.operation_stores==216);
+    PsxHeadroomFrame out;g_disp_tail_seq=5;prefix_probe=&out;psx_headroom_totals(&out);
+    assert(!prefix_probe);
     assert(out.values[PSX_HR_DISPATCH]==5 && out.values[PSX_HR_CHECK_IRQ]==7);
 #if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
     assert(out.values[PSX_HR_BLOCK_EDGES]==1000 && out.values[PSX_HR_SLOW_EDGES]==20);
