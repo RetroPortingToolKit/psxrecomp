@@ -896,6 +896,22 @@ if(BUILD_TESTING)
     target_link_libraries(portable_settings_paths_test PRIVATE fmt)
     add_test(NAME portable_settings_paths_test COMMAND portable_settings_paths_test)
 
+    # settings.toml holds bios_hle / fast_boot only when the player wrote them;
+    # an older launcher's echo of them is dropped.
+    add_executable(boot_keys_settings_test
+        tests/boot_keys_settings_test.cpp
+        src/config_loader.cpp
+        src/ps1_exe_parser.cpp
+    )
+    target_include_directories(boot_keys_settings_test PRIVATE
+        include
+        src
+        lib/fmt/include
+        lib/toml11
+    )
+    target_link_libraries(boot_keys_settings_test PRIVATE fmt)
+    add_test(NAME boot_keys_settings_test COMMAND boot_keys_settings_test)
+
     # Needs bios/SCPH1001.toml — run from the framework root.
     add_test(NAME bios_address_model_test
              COMMAND bios_address_model_test
@@ -1426,6 +1442,7 @@ if(BUILD_TESTING)
                 render_pass_guards
                 pal_cadence_host_refresh
                 sdl3_main_single_include
+                settings_boot_keys_wiring
                 spu_sample_scheduler_default
                 vk_build_default
                 vk_color_self_barrier

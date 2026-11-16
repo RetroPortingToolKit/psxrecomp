@@ -3188,6 +3188,13 @@ UserSettings load_user_settings(const fs::path& path) {
     // Each field guarded independently so one bad value can't blank the rest.
     auto try_get = [](auto&& fn) { try { fn(); } catch (const std::exception&) {} };
 
+    // A file without the key, or with a value that is not a number, is an old
+    // one (format 0).
+    if (doc.contains("settings_format")) try_get([&]{
+        const auto n = toml::find<int64_t>(doc, "settings_format");
+        if (n > 0 && n < 1000) s.settings_format = (int)n;
+    });
+
     if (doc.contains("video")) {
         const toml::value& v = toml::find(doc, "video");
         if (v.contains("renderer")) try_get([&]{
@@ -3234,6 +3241,16 @@ UserSettings load_user_settings(const fs::path& path) {
         if (v.contains("bios_hle")) try_get([&]{
             s.bios_hle = toml::find<bool>(v, "bios_hle"); s.has_bios_hle = true;
         });
+        // Before format 2 the launcher wrote these two keys itself at every
+        // save, so in such a file they are not the player's choice: do not
+        // apply them and do not write them back (UserSettings::
+        // boot_keys_were_echoes explains why). The values stay in the struct
+        // so the caller can say what was dropped.
+        if (s.settings_format < 2 && (s.has_fast_boot || s.has_bios_hle)) {
+            s.boot_keys_were_echoes = true;
+            s.has_fast_boot = false;
+            s.has_bios_hle = false;
+        }
         if (v.contains("fullscreen")) try_get([&]{
             // Tri-state (0 off / 1 borderless / 2 exclusive). Back-compat: a
             // settings.toml written before the tri-state migration stores this
@@ -3536,7 +3553,12 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     auto rel = [&](const fs::path& p) { return fwd(relative_to_folder(p, path.parent_path())); };
 
     f << "# psxrecomp user settings - written by the launcher. Safe to hand-edit.\n";
-    f << "# Overrides the bundled game.toml; the command line overrides this file.\n\n";
+    f << "# Overrides the bundled game.toml; the command line overrides this file.\n";
+    // From format 2 on the launcher writes only what it has a control for, or
+    // what the player wrote here. `bios_hle` and `fast_boot` under [video] are
+    // read as the player's own lines in a file of this format, and as an old
+    // launcher's echo in a file without it.
+    f << "settings_format = " << UserSettings::kFormat << "\n\n";
 
     f << "[video]\n";
     if (s.has_renderer)
