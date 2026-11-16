@@ -102,6 +102,7 @@ def main():
     ap.add_argument('--cxx', required=True)
     ap.add_argument('--work-dir', type=Path,
                     help='Retain generated sources, objects and executable for a focused diagnosis')
+    ap.add_argument('--compile-only', action='store_true', help='prepare the exact unit executable without rerunning qualified products')
     ap.add_argument('--reuse-passed-source', type=Path, help='O0 only: verify unchanged passed bodies and run remaining region cases')
     ap.add_argument('--regions', action='store_true', help='actual private CFG/owner/clock/opaque-entry products')
     ap.add_argument('--runtime-root', type=Path, default=ROOT, help='verified production headers/project root for test-only fixture worktree')
@@ -269,7 +270,9 @@ def main():
                     stubs.add(symbol); changed = True
             if not changed: raise RuntimeError(p.stderr)
         else: raise RuntimeError('fixture link did not converge')
-        run([result_exe])
+        if a.compile_only:
+            print('COMPILED '+str(result_exe),flush=True)
+        else:run([result_exe])
     return 0
 
 

@@ -7,6 +7,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#if defined(PSX_TEST_PGXP_REGIONS)
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <time.h>
+#endif
+#endif
 
 extern "C" void flow_reference(CPUState*);
 extern "C" void flow_candidate(CPUState*);
@@ -72,6 +82,8 @@ void psx_write_byte(uint32_t a,uint8_t v) {debug_server_trace_write_check(a&0x1f
 }
 #if defined(PSX_TEST_PGXP_REGIONS)
 #include "region_case.h"
+#include "psx_native_span.h"
+#include "psx_block_edge.h"
 extern "C" {
 void flow_reference_func_80010700(CPUState*);void flow_candidate_func_80010700(CPUState*);
 void flow_reference_func_80010800(CPUState*);void flow_candidate_func_80010800(CPUState*);
@@ -329,8 +341,121 @@ static void region_products() {
        region_candidate.entries[2]!=1||region_candidate.edges!=1)std::abort();
     std::puts("PASS real emitted owner/CPS private selection, canonical public entry, first-block hook-once escape, fractional precharge sample, redirect/bail");
 }
+/* One finite boundary-cost decision, separate from the correctness entrypoint.
+ * These are the real hot receipt masks in normally emitted Ape80044EF4:
+ * 45794 LUIat=80000000; 44F54 ADDIUv0=2; 44F54/5C ADDIUv0+LUIv1.
+ * The v0 case includes one compatible carrying edge and its real precharge
+ * preview; the others end at the real incompatible-join receipt shape. */
+static void cost_receipt_2(CPUState* cpu) {psx_pgxp_region_materialize(cpu,2,2,2,2,2);}
+static void cost_receipt_4(CPUState* cpu) {psx_pgxp_region_materialize(cpu,4,0,0,0,0);}
+static void cost_receipt_c(CPUState* cpu) {psx_pgxp_region_materialize(cpu,12,8,8,8,8);}
+static uint64_t thread_cpu_ns() {
+#if defined(_WIN32)
+    FILETIME created,exited,kernel,user;
+    if(!GetThreadTimes(GetCurrentThread(),&created,&exited,&kernel,&user))std::abort();
+    return ((((uint64_t)kernel.dwHighDateTime<<32)|kernel.dwLowDateTime)+
+            (((uint64_t)user.dwHighDateTime<<32)|user.dwLowDateTime))*100u;
+#else
+    timespec time{};if(clock_gettime(CLOCK_THREAD_CPUTIME_ID,&time))std::abort();
+    return (uint64_t)time.tv_sec*1000000000u+(uint64_t)time.tv_nsec;
 #endif
-int main() {
+}
+template<unsigned Kind,bool Native> static void cost_body(CPUState* cpu,uint32_t count) {
+    for(uint32_t i=0;i<count;++i) {
+        psx_native_span_charge(2u);
+        if constexpr(Kind==0) {
+            cpu->gpr[1]=0x80000000u;
+            if constexpr(!Native)psx_pgxp_alu(cpu,0x3c018000u,cpu->gpr[1],0,0x8000);
+        } else {
+            cpu->gpr[2]=2u;
+            if constexpr(!Native)psx_pgxp_alu(cpu,0x24020002u,2,0,2);
+            if constexpr(Kind==2) {
+                cpu->gpr[3]=0x800f0000u;
+                if constexpr(!Native)psx_pgxp_alu(cpu,0x3c03800fu,cpu->gpr[3],0,0x800f);
+            }
+        }
+        auto receipt=Kind==0?cost_receipt_2:Kind==1?cost_receipt_4:cost_receipt_c;
+        if constexpr(Kind==1) {
+            if constexpr(Native) {
+                if(psx_block_edge_materialize(cpu,0x80045040u,receipt)||
+                   psx_native_span_charge_observable(2u))std::abort();
+            } else PSX_BLOCK_EDGE(cpu,0x80045040u);
+            psx_native_span_charge(2u);
+        }
+        if constexpr(Native) {
+            if(psx_block_edge_materialize(cpu,0x800457a4u,receipt))std::abort();
+            receipt(cpu);
+        } else PSX_BLOCK_EDGE(cpu,0x800457a4u);
+    }
+}
+struct BoundaryCost {uint64_t cpu_ns,cycles,edges,alu;unsigned writes;};
+template<unsigned Kind,bool Native> static BoundaryCost cost_arm(uint32_t count) {
+    CPUState cpu{};region_cpu=live_cpu=&cpu;history_count=0;std::memset(ram,0,sizeof ram);
+    cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;cpu.read_byte=psx_read_byte;
+    cpu.write_word=psx_write_word;cpu.write_half=psx_write_half;cpu.write_byte=psx_write_byte;
+    pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_source_tracking(1);pgxp_invalidate_all();
+    cpu.gpr[1]=0x80000000u;cpu.gpr[2]=2u;cpu.gpr[3]=0x800f0000u;
+    for(unsigned r=1;r<=3;++r)if(!pgxp_native_scalar_gpr(&cpu,r,(int32_t)cpu.gpr[r]+.25,1))std::abort();
+    g_psx_call_bail=g_psx_precise_slice=g_psx_guest_time_frozen=0;
+    g_event_step_conservative=psx_in_device_service=g_psx_render_pass_active=0;
+    g_ls_replay_active=g_ls_mode=g_ds_recording=g_host_store_depth=g_ram_read_watch_active=g_dma_exec_depth=0;
+    g_psx_cyc_batch=0;g_psx_cyc_local_acc=nullptr;g_psx_cyc_bb_defer=0;g_overlay_flush_pending_cycles=nullptr;
+    g_psx_gcs_recip_q16=32768u;g_psx_gcs_frac=0;psx_cycle_count=0;
+    psx_next_service_cycle=psx_next_cycle_sample=UINT64_MAX;
+    psx_defer_switch_pending=g_psx_savestate_pending=psx_observation_wait_active=g_ls_suppress_record=0;
+    i_stat=i_mask=0;region_mode=0;region_sample=region_edges=0;
+    g_debug_last_store_pc=Kind==0?0x80045794u:0x80044f54u;frame_count=1;
+    pgxp_set_trace_sources(&g_debug_last_store_pc,&frame_count);
+    PGXPHookStats before{},after{};pgxp_get_hook_stats(&before);
+    const uint64_t first_edge=psx_observation_block_edges,begin=thread_cpu_ns();
+    cost_body<Kind,Native>(&cpu,count);
+    const uint64_t end=thread_cpu_ns();pgxp_get_hook_stats(&after);
+    BoundaryCost result{end-begin,psx_cycle_count,psx_observation_block_edges-first_edge,after.alu-before.alu,0};
+    const uint64_t expected_edges=(Kind==1?2u:1u)*(uint64_t)count;
+    if(result.edges!=expected_edges||result.cycles!=expected_edges||region_edges||region_sample||
+       result.alu!=(Native?0u:(Kind==2?2u:1u)*(uint64_t)count))std::abort();
+    if constexpr(Kind==0)region_receipt(&cpu,1,3);
+    else {region_receipt(&cpu,2,0);if constexpr(Kind==2)region_receipt(&cpu,3,3);}
+    for(unsigned r=Kind==0?1:2;r<=(Kind==2?3:Kind==0?1:2);++r) {
+        double scalar;if(pgxp_native_gpr_scalar(r,cpu.gpr[r],&scalar))std::abort();
+    }
+    result.writes=history_count;return result;
+}
+static int boundary_cost() {
+    constexpr uint32_t count=1u<<22;constexpr unsigned rounds=3;
+    uint64_t total[3][2]{};
+    std::puts("SCOPE component only: real CPU-mode PGXP receipts plus quiet edges; Ape2x guest scaling; masks2/4/C; no guest-memory/device workload in timed interval; full providers/history remain enabled");
+    for(unsigned round=0;round<rounds;++round)for(unsigned kind=0;kind<3;++kind) {
+        BoundaryCost result[2]{};const bool reverse=(round+kind)&1u;
+        for(unsigned arm=0;arm<2;++arm) {
+            const bool native=bool(arm)^reverse;
+            if(kind==0)result[native]=native?cost_arm<0,true>(count):cost_arm<0,false>(count);
+            if(kind==1)result[native]=native?cost_arm<1,true>(count):cost_arm<1,false>(count);
+            if(kind==2)result[native]=native?cost_arm<2,true>(count):cost_arm<2,false>(count);
+        }
+        if(result[0].cycles!=result[1].cycles||result[0].edges!=result[1].edges||result[0].writes!=result[1].writes)std::abort();
+        for(unsigned arm=0;arm<2;++arm)total[kind][arm]+=result[arm].cpu_ns;
+        std::printf("COST round%u mask0x%X iterations%u order%s canonical_cpu_ns%llu native_cpu_ns%llu cycles%llu edges%llu ALU%llu/%llu retained_probe_writes%u\n",
+            round,kind==0?2:kind==1?4:12,count,reverse?"NC":"CN",(unsigned long long)result[0].cpu_ns,
+            (unsigned long long)result[1].cpu_ns,(unsigned long long)result[0].cycles,(unsigned long long)result[0].edges,
+            (unsigned long long)result[0].alu,(unsigned long long)result[1].alu,result[0].writes);std::fflush(stdout);
+    }
+    for(unsigned kind=0;kind<3;++kind) {
+        if(!total[kind][0]||!total[kind][1])std::abort();
+        std::printf("COST_TOTAL mask0x%X logical_operations%llu canonical_cpu_ns%llu native_cpu_ns%llu delta_percent%.6f\n",
+            kind==0?2:kind==1?4:12,(unsigned long long)count*rounds,(unsigned long long)total[kind][0],
+            (unsigned long long)total[kind][1],100.*((double)total[kind][1]/total[kind][0]-1.));
+    }
+    std::puts("PASS finite interleaved real receipt/edge cost; correctness/clock/count/history checks retained; no game-performance or global zero-hook claim");return 0;
+}
+
+#endif
+int main(int argc,char** argv) {
+#if defined(PSX_TEST_PGXP_REGIONS)
+    if(argc==2 && !std::strcmp(argv[1],"--cost"))return boundary_cost();
+#else
+    (void)argc;(void)argv;
+#endif
 #if !defined(PSX_TEST_PGXP_REGIONS_REMAINING)
     for(unsigned test=0;test<38;++test) {
         const unsigned v=test<32?test: test==32?32:test==33?64:test==34?128:test==35?192:test==36?256:512;
