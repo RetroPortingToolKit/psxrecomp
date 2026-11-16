@@ -3585,6 +3585,14 @@ static int cdrom_snap_emit(PstW *w, int extended) {
             WU(0x34464443u); /* CDF4: Setloc and decoded-header validity */
             W8(setloc_pending);
             W8(last_sector_header_stale);
+            if (extended >= 3) {
+                /* CDF5: the CD audio volume matrix, staged and applied. A
+                 * load used to keep the live matrix, so XA and CD-DA after
+                 * the load played at the volume of the session that loaded. */
+                WU(0x35464443u);
+                WB(cd_pending_vol);
+                WB(cd_decode_vol);
+            }
         }
     }
 
@@ -3660,6 +3668,11 @@ static int cdrom_snap_parse(PstR *r, int extended) {
             RU(u); /* validated CDF4 marker */
             R8(setloc_pending);
             R8(last_sector_header_stale);
+            if (extended >= 3) {
+                RU(u); /* validated CDF5 marker */
+                RB(cd_pending_vol);
+                RB(cd_decode_vol);
+            }
         }
     }
 
@@ -3676,6 +3689,9 @@ static int cdrom_snap_parse(PstR *r, int extended) {
     return 1;
 }
 
+#define CDROM_SNAP_CDF4_BYTES 6u
+#define CDROM_SNAP_CDF5_BYTES (4u + sizeof cd_pending_vol + sizeof cd_decode_vol)
+
 static uint32_t cdrom_snapshot_legacy_bytes(void) {
     PstW w;
     pst_w_init(&w, NULL, 0);
@@ -3688,7 +3704,10 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
     const uint32_t current = cdrom_snapshot_bytes();
     if (!p) return 0;
     if (len == legacy) return 1;
-    if (len != current && len != current - 6u) return 0; /* CDF4 or CDF2 */
+    /* CDF5, CDF4 or CDF2. */
+    if (len != current && len != current - CDROM_SNAP_CDF5_BYTES &&
+        len != current - CDROM_SNAP_CDF5_BYTES - CDROM_SNAP_CDF4_BYTES)
+        return 0;
     PstR r;
     uint32_t magic;
     int32_t index, pos, size, delay;
@@ -3706,11 +3725,16 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
             size < 0 || size > SECTOR_BUFFER_SIZE || pos < 0 || pos > size)
             return 0;
     }
-    if (len == current) {
+    if (len >= current - CDROM_SNAP_CDF5_BYTES) {
         uint8_t pending_loc, stale_header;
         if (!pst_r_u32(&r, &magic) || magic != 0x34464443u ||
             !pst_r_u8(&r, &pending_loc) || pending_loc > 1 ||
             !pst_r_u8(&r, &stale_header) || stale_header > 1) return 0;
+    }
+    if (len == current) {
+        if (!pst_r_u32(&r, &magic) || magic != 0x35464443u ||
+            !pst_r_bytes(&r, NULL, sizeof cd_pending_vol + sizeof cd_decode_vol))
+            return 0;
     }
     return r.p == r.end;
 }
@@ -3718,21 +3742,23 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
 uint32_t cdrom_snapshot_bytes(void) {
     PstW w;
     pst_w_init(&w, NULL, 0);
-    (void)cdrom_snap_emit(&w, 2);
+    (void)cdrom_snap_emit(&w, 3);
     return (uint32_t)w.written;
 }
 void cdrom_snapshot_write(uint8_t *p) {
     PstW w;
     uint32_t n = cdrom_snapshot_bytes();
     pst_w_init(&w, p, n);
-    (void)cdrom_snap_emit(&w, 2);
+    (void)cdrom_snap_emit(&w, 3);
 }
 int cdrom_snapshot_read(const uint8_t *p, uint32_t len) {
     PstR r;
     if (!cdrom_snapshot_validate(p, len)) return 0;
     pst_r_init(&r, p, len);
+    const uint32_t current = cdrom_snapshot_bytes();
     const int extended = len == cdrom_snapshot_legacy_bytes() ? 0 :
-                         len == cdrom_snapshot_bytes() ? 2 : 1;
+                         len == current ? 3 :
+                         len == current - CDROM_SNAP_CDF5_BYTES ? 2 : 1;
     if (!cdrom_snap_parse(&r, extended))
         return 0;
     /* Absolute host deadlines are not on the wire — rebuild from restored
