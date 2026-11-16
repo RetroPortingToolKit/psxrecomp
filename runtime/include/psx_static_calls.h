@@ -27,6 +27,34 @@ int psx_static_code_valid(PsxStaticCodeValidity *state,
 void psx_static_call_get_stats(PsxStaticCallStats *out);
 void psx_static_call_note_entry(int handled);
 int dirty_ram_dispatch_game_direct(struct CPUState *cpu, uint32_t addr);
+/* Guaranteed tail chains retain the flat owner as the sole stop/return owner.
+ * The per-image hook callback is the exact sequence used by that owner. */
+typedef int (*PsxNativeTailHooks)(struct CPUState *, uint32_t);
+typedef void (*PsxNativeTailBody)(struct CPUState *);
+int dirty_ram_dispatch_game_chain(struct CPUState *, uint32_t, int, PsxNativeTailHooks);
+int psx_native_tail_prepare(struct CPUState *, uint32_t, PsxNativeTailBody, PsxNativeTailBody);
+void psx_native_tail_note_body(struct CPUState *, PsxNativeTailBody);
+int psx_game_native_tail_enter(struct CPUState *, uint32_t, PsxNativeTailBody);
+
+/* Never substitute an optional tail-call optimization. The build selection is
+ * enabled only after compiling this exact statement/ABI with attribute errors
+ * fatal; unsupported compiler/targets retain the original CPS return. */
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)
+# if defined(__clang__)
+#  define PSX_GUARANTEED_TAIL [[clang::musttail]]
+# elif defined(__GNUC__) && __GNUC__ >= 15
+#  define PSX_GUARANTEED_TAIL __attribute__((musttail))
+# else
+#  error PSX_NATIVE_TAIL_CHAINS requires a guaranteed musttail compiler/ABI
+# endif
+# define PSX_TRY_NATIVE_TAIL(cpu, pc, caller, body) do { \
+    const int psx_tail_result_ = psx_native_tail_prepare((cpu), (pc), (caller), (body)); \
+    if (psx_tail_result_ > 0) { PSX_GUARANTEED_TAIL return (body)(cpu); } \
+    if (psx_tail_result_ < 0) return; \
+} while (0)
+#else
+# define PSX_TRY_NATIVE_TAIL(cpu, pc, caller, body) do { } while (0)
+#endif
 
 /* OFF/REFERENCE retains the original call itself, with no extra cache wrapper
  * or watched pages on its hot path. Generated state tokens vanish with it. */

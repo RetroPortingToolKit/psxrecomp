@@ -12,6 +12,7 @@ from fixture_link import build_and_run
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cc', default='gcc')
+    parser.add_argument('--native-tail', action='store_true', help='exercise explicitly supported musttail compiler/ABI')
     args = parser.parse_args()
     runtime = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix='psx-static-validity-') as tmp:
@@ -43,6 +44,16 @@ def main():
                           'test_static_native_entry.c',
                           defines=('PSX_HAS_GAME_DISPATCH', 'PSX_NO_DEBUG_TOOLS',
                                    'PSX_NATIVE_STATIC_CALLS=1'))
+        # The same production entry fixture exercises the guaranteed chain;
+        # no extra profiler/driver or substitute owner is introduced.
+        if args.native_tail:
+            for opt in ('-O0', '-O2'):
+                build_and_run(args.cc, runtime / 'tests', runtime, opt, work,
+                              ['dirty_ram_interp.c', 'static_code_validity.c'],
+                              'test_static_native_entry.c',
+                              defines=('PSX_HAS_GAME_DISPATCH', 'PSX_NO_DEBUG_TOOLS',
+                                       'PSX_NATIVE_STATIC_CALLS=1', 'PSX_NATIVE_TAIL_CHAINS=1'),
+                              fixture_defines=('PSX_NATIVE_TAIL_CHAINS=1',))
     print('PASS: static validity production reference/native O0/O2')
 
 

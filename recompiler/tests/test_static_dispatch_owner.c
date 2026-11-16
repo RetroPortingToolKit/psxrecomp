@@ -82,6 +82,13 @@ static int dirty_ram_dispatch_game_direct(CPUState *cpu, uint32_t addr) {
     if (mode == 7 || g_psx_dispatch_depth != 1) return 0;
     ++native_calls; graph(cpu, addr); return 1;
 }
+void fntrace_record_tail(CPUState *cpu, uint32_t addr) { fntrace_record(cpu, addr); }
+typedef int (*PsxNativeTailHooks)(CPUState *, uint32_t);
+static int dirty_ram_dispatch_game_chain(CPUState *cpu, uint32_t addr, int allowed, PsxNativeTailHooks hooks) {
+    assert(allowed == (mode == 3 || escape));
+    assert(hooks != NULL);
+    return dirty_ram_dispatch_game_direct(cpu, addr);
+}
 static int dirty_ram_dispatch(CPUState *cpu, uint32_t addr, uint32_t stop) {
     (void)stop; hook('D'); ++fallback_calls; graph(cpu, addr); return 1;
 }

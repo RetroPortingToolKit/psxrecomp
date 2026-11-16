@@ -2908,9 +2908,20 @@ std::string CodeGenerator::translate_basic_block(
                             cps_cur_continuations_.push_back(cont_addr);
                         }
                         ss << emit_interrupt_check(target, config_.indent);
-                        ss << config_.indent
-                           << fmt::format("cpu->pc = 0x{:08X}u; return;  /* CPS jal -> 0x{:08X} */\n",
-                                          runtime_pc(target), runtime_pc(target));
+                        ss << config_.indent << fmt::format("cpu->pc = 0x{:08X}u;\n", runtime_pc(target));
+                        if (native_tail_signature_ && !native_tail_caller_.empty() && !config_.overlay_mode && known_functions_.count(target)) {
+                            // The old body boundary ends its automatic cycle
+                            // guards before the owner may admit another body.
+                            // A guaranteed tail return cannot leave those
+                            // cleanup lifetimes active, even after a manual flush.
+                            ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n";
+                            ss << config_.indent << fmt::format(
+                                "_psx_native_tail_pc = 0x{:08X}u;\n", runtime_pc(target));
+                            ss << config_.indent << fmt::format(
+                                "_psx_native_tail_body = func_{:08X};\n", target);
+                            ss << config_.indent << "goto psx_native_tail_transfer;\n#endif\n";
+                        }
+                        ss << config_.indent << fmt::format("return;  /* CPS jal -> 0x{:08X} */\n", runtime_pc(target));
                     } else {
                     // Function call (jal).  The call contract (Bug D family)
                     // guards the continuation: it may only run if the guest
@@ -3177,6 +3188,8 @@ GeneratedFunction CodeGenerator::generate_function(
 
     GeneratedFunction result;
     result.function_name = func.name;
+    native_tail_caller_ = func.name;
+    native_tail_signature_ = true;
     {
         std::string sig;
         if (config_.hot_funcs.count(func.start_addr)) {
@@ -3248,7 +3261,15 @@ GeneratedFunction CodeGenerator::generate_function(
     }
 
     std::stringstream body_ss;
+    const bool native_tail_scope = blocks_ss.str().find("goto psx_native_tail_transfer;") != std::string::npos;
     body_ss << "{\n";
+    if (native_tail_scope) {
+        body_ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n"
+                << config_.indent << "uint32_t _psx_native_tail_pc = 0;\n"
+                << config_.indent << "PsxNativeTailBody _psx_native_tail_body = 0;\n"
+                << config_.indent << "{  /* execution scope: automatic cycle cleanup ends before transfer */\n"
+                << "#endif\n";
+    }
     body_ss << "#if defined(PSX_ENABLE_BLOCK_CYCLES) && "
                "(defined(__GNUC__) || defined(__clang__))\n"
             << config_.indent
@@ -3423,6 +3444,16 @@ GeneratedFunction CodeGenerator::generate_function(
         }
     }
     body_ss << "    ;  /* label compatibility: C requires a statement after the last label */\n";
+    if (native_tail_scope) {
+        body_ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n"
+                << config_.indent << "}  /* publish charges and end execution-local lifetimes */\n"
+                << config_.indent << "return;\n"
+                << "psx_native_tail_transfer:\n"
+                << config_.indent << fmt::format(
+                       "PSX_TRY_NATIVE_TAIL(cpu, _psx_native_tail_pc, {}, _psx_native_tail_body);\n", func.name)
+                << config_.indent << "return;  /* refused/handled transfer returns to its original flat owner */\n"
+                << "#endif\n";
+    }
     body_ss << "}\n";
 
     result.body = body_ss.str();
@@ -3548,12 +3579,16 @@ std::vector<GeneratedFunction> CodeGenerator::generate_alias_group(
 
     // Translate live blocks first (populates cps_cur_continuations_ for the CPS
     // continuation switch below).
+    const bool saved_tail_signature = native_tail_signature_;
+    native_tail_signature_ = false;
     std::stringstream blocks_buf;
     for (uint32_t block_addr : cfg.block_order) {
         if (!live_blocks.count(block_addr)) continue;
         const BasicBlock& block = cfg.blocks.at(block_addr);
         blocks_buf << "\n" << translate_basic_block(block, cfg);
     }
+
+    native_tail_signature_ = saved_tail_signature;
 
     // FAITHFUL RE-ENTRY — every live block leader is a dispatchable continuation
     // (see generate_function for the full rationale: psx_check_interrupts_at is at
@@ -3841,6 +3876,7 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     ss << "extern void cosim_block(uint32_t block_leader_phys);\n";
     ss << "extern void cosim_instr(uint32_t pc);\n";
     ss << "#endif\n";
+    ss << "#include \"psx_static_calls.h\"\n/* psx-native-tail-game-v1 */\n";
     ss << "extern int  psx_game_text_native_ok(uint32_t addr);  /* stale-static guard (dispatch shard) */\n";
     ss << "extern int  psx_datashard_enter(CPUState* cpu, uint32_t key);  /* data-shard replay/capture (data_shards.c) */\n";
     ss << "extern void psx_mod_instruction(CPUState*, uint32_t, uint32_t);\n";

@@ -5632,7 +5632,12 @@ static void handle_hr_counters(int id,const char *json)
 static void handle_static_call_stats(int id, const char *json)
 {
     (void)json;
-    extern uint64_t g_disp_tail_seq;
+    extern uint64_t g_disp_tail_seq, g_psx_owner_dispatch_count;
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+    const uint64_t owner_iterations = g_psx_owner_dispatch_count;
+#else
+    const uint64_t owner_iterations = g_disp_tail_seq;
+#endif
     PsxStaticCallStats stats;
     psx_static_call_get_stats(&stats);
     send_fmt("{\"id\":%d,\"ok\":true,\"validity_queries\":%llu,"
@@ -5644,7 +5649,7 @@ static void handle_static_call_stats(int id, const char *json)
              (unsigned long long)stats.fast_entries,
              (unsigned long long)stats.fast_misses,
              (unsigned long long)dirty_ram_text_compare_calls(),
-             (unsigned long long)g_disp_tail_seq);
+             (unsigned long long)owner_iterations);
 }
 
 static void handle_direct_memory_stats(int id, const char *json)
