@@ -3974,6 +3974,26 @@ static int resolve_transport(const PsxNetplayConfig *cfg)
     }
 }
 
+/* Both pre-guest catalog admission and the resolved session route use the
+ * same strict direct-loopback policy. A LAN result alone does not grant this
+ * scope to lobby/relay launches whose endpoints happen to be loopback. */
+static int np_registered_loopback_scope(const PsxNetplayConfig *cfg, int transport)
+{
+    int in_lobby = 0;
+    if (!cfg) return 0;
+#if defined(PSX_HAS_LOBBY_CLIENT)
+    in_lobby = psx_lobby_connected() && psx_lobby_in_lobby();
+#endif
+    return np_host_direct_loopback_scope(transport, in_lobby,
+        cfg->force_input_relay || cfg->transport_host || cfg->transport_ice_hub ||
+        cfg->force_turn, cfg->bind_hostport, cfg->peer_hostport);
+}
+
+int psx_netplay_direct_loopback_scope(const PsxNetplayConfig *cfg)
+{
+    return cfg && np_registered_loopback_scope(cfg, resolve_transport(cfg));
+}
+
 /* Agents taken from the lobby when the launch was consumed, until start()
  * adopts them. Outside g_np: shutdown wipes g_np, and this must survive the
  * gap between the launcher closing and the session being created. */
