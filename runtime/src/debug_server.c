@@ -848,10 +848,26 @@ static SregLastEntry *sreg_last_slot(uint32_t tcb)
     return &s_sreg_last[free_idx];
 }
 
+/* Non-focus entries have no retained S-register record. Skip their discarded
+ * TCB reads only when the existing canonical bus has no observer/private owner.
+ * Live LS/DS/read watches, cache isolation and foreign/pending owners retain
+ * the original reads and their effects. This predicate never reads guest RAM. */
+static int sreg_trace_quiet_bus(CPUState *cpu)
+{
+    return cpu->read_word == psx_read_word && cpu->read_half == psx_read_half &&
+        !g_ls_mode && !g_ls_replay_active && !g_ds_recording &&
+        !g_ram_read_watch_active && !g_dma_exec_depth && !g_host_store_depth &&
+        !g_psx_render_pass_active && !g_overlay_flush_pending_cycles &&
+        !(cpu->cop0[12] & 0x10000u) &&
+        (!g_psx_memory_sr_ptr || !(*g_psx_memory_sr_ptr & 0x10000u));
+}
+
 static void sreg_trace_record(uint32_t func_addr)
 {
     CPUState *cpu = debug_cpu_ptr;
     if (!cpu) return;
+    int focus_func = sreg_trace_focus_func(func_addr);
+    if (!focus_func && sreg_trace_quiet_bus(cpu)) return;
 
     uint32_t tcb_ptr_addr = trace_read_word(cpu, 0x00000108u);
     uint32_t tcb = tcb_ptr_addr ? trace_read_word(cpu, tcb_ptr_addr) : 0;
@@ -859,7 +875,6 @@ static void sreg_trace_record(uint32_t func_addr)
     if (tcb == 0 || tcb_phys < 0x0000E000u || tcb_phys >= 0x0000F000u) {
         return;
     }
-    int focus_func = sreg_trace_focus_func(func_addr);
     if (!focus_func) {
         return;
     }

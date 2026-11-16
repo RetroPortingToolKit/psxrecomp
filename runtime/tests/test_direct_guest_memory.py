@@ -88,7 +88,31 @@ static void wtrace_record(uint32_t p,uint32_t o,uint32_t v,uint8_t w){(void)p;(v
 static void cyc_watch_observe(uint32_t p){(void)p;watch_entries++;if(s_cyc_watch_armed)event(7);}
 static void pc_probe_observe(uint32_t p){(void)p;probe_entries++;if(s_pc_probe_armed)event(8);}
 void ls_at_leader(uint32_t p,CPUState *c){assert(p==g_psx_last_block&&c==&cpu);ls_calls++;if(ls_armed)event(9);}
-uint32_t psx_read_word(uint32_t p){(void)p;nd_reads++;return 0;}
+static unsigned sreg_fixture_mode,sreg_word_reads,sreg_half_reads,sreg_effects,sreg_read_n;
+static uint32_t sreg_reads[32],sreg_root=0x80000100u;
+int g_ls_mode,g_ls_replay_active,g_ram_read_watch_active,g_dma_exec_depth,g_host_store_depth;
+volatile int g_ds_recording;
+static uint32_t sreg_sr;
+const uint32_t *g_psx_memory_sr_ptr=&sreg_sr;
+void (*g_overlay_flush_pending_cycles)(void);
+static void sreg_foreign_owner(void){}
+static int sreg_observed(void){return g_ls_mode||g_ls_replay_active||g_ram_read_watch_active||g_ds_recording;}
+uint32_t psx_read_word(uint32_t p){
+ nd_reads++;if(!sreg_fixture_mode)return 0;
+ assert(sreg_read_n<32);sreg_reads[sreg_read_n++]=p;sreg_word_reads++;if(sreg_observed())sreg_effects++;
+ if(p==0x108u)return sreg_root;
+ if(p==0x80000100u)return 0x8000E100u;
+ if(p==0x1F8001D4u)return 0x80020000u;
+ if(p==0x80020000u)return 0x12345678u;
+ return p^0x13579BDFu;
+}
+uint16_t psx_read_half(uint32_t p){assert(sreg_read_n<32);sreg_reads[sreg_read_n++]=p;sreg_half_reads++;if(sreg_observed())sreg_effects++;return (uint16_t)(p^0xABCDu);}
+static uint32_t sreg_custom_word(uint32_t p){return psx_read_word(p);}
+static uint16_t sreg_custom_half(uint32_t p){return psx_read_half(p);}
+static uint32_t trace_read_word(CPUState *c,uint32_t p){assert(c==&cpu);return psx_read_word(p);}
+static uint32_t trace_read_half(CPUState *c,uint32_t p){assert(c==&cpu);return psx_read_half(p);}
+static void sreg_reset_reads(void){sreg_word_reads=sreg_half_reads=sreg_effects=sreg_read_n=0;}
+
 void psx_host_write_word(uint32_t p,uint32_t v){(void)p;(void)v;}
 void psx_nd_note_wood_batch_ot_tagged(uint32_t p,uint32_t t){(void)p;(void)t;}
 void psx_nd_note_wood_batch_ot(uint32_t p){(void)p;}
@@ -167,14 +191,60 @@ int main(void){
  debug_server_cyc_observe(0x8006AAF0);assert(nd_reads==2&&watch_entries==2&&probe_entries==2);
  s_fmv_quiet=1;unsigned before=ls_calls;debug_server_cyc_observe(0x80012350);
  assert(g_psx_last_block==0x12350&&ls_calls==before);
- puts("PASS actual observer routing: page interest/exact edges/reconfiguration, mandatory order, boot totals, ND and first lockstep leader");
+ /* The12-PC admission is pure; actual focused records keep every field/order. */
+ s_fmv_quiet=0;sreg_fixture_mode=1;cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;
+ sreg_reset_reads();sreg_trace_record(0x80012340u);assert(!sreg_word_reads&&!sreg_half_reads&&!s_sreg_trace_seq);
+ int *owners[]={&g_ls_mode,&g_ls_replay_active,&g_ram_read_watch_active,&g_dma_exec_depth,&g_host_store_depth,&g_psx_render_pass_active};
+ for(unsigned i=0;i<sizeof owners/sizeof owners[0];i++){
+  *owners[i]=1;sreg_reset_reads();sreg_trace_record(0x80012340u);
+  assert(sreg_word_reads==2&&!sreg_half_reads&&!s_sreg_trace_seq);
+  assert(sreg_reads[0]==0x108u&&sreg_reads[1]==0x80000100u);
+  if(i<3)assert(sreg_effects==2);*owners[i]=0;
+ }
+ g_ds_recording=1;sreg_reset_reads();sreg_trace_record(0x80012340u);assert(sreg_word_reads==2&&sreg_effects==2);g_ds_recording=0;
+ cpu.cop0[12]=0x10000;sreg_reset_reads();sreg_trace_record(0x80012340u);assert(sreg_word_reads==2);cpu.cop0[12]=0;
+ sreg_sr=0x10000;sreg_reset_reads();sreg_trace_record(0x80012340u);assert(sreg_word_reads==2);sreg_sr=0;
+ g_overlay_flush_pending_cycles=sreg_foreign_owner;sreg_reset_reads();sreg_trace_record(0x80012340u);assert(sreg_word_reads==2);g_overlay_flush_pending_cycles=NULL;
+ cpu.read_word=sreg_custom_word;sreg_reset_reads();sreg_trace_record(0x80012340u);assert(sreg_word_reads==2);cpu.read_word=psx_read_word;
+ cpu.read_half=sreg_custom_half;sreg_reset_reads();sreg_trace_record(0x80012340u);assert(sreg_word_reads==2);cpu.read_half=psx_read_half;
+ g_ram_read_watch_active=1;sreg_root=0;sreg_reset_reads();sreg_trace_record(0x80012340u);assert(sreg_word_reads==1&&sreg_effects==1);sreg_root=0x80000100;g_ram_read_watch_active=0;
+ static const uint32_t focus[]={0x800171D4,0x8001A51C,0x8001A670,0x8001A774,0x8001A954,0x8001CE80,0x8001DE24,0x80021C24,0x80021CC8,0x800222B8,0x800223E0,0x8005B40C};
+ cpu.gpr[29]=0x80030000;cpu.gpr[31]=0x80044444;
+ for(unsigned r=0;r<8;r++)cpu.gpr[16+r]=0x6000+r;
+ for(unsigned r=0;r<4;r++)cpu.gpr[4+r]=0xA000+r;
+ for(unsigned i=0;i<12;i++){
+  sreg_reset_reads();sreg_trace_record(focus[i]);assert(s_sreg_trace_seq==i+1&&sreg_word_reads==11&&sreg_half_reads==2);
+  SregTraceEntry *e=&s_sreg_trace[i];assert(e->seq==i&&e->tcb==0x8000E100&&e->func==focus[i]&&e->frame==7&&e->ra==cpu.gpr[31]&&e->sp==cpu.gpr[29]);
+  assert(e->s0==0x6000&&e->s1==0x6001&&e->s2==0x6002&&e->s3==0x6003&&e->s4==0x6004&&e->s5==0x6005&&e->s6==0x6006&&e->s7==0x6007);
+  assert(e->prev_s0==(i?0x6000:0)&&e->prev_s1==(i?0x6001:0)&&e->prev_s2==(i?0x6002:0)&&e->prev_s3==(i?0x6003:0)&&e->reason==(i?4:6));
+  assert(e->a0==0xA000&&e->a1==0xA001&&e->a2==0xA002&&e->a3==0xA003);
+  assert(e->task_ptr==0x80020000&&e->task_state==0x12345678&&e->task_mode==((0x80020000u+72u)^0xABCDu)%65536u&&e->task_submode==((0x80020000u+74u)^0xABCDu)%65536u);
+  assert(e->stack10==((cpu.gpr[29]+0x10u)^0x13579BDFu)&&e->stack14==((cpu.gpr[29]+0x14u)^0x13579BDFu)&&e->stack18==((cpu.gpr[29]+0x18u)^0x13579BDFu)&&e->stack1c==((cpu.gpr[29]+0x1Cu)^0x13579BDFu));
+  assert(e->stack20==((cpu.gpr[29]+0x20u)^0x13579BDFu)&&e->stack28==((cpu.gpr[29]+0x28u)^0x13579BDFu)&&e->stack40==((cpu.gpr[29]+0x40u)^0x13579BDFu));
+  assert(sreg_reads[0]==0x108&&sreg_reads[1]==0x80000100&&sreg_reads[2]==0x1F8001D4&&sreg_reads[3]==0x80020000&&sreg_reads[4]==0x80020048&&sreg_reads[5]==0x8002004A);
+ }
+ g_ds_recording=g_ram_read_watch_active=1;sreg_reset_reads();sreg_trace_record(focus[0]);assert(s_sreg_trace_seq==13&&sreg_word_reads==11&&sreg_half_reads==2&&sreg_effects==13);g_ds_recording=g_ram_read_watch_active=0;
+ sreg_root=0;sreg_reset_reads();sreg_trace_record(focus[0]);assert(sreg_word_reads==1&&s_sreg_trace_seq==13);sreg_root=0x80000100;
+ debug_cpu_ptr=NULL;sreg_reset_reads();sreg_trace_record(focus[0]);assert(!sreg_word_reads&&s_sreg_trace_seq==13);debug_cpu_ptr=&cpu;
+ puts("PASS actual observer routing: existing page/ND/lockstep and S-register12-PC admission, zero quiet nonfocus reads, full focus fields/order, observer/private owner fallbacks");
 }
 '''
     routing = source[source.index("/* Derived optional-write routing"):
                      source.index("/* Only optional recorder dispatch is cold.")]
-    actual = routing + "\n".join(body(name) for name in (
+    def typedef(name):
+        end = source.index("} " + name + ";") + len("} " + name + ";")
+        return source[source.rfind("typedef struct", 0, end):end]
+
+    sreg_declarations = "\n".join((
+        next(line for line in source.splitlines() if line.startswith("#define SREG_TRACE_CAP ")),
+        typedef("SregTraceEntry"), typedef("SregLastEntry"),
+        "static SregTraceEntry s_sreg_trace[SREG_TRACE_CAP];",
+        "static uint64_t s_sreg_trace_seq; static SregLastEntry s_sreg_last[32];",
+        "static uint64_t s_frame_count=7;")) + "\n"
+    actual = sreg_declarations + routing + "\n".join(body(name) for name in (
         "debug_server_cyc_observe_optional", "debug_server_cyc_observe",
-        "debug_server_trace_write_optional", "history_record_live_write", "debug_server_trace_write_check"))
+        "debug_server_trace_write_optional", "history_record_live_write", "debug_server_trace_write_check",
+        "sreg_trace_focus_func", "sreg_last_slot", "sreg_trace_quiet_bus", "sreg_trace_record"))
     path = work / "existing-observer-dispatch.c"
     path.write_text(preamble + actual + cases, encoding="utf-8")
     for opt in ("-O0", "-O2"):
