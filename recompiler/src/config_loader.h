@@ -1761,8 +1761,20 @@ bool save_user_settings(const std::filesystem::path& path, const UserSettings& s
 
 // `p` relative to `folder` when it lies inside it; otherwise `p` unchanged.
 // Keeps portable game folders portable once the launcher saves a path.
+//
+// With `install_root`: when `folder` sits directly below that root and `p`
+// lies inside the root, `p` is written with one climb ("../saves"). That is
+// the layout of a setup install: settings.toml in <root>/build-release, the
+// memory cards in <root>/saves. Without it the cards were stored by full path
+// and a moved or copied install kept using the old folder.
 std::filesystem::path relative_to_folder(const std::filesystem::path& p,
-                                         const std::filesystem::path& folder);
+                                         const std::filesystem::path& folder,
+                                         const std::filesystem::path& install_root = {});
+
+// The install's root for save_user_settings(): the [memcard] paths that lie
+// inside it are written relative to the settings folder, as above. The disc
+// and BIOS paths are not affected. Empty (the default) keeps the plain rule.
+void set_user_settings_install_root(const std::filesystem::path& root);
 
 // Surgical upsert of `key = true|false` under [controller] in game.toml.
 // Preserves comments and unrelated keys. Creates [controller] if missing.

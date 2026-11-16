@@ -3051,6 +3051,16 @@ static std::filesystem::path anchor_on_exe_dir(const char* argv0,
     return PSXRecompV4::host_resolve(exe_dir_from_argv(argv0), p);
 }
 
+/* The same for a [memcard] value. A setup install keeps its cards one level
+ * above the exe folder and stores them as "../saves", so a relative value can
+ * hold a climb: fold it, and the card folder reads as <root>/saves everywhere
+ * it is shown or compared. An absolute value is returned unchanged. */
+static std::filesystem::path anchor_card_path(const char* argv0,
+                                              const std::filesystem::path& p) {
+    if (p.empty() || PSXRecompV4::host_path_is_absolute(p)) return p;
+    return anchor_on_exe_dir(argv0, p).lexically_normal();
+}
+
 static std::filesystem::path read_cached_path(const char* argv0, const char* filename) {
     std::ifstream f(sidecar_cfg_path(argv0, filename));
     if (!f.is_open()) return {};
@@ -18170,6 +18180,10 @@ int main(int argc, char** argv) {
             }
             if (!gc.discs.empty()) resolved_disc = gc.discs.front();
             if (gc.runtime.has_memcard_dir)  memcard_dir   = gc.runtime.memcard_dir;
+            /* settings.toml may name the cards of this install with one climb
+             * ("../saves") when the exe folder is one level below this root:
+             * the layout of a setup install. */
+            PSXRecompV4::set_user_settings_install_root(gc.project_root);
             if (gc.runtime.has_window_title) window_title  = gc.runtime.window_title;
             if (gc.runtime.has_debug_port)   debug_port    = gc.runtime.debug_port;
             /* On-the-fly string translation / localization (framework feature —
@@ -18953,9 +18967,9 @@ int main(int argc, char** argv) {
         }
         /* Relative [memcard] values anchor on the exe directory; the
          * per-game options file also lives in memcard_dir. */
-        if (us.has_memcard_dir)   memcard_dir   = anchor_on_exe_dir(argv[0], us.memcard_dir);
-        if (us.has_memcard1_path) memcard1_path = anchor_on_exe_dir(argv[0], us.memcard1_path);
-        if (us.has_memcard2_path) memcard2_path = anchor_on_exe_dir(argv[0], us.memcard2_path);
+        if (us.has_memcard_dir)   memcard_dir   = anchor_card_path(argv[0], us.memcard_dir);
+        if (us.has_memcard1_path) memcard1_path = anchor_card_path(argv[0], us.memcard1_path);
+        if (us.has_memcard2_path) memcard2_path = anchor_card_path(argv[0], us.memcard2_path);
         if (us.has_memcard1_enabled) memcard1_enabled = us.memcard1_enabled;
         if (us.has_memcard2_enabled) memcard2_enabled = us.memcard2_enabled;
         if (us.has_multitap_enabled) multitap_enabled = us.multitap_enabled;
@@ -20327,8 +20341,8 @@ int main(int argc, char** argv) {
                 }
                 memcard1_enabled = seed.memcard1_enabled;
                 memcard2_enabled = seed.memcard2_enabled;
-                if (seed.has_memcard1_path) memcard1_path = anchor_on_exe_dir(argv[0], seed.memcard1_path);
-                if (seed.has_memcard2_path) memcard2_path = anchor_on_exe_dir(argv[0], seed.memcard2_path);
+                if (seed.has_memcard1_path) memcard1_path = anchor_card_path(argv[0], seed.memcard1_path);
+                if (seed.has_memcard2_path) memcard2_path = anchor_card_path(argv[0], seed.memcard2_path);
                 if (seed.has_language) resolved_language = seed.language;
                 {
                     const int n = std::min(PSX_MAX_PLAYERS,
