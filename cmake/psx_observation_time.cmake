@@ -25,13 +25,21 @@ function(psxrecomp_observation_time target)
     set(_directory "${CMAKE_CURRENT_BINARY_DIR}/observation-time/${target}")
     file(MAKE_DIRECTORY "${_directory}")
     set(_wait "0")
+    set(_wait_values "0u")
+    set(_wait_count 0)
     foreach(_pc IN LISTS P_WAIT_SITES)
         # Addresses have already passed the native-idle-wait binding validator.
         math(EXPR _value "${_pc}")
         string(APPEND _wait " || ((pc) == ${_value}u)")
+        if(_wait_count EQUAL 0)
+            set(_wait_values "${_value}u")
+        else()
+            string(APPEND _wait_values ", ${_value}u")
+        endif()
+        math(EXPR _wait_count "${_wait_count} + 1")
     endforeach()
     file(CONFIGURE OUTPUT "${_directory}/psx_observation_config.h" CONTENT
-        "#pragma once\n#define PSX_OBSERVATION_WAIT_SITE(pc) (${_wait})\n" @ONLY)
+        "#pragma once\n#define PSX_OBSERVATION_WAIT_SITE(pc) (${_wait})\n#define PSX_OBSERVATION_WAIT_SITE_VALUES ${_wait_values}\n#define PSX_OBSERVATION_WAIT_SITE_COUNT ${_wait_count}u\n" @ONLY)
     target_include_directories(${target} PRIVATE "${_directory}")
     file(CONFIGURE OUTPUT "${_directory}/native.c" CONTENT
         "const unsigned psx_build_observation_time_model = ${_native}u;\n" @ONLY)
@@ -56,7 +64,7 @@ function(psxrecomp_observation_time target)
         set_property(TARGET ${target} PROPERTY SOURCES "${_selected}")
     endif()
     psxrecomp_add_implementation(${target}
-        NAME machine-time CONTRACT per-device-observation-${_native}-v2
+        NAME machine-time CONTRACT per-device-observation-${_native}-v3
         HLE_SOURCES "${_directory}/native.c"
         LLE_SOURCES "${_directory}/reference.c"
         CONTRACT_FILES "${PSXRECOMP_ROOT}/runtime/src/psx_cycles.c"
@@ -67,6 +75,9 @@ function(psxrecomp_observation_time target)
                        "${PSXRECOMP_ROOT}/runtime/include/psx_cycles.h"
                        "${PSXRECOMP_ROOT}/runtime/include/psx_cycle_freeze.h"
                        "${PSXRECOMP_ROOT}/runtime/include/psx_block_edge.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/psx_observation_view.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/overlay_api.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/overlay_dispatch_preamble.c.inc"
                        "${PSXRECOMP_ROOT}/runtime/src/interrupts.c"
                        "${PSXRECOMP_ROOT}/runtime/src/overlay_loader.c"
                        "${PSXRECOMP_ROOT}/runtime/src/spu_observation_time.c"
