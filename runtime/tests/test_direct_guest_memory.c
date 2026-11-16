@@ -89,33 +89,26 @@ static void check_store_trace(CPUState *cpu) {
         const uint64_t stores=g_guest_store_count;
         p[0]=0x12u;p[1]=0x34u;p[2]=0x56u;p[3]=0x78u;
         PSX_STORE_WORD(cpu,addresses[region],0x90ABCDEFu);
-#ifndef PSX_NO_DEBUG_TOOLS
         CHECK(g_trace_write_calls==calls+1u);
         CHECK(trace_last.phys==physical[region] && trace_last.width==4u);
         CHECK(trace_last.old_value==0x78563412u && trace_last.new_value==0x90ABCDEFu);
         CHECK(trace_last.stores==stores+1u);
-#endif
         PSX_STORE_HALF(cpu,addresses[region],0x1357u);
-#ifndef PSX_NO_DEBUG_TOOLS
         CHECK(g_trace_write_calls==calls+2u);
         CHECK(trace_last.phys==physical[region] && trace_last.width==2u);
         CHECK(trace_last.old_value==0xCDEFu && trace_last.new_value==0x1357u);
         CHECK(trace_last.stores==stores+2u);
-#endif
         PSX_STORE_BYTE(cpu,addresses[region],0x24u);
-#ifndef PSX_NO_DEBUG_TOOLS
         CHECK(g_trace_write_calls==calls+3u);
         CHECK(trace_last.phys==physical[region] && trace_last.width==1u);
         CHECK(trace_last.old_value==0x57u && trace_last.new_value==0x24u);
         CHECK(trace_last.stores==stores+3u);
-#else
-        CHECK(g_trace_write_calls==calls);
-#endif
         CHECK(p[0]==0x24u && p[1]==0x13u && p[2]==0xABu && p[3]==0x90u);
     }
-    /* The DLL descriptor keeps its old no-debug requirement; no new exported
-     * hook or callback ABI is needed to accelerate host stores. */
-#if PSX_DIRECT_GUEST_MEMORY && defined(PSX_NO_DEBUG_TOOLS)
+    /* All host stores retain exactly one pre-write record in both builds.
+     * The DLL descriptor also exposes that same passive producer. */
+    CHECK(psx_direct_memory_host_view()->record_write==debug_server_trace_write_check);
+#if PSX_DIRECT_GUEST_MEMORY
     CHECK(psx_direct_memory_host_view()->direct_stores==1);
 #else
     CHECK(psx_direct_memory_host_view()->direct_stores==0);

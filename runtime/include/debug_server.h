@@ -82,6 +82,10 @@ typedef struct {
 
 /* Initialize the server. Call once at startup.
  * port=0 uses the default (4370). */
+/* Passive retained histories initialize before guest execution, independently
+ * of TCP/listener lifetime. history_frame follows the common frame increment. */
+void debug_server_history_init(void);
+void debug_server_history_frame(void);
 void debug_server_init(int port);
 
 /* The launcher mod requests the listener before session startup. Release

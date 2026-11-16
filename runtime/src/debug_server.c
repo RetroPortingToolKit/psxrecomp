@@ -12171,13 +12171,9 @@ static PSX_DEBUG_COLD void debug_server_trace_write_optional(uint32_t phys,
  * Iterates up to 8 ranges; records if any match.
  * The always-on catch-all ring is recorded UNCONDITIONALLY first so
  * late-connecting probes can still see recent writes without arming. */
-void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
+static void history_record_live_write(uint32_t phys, uint32_t old_val,
                                     uint32_t new_val, uint8_t width)
 {
-#ifdef PSX_NO_DEBUG_TOOLS
-    (void)phys; (void)old_val; (void)new_val; (void)width;
-    return;
-#endif
     /* Render passes are rolled back; keep them out of the live timeline's
      * fingerprints and write traces (docs/RENDER_PASSES.md). */
     if (g_psx_render_pass_active) return;
@@ -12187,7 +12183,7 @@ void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
     }
     if (is_card_critical_addr(phys)) card_trace_record(phys, old_val, new_val, width);
     fp_record_write(phys, new_val, g_debug_last_store_pc);
-    {
+    if (s_rec_frame >= 0) {
         uint32_t ra = debug_cpu_ptr ? debug_cpu_ptr->gpr[31] : 0;
         if (phys < psx_ram_live_bytes())
             rec_event(REC_KIND_RAM_W, phys, new_val, g_debug_last_store_pc, ra);
@@ -12201,14 +12197,19 @@ void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
         debug_server_trace_write_optional(phys, old_val, new_val, width, observers);
 }
 
+/* One producer for canonical, admitted inline, host and DLL stores. Keep the
+ * old public entry point for callers; the shared core never pumps commands,
+ * changes RAM or advances guest/device time. */
+void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
+                                    uint32_t new_val, uint8_t width)
+{
+    history_record_live_write(phys, old_val, new_val, width);
+}
+
 /* MMIO write trace — called from memory.c mmio_write32/16/8. */
 void debug_server_trace_mmio_write(uint32_t addr, uint32_t val, uint8_t width)
 {
     if (g_psx_render_pass_active) return;   /* rolled back: not live */
-#ifdef PSX_NO_DEBUG_TOOLS
-    (void)addr; (void)val; (void)width;
-    return;
-#endif
     if (s_fmv_quiet) { psx_fp_note_quiet(&s_fp); return; }
     /* First-divergence fingerprint + frame recorder also see device writes. */
     fp_record_mmio(addr, val, g_debug_last_store_pc);
@@ -12253,10 +12254,7 @@ void debug_server_trace_mmio_write(uint32_t addr, uint32_t val, uint8_t width)
  * livelock that polls them. `val` is the value the CPU actually loaded. */
 void debug_server_trace_mmio_read(uint32_t addr, uint32_t val, uint8_t width)
 {
-#ifdef PSX_NO_DEBUG_TOOLS
-    (void)addr; (void)val; (void)width;
-    return;
-#endif
+    if (g_psx_render_pass_active) return;
     if (s_fmv_quiet) return;
     rec_event(REC_KIND_MMIO_R, addr, val, g_debug_last_store_pc,
               debug_cpu_ptr ? debug_cpu_ptr->gpr[31] : 0);
@@ -17176,6 +17174,7 @@ void debug_server_set_cpu(CPUState *cpu)
 {
     s_cpu = cpu;
     debug_cpu_ptr = cpu;
+    debug_server_history_init();
     /* Always-on guest-cycle profile ring (gcp_ring), Release included. */
     guest_cycle_profile_install();
 }
@@ -17246,200 +17245,13 @@ malformed:
     return n;
 }
 
-void debug_server_init(int port)
+/* Mandatory late-probe histories belong to the execution session, not TCP.
+ * Called once before guest execution; listener retries never reset retained data.
+ * Optional full CPU/block/armed recording remains under its existing controls. */
+static int s_write_history_initialized;
+void debug_server_history_init(void)
 {
-    if (s_listen != SOCK_INVALID) return;
-    if (port > 0) s_port = port;
-
-    /* Deterministic cold-boot controller probe. Unlike a TCP set_input command,
-     * which can only arrive after the guest has already started polling, this
-     * debug-only override is active for the very first VBlank/input sample.
-     * It lets runtime tests reproduce a controller attached before power-on.
-     * Example: PSX_DEBUG_INITIAL_PAD_TYPE=2 selects a centered JogCon. */
-    {
-        const char *initial_type = getenv("PSX_DEBUG_INITIAL_PAD_TYPE");
-        if (initial_type && *initial_type) {
-            char *end = NULL;
-            long type = strtol(initial_type, &end, 0);
-            if (end != initial_type && *end == '\0' && type >= 0 && type <= 2) {
-                s_input_override = 0xFFFF;
-                s_input_frames = 0;
-                s_axis_override = 1;
-                s_axis_st[0] = s_axis_st[1] =
-                    s_axis_st[2] = s_axis_st[3] = 0x80;
-                s_pad_type_override = (int)type;
-                fprintf(stdout, "psxrecomp: debug cold-boot pad type=%ld\n", type);
-            } else {
-                fprintf(stderr, "psxrecomp: invalid PSX_DEBUG_INITIAL_PAD_TYPE='%s' (expected 0, 1, or 2)\n",
-                        initial_type);
-            }
-        }
-    }
-
-    /* Race-free recorder arming: PSX_RECORD_FRAME=<N> arms the unified ordered
-     * access recorder from boot (instruction 0), so it deterministically
-     * captures guest frame N no matter when a probe connects — the same
-     * always-on-from-boot model as PSX_NATIVE_BLOCK / PSX_OVERLAY_NATIVE_OFF.
-     * Never race a connect against the target frame; seed it and free-run. */
-    {
-        const char *rf = getenv("PSX_RECORD_FRAME");
-        if (rf && *rf) {
-            s_rec_frame = (int64_t)strtoll(rf, NULL, 0);
-            s_rec_count = 0; s_rec_overflow = 0;
-        }
-        /* PSX_READ_WATCH="<lo>,<hi>" arms the targeted main-RAM read watch from
-         * boot (phys range, hex/dec ok). Reads in [lo,hi) during the recorded
-         * frame land in the unified buffer as REC_KIND_RAM_R. */
-        const char *rw = getenv("PSX_READ_WATCH");
-        if (rw && *rw) {
-            char tmp[64]; snprintf(tmp, sizeof(tmp), "%s", rw);
-            char *comma = strchr(tmp, ',');
-            if (comma) {
-                *comma = '\0';
-                s_rwatch_lo = (uint32_t)strtoul(tmp, NULL, 0);
-                s_rwatch_hi = (uint32_t)strtoul(comma + 1, NULL, 0);
-                if (s_rwatch_hi > s_rwatch_lo) g_ram_read_watch_active = 1;
-            }
-        }
-        /* PSX_ND_INTRO_PROBE=1 PolyG4; =2 OT; =3 wood; =4 depth; =5 wood DL.
-         * PSX_PC_PROBE="0xA,0xB" arms an explicit list (can combine). */
-        {
-            const char *nd = getenv("PSX_ND_INTRO_PROBE");
-            const char *pcs = getenv("PSX_PC_PROBE");
-            if ((nd && *nd && *nd != '0') || (pcs && *pcs)) {
-                pc_probe_clear_state();
-                s_pc_probe_sample_max = 48;
-                if (nd && *nd && *nd != '0') {
-                    int ndv = (int)strtol(nd, NULL, 0);
-                    if (ndv == 5) pc_probe_arm_nd_intro_wood_dl_defaults();
-                    else if (ndv == 4) pc_probe_arm_nd_intro_depth_defaults();
-                    else if (ndv == 3) pc_probe_arm_nd_intro_wood_defaults();
-                    else if (ndv == 2) pc_probe_arm_nd_intro_ot_defaults();
-                    else pc_probe_arm_nd_intro_defaults();
-                }
-                if (pcs && *pcs) pc_probe_parse_list(pcs);
-                if (s_pc_probe_n > 0) {
-                    s_pc_probe_armed = 1;
-                    fprintf(stdout, "psxrecomp: pc_probe armed (%d pcs)\n", s_pc_probe_n);
-                }
-            }
-        }
-        /* PSX_CYC_WATCH="<pc>" or "<pc>-<end>" (region mode) arms cyc_watch
-         * before the first guest instruction, with PSX_CYC_WATCH_N hits
-         * (default 16). Boot anchors (reset, the kernel copy, the first
-         * syscalls, the shell) pass before any TCP arm can land. psx-beetle
-         * reads the same variables, so one boot of each backend gives the
-         * same anchor from cycle 0 (tools/cycle_compare.py --no-arm). */
-        {
-            const char *cw = getenv("PSX_CYC_WATCH");
-            if (cw && *cw) {
-                char *e = NULL;
-                uint32_t pc = (uint32_t)strtoul(cw, &e, 0);
-                uint32_t end = (e && *e == '-') ? (uint32_t)strtoul(e + 1, NULL, 0) : 0u;
-                const char *ns = getenv("PSX_CYC_WATCH_N");
-                cyc_watch_arm(pc, end, (ns && *ns) ? (int)strtol(ns, NULL, 0) : 16);
-                fprintf(stdout, "psxrecomp: cyc_watch armed from boot pc=0x%08X end=0x%08X n=%u\n",
-                        pc, end, s_cyc_watch_max_hits);
-            }
-        }
-    }
-
-#ifdef _WIN32
-    WSADATA wsa;
-    s_listen_err = WSAStartup(MAKEWORD(2, 2), &wsa);
-    if (s_listen_err) return;
-    s_wsa_started = 1;
-#endif
-
-    s_listen = socket(AF_INET, SOCK_STREAM, 0);
-    if (s_listen == SOCK_INVALID) {
-        s_listen_err = sock_error();
-        fprintf(stdout, "psxrecomp: debug server socket() FAILED\n");
-        debug_server_shutdown();
-        return;
-    }
-#ifdef _WIN32
-    /* Winsock sockets are inheritable by default: child processes (e.g. the
-     * overlay autocompile's cmd.exe/python) inherit this listener and keep the
-     * debug port bound after the game exits, so the next launch cannot bind. */
-    SetHandleInformation((HANDLE)s_listen, HANDLE_FLAG_INHERIT, 0);
-#endif
-
-    int yes = 1;
-#ifdef _WIN32
-    /* Winsock SO_REUSEADDR permits two listeners on one address/port, with
-     * indeterminate routing. Parallel QA commands must reach exactly one
-     * runtime. Exclusive ownership also refuses an already occupied port.
-     * https://learn.microsoft.com/windows/win32/winsock/so-exclusiveaddruse */
-    if (setsockopt(s_listen, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-                   (const char *)&yes, sizeof(yes)) != 0) {
-        s_listen_err = sock_error();
-        fprintf(stdout, "psxrecomp: debug server exclusive socket option FAILED (%d)\n",
-                s_listen_err);
-        sock_close(s_listen);
-        s_listen = SOCK_INVALID;
-        return;
-    }
-#else
-    setsockopt(s_listen, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
-#endif
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons((uint16_t)s_port);
-
-    if (bind(s_listen, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        s_listen_err = sock_error();
-        fprintf(stdout, "psxrecomp: debug server bind(%d) FAILED\n", s_port);
-        sock_close(s_listen);
-        s_listen = SOCK_INVALID;
-        debug_server_shutdown();
-        return;
-    }
-
-    /* Backlog 16, not 1: when main thread stalls (the very state we want
-     * to probe during a freeze), backlog=1 means the first pending connect
-     * fills the queue and every subsequent probe gets RST/ConnectionRefused.
-     * 16 leaves room for a few probes to queue while we investigate. This
-     * is observability infrastructure, not a freeze fix. */
-    listen(s_listen, 16);
-    if (!psx_debug_socket_nonblocking(s_listen, 1)) {
-        s_listen_err = sock_error();
-        sock_close(s_listen);
-        s_listen = SOCK_INVALID;
-        return;
-    }
-    fprintf(stdout, "psxrecomp: debug server LISTENING on 127.0.0.1:%d\n",
-            s_port);
-
-    /* Always-on wall-time phase sampler (phase_profile). Own thread: the
-     * server pumps on the main thread, so sampling must not live there. */
-    phase_sampler_start();
-    /* The I/O worker waits for readiness with bounded cancellation. */
-
-    /* Start the TCP I/O thread + its handoff primitives. */
-    s_io_mutex   = SDL_CreateMutex();
-    s_io_req_cv  = SDL_CreateCond();
-    s_io_resp_cv = SDL_CreateCond();
-    s_resp_cap   = 65536;
-    s_resp_buf   = (char *)malloc(s_resp_cap);
-    if (s_io_mutex && s_io_req_cv && s_io_resp_cv && s_resp_buf) {
-        io_set_running(1);
-        s_io_thread = SDL_CreateThread(io_thread_main, "psx-dbg-io", NULL);
-        if (!s_io_thread) io_set_running(0);
-    }
-    if (!s_io_thread) {
-        debug_server_shutdown();
-        return;
-    }
-
-    if (!s_frame_history) {
-        s_frame_history = (PSXFrameRecord *)calloc(FRAME_HISTORY_CAP, sizeof(PSXFrameRecord));
-    }
-    s_history_count = 0;
-
+    if (s_write_history_initialized) return;
     /* Tier 1: heap-allocate write trace ring buffer (32 MB). */
     if (!s_wtrace) {
         s_wtrace = (WriteTraceEntry *)calloc(WRITE_TRACE_CAP, sizeof(WriteTraceEntry));
@@ -17456,9 +17268,8 @@ void debug_server_init(int port)
     s_wtrace_boot_range_count = 0;
     debug_server_write_interest_invalidate();
 
-    /* Always-on catch-all wtrace ring (8 MB). Records EVERY RAM write
-     * with lean fields (no register window). Sized for ~1 second of
-     * coverage at typical Tomba write rates. */
+    /* Always-on catch-all: 4M x32-byte records =128MiB. Keep the
+     * established event window and exact late-probe fields. */
     if (!s_wtrace_all) {
         s_wtrace_all = (WriteTraceAllEntry *)calloc(WRITE_TRACE_ALL_CAP,
                                                     sizeof(WriteTraceAllEntry));
@@ -17474,43 +17285,6 @@ void debug_server_init(int port)
     s_wtrace_trans_head = 0;
     s_wtrace_trans_range_count = 0;
     debug_server_write_interest_invalidate();
-
-    fntrace_arm_from_env("PSX_FNTRACE_ARM");
-
-    /* Function entry/exit ring buffers (32 MB each, 64 MB total). */
-    if (!s_fn_entry) s_fn_entry = (FnEntryEntry *)calloc(FN_TRACE_CAP, sizeof(FnEntryEntry));
-    if (!s_fn_exit)  s_fn_exit  = (FnExitEntry *)calloc(FN_EXIT_TRACE_CAP, sizeof(FnExitEntry));
-    s_fn_entry_seq = 0;
-    s_fn_exit_seq  = 0;
-    s_fn_stack_top = 0;
-    s_fn_unmatched_returns = 0;
-    s_fn_stack_overflows   = 0;
-    s_fn_tail_calls = 0;
-    s_fn_prev_ra = 0;
-    s_fn_direct_seen = 0;
-    s_fn_direct_no_cpu = 0;
-    s_fn_direct_filtered = 0;
-    s_fn_trace_active = 0;
-    s_fn_trace_filter_lo = 0u;
-    s_fn_trace_filter_hi = 0xFFFFFFFFu;
-    fn_trace_filter_from_env("PSX_FN_FILTER");
-
-    if (!s_call_focus) {
-        s_call_focus = (CallFocusEntry *)calloc(CALL_FOCUS_CAP,
-                                                sizeof(CallFocusEntry));
-    }
-    s_call_focus_seq = 0;
-
-    /* PGXP rings stamp each record with the store PC and frame. */
-    pgxp_set_trace_sources(&g_debug_last_store_pc, &s_frame_count);
-
-    /* EvCB walk ring (~240 KB). */
-    if (!s_evcb_ring) s_evcb_ring = (EvCBSnapshot *)calloc(EVCB_RING_CAP, sizeof(EvCBSnapshot));
-    s_evcb_ring_seq = 0;
-    s_evcb_ring_entry_count = 0;
-    s_evcb_ring_exit_count  = 0;
-    s_evcb_pending_active   = 0;
-    s_evcb_unwound_count    = 0;
 
     /* Phase 4.5: watch EB4 area + DF8/DFC area + EvCB slot 1 status + state machine
      * + spiral texture buffer. */
@@ -17771,6 +17545,249 @@ void debug_server_init(int port)
     s_mmio_rtrace_ranges[1].lo = 0x1F801070u; s_mmio_rtrace_ranges[1].hi = 0x1F801078u; /* I_STAT / I_MASK */
     s_mmio_rtrace_range_count = 2;
 
+    if (!s_wtrace || !s_wtrace_boot || !s_wtrace_all || !s_wtrace_trans ||
+        !s_mmio_trace || !s_gp1_trace || !s_mmio_rtrace) {
+        fputs("psxrecomp: mandatory write/MMIO history allocation failed\n", stderr);
+        abort(); /* Do not run while advertising unavailable retained history. */
+    }
+    pgxp_set_trace_sources(&g_debug_last_store_pc, &s_frame_count);
+    s_write_history_initialized = 1;
+}
+
+void debug_server_history_frame(void)
+{
+    if (!s_fmv_quiet) fp_snapshot((uint32_t)s_frame_count);
+}
+
+void debug_server_init(int port)
+{
+    debug_server_history_init();
+    if (s_listen != SOCK_INVALID) return;
+    if (port > 0) s_port = port;
+
+    /* Deterministic cold-boot controller probe. Unlike a TCP set_input command,
+     * which can only arrive after the guest has already started polling, this
+     * debug-only override is active for the very first VBlank/input sample.
+     * It lets runtime tests reproduce a controller attached before power-on.
+     * Example: PSX_DEBUG_INITIAL_PAD_TYPE=2 selects a centered JogCon. */
+    {
+        const char *initial_type = getenv("PSX_DEBUG_INITIAL_PAD_TYPE");
+        if (initial_type && *initial_type) {
+            char *end = NULL;
+            long type = strtol(initial_type, &end, 0);
+            if (end != initial_type && *end == '\0' && type >= 0 && type <= 2) {
+                s_input_override = 0xFFFF;
+                s_input_frames = 0;
+                s_axis_override = 1;
+                s_axis_st[0] = s_axis_st[1] =
+                    s_axis_st[2] = s_axis_st[3] = 0x80;
+                s_pad_type_override = (int)type;
+                fprintf(stdout, "psxrecomp: debug cold-boot pad type=%ld\n", type);
+            } else {
+                fprintf(stderr, "psxrecomp: invalid PSX_DEBUG_INITIAL_PAD_TYPE='%s' (expected 0, 1, or 2)\n",
+                        initial_type);
+            }
+        }
+    }
+
+    /* Race-free recorder arming: PSX_RECORD_FRAME=<N> arms the unified ordered
+     * access recorder from boot (instruction 0), so it deterministically
+     * captures guest frame N no matter when a probe connects — the same
+     * always-on-from-boot model as PSX_NATIVE_BLOCK / PSX_OVERLAY_NATIVE_OFF.
+     * Never race a connect against the target frame; seed it and free-run. */
+    {
+        const char *rf = getenv("PSX_RECORD_FRAME");
+        if (rf && *rf) {
+            s_rec_frame = (int64_t)strtoll(rf, NULL, 0);
+            s_rec_count = 0; s_rec_overflow = 0;
+        }
+        /* PSX_READ_WATCH="<lo>,<hi>" arms the targeted main-RAM read watch from
+         * boot (phys range, hex/dec ok). Reads in [lo,hi) during the recorded
+         * frame land in the unified buffer as REC_KIND_RAM_R. */
+        const char *rw = getenv("PSX_READ_WATCH");
+        if (rw && *rw) {
+            char tmp[64]; snprintf(tmp, sizeof(tmp), "%s", rw);
+            char *comma = strchr(tmp, ',');
+            if (comma) {
+                *comma = '\0';
+                s_rwatch_lo = (uint32_t)strtoul(tmp, NULL, 0);
+                s_rwatch_hi = (uint32_t)strtoul(comma + 1, NULL, 0);
+                if (s_rwatch_hi > s_rwatch_lo) g_ram_read_watch_active = 1;
+            }
+        }
+        /* PSX_ND_INTRO_PROBE=1 PolyG4; =2 OT; =3 wood; =4 depth; =5 wood DL.
+         * PSX_PC_PROBE="0xA,0xB" arms an explicit list (can combine). */
+        {
+            const char *nd = getenv("PSX_ND_INTRO_PROBE");
+            const char *pcs = getenv("PSX_PC_PROBE");
+            if ((nd && *nd && *nd != '0') || (pcs && *pcs)) {
+                pc_probe_clear_state();
+                s_pc_probe_sample_max = 48;
+                if (nd && *nd && *nd != '0') {
+                    int ndv = (int)strtol(nd, NULL, 0);
+                    if (ndv == 5) pc_probe_arm_nd_intro_wood_dl_defaults();
+                    else if (ndv == 4) pc_probe_arm_nd_intro_depth_defaults();
+                    else if (ndv == 3) pc_probe_arm_nd_intro_wood_defaults();
+                    else if (ndv == 2) pc_probe_arm_nd_intro_ot_defaults();
+                    else pc_probe_arm_nd_intro_defaults();
+                }
+                if (pcs && *pcs) pc_probe_parse_list(pcs);
+                if (s_pc_probe_n > 0) {
+                    s_pc_probe_armed = 1;
+                    fprintf(stdout, "psxrecomp: pc_probe armed (%d pcs)\n", s_pc_probe_n);
+                }
+            }
+        }
+        /* PSX_CYC_WATCH="<pc>" or "<pc>-<end>" (region mode) arms cyc_watch
+         * before the first guest instruction, with PSX_CYC_WATCH_N hits
+         * (default 16). Boot anchors (reset, the kernel copy, the first
+         * syscalls, the shell) pass before any TCP arm can land. psx-beetle
+         * reads the same variables, so one boot of each backend gives the
+         * same anchor from cycle 0 (tools/cycle_compare.py --no-arm). */
+        {
+            const char *cw = getenv("PSX_CYC_WATCH");
+            if (cw && *cw) {
+                char *e = NULL;
+                uint32_t pc = (uint32_t)strtoul(cw, &e, 0);
+                uint32_t end = (e && *e == '-') ? (uint32_t)strtoul(e + 1, NULL, 0) : 0u;
+                const char *ns = getenv("PSX_CYC_WATCH_N");
+                cyc_watch_arm(pc, end, (ns && *ns) ? (int)strtol(ns, NULL, 0) : 16);
+                fprintf(stdout, "psxrecomp: cyc_watch armed from boot pc=0x%08X end=0x%08X n=%u\n",
+                        pc, end, s_cyc_watch_max_hits);
+            }
+        }
+    }
+
+#ifdef _WIN32
+    WSADATA wsa;
+    s_listen_err = WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (s_listen_err) return;
+    s_wsa_started = 1;
+#endif
+
+    s_listen = socket(AF_INET, SOCK_STREAM, 0);
+    if (s_listen == SOCK_INVALID) {
+        s_listen_err = sock_error();
+        fprintf(stdout, "psxrecomp: debug server socket() FAILED\n");
+        debug_server_shutdown();
+        return;
+    }
+#ifdef _WIN32
+    /* Winsock sockets are inheritable by default: child processes (e.g. the
+     * overlay autocompile's cmd.exe/python) inherit this listener and keep the
+     * debug port bound after the game exits, so the next launch cannot bind. */
+    SetHandleInformation((HANDLE)s_listen, HANDLE_FLAG_INHERIT, 0);
+#endif
+
+    int yes = 1;
+#ifdef _WIN32
+    /* Winsock SO_REUSEADDR permits two listeners on one address/port, with
+     * indeterminate routing. Parallel QA commands must reach exactly one
+     * runtime. Exclusive ownership also refuses an already occupied port.
+     * https://learn.microsoft.com/windows/win32/winsock/so-exclusiveaddruse */
+    if (setsockopt(s_listen, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                   (const char *)&yes, sizeof(yes)) != 0) {
+        s_listen_err = sock_error();
+        fprintf(stdout, "psxrecomp: debug server exclusive socket option FAILED (%d)\n",
+                s_listen_err);
+        sock_close(s_listen);
+        s_listen = SOCK_INVALID;
+        return;
+    }
+#else
+    setsockopt(s_listen, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
+#endif
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons((uint16_t)s_port);
+
+    if (bind(s_listen, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        s_listen_err = sock_error();
+        fprintf(stdout, "psxrecomp: debug server bind(%d) FAILED\n", s_port);
+        sock_close(s_listen);
+        s_listen = SOCK_INVALID;
+        debug_server_shutdown();
+        return;
+    }
+
+    /* Backlog 16, not 1: when main thread stalls (the very state we want
+     * to probe during a freeze), backlog=1 means the first pending connect
+     * fills the queue and every subsequent probe gets RST/ConnectionRefused.
+     * 16 leaves room for a few probes to queue while we investigate. This
+     * is observability infrastructure, not a freeze fix. */
+    listen(s_listen, 16);
+    if (!psx_debug_socket_nonblocking(s_listen, 1)) {
+        s_listen_err = sock_error();
+        sock_close(s_listen);
+        s_listen = SOCK_INVALID;
+        return;
+    }
+    fprintf(stdout, "psxrecomp: debug server LISTENING on 127.0.0.1:%d\n",
+            s_port);
+
+    /* Always-on wall-time phase sampler (phase_profile). Own thread: the
+     * server pumps on the main thread, so sampling must not live there. */
+    phase_sampler_start();
+    /* The I/O worker waits for readiness with bounded cancellation. */
+
+    /* Start the TCP I/O thread + its handoff primitives. */
+    s_io_mutex   = SDL_CreateMutex();
+    s_io_req_cv  = SDL_CreateCond();
+    s_io_resp_cv = SDL_CreateCond();
+    s_resp_cap   = 65536;
+    s_resp_buf   = (char *)malloc(s_resp_cap);
+    if (s_io_mutex && s_io_req_cv && s_io_resp_cv && s_resp_buf) {
+        io_set_running(1);
+        s_io_thread = SDL_CreateThread(io_thread_main, "psx-dbg-io", NULL);
+        if (!s_io_thread) io_set_running(0);
+    }
+    if (!s_io_thread) {
+        debug_server_shutdown();
+        return;
+    }
+
+    if (!s_frame_history) {
+        s_frame_history = (PSXFrameRecord *)calloc(FRAME_HISTORY_CAP, sizeof(PSXFrameRecord));
+    }
+    s_history_count = 0;
+
+    fntrace_arm_from_env("PSX_FNTRACE_ARM");
+
+    /* Function entry/exit ring buffers (32 MB each, 64 MB total). */
+    if (!s_fn_entry) s_fn_entry = (FnEntryEntry *)calloc(FN_TRACE_CAP, sizeof(FnEntryEntry));
+    if (!s_fn_exit)  s_fn_exit  = (FnExitEntry *)calloc(FN_EXIT_TRACE_CAP, sizeof(FnExitEntry));
+    s_fn_entry_seq = 0;
+    s_fn_exit_seq  = 0;
+    s_fn_stack_top = 0;
+    s_fn_unmatched_returns = 0;
+    s_fn_stack_overflows   = 0;
+    s_fn_tail_calls = 0;
+    s_fn_prev_ra = 0;
+    s_fn_direct_seen = 0;
+    s_fn_direct_no_cpu = 0;
+    s_fn_direct_filtered = 0;
+    s_fn_trace_active = 0;
+    s_fn_trace_filter_lo = 0u;
+    s_fn_trace_filter_hi = 0xFFFFFFFFu;
+    fn_trace_filter_from_env("PSX_FN_FILTER");
+
+    if (!s_call_focus) {
+        s_call_focus = (CallFocusEntry *)calloc(CALL_FOCUS_CAP,
+                                                sizeof(CallFocusEntry));
+    }
+    s_call_focus_seq = 0;
+
+    /* EvCB walk ring (~240 KB). */
+    if (!s_evcb_ring) s_evcb_ring = (EvCBSnapshot *)calloc(EVCB_RING_CAP, sizeof(EvCBSnapshot));
+    s_evcb_ring_seq = 0;
+    s_evcb_ring_entry_count = 0;
+    s_evcb_ring_exit_count  = 0;
+    s_evcb_pending_active   = 0;
+    s_evcb_unwound_count    = 0;
+
     memset(s_watchpoints, 0, sizeof(s_watchpoints));
     memset(s_snapshot_addrs, 0, sizeof(s_snapshot_addrs));
     memset(s_snapshot_active, 0, sizeof(s_snapshot_active));
@@ -17950,10 +17967,6 @@ void debug_server_record_frame(void)
 
     s_history_count = s_frame_count + 1;
     s_frame_count++;
-    /* Layer-1 first-divergence: snapshot the cumulative write fingerprint for
-     * the frame that just completed. Tagged with the new frame number so two
-     * runs line up by frame index. */
-    fp_snapshot((uint32_t)s_frame_count);
 
     /* step / run_to_frame post-frame hooks: removed with the rest of
      * pause/step machinery. s_step_count and s_run_to stay at zero. */

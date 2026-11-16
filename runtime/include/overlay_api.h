@@ -133,7 +133,9 @@
  * v36: host canonical bus identities and shared callback-width counters.
  * v37: live host memory view and native DLL direct-access admission.
  * v38: live host observation clock/edge view; no common DLL publication. */
-#define PSX_OVERLAY_ABI_VERSION 38
+/* v39: live direct-memory view appends the mandatory pre-write history
+ * callback. Reject old DLLs before init so inline stores cannot omit history. */
+#define PSX_OVERLAY_ABI_VERSION 39
 
 /* Process-lifetime overlay candidate capacity.  Every accepted manifest F
  * record consumes one slot, even when another DLL carries an identical

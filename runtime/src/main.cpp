@@ -9242,6 +9242,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     extern uint64_t s_frame_count;
     s_frame_count++;
 #endif
+    debug_server_history_frame();
     /* TCP input commands are available in lean builds too. Consume each
      * port once per guest frame so acknowledged presses reach the pads. */
     int override = debug_server_get_input_override();

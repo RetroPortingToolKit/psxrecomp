@@ -95,6 +95,9 @@ typedef struct PSXDirectMemoryView {
     uint32_t *g_psx_overlay_watch_bitmap, *g_dirty_ram_exec_page_bitmap;
     void (**g_overlay_flush_pending_cycles)(void);
     PSXMemoryWidthStats *width_stats; /* NULL in a counter-OFF host */
+    /* ABI v39: the same pre-write passive history producer as canonical memory.
+     * Required for DLL inline stores; NULL refuses direct-store admission. */
+    void (*record_write)(uint32_t,uint32_t,uint32_t,uint8_t);
 } PSXDirectMemoryView;
 const PSXDirectMemoryView *psx_direct_memory_host_view(void);
 #ifdef PSX_OVERLAY_DLL_BUILD
@@ -197,7 +200,8 @@ static inline uint8_t *psx_direct_store_view(uint32_t address, uint32_t width) {
     if (!width || width > 4u) return NULL;
 #if (defined(PSX_DIRECT_GUEST_MEMORY) && PSX_DIRECT_GUEST_MEMORY) || defined(PSX_OVERLAY_DLL_BUILD)
 #ifdef PSX_OVERLAY_DLL_BUILD
-    if(!psx_direct_native_enabled() || !g_psx_overlay_memory_view->direct_stores)return NULL;
+    if(!psx_direct_native_enabled() || !g_psx_overlay_memory_view->direct_stores ||
+        !g_psx_overlay_memory_view->record_write)return NULL;
 #endif
     if (address >= 0xC0000000u || PSX_DM_VALUE(g_ls_mode) || PSX_DM_VALUE(g_ls_replay_active) ||
         PSX_DM_VALUE(g_ds_recording) || PSX_DM_VALUE(g_psx_render_pass_active) || PSX_DM_VALUE(g_dma_exec_depth) ||
@@ -246,27 +250,31 @@ static inline void psx_direct_note_store(uint32_t addr, uint32_t value, uint32_t
     if (width == 4u) PSX_DM_VALUE(g_guest_last_store_val) = value;
 }
 
-/* Debug history observes the same pre-mutation bytes and canonical physical
+/* Shared late-probe history observes the same pre-mutation bytes and canonical physical
  * address as memory.c. Keep every existing trace/fingerprint/watch consumer;
  * only avoid the canonical bus/filter layers already excluded by store_view.
  * The maintained hook only updates recorders (and reads RAM/scratch stacks);
  * it never pumps commands, advances devices or restores/swaps memory. Keep
  * that contract when using the admitted pointer after observation.
- * Debug DLL stores still use their host's canonical callback: the descriptor
- * deliberately does not expose a debug hook or enable direct_stores there. */
-#if !defined(PSX_NO_DEBUG_TOOLS) && !defined(PSX_OVERLAY_DLL_BUILD)
+ * Host and DLL stores in both builds use this same producer. Missing or
+ * stale DLL view/callback admission retains the complete canonical fallback. */
+#ifndef PSX_OVERLAY_DLL_BUILD
 void debug_server_trace_write_check(uint32_t phys, uint32_t old_value,
                                    uint32_t new_value, uint8_t width);
+#endif
 static inline void psx_direct_observe_store(uint32_t addr, const uint8_t *p,
                                             uint32_t value, uint32_t width) {
     uint32_t phys = addr & 0x1FFFFFFFu;
     uint32_t old_value = p[0];
     if (width >= 2u) old_value |= (uint32_t)p[1] << 8;
     if (width == 4u) old_value |= (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-    if (phys < PSX_MAIN_RAM_WINDOW_BYTES) phys &= g_psx_ram_mask;
+    if (phys < PSX_MAIN_RAM_WINDOW_BYTES) phys &= PSX_DM_VALUE(g_psx_ram_mask);
+#ifdef PSX_OVERLAY_DLL_BUILD
+    g_psx_overlay_memory_view->record_write(phys, old_value, value, (uint8_t)width);
+#else
     debug_server_trace_write_check(phys, old_value, value, (uint8_t)width);
-}
 #endif
+}
 
 static inline void psx_native_store_word(CPUState *cpu, uint32_t addr, uint32_t value) {
 #ifdef PSX_OVERLAY_DLL_BUILD
@@ -280,9 +288,7 @@ static inline void psx_native_store_word(CPUState *cpu, uint32_t addr, uint32_t 
         PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_word,psx_write_word,1u,4u);
         cpu->write_word(addr, value); return; }
     psx_direct_note_store(addr, value, 4u);
-#if !defined(PSX_NO_DEBUG_TOOLS) && !defined(PSX_OVERLAY_DLL_BUILD)
     psx_direct_observe_store(addr, p, value, 4u);
-#endif
     p[0] = (uint8_t)value; p[1] = (uint8_t)(value >> 8);
     p[2] = (uint8_t)(value >> 16); p[3] = (uint8_t)(value >> 24);
 }
@@ -298,9 +304,7 @@ static inline void psx_native_store_half(CPUState *cpu, uint32_t addr, uint16_t 
         PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_half,psx_write_half,1u,2u);
         cpu->write_half(addr, value); return; }
     psx_direct_note_store(addr, value, 2u);
-#if !defined(PSX_NO_DEBUG_TOOLS) && !defined(PSX_OVERLAY_DLL_BUILD)
     psx_direct_observe_store(addr, p, value, 2u);
-#endif
     p[0] = (uint8_t)value; p[1] = (uint8_t)(value >> 8);
 }
 static inline void psx_native_store_byte(CPUState *cpu, uint32_t addr, uint8_t value) {
@@ -315,9 +319,7 @@ static inline void psx_native_store_byte(CPUState *cpu, uint32_t addr, uint8_t v
         PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_byte,psx_write_byte,1u,1u);
         cpu->write_byte(addr, value); return; }
     psx_direct_note_store(addr, value, 1u);
-#if !defined(PSX_NO_DEBUG_TOOLS) && !defined(PSX_OVERLAY_DLL_BUILD)
     psx_direct_observe_store(addr, p, value, 1u);
-#endif
     p[0] = value;
 }
 

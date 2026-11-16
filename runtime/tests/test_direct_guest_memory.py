@@ -59,6 +59,7 @@ def check_observer_dispatch(root, work, cc):
 static CPUState cpu;
 CPUState *debug_cpu_ptr=&cpu;
 static int s_fmv_quiet,g_psx_render_pass_active,s_fp;
+static int64_t s_rec_frame=0;
 static int s_cyc_watch_armed,s_pc_probe_armed,ls_armed;
 static unsigned events[32],n,watch_entries,probe_entries,ls_calls,nd_reads,boot_total;
 static uint32_t g_psx_last_block,g_debug_last_store_pc;
@@ -96,6 +97,8 @@ void psx_nd_note_wood_batch_ot(uint32_t p){(void)p;}
 int main(void){
  debug_server_trace_write_check(0x200,3,9,4);
  assert(n==3&&events[0]==1&&events[1]==2&&events[2]==3);
+ s_rec_frame=-1;n=0;debug_server_trace_write_check(0x200,3,9,4);
+ assert(n==2&&events[0]==1&&events[1]==3);s_rec_frame=0;n=0;
  s_wtrace_trans=s_wtrace_boot=s_wtrace=(void*)1;
  s_wtrace_trans_range_count=s_wtrace_boot_range_count=s_wtrace_range_count=1;
  s_wtrace_ranges[0]=(FixtureRange){0x100,0x200};
@@ -171,7 +174,7 @@ int main(void){
                      source.index("/* Only optional recorder dispatch is cold.")]
     actual = routing + "\n".join(body(name) for name in (
         "debug_server_cyc_observe_optional", "debug_server_cyc_observe",
-        "debug_server_trace_write_optional", "debug_server_trace_write_check"))
+        "debug_server_trace_write_optional", "history_record_live_write", "debug_server_trace_write_check"))
     path = work / "existing-observer-dispatch.c"
     path.write_text(preamble + actual + cases, encoding="utf-8")
     for opt in ("-O0", "-O2"):
@@ -179,6 +182,148 @@ int main(void){
         subprocess.run([cc, "-std=c11", opt, "-UNDEBUG", "-Werror",
                         "-I", str(root / "runtime/include"), str(path), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
+
+
+def check_history_retention(root, work, cc):
+    """Actual existing initializer/recorders: late join, order and same build contract."""
+    source = (root / "runtime/src/debug_server.c").read_text(encoding="utf-8")
+
+    def body(name):
+        start = source.rfind("\n", 0, source.index(name + "(")) + 1
+        # Some public functions have earlier calls. Find the actual definition.
+        import re
+        match = re.search(r"(?m)^(?:static )?(?:inline )?(?:PSX_DEBUG_COLD )?(?:void|int) " + name +
+                          r"\([^;]*?\)\s*\{", source)
+        assert match, name
+        start = match.start()
+        brace = source.index("{", start)
+        end, depth = brace + 1, 1
+        while depth:
+            depth += (source[end] == "{") - (source[end] == "}")
+            end += 1
+        return source[start:end]
+
+    def typedef(name):
+        end = source.index("} " + name + ";") + len("} " + name + ";")
+        return source[source.rfind("typedef struct", 0, end):end]
+
+    constants = "\n".join(line for line in source.splitlines() if line.startswith((
+        "#define WRITE_TRACE_", "#define WTRACE_", "#define MMIO_TRACE_CAP ",
+        "#define GP1_TRACE_CAP ", "#define FP_RING_CAP ")))
+    preamble = r"""
+#include "cpu_state.h"
+#include "psx_memory.h"
+#include "frame_fingerprint.h"
+#include <assert.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#define DEFAULT_DEBUG_PORT 4470
+#define PSX_DEBUG_COLD
+#define REC_KIND_RAM_W 0
+#define REC_KIND_SP_W 1
+#define REC_KIND_MMIO_W 2
+#define REC_KIND_MMIO_R 3
+"""
+    declarations = r"""
+static CPUState cpu;CPUState *debug_cpu_ptr=&cpu;
+uint32_t g_psx_ram_size=0x200000u;
+static uint32_t g_debug_last_store_pc=0x1234,g_debug_current_func_addr=0x5678;
+static uint64_t s_frame_count=7;
+static int s_fmv_quiet,g_psx_render_pass_active;
+int g_dma_exec_depth,g_dma_cur_ch;uint32_t g_dma_initiator_pc;
+static PsxFrameFingerprint s_fp=PSX_FRAME_FINGERPRINT_INIT;
+static FpEntry s_fp_ring[FP_RING_CAP];static uint32_t s_fp_head;static uint64_t s_fp_total;
+static WriteTraceEntry *s_wtrace,*s_wtrace_boot;
+static WriteTraceAllEntry *s_wtrace_all;static WriteTraceTransEntry *s_wtrace_trans;
+static MmioTraceEntry *s_mmio_trace,*s_gp1_trace,*s_mmio_rtrace;
+static uint64_t s_wtrace_seq,s_wtrace_boot_total,s_wtrace_all_seq,s_wtrace_trans_seq;
+static uint64_t s_mmio_trace_seq,s_gp1_trace_seq,s_mmio_rtrace_seq;
+static uint32_t s_wtrace_head,s_wtrace_boot_count,s_wtrace_all_head,s_wtrace_trans_head;
+static uint32_t s_mmio_trace_head,s_gp1_trace_head,s_mmio_rtrace_head;
+static struct {uint32_t lo,hi;} s_wtrace_ranges[WTRACE_MAX_RANGES],
+ s_wtrace_boot_ranges[WTRACE_BOOT_MAX_RANGES],s_wtrace_trans_ranges[WTRACE_TRANS_MAX_RANGES],
+ s_mmio_rtrace_ranges[8];
+static int s_wtrace_range_count,s_wtrace_boot_range_count,s_wtrace_trans_range_count,s_mmio_rtrace_range_count;
+static int s_wtrace_env_ranges,s_write_history_initialized;static char s_wtrace_env_error[96];
+static int64_t s_rec_frame=-1;static uint32_t g_capture_freeze_frame;
+static uint32_t i_stat=3,i_mask=4;static unsigned bindings,armed_events;
+uint64_t psx_get_cycle_count(void){return 900;}
+static void pgxp_set_trace_sources(uint32_t *pc,uint64_t *frame){assert(pc==&g_debug_last_store_pc&&frame==&s_frame_count);bindings++;}
+static uint32_t trace_read_word(CPUState *c,uint32_t a){assert(c==&cpu);return a^0x13579BDFu;}
+static int is_card_critical_addr(uint32_t p){(void)p;return 0;}
+static void card_trace_record(uint32_t p,uint32_t o,uint32_t v,uint8_t w){(void)p;(void)o;(void)v;(void)w;abort();}
+static void rec_event(uint8_t k,uint32_t a,uint32_t v,uint32_t p,uint32_t r){(void)k;(void)a;(void)v;(void)p;(void)r;armed_events++;}
+"""
+    routing = source[source.index("/* Derived optional-write routing"):
+                     source.index("/* Only optional recorder dispatch is cold.")]
+    functions = "\n".join(body(name) for name in (
+        "fp_record_write", "fp_record_mmio", "fp_snapshot", "capture_frozen",
+        "wtrace_fill_entry", "wtrace_record", "wtrace_boot_record", "wtrace_all_record",
+        "wtrace_transition_record", "debug_server_trace_write_optional",
+        "history_record_live_write", "debug_server_trace_write_check",
+        "debug_server_trace_mmio_write", "debug_server_trace_mmio_read",
+        "wtrace_apply_env_ranges", "debug_server_history_init", "debug_server_history_frame"))
+    # Listener setup cannot reset histories on a late/failed connection.
+    listener = body("debug_server_init")
+    assert listener.index("debug_server_history_init();") < listener.index("socket(")
+    assert "s_wtrace_all_seq  = 0" not in listener
+    assert "debug_server_history_init();" in body("debug_server_set_cpu")
+    main_source = (root / "runtime/src/main.cpp").read_text(encoding="utf-8")
+    assert "#endif\n    debug_server_history_frame();" in main_source
+    cases = r"""
+int main(void){
+ cpu.gpr[31]=0x80001234;cpu.gpr[29]=0x80010000;cpu.gpr[16]=19;
+ debug_server_history_init();assert(bindings==1 && s_write_history_initialized);
+ assert(WRITE_TRACE_ALL_CAP==(1<<22) && sizeof(WriteTraceAllEntry)==32);
+ assert(s_wtrace_all && s_wtrace_boot && s_wtrace_trans && s_mmio_trace && s_mmio_rtrace && s_gp1_trace);
+ debug_server_trace_write_check(0x97420,1,2,4);
+ debug_server_trace_write_check(0x1F8001CC,3,4,2);
+ assert(s_wtrace_all_seq==2 && s_wtrace_all_head==2 && !armed_events);
+ assert(s_wtrace_all[0].seq==0 && s_wtrace_all[0].addr==0x97420 && s_wtrace_all[0].new_val==2);
+ assert(s_wtrace_all[0].pc==0x1234 && s_wtrace_all[0].ra==0x80001234 && s_wtrace_all[0].frame==7 && s_wtrace_all[0].w==4);
+ assert(s_wtrace_all[1].seq==1 && s_wtrace_all[1].addr==0x1F8001CC && s_wtrace_all[1].w==2);
+ assert(s_wtrace_boot_total==1 && s_wtrace_boot_count==1 && s_wtrace_trans_seq==2);
+ assert(s_wtrace_trans[0].old_val==1 && s_wtrace_trans[0].new_val==2 && s_wtrace_trans[0].s0==19);
+ assert(s_wtrace_trans[0].stk20==((0x80010000u+20)^0x13579BDFu));
+ void *retained=s_wtrace_all;debug_server_history_init();
+ assert(s_wtrace_all==retained && s_wtrace_all_seq==2 && s_wtrace_trans_seq==2 && bindings==1);
+ /* Real ring-boundary producer behavior, preserving the fixed4M event window. */
+ s_wtrace_all_seq=WRITE_TRACE_ALL_CAP-1u;s_wtrace_all_head=WRITE_TRACE_ALL_CAP-1u;
+ debug_server_trace_write_check(0x100000,4,5,1);debug_server_trace_write_check(0x100001,5,6,1);
+ assert(s_wtrace_all_seq==WRITE_TRACE_ALL_CAP+1u && s_wtrace_all_head==1);
+ assert(s_wtrace_all[WRITE_TRACE_ALL_CAP-1u].seq==WRITE_TRACE_ALL_CAP-1u && s_wtrace_all[0].seq==WRITE_TRACE_ALL_CAP);
+ debug_server_trace_mmio_write(0x1F801814,0xAA55,4);
+ debug_server_trace_mmio_read(0x1F801800,0x23,1);
+ assert(s_mmio_trace_seq==1 && s_gp1_trace_seq==1 && s_mmio_rtrace_seq==1);
+ assert(s_mmio_trace[0].val==0xAA55 && s_mmio_trace[0].ra==0x80001234 && s_mmio_trace[0].frame==7);
+ assert(s_gp1_trace[0].val==0xAA55 && s_mmio_rtrace[0].val==0x23 && s_mmio_rtrace[0].width==1);
+ debug_server_history_frame();assert(s_fp_total==1 && s_fp_ring[0].frame==7);
+ uint64_t writes=s_wtrace_all_seq;PsxFrameFingerprint fp=s_fp;
+ g_psx_render_pass_active=1;debug_server_trace_write_check(0x97420,2,3,4);
+ debug_server_trace_mmio_write(0x1F801814,0,4);debug_server_trace_mmio_read(0x1F801800,0,1);
+ assert(s_wtrace_all_seq==writes && s_mmio_trace_seq==1 && s_mmio_rtrace_seq==1 && !memcmp(&s_fp,&fp,sizeof fp));
+ g_psx_render_pass_active=0;g_capture_freeze_frame=7;
+ debug_server_trace_mmio_write(0x1F801814,0,4);debug_server_trace_mmio_read(0x1F801800,0,1);
+ assert(s_mmio_trace_seq==1 && s_mmio_rtrace_seq==1);
+ printf("PASS actual shared history: standalone/idempotent init, ordered late records,4M wrap, MMIO/FP/pass/freeze; heap_bytes=%zu\n",
+  WRITE_TRACE_ALL_CAP*sizeof(WriteTraceAllEntry)+(WRITE_TRACE_CAP+WRITE_TRACE_BOOT_CAP)*sizeof(WriteTraceEntry)+WRITE_TRACE_TRANS_CAP*sizeof(WriteTraceTransEntry)+(2u*MMIO_TRACE_CAP+GP1_TRACE_CAP)*sizeof(MmioTraceEntry));
+}
+"""
+    path = work / "existing-history-retention.c"
+    path.write_text(preamble + constants + "\n" + "\n".join(typedef(name) for name in (
+        "WriteTraceEntry", "WriteTraceAllEntry", "WriteTraceTransEntry", "MmioTraceEntry", "FpEntry")) +
+        declarations + routing + functions + cases, encoding="utf-8")
+    for opt in ("-O0", "-O2"):
+        for production in (True, False):
+            exe = work / ("history.exe" if os.name == "nt" else "history")
+            argv = [cc, "-std=c11", opt, "-UNDEBUG", "-Werror", "-I", str(root / "runtime/include")]
+            if production:
+                argv.append("-DPSX_NO_DEBUG_TOOLS=1")
+            subprocess.run(argv + [str(path), "-o", str(exe)], check=True)
+            env = dict(os.environ)
+            env.pop("PSX_WTRACE_BOOT_RANGES", None)
+            subprocess.run([str(exe)], check=True, env=env)
 
 
 def main():
@@ -230,6 +375,7 @@ def main():
                 subprocess.run([str(exe)], check=True)
         if not args.headroom_disabled:
             check_observer_dispatch(root, work, args.cc)
+            check_history_retention(root, work, args.cc)
     print("PASS: actual canonical/native data access and dynamic observers (O0/O2, production/debug)")
 
 

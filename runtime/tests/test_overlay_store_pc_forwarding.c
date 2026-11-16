@@ -26,7 +26,7 @@ static uint8_t (*const timed_byte)(CPUState*,uint32_t,uint32_t,uint32_t)=psx_cyc
 
 /* Verbatim from code_generator.cpp's emitted extern block. Must still compile
  * once cpu_state.h has mapped the name onto the host pointer. */
-extern uint32_t g_debug_last_store_pc;  /* exact PC of the executing SW/SH/SB — wtrace/readtrace producer attribution (debug_server.c) */
+extern uint32_t g_debug_last_store_pc;  /* exact PC of the executing SW/SH/SB â€” wtrace/readtrace producer attribution (debug_server.c) */
 
 static uint32_t host_last_store_pc;
 static uint32_t host_ram_word;
@@ -84,8 +84,16 @@ static uint32_t direct_read(uint32_t a,unsigned width) {
 static uint32_t direct_word(uint32_t a){return direct_read(a,4);}
 static uint16_t direct_half(uint32_t a){return (uint16_t)direct_read(a,2);}
 static uint8_t direct_byte(uint32_t a){return (uint8_t)direct_read(a,1);}
+static unsigned direct_histories;
+static void direct_history(uint32_t a,uint32_t old,uint32_t value,uint8_t width){
+    (void)value;uint32_t observed=0;
+    for(unsigned i=0;i<width;++i)observed|=(uint32_t)*direct_byte_ptr(a+i)<<(i*8);
+    assert(observed==old);++direct_histories;
+}
 static void direct_write(uint32_t a,uint32_t v,unsigned width){
     ++direct_writes;assert(!s_pending_cycles);
+    uint32_t old=0;for(unsigned i=0;i<width;++i)old|=(uint32_t)*direct_byte_ptr(a+i)<<(i*8);
+    direct_history(a,old,v,(uint8_t)width);
     for(unsigned i=0;i<width;++i){uint8_t *p=direct_byte_ptr(a+i);if(p)*p=(uint8_t)(v>>(i*8));}
 }
 static void direct_store_word(uint32_t a,uint32_t v){direct_write(a,v,4);}
@@ -111,7 +119,7 @@ static void check_direct_memory(CPUState *cpu,OverlayCallbacks *callbacks){
     view.g_psx_render_pass_active=&direct_guards[4];view.g_ram_read_watch_active=&direct_guards[5];
     view.g_psx_track_last_store=&direct_guards[6];view.g_ds_recording=&direct_recording;
     view.g_guest_store_count=&direct_stores;view.g_guest_last_store_addr=&direct_last_addr;view.g_guest_last_store_val=&direct_last_value;
-    view.g_psx_direct_memory_stats=&direct_sites;view.width_stats=&direct_widths;
+    view.g_psx_direct_memory_stats=&direct_sites;view.width_stats=&direct_widths;view.record_write=direct_history;
     view.g_psx_overlay_watch_bitmap=direct_watch;view.g_dirty_ram_exec_page_bitmap=direct_exec;
     view.g_overlay_flush_pending_cycles=&direct_flush_owner;
     callbacks->direct_memory=&view;callbacks->cpu_charge=direct_charge;
@@ -121,7 +129,7 @@ static void check_direct_memory(CPUState *cpu,OverlayCallbacks *callbacks){
     cpu->read_word=direct_word;cpu->read_half=direct_half;cpu->read_byte=direct_byte;
     cpu->write_word=direct_store_word;cpu->write_half=direct_store_half;cpu->write_byte=direct_store_byte;
     direct_flush_owner=overlay_flush_cycles;overlay_init(callbacks);
-    assert(PSX_OVERLAY_ABI_VERSION==38 && g_psx_overlay_memory_view==&view);
+    assert(PSX_OVERLAY_ABI_VERSION==39 && g_psx_overlay_memory_view==&view);
     const uint32_t aliases[]={0x00120000u,0x80120000u,0xA0320000u,0x1F800100u,0x9F800100u,0xBF800100u};
     for(unsigned i=0;i<6;++i){
         uint8_t *p=direct_byte_ptr(aliases[i]);p[0]=0x44;p[1]=0x33;p[2]=0x22;p[3]=0x11;
@@ -134,7 +142,7 @@ static void check_direct_memory(CPUState *cpu,OverlayCallbacks *callbacks){
         psx_store_cycle_barrier();PSX_STORE_BYTE(cpu,aliases[i],0x44u);
         assert(!direct_reads && !direct_writes && direct_charges==i+1);
     }
-    assert(direct_published==42 && direct_stores==18);
+    assert(direct_published==42 && direct_stores==18 && direct_histories==18);
     assert(direct_sites.load_inline_ram==9 && direct_sites.load_inline_scratch==9);
     assert(direct_sites.store_inline_ram==9 && direct_sites.store_inline_scratch==9);
     for(unsigned a=0;a<2;++a)for(unsigned r=0;r<2;++r)for(unsigned w=0;w<3;++w){
@@ -174,6 +182,9 @@ static void check_direct_memory(CPUState *cpu,OverlayCallbacks *callbacks){
     assert(direct_writes==before+1 && !s_pending_cycles);
     view.direct_stores=0;before=direct_writes;PSX_STORE_WORD(cpu,aliases[0],0x11223344u);
     assert(direct_writes==before+1);view.direct_stores=1;
+    view.record_write=NULL;before=direct_writes;unsigned history_before=direct_histories;
+    PSX_STORE_WORD(cpu,aliases[0],0x11223344u);
+    assert(direct_writes==before+1 && direct_histories==history_before+1);view.record_write=direct_history;
     view.direct_memory=0;before=direct_reads;(void)timed_byte(cpu,aliases[3],2,0);
     assert(direct_reads==before+1);view.direct_memory=1;
     direct_mask=PSX_MAIN_RAM_EXPANDED_BYTES-1u;direct_ram[0x320000]=0xAB;
