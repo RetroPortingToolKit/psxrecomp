@@ -3781,6 +3781,26 @@ static int      s_d24_present_hold = 0; /* vblanks to skip Swap after GP1(07h) *
  * rollback load, so replay != live). */
 static int      s_d24_present_skip = 0;
 static uint32_t s_d24_prev_disp_h = 0;  /* last GP1(07h) band height */
+/* Rows the current 24-bit movie has uploaded. A movie session starts on the
+ * rising edge of MDEC activity; rows it has not written yet hold whatever an
+ * earlier scene left in VRAM and present black instead. Presentation only:
+ * guest VRAM and raw scanout are untouched, and the record is not saved in
+ * snapshots (a restore shows black rows until the movie uploads them). */
+static uint8_t s_d24_rows[512];
+static int s_d24_streaming;
+static void depth24_reset_rows(void) {
+    memset(s_d24_rows, 0, sizeof(s_d24_rows));
+    s_d24_streaming = 0;
+}
+
+static int depth24_update_stream(void) {
+    int active = mdec_recently_active(10);
+    if (active && !s_d24_streaming)
+        memset(s_d24_rows, 0, sizeof(s_d24_rows));
+    s_d24_streaming = active;
+    return active;
+}
+
 static void depth24_note_upload(uint32_t x, uint32_t w);
 
 static void gp0_commit_cpu_to_vram(void) {
@@ -3791,6 +3811,11 @@ static void gp0_commit_cpu_to_vram(void) {
                      ((vram_write_x + col) & 1023u)];
     gr_vram_upload_commit(vram_write_x, vram_write_y,
                           vram_write_w, vram_write_h, vram_write_pixels);
+    /* Check the activity edge before marking, so the first upload of a
+     * movie survives even when no present has seen MDEC start yet. */
+    if (gpu_display_is_depth24() && depth24_update_stream())
+        for (uint32_t row = 0; row < vram_write_h; row++)
+            s_d24_rows[(vram_write_y + row) & 511u] = 1;
     depth24_note_upload(vram_write_x, vram_write_w);
     gp0_state = GP0_IDLE;
     vram_write_remaining = 0;
@@ -4258,6 +4283,7 @@ static void gpu_reset_state(int clear_vram) {
     s_d24_present_hold = 0;
     s_d24_present_skip = 0;
     s_d24_prev_disp_h = 0;
+    depth24_reset_rows();
 }
 
 void gpu_init(void) {
@@ -4621,6 +4647,7 @@ void gpu_depth24_on_savestate_loaded(void) {
      * Upload span / prev_h were restored from the GPU snap. */
     s_d24_present_hold = 0;
     s_d24_present_skip = 0;
+    depth24_reset_rows();
 }
 
 /* ---- Present-time screen-colour LUT (verified-enhancement, opt-in) -------
@@ -4737,6 +4764,10 @@ uint32_t gpu_display_pixel_argb(const GpuDisplayInfo* di, uint32_t x, uint32_t y
 void gpu_depth24_present_row(const GpuDisplayInfo* di, uint32_t y, uint32_t* out,
                              uint32_t count) {
     uint32_t vy = (di->display_y + y) & 511u;
+    if (depth24_update_stream() && !s_d24_rows[vy]) {
+        for (uint32_t x = 0; x < count; x++) out[x] = 0xFF000000u;
+        return;
+    }
     uint32_t base_byte_x = (di->display_x & 1023u) * 2u;
     const uint16_t* row = vram + (size_t)vy * 1024u;
     uint32_t valid = 0u;
@@ -8242,8 +8273,10 @@ static void gp1_display_mode(uint32_t val) {
     /* VBlank rate, Timer 1 HBlank clock and host pacing follow the live
      * standard, whatever the disc region (psx_video_timing.h). */
     (void)psx_video_timing_set_pal((int)video_mode);
-    if (new_depth != display_depth)
+    if (new_depth != display_depth) {
         s_d24_upload_x1 = 0; /* rising/falling: drop stale coverage */
+        depth24_reset_rows();
+    }
     display_depth = new_depth;
     vertical_interlace = (val >> 5) & 1;
     /* GPUSTAT.13 holds the legacy constant 0 in progressive (see the vblank

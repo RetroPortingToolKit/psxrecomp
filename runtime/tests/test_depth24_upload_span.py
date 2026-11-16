@@ -31,6 +31,7 @@ static int s_d24_present_hold;
 static uint32_t s_d24_prev_disp_h, v_display_y1, v_display_y2;
 static uint32_t hres1, hres2, vres, video_mode, vertical_interlace, interlace_field, reverse_flag;
 static void __attribute__((unused)) gr_display_mode_changed(void) {}
+static void __attribute__((unused)) depth24_reset_rows(void) {}
 static int psx_gp1_display_mode_is_pal(uint32_t val) { return (int)((val >> 3) & 1u); }
 static int psx_video_timing_set_pal(int pal) { return pal; }
 static void depth24_note_upload(uint32_t x, uint32_t w) { NOTE }
