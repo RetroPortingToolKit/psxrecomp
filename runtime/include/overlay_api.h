@@ -211,13 +211,15 @@
  * sources). Folded into the cache PATH next to cg<N> (gcc/<arch-abi>/cg<N>_<hash>/)
  * so ANY emitter change auto-invalidates the cache, even within the same manual
  * PSX_OVERLAY_CODEGEN_VER — closing the stale-but-cgN reuse that caused the v0.3.0
- * black screen. The build writes overlay_codegen_hash.h (gitignored) into this
- * dir; a fresh checkout without it falls back to 0 (== old single-cgN behaviour)
- * until the first build. compile_overlays.py reads the same value, so the loader
- * and the compiler always agree on the path. */
+ * black screen. CMake writes overlay_codegen_hash.h to a build-owned include
+ * directory and puts that directory before this one, so the include is found
+ * through the include path only (angle brackets: a stale copy beside this file
+ * must not win). The recompiler build writes the same header beside its
+ * psxrecomp-game for compile_overlays.py, and SDK/toolchain staging copies it
+ * into the staged include directory. A consumer without it falls back to 0. */
 #if defined(__has_include)
-#  if __has_include("overlay_codegen_hash.h")
-#    include "overlay_codegen_hash.h"
+#  if __has_include(<overlay_codegen_hash.h>)
+#    include <overlay_codegen_hash.h>
 #  endif
 #endif
 #ifndef PSX_OVERLAY_CODEGEN_HASH

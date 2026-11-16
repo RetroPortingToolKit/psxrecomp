@@ -331,18 +331,20 @@ def main(argv=None) -> int:
         tmp_out = os.path.join(out_dir, "." + os.path.basename(args.out) + ".tmp")
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
-        # The codegen hash the module must export is the one in the include
-        # tree it compiles against. Read it here rather than leaving it to
+        # The codegen hash the module must export is the one the emitter's own
+        # build wrote (<build>/runtime/include/), else the one in the include
+        # tree it compiles against (a staged toolchain). Read it here rather
+        # than leaving it to
         # overlay_api.h's __has_include probe: tcc has no __has_include, so the
         # probe silently yields 0u and every tcc-built module was rejected by
         # the host as "codegen hash 00000000 != host ...". A build that cannot
         # name the hash has no business publishing a module the host will
         # refuse, so a missing header is a hard error here.
-        codegen_hash = co.codegen_hash(include)
+        codegen_hash = co.codegen_hash(include, emitter)
         if codegen_hash == 0:
-            die(f"{os.path.join(include, 'overlay_codegen_hash.h')} is missing or names 0; "
-                f"the module would export a hash the host rejects. Stage the "
-                f"toolchain from a built runtime include tree.")
+            die(f"{os.path.join(include, 'overlay_codegen_hash.h')} is missing or names 0, "
+                f"and the emitter's build has none either; the module would export "
+                f"a hash the host rejects. Stage the toolchain from a built tree.")
         include_dirs = [include]
         fmt_inc = os.path.join(tk, "lib", "fmt", "include")   # dev-tree layout only
         if os.path.isdir(fmt_inc):

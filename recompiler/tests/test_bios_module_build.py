@@ -10,7 +10,7 @@ this interpreter and reads the descriptor back through ctypes:
     there the test builds the module and skips only the ctypes read),
   * it exports exactly the psx_bios_module.h entry points,
   * its ABI tag carries the requested flavor and its codegen hash is the one
-    runtime/include/overlay_codegen_hash.h (or overlay_api.h's default) names,
+    emitter build's runtime/include/overlay_codegen_hash.h names,
   * the descriptor's image identity is OpenBIOS's real size and CRC-32,
   * a dump that does not match the profile's SHA-256 pin is refused before
     anything is compiled.
@@ -43,13 +43,15 @@ def abi_version_expected():
     return int(m.group(1))
 
 
-def codegen_hash_expected():
-    p = os.path.join(ROOT, 'runtime', 'include', 'overlay_codegen_hash.h')
-    if os.path.isfile(p):
-        m = re.search(r'PSX_OVERLAY_CODEGEN_HASH\s+(0x[0-9a-fA-F]+)', open(p).read())
-        if m:
-            return int(m.group(1), 16)
-    return None   # header absent: overlay_api.h defaults to 0u
+def codegen_hash_expected(emitter):
+    # The same lookup the builder uses: the header the emitter's own build
+    # wrote, else the source include tree.
+    if TOOLS not in sys.path:
+        sys.path.insert(0, TOOLS)
+    import compile_overlays
+    h = compile_overlays.codegen_hash(
+        os.path.join(ROOT, 'runtime', 'include'), emitter)
+    return h or None   # no header: overlay_api.h defaults to 0u
 
 
 class PsxBiosImageInfo(ctypes.Structure):
@@ -86,9 +88,9 @@ def main():
     if not cc:
         print('SKIP: no C compiler on PATH')
         return 0
-    if codegen_hash_expected() is None:
-        print('SKIP: runtime/include/overlay_codegen_hash.h is not generated yet (a runtime '
-              'build writes it); the builder refuses a module without it')
+    if codegen_hash_expected(emitter) is None:
+        print('SKIP: overlay_codegen_hash.h is not generated yet (the emitter build writes it); '
+              'the builder refuses a module without it')
         return 0
     windows = sys.platform.startswith('win')
 
@@ -137,7 +139,7 @@ def main():
         assert (abi & 0xFFFF) == abi_version_expected(), f'ABI version {abi & 0xFFFF}'
         assert ((abi >> 16) & 0xFFFF) == 2, f'flavor bits {(abi >> 16) & 0xFFFF}'
         h = lib.psx_bios_module_codegen_hash()
-        want_h = codegen_hash_expected()
+        want_h = codegen_hash_expected(emitter)
         if want_h is not None:
             assert h == want_h, f'codegen hash {h:#x} != header {want_h:#x}'
         b = lib.psx_bios_module_backend().contents
