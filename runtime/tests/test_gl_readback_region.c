@@ -41,6 +41,7 @@ int psx_ws_prim_is_tagged(void){return 0;}
 void gpu_depth24_upload_span_reset(void){}
 /* Netplay unsplit view and forward-pass opt-in: off in these fixtures. */
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
+int gpu_ws_display_width(void){return 320;}
 int render_pass_netplay_enabled(void){return 0;}
 /* No frontend overlays, queued screenshots or guest debug-gate state here.
  * These are the same typed inactive frontend providers used by the existing
@@ -565,7 +566,8 @@ static void verify_wide_coop_hud(void) {
  check(!gl_renderer_stereo_parked_publish(lease,82,psx_cycle_count,views),"wide lease consumed once");
  check(gl_renderer_fbo_peek(0,0,320,240,native_after) && !memcmp(native_before,native_after,320*240*2),"wide pair restores native raster including HUD region");
  check(glb_wide_dump_full(wide_after,n,&ow,&oh,0)>0 && !memcmp(wide_before,wide_after,n*4),"wide pair restores entire canonical sidecar");
- check(stereo_present(320,240),"actual wide co-op compositor presents native owned pair");
+ check(gl_renderer_present_wide_fbo(0,0,240,0),"native-wide presentation accepts a complete local pair");
+ check(s_last_present_path==GL_PRES_STEREO,"native-wide presentation selects the fresh private pair before flat duplication");
  GlPresEvent e;check(gl_renderer_pres_get(gl_renderer_pres_total()-1,&e) && e.lx==0 && e.ly==0 && e.lw==1280 && e.lh==360,"adaptive wide pair fills actual32:9 drawable without4:3 pillars");
  coop_wide_held_pixels();
  gl_renderer_stereo_reset();check(!gl_renderer_local_pair_presentation_active(),"session reset releases adaptive pair layout");

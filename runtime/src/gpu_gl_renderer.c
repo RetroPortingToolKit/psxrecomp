@@ -10003,6 +10003,11 @@ static int present_wide_fbo_impl(int disp_x, int disp_y, int disp_h, int linear)
     flush_tex_batch();
     flush_cpu_upload();
     hiw_flush_queue();   /* windowed: queued wide mirrors */
+    /* Native-wide takes this entry before present_vram_impl. A fresh local
+     * pair owns both already-rendered wide panes; presenting the canonical
+     * sidecar here would duplicate one flat view and discard that pair. */
+    if (s_stereo_mode == 2 && stereo_present(gpu_ws_display_width(), disp_h))
+        return 1;
     if (!s_native_surface_enabled && s_force_present_remaining <= 0 &&
         s_last_present_path == GL_PRES_WIDE &&
         s_last_dx == disp_x && s_last_dy == disp_y &&
