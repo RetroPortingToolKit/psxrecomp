@@ -45,6 +45,10 @@ static void set_env(const char *name, const char *value) {
 static int resync_moves_clock;
 void psx_cycles_resync_after_restore(CPUState *cpu) { (void)cpu; if (resync_moves_clock) ++psx_cycle_count; }
 void interrupts_resync_after_restore(void) {}
+/* The scheduler double: a start that resumes arms the restored PC. */
+static int arm_calls;
+static uint32_t armed_pc;
+int psx_scheduler_arm_resume(uint32_t pc) { ++arm_calls; armed_pc = pc; return 1; }
 
 /* Card 1 inserted, card 2 empty. */
 static uint8_t card[2][PSX_TAS_STATEIO_CARD_BYTES];
@@ -157,6 +161,14 @@ int main(void) {
     check(cpu.pc == want.pc && cpu.gpr[29] == want.gpr[29], "the CPU is restored");
     check(fixture_return_tcb == TCB_BASE + 0xC0u && fixture_irq_timing.cooldown_until == 987654000u &&
           fixture_memctrl[3] == 0x1F000003u, "the resume sections are restored");
+
+    /* A start with a resume request resumes and arms the scheduler at the
+     * restored PC, so the first dispatch does not reload a thread context. */
+    scramble(&cpu);
+    set_env("PSX_TAS_RESUME_STATE", state);
+    check(tas_checkpoint_start(&cpu) == 0 && cpu.pc == want.pc, "a start resumes the checkpoint");
+    check(arm_calls == 1 && armed_pc == want.pc, "the start arms the scheduler at the restored PC");
+    set_env("PSX_TAS_RESUME_STATE", NULL);
 
     /* Refusals. */
     card[0][100] ^= 1;

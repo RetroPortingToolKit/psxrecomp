@@ -291,6 +291,14 @@ int tas_checkpoint_start(CPUState *cpu) {
         fprintf(stderr, "psxrecomp: [tas-checkpoint] resume rejected: %s\n", reason);
         return 2;
     }
+    {
+        extern int psx_scheduler_arm_resume(uint32_t resume_pc);
+        if (!psx_scheduler_arm_resume(cpu->pc)) {
+            fprintf(stderr, "psxrecomp: [tas-checkpoint] resume PC 0x%08X is not dispatchable\n",
+                    (unsigned)cpu->pc);
+            return 2;
+        }
+    }
     fprintf(stdout, "psxrecomp: [tas-checkpoint] resumed frame %llu cycle %llu from %s\n",
             (unsigned long long)s_frame_count, (unsigned long long)psx_cycle_count, state);
     return 0;

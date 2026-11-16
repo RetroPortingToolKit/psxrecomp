@@ -766,6 +766,27 @@ void psx_scheduler_resume_at(uint32_t resume_pc)
     longjmp(g_scheduler_jmpbuf, 1); /* unwind to psx_scheduler_run; never returns */
 }
 
+/* Before psx_scheduler_run starts: a restored state resumes the restored CPU
+ * at resume_pc, as psx_scheduler_resume_at does once the run has started,
+ * instead of reloading the current thread's saved context from its TCB. */
+static int g_sched_resume_armed = 0;
+
+int psx_scheduler_arm_resume(uint32_t resume_pc)
+{
+    if (!psx_is_dispatchable(resume_pc)) return 0;
+    g_sched_escape.target_tcb = 0;
+    g_sched_escape.resume_pc  = resume_pc;
+    g_sched_escape.reason     = PSX_RUN_RESUME_CURRENT;
+    g_sched_top_level_resume = 1;
+    g_sched_restore_edge_check = 1;
+    g_sched_resume_armed = 1;
+    {
+        extern void psx_irq_arm_compiled_resume_pc(uint32_t pc);
+        psx_irq_arm_compiled_resume_pc(resume_pc);
+    }
+    return 1;
+}
+
 /* Scheduler mode. HLE = the deterministic TCB scheduler
  * (psx_request_thread_switch, default); LLE = the legacy host-fiber bridge
  * (psx_change_thread_fiber). This is the HLE tier's standing SUBSYSTEM
@@ -848,7 +869,8 @@ void psx_scheduler_run(CPUState* cpu)
 {
     extern int g_psx_dispatch_depth;
     g_in_scheduler_run = 1;
-    g_sched_escape.reason = PSX_RUN_CONTINUE;
+    if (g_sched_resume_armed) g_sched_resume_armed = 0;
+    else g_sched_escape.reason = PSX_RUN_CONTINUE;
     for (;;) {
         if (setjmp(g_scheduler_jmpbuf) != 0) {
             psx_snapshot_host_call_reset();
