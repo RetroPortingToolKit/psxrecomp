@@ -81,7 +81,7 @@ static void test_private_owners(void) {
     spu_private_voice_stop(UINT32_MAX); /* Legacy cannot stop either owner. */
     spu_snapshot_write(after);CHECK(!memcmp(before,after,bytes));
     CHECK(spu_private_voice_volume_owned(a,20,0,0) && spu_private_voice_stop_owned(a,mask));
-    voice_next_sample(44);CHECK(!voices[44].active);
+    voice_next_sample(44,0);CHECK(!voices[44].active);
     CHECK(spu_private_voice_release(a,mask) && !spu_private_voice_owner(20));
     CHECK(!spu_private_voice_release(a,1u<<22) && spu_private_voice_owner(22)==b);
     CHECK(spu_private_voice_play(20,2,regs,0));
