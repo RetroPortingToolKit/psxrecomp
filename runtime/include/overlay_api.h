@@ -131,8 +131,9 @@
  * v35: append native replacement forwarding to v34; old X6 v31 and
  *      experimental v32 caches remain incompatible.
  * v36: host canonical bus identities and shared callback-width counters.
- * v37: live host memory view and native DLL direct-access admission. */
-#define PSX_OVERLAY_ABI_VERSION 37
+ * v37: live host memory view and native DLL direct-access admission.
+ * v38: live host observation clock/edge view; no common DLL publication. */
+#define PSX_OVERLAY_ABI_VERSION 38
 
 /* Process-lifetime overlay candidate capacity.  Every accepted manifest F
  * record consumes one slot, even when another DLL carries an identical
@@ -413,6 +414,7 @@ typedef struct OverlayCallbacks {
     void (*bus_write_byte)(uint32_t,uint8_t);
     uint64_t (*bus_callback_widths)[3];
     const struct PSXDirectMemoryView *direct_memory; /* ABI v37, live guards */
+    const struct PSXObservationView *observation_time; /* ABI v38, live clock */
 } OverlayCallbacks;
 
 #ifdef __cplusplus

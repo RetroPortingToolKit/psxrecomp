@@ -121,7 +121,7 @@ static void check_direct_memory(CPUState *cpu,OverlayCallbacks *callbacks){
     cpu->read_word=direct_word;cpu->read_half=direct_half;cpu->read_byte=direct_byte;
     cpu->write_word=direct_store_word;cpu->write_half=direct_store_half;cpu->write_byte=direct_store_byte;
     direct_flush_owner=overlay_flush_cycles;overlay_init(callbacks);
-    assert(PSX_OVERLAY_ABI_VERSION==37 && g_psx_overlay_memory_view==&view);
+    assert(PSX_OVERLAY_ABI_VERSION==38 && g_psx_overlay_memory_view==&view);
     const uint32_t aliases[]={0x00120000u,0x80120000u,0xA0320000u,0x1F800100u,0x9F800100u,0xBF800100u};
     for(unsigned i=0;i<6;++i){
         uint8_t *p=direct_byte_ptr(aliases[i]);p[0]=0x44;p[1]=0x33;p[2]=0x22;p[3]=0x11;
@@ -256,6 +256,113 @@ static void shard_store(CPUState *cpu)
     PSX_STORE_WORD(cpu,cpu->gpr[4] + 304,cpu->gpr[10]);
 }
 
+/* The real generated preamble and shared edge predicate, with the host clock
+ * seam owned here. Real catch-up/scaled clocks are checked by the maintained
+ * test_psx_cycle_event_boundaries.c against psx_cycles.c and the actual loader
+ * callbacks; these assertions pin cross-module publication and admission. */
+static uint64_t edge_clock, edge_deadline, edge_sample, edge_count;
+static uint32_t edge_recip=65536u, edge_frac, edge_batch, edge_status, edge_mask;
+static uint32_t *edge_local;
+static int edge_guards[12];
+static uint32_t edge_budget,edge_ratelimit;
+static void (*edge_owner)(void);
+static unsigned edge_charges,edge_slow,edge_legacy,edge_samples,edge_waits;
+static void edge_apply(uint32_t raw) {
+    uint32_t scaled=raw;
+    if(edge_recip!=65536u) {
+        uint64_t total=(uint64_t)raw*edge_recip+edge_frac;
+        scaled=(uint32_t)(total>>16);edge_frac=(uint32_t)(total&65535u);
+    }
+    edge_clock+=scaled;
+    if(edge_clock>=edge_sample){++edge_samples;edge_sample=UINT64_MAX;}
+}
+static void edge_charge(uint32_t raw){++edge_charges;edge_apply(raw);}
+static void edge_host(CPUState *cpu,uint32_t pc,int wait,uint32_t raw){
+    (void)cpu;(void)pc;assert(!s_pending_cycles);++edge_slow;edge_apply(raw);
+    edge_guards[10]=wait;if(wait)++edge_waits;
+    if(!edge_deadline||edge_clock>=edge_deadline)edge_deadline=edge_clock+1000;
+}
+static void edge_legacy_host(CPUState *cpu,uint32_t pc){
+    (void)cpu;(void)pc;assert(!s_pending_cycles&&!foreign_pending);
+    ++edge_legacy;++edge_count;
+}
+static void edge_fallback_host(CPUState *cpu,uint32_t pc,uint32_t raw){
+    edge_apply(raw);edge_legacy_host(cpu,pc);
+}
+static void check_observation_edges(CPUState *cpu,OverlayCallbacks *callbacks){
+    static const uint32_t waits[]={0x8002E6C0u};
+    PSXObservationView view={0};view.bytes=sizeof view;view.model=1;
+    view.clock=&edge_clock;view.deadline=&edge_deadline;view.sample=&edge_sample;
+    view.scale_recip=&edge_recip;view.scale_frac=&edge_frac;view.batch=&edge_batch;
+    view.local_acc=&edge_local;view.irq_status=&edge_status;view.irq_mask=&edge_mask;
+    view.device_service=&edge_guards[0];view.conservative=&edge_guards[1];
+    view.frozen=&edge_guards[2];view.replay=&edge_guards[3];
+    view.shadow=&edge_guards[4];view.suppress_irq=&edge_guards[5];
+    view.cd_only=&edge_guards[6];view.defer_cd=&edge_guards[7];
+    view.save_pending=&edge_guards[8];view.defer_switch=&edge_guards[9];
+    view.wait_active=&edge_guards[10];view.suppress_record=&edge_guards[11];
+    view.irq_budget=&edge_budget;view.irq_ratelimit=&edge_ratelimit;
+    view.flush_owner=&edge_owner;view.wait_sites=waits;view.wait_site_count=1;
+    view.block_edges=&edge_count;view.edge=edge_host;view.fallback=edge_fallback_host;
+    callbacks->cpu_charge=edge_charge;callbacks->check_interrupts_at=edge_legacy_host;
+    callbacks->observation_time=&view;edge_owner=overlay_flush_cycles;
+    edge_deadline=200;edge_sample=UINT64_MAX;cpu->cop0[12]=cpu->cop0[13]=0;
+    overlay_init(callbacks);assert(g_psx_overlay_observation_view==&view);
+    edge_guards[11]=3;
+    for(unsigned n=0;n<64;++n){psx_cpu_charge(3);PSX_BLOCK_EDGE(cpu,0x80010000u);}
+    assert(s_pending_cycles==192 && edge_clock==0 && edge_count==64);
+    assert(!edge_charges&&!edge_slow&&!edge_legacy&&!edge_guards[11]);
+    psx_cpu_charge(8);PSX_BLOCK_EDGE(cpu,0x80010000u);
+    assert(edge_slow==1&&!edge_charges&&!edge_legacy&&!s_pending_cycles&&edge_clock==200);
+    /* A sample is a real clock observation, without waiting for device time. */
+    edge_sample=205;psx_cpu_charge(5);PSX_BLOCK_EDGE(cpu,0x80010000u);
+    assert(edge_slow==2&&edge_samples==1&&edge_clock==205);
+    psx_cpu_charge(1);PSX_BLOCK_EDGE(cpu,waits[0]);
+    assert(edge_waits==1&&edge_guards[10]);
+    PSX_BLOCK_EDGE(cpu,0x80010000u);assert(!edge_guards[10]&&edge_slow==4);
+    cpu->cop0[12]=0x101;cpu->cop0[13]=0x100;
+    PSX_BLOCK_EDGE(cpu,0x80010000u);assert(edge_slow==5);
+    cpu->cop0[12]=0x401;cpu->cop0[13]=0;edge_status=edge_mask=4;
+    PSX_BLOCK_EDGE(cpu,0x80010000u);assert(edge_slow==6);
+    edge_status=edge_mask=0;cpu->cop0[12]=0;
+    for(unsigned g=8;g<10;++g){edge_guards[g]=1;PSX_BLOCK_EDGE(cpu,0x80010000u);edge_guards[g]=0;}
+    assert(edge_slow==8);
+    /* Exact aggregate fractional carry, read live; no speculative write. */
+    edge_clock=0;edge_deadline=2;edge_recip=21845;edge_frac=65535;
+    psx_cpu_charge(1);PSX_BLOCK_EDGE(cpu,0x80010000u);
+    assert(!edge_clock&&edge_frac==65535&&s_pending_cycles==1);
+    psx_cpu_charge(2);PSX_BLOCK_EDGE(cpu,0x80010000u);
+    assert(!edge_clock&&edge_frac==65535&&s_pending_cycles==3);
+    psx_cpu_charge(1);PSX_BLOCK_EDGE(cpu,0x80010000u);
+    assert(edge_clock==2&&edge_frac==21843&&!s_pending_cycles&&edge_slow==9);
+    edge_recip=65536;edge_frac=0;
+    /* Existing mandatory barriers are retained even below the horizon. */
+    psx_cpu_charge(2);psx_store_cycle_barrier();assert(edge_charges==1&&!s_pending_cycles);
+    cpu->read_word=host_read_word;callbacks->bus_read_word=host_read_word;
+    overlay_init(callbacks);psx_cpu_charge(2);
+    (void)psx_native_span_word(cpu,0x1F801000u,2,0);
+    assert(edge_charges==2&&!s_pending_cycles);
+    /* Every mutable unsupported owner/policy goes through the original host
+     * seam after publication, including conservative/replay/frozen scopes. */
+    for(unsigned g=0;g<8;++g){
+        edge_guards[g]=1;psx_cpu_charge(1);unsigned before=edge_legacy;
+        PSX_BLOCK_EDGE(cpu,0x80010000u);assert(edge_legacy==before+1&&!s_pending_cycles);edge_guards[g]=0;
+    }
+    edge_budget=1;PSX_BLOCK_EDGE(cpu,0x80010000u);edge_budget=0;
+    edge_ratelimit=1;PSX_BLOCK_EDGE(cpu,0x80010000u);edge_ratelimit=0;
+    view.legacy_unit_defer=1;PSX_BLOCK_EDGE(cpu,0x80010000u);view.legacy_unit_defer=0;
+    edge_batch=1;PSX_BLOCK_EDGE(cpu,0x80010000u);edge_batch=0;
+    uint32_t local=1;edge_local=&local;PSX_BLOCK_EDGE(cpu,0x80010000u);edge_local=NULL;
+    edge_owner=foreign_flush;foreign_pending=11;psx_cpu_charge(3);
+    PSX_BLOCK_EDGE(cpu,0x80010000u);assert(!foreign_pending&&!s_pending_cycles);edge_owner=overlay_flush_cycles;
+    unsigned before=edge_charges;psx_cpu_charge(UINT32_MAX);psx_cpu_charge(1);
+    assert(edge_charges==before+1&&s_pending_cycles==1);overlay_flush_cycles();
+    --view.bytes;overlay_init(callbacks);assert(!g_psx_overlay_observation_view);++view.bytes;
+    view.model=0;overlay_init(callbacks);assert(!g_psx_overlay_observation_view);
+    callbacks->observation_time=NULL;overlay_init(callbacks);
+    puts("PASS real DLL observation:64 charged quiet edges/zero host callbacks;due/frame policy,wait/departure,sample,IRQ/save/defer,exact fractional carry,mandatory barriers,live fallback,ABI refusal");
+}
+
 int main(void)
 {
     CPUState cpu = {0};
@@ -278,6 +385,7 @@ int main(void)
     assert(g_debug_last_store_pc == 0x800657FCu);
     check_bus_widths(&cpu,&callbacks);
     check_direct_memory(&cpu,&callbacks);
+    check_observation_edges(&cpu,&callbacks);
 
     /* A host that supplies no pointer gets the pre-v24 behaviour back: the
      * DLL keeps its own copy and never touches the host's. */

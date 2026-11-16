@@ -149,8 +149,14 @@ static inline uint32_t psx_gcs_session_profile(uint32_t scale, int batch) {
     if (scale <= 1u) return 0u;
     return 0x6C000000u | (batch ? 0x00800000u : 0u) | scale;
 }
+static inline uint64_t psx_gcs_charge_total(uint32_t cycles, uint32_t recip, uint32_t frac) {
+    return (uint64_t)cycles * recip + frac;
+}
+static inline uint32_t psx_gcs_scaled_charge(uint32_t cycles, uint32_t recip, uint32_t frac) {
+    return (uint32_t)(psx_gcs_charge_total(cycles, recip, frac) >> 16);
+}
 static inline uint32_t psx_gcs_scale(uint32_t cpu_cycles) {
-    uint64_t t = (uint64_t)cpu_cycles * g_psx_gcs_recip_q16 + g_psx_gcs_frac;
+    uint64_t t = psx_gcs_charge_total(cpu_cycles, g_psx_gcs_recip_q16, g_psx_gcs_frac);
     g_psx_gcs_frac = (uint32_t)(t & 0xFFFFu);
     return (uint32_t)(t >> 16);
 }

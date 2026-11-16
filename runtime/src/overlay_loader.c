@@ -2414,24 +2414,36 @@ static int overlay_irq_suppressed_now(void) {
     return 0;
 }
 
+/* A legacy DLL wrapper can return before the native host edge. Account that
+ * actual out-of-line edge here; the delivered path is counted by the host
+ * edge itself. Previously these early-return DLL edges were absent in M0. */
+static void overlay_note_skipped_edge(void) {
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    if (!g_psx_guest_time_frozen && !g_ls_replay_active) {
+        psx_observation_block_edges++;
+        psx_observation_slow_edges++;
+    }
+#endif
+}
+
 static void overlay_ci_wrapper(CPUState *cpu) {
     /* Legacy blanket deferral inside a nested call unit (A/B knob only; default
      * is to deliver — see g_call_unit_depth / overlay_unit_defer.h). */
     if (overlay_unit_irq_must_defer(g_call_unit_depth, overlay_unit_irq_defer_enabled())) {
-        s_ci_skip_unit++;
+        s_ci_skip_unit++; overlay_note_skipped_edge();
         return;
     }
-    if (overlay_irq_suppressed_now()) { s_ci_skip_supp++; return; }
+    if (overlay_irq_suppressed_now()) { s_ci_skip_supp++; overlay_note_skipped_edge(); return; }
     /* psx_advance_cycles() has already raised every device edge due at this
      * block. Avoid entering the full scheduler/diagnostic path when COP0 could
      * not take the IRQ anyway. FMV polling loops can execute this edge millions
      * of times while an INTC bit is pending but IEc is deliberately clear. */
-    if ((i_stat & i_mask) == 0) { s_ci_skip_none++; return; }
+    if ((i_stat & i_mask) == 0) { s_ci_skip_none++; overlay_note_skipped_edge(); return; }
     if ((cpu->cop0[12] & ((1u << 10) | 1u)) != ((1u << 10) | 1u)) {
-        s_ci_skip_sr++;
+        s_ci_skip_sr++; overlay_note_skipped_edge();
         return;
     }
-    if (!psx_interrupt_delivery_needed(cpu)) { s_ci_skip_deliv++; return; }
+    if (!psx_interrupt_delivery_needed(cpu)) { s_ci_skip_deliv++; overlay_note_skipped_edge(); return; }
     s_ci_enter++;
     if (s_irq_defer_cdrom && (i_stat & (1u << IRQ_CDROM))) {
         uint32_t saved_cd = i_stat & (1u << IRQ_CDROM);
@@ -2465,16 +2477,16 @@ static void overlay_ci_at_wrapper(CPUState *cpu, uint32_t resume_pc) {
      * is to deliver — see g_call_unit_depth / overlay_unit_defer.h). A thread
      * switch landing here is deferred by psx_check_interrupts, not by skipping. */
     if (overlay_unit_irq_must_defer(g_call_unit_depth, overlay_unit_irq_defer_enabled())) {
-        s_ci_skip_unit++;
+        s_ci_skip_unit++; overlay_note_skipped_edge();
         return;
     }
-    if (overlay_irq_suppressed_now()) { s_ci_skip_supp++; return; }
-    if ((i_stat & i_mask) == 0) { s_ci_skip_none++; return; }
+    if (overlay_irq_suppressed_now()) { s_ci_skip_supp++; overlay_note_skipped_edge(); return; }
+    if ((i_stat & i_mask) == 0) { s_ci_skip_none++; overlay_note_skipped_edge(); return; }
     if ((cpu->cop0[12] & ((1u << 10) | 1u)) != ((1u << 10) | 1u)) {
-        s_ci_skip_sr++;
+        s_ci_skip_sr++; overlay_note_skipped_edge();
         return;
     }
-    if (!psx_interrupt_delivery_needed(cpu)) { s_ci_skip_deliv++; return; }
+    if (!psx_interrupt_delivery_needed(cpu)) { s_ci_skip_deliv++; overlay_note_skipped_edge(); return; }
     s_ci_enter++;
     extern int g_idle_note_suppress;
     int suppress_idle_note = overlay_idle_note_is_internal_or_return(cpu, resume_pc);
@@ -2489,6 +2501,59 @@ static void overlay_ci_at_wrapper(CPUState *cpu, uint32_t resume_pc) {
     }
     psx_check_interrupts_at(cpu, resume_pc);
     if (suppress_idle_note) g_idle_note_suppress--;
+}
+
+/* A true observation publishes the DLL's raw work exactly once, then uses
+ * the qualified native handler. Unlike the mandatory store/MMIO/exit charge
+ * callback above, this lets the handler arm the resume PC before catch-up. */
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+static void overlay_observation_edge(CPUState *cpu, uint32_t pc, int wait,
+                                     uint32_t charge) {
+    psx_cpu_charge(charge);
+    psx_observation_edge(cpu, pc, wait);
+}
+static void overlay_observation_fallback(CPUState *cpu, uint32_t pc, uint32_t charge) {
+    /* An unproved host-local batch must be published even when this DLL has
+     * no raw charge. Preserve the mandatory eager-due charge policy before
+     * the legacy IRQ wrapper's no-latched-source return. */
+    psx_cyc_batch_flush();
+    overlay_cpu_charge(charge);
+    overlay_ci_at_wrapper(cpu, pc);
+}
+#endif
+
+static const PSXObservationView *overlay_observation_view(void) {
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    static const uint32_t waits[] = { PSX_OBSERVATION_WAIT_SITE_VALUES };
+    static PSXObservationView view = {
+        .bytes = sizeof(PSXObservationView), .model = 1u,
+        .clock = &psx_cycle_count, .deadline = &psx_next_service_cycle,
+        .sample = &psx_next_cycle_sample,
+        .scale_recip = &g_psx_gcs_recip_q16, .scale_frac = &g_psx_gcs_frac,
+        .batch = &g_psx_cyc_batch, .local_acc = &g_psx_cyc_local_acc,
+        .device_service = &psx_in_device_service,
+        .conservative = &g_event_step_conservative,
+        .frozen = &g_psx_guest_time_frozen, .replay = &g_ls_replay_active,
+        .defer_switch = &psx_defer_switch_pending,
+        .save_pending = &g_psx_savestate_pending,
+        .suppress_record = &g_ls_suppress_record,
+        .wait_active = &psx_observation_wait_active,
+        .irq_status = &i_stat, .irq_mask = &i_mask,
+        .shadow = &s_in_shadow, .suppress_irq = &s_suppress_irq,
+        .cd_only = &s_irq_suppress_cdrom_only, .defer_cd = &s_irq_defer_cdrom,
+        .irq_budget = &s_irq_budget_cycles, .irq_ratelimit = &s_irq_ratelimit,
+        .flush_owner = &g_overlay_flush_pending_cycles,
+        .wait_sites = waits, .wait_site_count = PSX_OBSERVATION_WAIT_SITE_COUNT,
+        .block_edges = &psx_observation_block_edges,
+        .edge = overlay_observation_edge, .fallback = overlay_observation_fallback
+    };
+    /* This environment option is resolved once per process, not mutable
+     * execution state. All live suppression controls above stay by reference. */
+    view.legacy_unit_defer = overlay_unit_irq_defer_enabled();
+    return &view;
+#else
+    return NULL;
+#endif
 }
 
 static int overlay_irq_budget_blocks_now(void) {
@@ -2539,6 +2604,7 @@ static void init_callbacks(void) {
     s_callbacks.cpu_charge         = overlay_cpu_charge;
     s_callbacks.gte_execute          = gte_execute;
     s_callbacks.direct_memory=psx_direct_memory_host_view();
+    s_callbacks.observation_time=overlay_observation_view();
     s_callbacks.bus_read_word=psx_read_word;
     s_callbacks.bus_read_half=psx_read_half;
     s_callbacks.bus_read_byte=psx_read_byte;

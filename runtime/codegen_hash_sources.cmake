@@ -85,6 +85,7 @@ set(PSXRECOMP_CODEGEN_HASH_SRCS
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/overlay_api.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/cpu_state.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_block_edge.h
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_observation_view.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/pgxp_hooks.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_cyc.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_cycles.h

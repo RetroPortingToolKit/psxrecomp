@@ -7,6 +7,7 @@ static OverlayCallbacks g_cbs;
 static uint32_t s_pending_cycles;
 uint32_t *g_psx_overlay_pending_cycles_p=&s_pending_cycles;
 const PSXDirectMemoryView *g_psx_overlay_memory_view;
+const PSXObservationView *g_psx_overlay_observation_view;
 uint32_t (*g_psx_overlay_psx_read_word)(uint32_t);
 uint16_t (*g_psx_overlay_psx_read_half)(uint32_t);
 uint8_t (*g_psx_overlay_psx_read_byte)(uint32_t);
@@ -47,6 +48,11 @@ PSX_OVERLAY_EXPORT void overlay_init(const OverlayCallbacks *cbs) {
     g_cbs = *cbs;
     g_psx_overlay_memory_view=g_cbs.direct_memory &&
         g_cbs.direct_memory->bytes==sizeof(PSXDirectMemoryView)?g_cbs.direct_memory:NULL;
+    g_psx_overlay_observation_view = g_cbs.observation_time &&
+        g_cbs.observation_time->bytes == sizeof(PSXObservationView) &&
+        g_cbs.observation_time->model == 1u && g_cbs.observation_time->edge &&
+        g_cbs.observation_time->fallback
+            ? g_cbs.observation_time : NULL;
     g_psx_overlay_psx_read_word=g_cbs.bus_read_word;
     g_psx_overlay_psx_read_half=g_cbs.bus_read_half;
     g_psx_overlay_psx_read_byte=g_cbs.bus_read_byte;

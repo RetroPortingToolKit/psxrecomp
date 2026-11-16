@@ -269,6 +269,59 @@ int main(void) {
     TEST_OVERLAY_CPU_CHARGE(1);
     VERIFY(s_device_calls == calls_before,
            "overlay charge under the next horizon does not service devices");
+    /* The new DLL edge owns the raw charge and enters the same native
+     * observation handler. No previously-latched IRQ is needed to observe a
+     * completion; the mandatory eager charge callback above stays intact. */
+    s_cd_ready = 0; s_cd_cycles_remaining = 5; i_stat = 0;
+    psx_devices_refresh_observation_deadline();
+    const PSXObservationView *dll_clock = overlay_observation_view();
+    VERIFY(dll_clock->bytes == sizeof(*dll_clock) && dll_clock->model == 1 &&
+           dll_clock->clock == &psx_cycle_count &&
+           dll_clock->scale_frac == &g_psx_gcs_frac &&
+           dll_clock->deadline == &psx_next_service_cycle &&
+           dll_clock->block_edges == &psx_observation_block_edges &&
+           dll_clock->wait_site_count == 1 && dll_clock->wait_sites[0] == 0x8002E6C0u,
+           "actual DLL descriptor borrows real clock/fraction/deadline/M0 and audited PCs");
+    unsigned edges_before = s_edge_calls;
+    dll_clock->edge(&cpu, 0x80010000u, 0, 9);
+    VERIFY(s_cd_ready && (i_stat & i_mask) && s_edge_calls == edges_before + 1,
+           "actual DLL observation callback publishes and catches overdue CD without latched IRQ");
+    dll_clock->edge(&cpu, 0x8002E6C0u, 1, 1);
+    VERIFY(psx_observation_wait_active,
+           "actual DLL observation callback enters host audited wait induction");
+    dll_clock->edge(&cpu, 0x80010000u, 0, 0);
+    VERIFY(!psx_observation_wait_active,
+           "actual DLL observation callback resets induction on departure");
+    uint64_t blocks_before = psx_observation_block_edges;
+    uint64_t slow_before = psx_observation_slow_edges;
+    overlay_note_skipped_edge();
+    VERIFY(psx_observation_block_edges == blocks_before + 1 &&
+           psx_observation_slow_edges == slow_before + 1,
+           "actual conservative DLL early return fills the existing M0 lanes once");
+    g_psx_guest_time_frozen = 1; overlay_note_skipped_edge(); g_psx_guest_time_frozen = 0;
+    g_ls_replay_active = 1; overlay_note_skipped_edge(); g_ls_replay_active = 0;
+    VERIFY(psx_observation_block_edges == blocks_before + 1,
+           "private frozen/replay edges do not enter authoritative M0 counts");
+    s_cd_ready = 0; s_cd_cycles_remaining = 5; i_stat = 0;
+    psx_devices_refresh_observation_deadline();
+    uint32_t local_charge = 9;
+    g_psx_cyc_local_acc = &local_charge;
+    unsigned legacy_before = s_fixture_legacy_checks;
+    dll_clock->fallback(&cpu, 0x80010000u, 0);
+    VERIFY(local_charge == 0 && s_cd_ready && (i_stat & i_mask) &&
+           s_fixture_legacy_checks == legacy_before + 1,
+           "actual conservative callback publishes host-local work and overdue CD before legacy wrapper");
+    g_psx_cyc_local_acc = NULL;
+    uint64_t before_scaled = psx_cycle_count;
+    uint32_t saved_recip = g_psx_gcs_recip_q16, saved_frac = g_psx_gcs_frac;
+    g_psx_gcs_recip_q16 = 21845; g_psx_gcs_frac = 65535;
+    VERIFY(psx_gcs_scaled_charge(4, g_psx_gcs_recip_q16, g_psx_gcs_frac) == 2 &&
+           g_psx_gcs_frac == 65535,
+           "DLL clock preview reads fractional carry without publishing it");
+    TEST_OVERLAY_CPU_CHARGE(4);
+    VERIFY(psx_cycle_count == before_scaled + 2 && g_psx_gcs_frac == 21843,
+           "actual host charge exactly matches DLL preview and publishes fractional carry once");
+    g_psx_gcs_recip_q16 = saved_recip; g_psx_gcs_frac = saved_frac;
     s_cd_raise_irq = 0; i_mask = 0; i_stat = 0;
 #endif
     fprintf(stderr, "PASS observation charges/edges, MMIO arm, IRQ/frame, waits, sample, freeze/replay/restore\n");
