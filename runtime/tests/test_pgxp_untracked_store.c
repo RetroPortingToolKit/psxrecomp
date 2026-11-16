@@ -15,6 +15,7 @@
 #include "pgxp.h"
 #include "pgxp_hooks.h"
 #include "psx_memory.h"
+#include "psx_icache.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -58,7 +59,7 @@ static int precise(uint32_t addr) {
 
 int main(void) {
     static const uint32_t addrs[] = { 0x80100000u, 0x1F800100u };
-    static const uint32_t sr = 0;
+    static uint32_t sr = 0;
     psx_ram_apply_size_request();
     memory_set_sr_ptr(&sr);
     pgxp_set_enabled(1);
@@ -131,6 +132,21 @@ int main(void) {
         psx_write_byte(a,(uint8_t)PACKED);
         check(pgxp_load_source(a,PACKED)==0,"same-value byte ends source-only lineage");
     }
+    // Isolated CPU writes can physically touch the scratchpad too. Preserve
+    // that real bus routing while ending equal-bit precision at every width.
+    for(unsigned width=1;width<=4;width*=2) {
+        sr=0;psx_write_word(0x1f800100u,PACKED);produce(0x1f800100u);
+        psx_write_word(0xfffe0130u,PSX_BIU_DCACHE_ENABLE);sr=0x10000u;
+        if(width==4)psx_write_word(0x80000100u,PACKED);
+        else if(width==2)psx_write_half(0x80000102u,(uint16_t)(PACKED>>16));
+        else psx_write_byte(0x80000103u,(uint8_t)(PACKED>>24));
+        sr=0;check(!precise(0x1f800100u),"IsC scratch write owns same-value metadata");
+    }
+    psx_write_word(0x1f8003fcu,PACKED);produce(0x1f8003fcu);
+    psx_write_word(0x1f800000u,PACKED);produce(0x1f800000u);
+    sr=0x10000u;psx_write_word(0x800003ffu,0x5000a000u);sr=0;
+    check(!precise(0x1f8003fcu)&&!precise(0x1f800000u),"IsC wrap owns both scratch words");
+    psx_write_word(0xfffe0130u,0);
 #endif
     if (failures) {
         fprintf(stderr, "pgxp_untracked_store_test: %d FAILURES\n", failures);

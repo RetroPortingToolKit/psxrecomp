@@ -693,11 +693,39 @@ extern "C" void pgxp_invalidate_word(uint32_t addr) {
     if (pv) pv_kill(pv);
 }
 
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+/* A closed native operation borrows a compile-authored store sequence. All
+ * addresses/writers were admitted before execution; no service, private bus,
+ * instruction observer or reentrant callback may enter that interval. */
+static const PSXPGXPOperationAccess *s_operation_access;
+static uint32_t s_operation_count, s_operation_next_write;
+static void operation_note_owned_store(uint32_t address,uint32_t value,uint32_t width) {
+    if(!s_operation_access)return;
+    while(s_operation_next_write<s_operation_count &&
+          !(s_operation_access[s_operation_next_write].kind&0x100u))++s_operation_next_write;
+    if(s_operation_next_write>=s_operation_count)std::abort();
+    const auto& effect=s_operation_access[s_operation_next_write++];
+    // Equality is of the maintained shadow slot, not virtual alias spelling.
+    // An unmatched write means the closed-operation admission was violated.
+    PGXPValue *dst=pgxp_ptr(address);
+    if(!dst || dst!=pgxp_ptr(effect.address) || width!=(effect.kind&0xffu))std::abort();
+    if(width==1)return; // canonical SB has no PGXP store-ring entry
+    PGXPValue plain{};plain.gen=s_gen;plain.value=value;
+    const uint32_t reg=(effect.instruction>>16)&31u;
+    // Canonical SW copies the admitted plain source's entire receipt, whereas
+    // SW $zero and partial stores reset only their maintained destination.
+    // End stale projection payloads too; flags alone are not the public receipt.
+    if(width==4 && reg)dst->projection={};
+    note_store(width==4?0x2bu:0x29u,reg,reg?&plain:nullptr,effect.address,value,dst);
+}
+#endif
+
 extern "C" void pgxp_write_owned(uint32_t addr, uint32_t value, uint32_t width) {
 #if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
     if (!g_pgxp_active || (width != 1 && width != 2 && width != 4)) return;
     if (width == 4 && !(addr & 3u)) {
         if (PGXPValue *dst = pgxp_ptr_w(addr)) pv_reset(dst, value);
+        operation_note_owned_store(addr,value,width);
         return;
     }
     /* Host writers can be unaligned too. End every actually touched half,
@@ -713,6 +741,7 @@ extern "C" void pgxp_write_owned(uint32_t addr, uint32_t value, uint32_t width) 
         dst->z = 0;
         source_set(dst, 0);
     }
+    operation_note_owned_store(addr,value,width);
 #else
     (void)addr; (void)value; (void)width;
 #endif
@@ -816,41 +845,63 @@ static inline int32_t scalar_to_half(double v, int32_t half, int *ok, int *deriv
 
 /* SXY2 and SXYP are one register seen at two addresses: whichever the hook
  * just filled, the other describes the same word. */
-extern "C" int psx_pgxp_operation_begin(CPUState *cpu, uint32_t reads,
+extern "C" int psx_pgxp_operation_begin(CPUState *cpu, uint32_t reads, uint32_t outputs,
     const PSXPGXPOperationAccess *access, uint32_t count,
     uint32_t alu, uint32_t loads, uint32_t stores) {
 #if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
     flush_plain_writes();
     auto refuse = []() { if(g_pgxp_active) ++s_hook_stats.operation_refusals; return 0; };
-    if (!cpu || (count && !access) || count > 256) return refuse();
+    if (!cpu || (count && !access) || count > 256 || s_operation_access) return refuse();
     /* The integer summaries use the full CPU-mode constant/shift contract. */
     if (g_pgxp_active && !s_cpu_mode) return refuse();
+    const PGXPProjection empty_projection{};
+    for(unsigned r=1;r<32;++r)if(g_pgxp_active && (outputs&(UINT32_C(1)<<r)) &&
+        std::memcmp(&s_gpr[r].projection,&empty_projection,sizeof empty_projection))return refuse();
     for (unsigned r = 1; r < 32; ++r) if (reads & (UINT32_C(1) << r)) {
         const PGXPValue *v = &s_gpr[r];
         if (g_pgxp_active && (v->gen != s_gen ||
-            v->flags || source_get(v) || v->value != cpu->gpr[r] || s_gpr_s[r].gen == s_gen))
+            v->flags || source_get(v) || v->value != cpu->gpr[r] || s_gpr_s[r].gen == s_gen ||
+            v->x16 || v->y16 || v->z || std::memcmp(&v->projection,&empty_projection,sizeof empty_projection)))
             return refuse();
     }
+    uint32_t writes=0;
     for (uint32_t i = 0; i < count; ++i) {
         if (!access[i].data) return refuse();
-        if ((access[i].kind & 0x100u) || !g_pgxp_active) continue;
+        if(access[i].kind&0x100u) {
+            const uint32_t op=access[i].instruction>>26,width=access[i].kind&0xffu;
+            if(!((op==0x28&&width==1)||(op==0x29&&width==2)||(op==0x2b&&width==4)))return refuse();
+            ++writes;continue;
+        }
+        if(!g_pgxp_active)continue;
         const PGXPValue *v = pgxp_ptr(access[i].address);
+        // A cold partial write does not validate the untouched destination
+        // bits. A later LW would validate that word: retain that canonical
+        // side effect unless an intervening full-word write owns all bits.
+        if(v && v->gen!=s_gen && (access[i].kind&0xffu)==4u) {
+            bool cold_partial=false;
+            for(uint32_t j=0;j<i;++j)if((access[j].kind&0x100u) && pgxp_ptr(access[j].address)==v)
+                cold_partial=(access[j].kind&0xffu)!=4u;
+            if(cold_partial)return refuse();
+        }
         if (!v || v->gen != s_gen) continue;
         const uint8_t *p = access[i].data;
         const uint32_t word = (uint32_t)p[0] | (uint32_t)p[1] << 8 |
                              (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
         /* Include source-only receipts and stale raw writes. Refusing them
          * retains canonical LOAD validation; no validation is silently lost. */
-        if (v->flags || source_get(v) || v->value != word) return refuse();
+        if (v->flags || source_get(v) || v->value != word || v->x16 || v->y16 || v->z ||
+            std::memcmp(&v->projection,&empty_projection,sizeof empty_projection)) return refuse();
     }
+    if(writes!=stores)return refuse();
     if(g_pgxp_active) {
+        if(writes){s_operation_access=access;s_operation_count=count;s_operation_next_write=0;}
         ++s_hook_stats.operations;
         s_hook_stats.operation_alu += alu; s_hook_stats.operation_loads += loads;
         s_hook_stats.operation_stores += stores;
     }
     return 1;
 #else
-    (void)cpu; (void)reads; (void)access; (void)count; (void)alu; (void)loads; (void)stores;
+    (void)cpu; (void)reads; (void)outputs; (void)access; (void)count; (void)alu; (void)loads; (void)stores;
     return 0;
 #endif
 }
@@ -858,6 +909,12 @@ extern "C" int psx_pgxp_operation_begin(CPUState *cpu, uint32_t reads,
 extern "C" void psx_pgxp_operation_end(CPUState *cpu, uint32_t plain, uint32_t exact,
     uint32_t high, uint32_t low, uint32_t zero_halves) {
 #if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+    if(s_operation_access) {
+        while(s_operation_next_write<s_operation_count &&
+            !(s_operation_access[s_operation_next_write].kind&0x100u))++s_operation_next_write;
+        if(s_operation_next_write!=s_operation_count)std::abort();
+        s_operation_access=nullptr;s_operation_count=s_operation_next_write=0;
+    }
     if (!g_pgxp_active || !cpu) return;
     const uint32_t writes = plain | exact | high | low | zero_halves;
     for (unsigned r = 1; r < 32; ++r) if (writes & (UINT32_C(1) << r)) {

@@ -82,7 +82,7 @@ int main() {
     auto hazardous=integer;hazardous[2]={8,i(9,2,2,1)};
     CHECK(!pgxp_integer_operation(hazardous).valid); // architectural load-delay input
     auto transported=integer;transported.insert(transported.end()-2,{19,i(43,4,2)});
-    CHECK(!pgxp_integer_operation(transported).valid); // charge/observer boundary retained
+    CHECK(pgxp_integer_operation(transported).valid); // static native store barrier is a no-op
     auto scalar=integer;scalar[0]={0,r(8,9,0,0x18)};
     CHECK(!pgxp_integer_operation(scalar).valid); // caller-live HI/LO not guessed plain
     auto observer=integer;observer[0].opaque=true;

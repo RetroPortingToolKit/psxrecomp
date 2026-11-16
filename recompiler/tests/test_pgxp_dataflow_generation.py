@@ -16,7 +16,7 @@ def main():
         work = Path(folder)
         source = work/'body.c'
         for family,marker_name,option,callee in (("pgxp_dataflow","psx-pgxp-dataflow-v2","PSX_PGXP_DATAFLOW","psxrecomp_pgxp_dataflow"),
-                ("precision_operations","psx-pgxp-operations-v1","PSX_PGXP_OPERATIONS","psxrecomp_precision_operations")):
+                ("precision_operations","psx-pgxp-operations-v2","PSX_PGXP_OPERATIONS","psxrecomp_precision_operations")):
             for profile, native_spans, selected, marker, expected in (
                 ('ENHANCED', 'ON', 'ON', False, False),
                 ('ENHANCED', 'ON', 'ON', True, True),

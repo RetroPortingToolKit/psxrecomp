@@ -961,10 +961,11 @@ if(BUILD_TESTING)
             src/boot_state.c
             src/mod_snapshot.c
             src/pgxp.cpp
+            src/psx_icache.c
             src/psx_ram_geometry.c)
         target_include_directories(pgxp_write_owned_store_test PRIVATE include src)
         target_compile_definitions(pgxp_write_owned_store_test PRIVATE
-            PSX_STUBS_REAL_PGXP=1 PSX_PGXP_OPERATIONS=1)
+            PSX_STUBS_REAL_PGXP=1 PSX_STUBS_REAL_ICACHE=1 PSX_PGXP_OPERATIONS=1)
         target_compile_options(pgxp_write_owned_store_test PRIVATE
             -O2 -flto -ffunction-sections -fdata-sections -Wno-lto-type-mismatch)
         target_link_options(pgxp_write_owned_store_test PRIVATE -flto -Wno-lto-type-mismatch

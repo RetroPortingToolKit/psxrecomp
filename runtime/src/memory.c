@@ -1957,8 +1957,10 @@ static void isc_store(uint32_t addr, uint32_t val, uint32_t width) {
         for (uint32_t i = 0; i < width; i++)
             old |= (uint32_t)scratchpad[(off + i) & 0x3FFu] << (8u * i);
         debug_server_trace_write_check(0x1F800000u + off, old, val, (uint8_t)width);
-        for (uint32_t i = 0; i < width; i++)
+        for (uint32_t i = 0; i < width; i++) {
+            pgxp_untracked_store(0x1f800000u + ((off+i)&0x3ffu),val>>(8u*i),1u);
             scratchpad[(off + i) & 0x3FFu] = (uint8_t)(val >> (8u * i));
+        }
     }
 }
 

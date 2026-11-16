@@ -92,7 +92,7 @@ inline std::map<uint32_t,PgxpOperationSummary> pgxp_operation_summaries(const st
     return result;
 }
 
-struct PgxpOperationAccess {std::string address;uint32_t kind;};
+struct PgxpOperationAccess {std::string address;uint32_t kind,instruction=0;};
 struct PgxpOperationPlan {
     bool valid=false;
     uint32_t reads=0,plain=0,exact=0,high=0,low=0,zero=0,alu=0,loads=0,stores=0;
@@ -127,7 +127,7 @@ inline PgxpOperationPlan pgxp_integer_operation(const std::vector<PgxpFlowInstru
                     (physical>=0x1f800000u && physical<=0x1f800400u-width)))return false;
             }
             const auto address=expr(ea);if(address.empty())return false;
-            p.memory.push_back({address,width|(write?0x100u:0u)});return true;
+            p.memory.push_back({address,width|(write?0x100u:0u),write?w:0u});return true;
         };
         if(w==0)continue;
         if(op==0 && fn==8 && rs==31)continue; // original return boundary
@@ -189,6 +189,6 @@ inline PgxpOperationPlan pgxp_integer_operation(const std::vector<PgxpFlowInstru
         const uint32_t bit=UINT32_C(1)<<r;
         switch(state[r].kind){case Plain:p.plain|=bit;break;case Exact:p.exact|=bit;break;case High:p.high|=bit;break;case Low:p.low|=bit;break;case Zero:p.zero|=bit;break;default:return {};}
     }
-    p.valid=p.memory.size()<=256 && !p.stores;return p;
+    p.valid=p.memory.size()<=256;return p;
 }
 } // namespace PSXRecomp

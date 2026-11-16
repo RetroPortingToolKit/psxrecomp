@@ -64,6 +64,19 @@ def program():
     i(9, 2, 2, 7); i(10, 2, 3, 0x7fff); words += [0x03E00008, 0]
     words += [0] * (256-len(words))
     i(9, 20, 2, 1); words += [0x03E00008, 0]
+    # One mixed operation, with all three store widths and real write/read
+    # aliasing. The native span already charged before admission; static
+    # psx_store_cycle_barrier stays present and does not publish a new clock.
+    words += [0] * (320-len(words))
+    i(15, 0, 12, 0x8000); i(35, 12, 2, 0x2000); words.append(0)
+    i(9, 2, 2, 7); i(15, 0, 13, 0x8002); i(43, 13, 2)
+    i(9, 2, 2, 1); i(41, 13, 2, 4); i(40, 13, 2, 6)
+    i(35, 13, 3); words.append(0); words += [0x03E00008, 0]
+    # A cold partial destination followed by LW needs canonical validation
+    # of untouched bits, even though its GPR source is entirely integer.
+    words += [0] * (384-len(words))
+    i(15, 0, 13, 0x8002); i(41, 13, 20, 8); i(35, 13, 2, 8)
+    words.append(0); words += [0x03E00008, 0]
     return base, words
 
 
@@ -86,7 +99,7 @@ def main():
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
             struct.pack_into('<I', header, offset, value)
         exe = work / 'flow.psx'; exe.write_bytes(header + struct.pack('<%dI' % len(words), *words))
-        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n', encoding='utf-8')
+        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n', encoding='utf-8')
         out = work / 'generated'
         run([a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', ROOT], verbose=False)
         sources = sorted(out.glob('*_full*.c'))
@@ -113,15 +126,23 @@ def main():
             function = re.search(r'\bvoid func_80010300\(CPUState\* cpu\)\s*\{', text)
             if not function:
                 raise RuntimeError('actual emitted nongeometry function definition missing')
-            start = text.index('psx-pgxp-integer-operation-v1', function.end())
-            end = text.index('} else\n#endif', start)
-            if re.search(r'\bPGXP_(?:ALU|LOAD|STORE|COP2|MULDIV|FLOW_|PLAIN_)', text[start:end]):
-                raise RuntimeError('actual nongeometry operation retained an instruction hook')
-            if 'psx_pgxp_operation_begin' not in text[start:end] or 'psx_pgxp_operation_end' not in text[start:end]:
-                raise RuntimeError('actual nongeometry operation lacks its boundary proof/receipt')
-            print('Actual nongeometry load/ALU emitted operation: zero instruction PGXP hooks; canonical fallback retained', flush=True)
+            for address in ('80010300','80010500'):
+                function = re.search(r'\bvoid func_'+address+r'\(CPUState\* cpu\)\s*\{', text)
+                if not function:
+                    raise RuntimeError('actual emitted nongeometry function definition missing: '+address)
+                start = text.index('psx-pgxp-integer-operation-v2', function.end())
+                end = text.index('} else\n#endif', start)
+                if re.search(r'\bPGXP_(?:ALU|LOAD|STORE|COP2|MULDIV|FLOW_|PLAIN_)', text[start:end]):
+                    raise RuntimeError('actual nongeometry operation retained an instruction hook')
+                if 'psx_pgxp_operation_begin' not in text[start:end] or 'psx_pgxp_operation_end' not in text[start:end]:
+                    raise RuntimeError('actual nongeometry operation lacks its boundary proof/receipt')
+                if address=='80010500' and ('PSX_STORE_WORD' not in text[start:end] or
+                    'PSX_STORE_HALF' not in text[start:end] or 'PSX_STORE_BYTE' not in text[start:end] or
+                    text[start:end].count('psx_store_cycle_barrier()')!=3):
+                    raise RuntimeError('actual mixed operation lost a maintained store/barrier')
+            print('Actual nongeometry load/ALU/store operations: zero instruction PGXP hooks; all widths/barriers and canonical fallback retained', flush=True)
         common = ['-O2', '-ffunction-sections', '-fdata-sections', '-DPSX_PGXP=1',
-                  '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_NO_DEBUG_TOOLS=1', '-Werror',
+                  '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_DIRECT_GUEST_MEMORY=1', '-DPSX_NO_DEBUG_TOOLS=1', '-Werror',
                   '-I', str(ROOT/'runtime/include'), '-I', str(out)]
         objects = []
         for selected, name in ((0, 'reference'), (1, 'candidate')):

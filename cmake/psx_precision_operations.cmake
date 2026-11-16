@@ -16,7 +16,7 @@ function(psxrecomp_precision_operations target)
                 message(FATAL_ERROR "Precision operations require current generated bodies: ${_source}")
             endif()
             file(READ "${_source}" _text LIMIT 2048)
-            if(NOT _text MATCHES "psx-pgxp-operations-v1")
+            if(NOT _text MATCHES "psx-pgxp-operations-v2")
                 message(FATAL_ERROR "Regenerate game sources before selecting PSX_PGXP_OPERATIONS: ${_source}")
             endif()
         endforeach()
@@ -28,7 +28,7 @@ function(psxrecomp_precision_operations target)
     file(CONFIGURE OUTPUT "${_dir}/selected.c" CONTENT
         "const unsigned psx_build_precision_operations = ${_selected}u;\n" @ONLY)
     psxrecomp_add_implementation(${target}
-        NAME precision-operations CONTRACT write-owned-integer-operations-${_selected}-v1
+        NAME precision-operations CONTRACT write-owned-integer-operations-${_selected}-v2
         HLE_SOURCES "${_dir}/selected.c" LLE_SOURCES "${_dir}/selected.c"
         CONTRACT_FILES "${PSXRECOMP_ROOT}/runtime/include/pgxp_operation.h"
             "${PSXRECOMP_ROOT}/runtime/include/pgxp.h"
