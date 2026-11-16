@@ -1,5 +1,6 @@
 """An interpreted BREAK reaches the guest's own exception vector; a
-BREAK in statically compiled code keeps the fatal exit."""
+BREAK in statically compiled code keeps the fatal exit. The run report counts
+the vector entries."""
 import argparse
 from pathlib import Path
 import re
@@ -27,15 +28,34 @@ def static_side(root):
         'the static translator no longer emits the plain psx_break call'
 
 
+def report_side(root):
+    """The run report writes the counters that traps.c keeps (the report writer
+    links into the game runtime only, so its wiring is checked in the source)."""
+    report = (root / 'runtime/src/crash_trace.c').read_text(encoding='utf-8')
+    call = report.index('psx_break_guest_vector_stats(bg);')
+    fmt = re.search(
+        r'"  \\"break_guest_vector\\": \{\\n"\s*'
+        r'"    \\"count\\": %u,\\n"\s*'
+        r'"    \\"first_pc\\": \\"0x%08X\\",\\n"\s*'
+        r'"    \\"first_code\\": \\"0x%05X\\"\\n"\s*'
+        r'"  \},\\n",\s*bg\[0\], bg\[1\], bg\[2\]\);',
+        report[call:])
+    assert fmt, 'the report must write "break_guest_vector": {"count", "first_pc", "first_code"} from the counters'
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--cc', default='gcc')
     args = parser.parse_args()
     here = Path(__file__).resolve().parent
     static_side(here.parent.parent)
+    report_side(here.parent.parent)
     with tempfile.TemporaryDirectory() as root:
         for opt in ('-O0', '-O2'):
             build_and_run(args.cc, here, here.parent, opt, Path(root),
                           ['dirty_ram_interp.c'], 'test_break_guest_vector_interp.c',
                           defines=('PSX_HAS_GAME_DISPATCH', 'PSX_NO_DEBUG_TOOLS'))
-    print('PASS: an interpreted BREAK passes through the guest vector; static code keeps the exit (O0/O2)')
+            build_and_run(args.cc, here, here.parent, opt, Path(root),
+                          ['traps.c'], 'test_break_guest_vector_report.c')
+    print('PASS: an interpreted BREAK passes through the guest vector and is counted; '
+          'static code keeps the exit (O0/O2)')

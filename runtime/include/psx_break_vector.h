@@ -22,6 +22,8 @@
  * keeps the fatal report: its handler would return to EPC+4 in the middle of
  * a compiled function, which is neither an entry nor a call return.
  *
+ * The run report counts the entries (`break_guest_vector`, kept in traps.c).
+ *
  * Returns 1 with the exception entered: EPC is the BREAK's own PC, Cause
  * holds code 9 with BD clear, the SR mode bits are pushed, and cpu->pc is the
  * vector for the flat dispatcher. Returns 0, with nothing changed, inside the
