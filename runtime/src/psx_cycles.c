@@ -533,7 +533,8 @@ void psx_devices_mmio_sync_at(uint32_t addr, int write) {
     if (g_ls_replay_active || psx_in_device_service) return;
     if (g_psx_guest_time_frozen) { psx_cycle_freeze_tick(); return; }
     psx_devices_service_mask(PSX_HR_REQUEST_MMIO, observation_mmio_mask(addr, write));
-    psx_next_service_cycle = 0; /* handler may re-arm a different event */
+    if (write || !observation_read_keeps_deadline(addr))
+        psx_next_service_cycle = 0; /* handler may re-arm a different event */
 }
 #endif
 
