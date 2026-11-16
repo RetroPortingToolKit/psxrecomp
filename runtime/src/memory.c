@@ -1,11 +1,11 @@
-/* memory.c â€” Phase 2 PS1 memory system.
+/* memory.c — Phase 2 PS1 memory system.
  *
  * Physical address routing:
- *   0x00000000..0x001FFFFF â€” 2 MB RAM
- *   0x1F800000..0x1F8003FF â€” 1 KB scratchpad
- *   0x1F801000..0x1F803FFF â€” MMIO (fatal abort)
- *   0x1FC00000..0x1FC7FFFF â€” 512 KB BIOS ROM (read-only)
- *   Everything else         â€” fatal abort (unmapped)
+ *   0x00000000..0x001FFFFF — 2 MB RAM
+ *   0x1F800000..0x1F8003FF — 1 KB scratchpad
+ *   0x1F801000..0x1F803FFF — MMIO (fatal abort)
+ *   0x1FC00000..0x1FC7FFFF — 512 KB BIOS ROM (read-only)
+ *   Everything else         — fatal abort (unmapped)
  */
 
 #include "cpu_state.h"
@@ -196,7 +196,7 @@ void psx_memory_get_width_stats(PSXMemoryWidthStats *out) {
 void psx_direct_memory_get_stats(PSXDirectMemoryStats *out) {
     if (out) *out = g_psx_direct_memory_stats;
 }
-/* PSX_LOAD_DELAY gate (default on). âˆ’1 = unread; 0/1 after first resolve. */
+/* PSX_LOAD_DELAY gate (default on). −1 = unread; 0/1 after first resolve. */
 int g_psx_load_delay = -1;
 
 /* Physical address translation for guest accesses. Retail 2 MB DRAM is
@@ -276,7 +276,7 @@ static uint32_t dirty_ram_bitmap[DIRTY_RAM_BITMAP_WORDS];
  * writes + DMA/EXE loads that mark executable ranges). Consumers that cache
  * per-PC classifications of RAM instructions (the interp's widescreen
  * cull/backdrop site caches) compare against this and re-derive after any
- * code change â€” a cached kind must never survive an overlay reload. */
+ * code change — a cached kind must never survive an overlay reload. */
 uint32_t g_dirty_ram_code_gen = 1;
 
 static inline void dirty_ram_mark_page(uint32_t phys) {
@@ -296,7 +296,7 @@ static inline void dirty_ram_mark_page(uint32_t phys) {
  * [0x1FC10000,0x1FC18000); the statically-recompiled kernel functions in the
  * generated dispatch table were compiled FROM those ROM bytes. Those pages
  * are permanently dirty (TCB saves, event tables, install stubs share the
- * window), which diverted EVERY kernel dispatch to the interpreter â€” the
+ * window), which diverted EVERY kernel dispatch to the interpreter — the
  * dominant cost of event-heavy scenes (a Tomba village frame samples ~97%
  * in kernel PCs) and CD-load drains.
  *
@@ -307,12 +307,12 @@ static inline void dirty_ram_mark_page(uint32_t phys) {
  * drops that entry back to unverified (next dispatch re-compares). Entries
  * whose bodies were runtime-patched (the BIOS installs pad/SIO handlers into
  * ROM-zero gaps of the pad driver) simply never verify and stay on the
- * faithful interpreter path â€” their behavior is unchanged by design. This is
+ * faithful interpreter path — their behavior is unchanged by design. This is
  * the runtime half of the relocation-manifest contract
  * (docs/RELOCATION_MANIFEST_FORMAT.md: "runtime verifies against live RAM
  * before dispatching the AOT function"). */
 /* The window/offset constants come from the LINKED recompiled BIOS itself
- * (psx_bios_image, emitted into <stem>_dispatch.c from the BIOS profile) â€”
+ * (psx_bios_image, emitted into <stem>_dispatch.c from the BIOS profile) —
  * they cannot disagree with the code they describe. Snapshotted into
  * file-statics on the lazy init latch so the two hot paths (dispatch query,
  * guest-store invalidation) keep a two-load range test instead of reading
@@ -355,7 +355,7 @@ static int kbless_on(void) {
          * whole-body memcmp. Same purpose as PSX_KERNEL_BLESS=0 one level up:
          * an A/B instrument. With the ranges dropped a patched body mismatches
          * forever and its emitted hook is unreachable, which is exactly the
-         * behaviour before the ranges existed â€” so one binary measures both
+         * behaviour before the ranges existed — so one binary measures both
          * sides. */
         {
             const char* pe = getenv("PSX_KERNEL_PATCH_RANGES");
@@ -379,7 +379,7 @@ static int kbless_on(void) {
 /* Declared patch ranges (psx_bios_kernel_patch_ranges, emitted from the
  * profile's [[recompiler.install_slots]]): kernel-RAM words the guest is
  * EXPECTED to overwrite at boot. They sit inside compiled bodies, so the
- * whole-body memcmp below used to fail forever on the first install â€” the
+ * whole-body memcmp below used to fail forever on the first install — the
  * reason Breath of Fire III's BIOS exception handler interpreted 1.22 billion
  * instructions with its card stub sitting in the profile's declared slot.
  * The body is verified in segments that skip them instead: CLEAN now means
@@ -438,7 +438,7 @@ int psx_kernel_bless_dispatchable(uint32_t phys) {
 
 /* A write landed in the kernel window: any entry whose body contains the
  * written byte must re-verify before its next native dispatch. Kernel DATA
- * writes (TCB saves, event tables â€” the frequent case) lie outside every
+ * writes (TCB saves, event tables — the frequent case) lie outside every
  * body and fall through the loop without invalidating anything; genuine
  * code-window writes (install-time, patches) are rare. */
 static void kbless_note_write(uint32_t phys) {
@@ -460,7 +460,7 @@ static void kbless_note_write(uint32_t phys) {
 }
 
 /* Range write (DMA / EXE load / savestate restore) overlapping the window:
- * bulk, rare events â€” reset every entry rather than per-byte scanning. */
+ * bulk, rare events — reset every entry rather than per-byte scanning. */
 void psx_kernel_bless_note_range(uint32_t phys, uint32_t len) {
     if (kbless_enabled <= 0) return;   /* also pre-init: nothing verified yet */
     if (len == 0) return;
@@ -530,15 +530,15 @@ int dirty_ram_is_dirty(uint32_t phys);
 
 /* Establish the clean compiled-image baseline for the game-EXE text region.
  * Called ONCE when the game entry is first reached (fntrace game-start): by then
- * the BIOS has fully loaded the boot EXE into [0x10000, FLOOR) â€” which IS the
- * compiled image â€” but no gameplay overlay has run yet. The EXE load (CD DMA via
+ * the BIOS has fully loaded the boot EXE into [0x10000, FLOOR) — which IS the
+ * compiled image — but no gameplay overlay has run yet. The EXE load (CD DMA via
  * dirty_ram_mark_executable_range) marks the whole text dirty as a FALSE POSITIVE
  * (RAM == compiled image); clearing it here means dirty_ram_is_dirty() afterwards
  * is true ONLY for pages a later overlay actually overwrote. The dispatch can then
  * trust a clean text page to run its compiled function and divert only truly-
  * overlaid pages to the interpreter (Tomba 2 loads a loader overlay over
  * 0x8001Dxxx). The kernel window [0,0x10000) (BIOS install stubs) and the overlay
- * region OUTSIDE [BASE, FLOOR) are left untouched â€” including the RAM BELOW the
+ * region OUTSIDE [BASE, FLOOR) are left untouched — including the RAM BELOW the
  * text image, which is overlay space for a high-loading boot EXE (Klonoa loads
  * at 0x180000). Baselining from the kernel-window end instead of the real text
  * base wiped that whole region's dirty bits. See dirty_ram_interp.h. */
@@ -572,7 +572,7 @@ void dirty_ram_clear_image_baseline(void) {
 /* Mutable: the runtime owns this heap buffer (main.cpp mallocs the EXE image and
  * never frees it). Intentional data patches by the translation layer are blessed
  * into it via dirty_ram_text_bless so they are not mistaken for self-modifying
- * code â€” see dirty_ram_text_native_ok / dirty_ram_text_bless. */
+ * code — see dirty_ram_text_native_ok / dirty_ram_text_bless. */
 static uint64_t text_validation_revision = 1;
 static void text_validation_note_bulk_range(uint32_t first, uint32_t last);
 static uint64_t text_compare_calls;
@@ -644,14 +644,14 @@ int dirty_ram_text_native_ok(uint32_t phys) {
         return 0;
     }
     /* Fast path: a page never touched by a guarded write AND not runtime-dirty
-     * still holds the pristine compiled image â€” native is safe with no compare. */
+     * still holds the pristine compiled image — native is safe with no compare. */
     if (!(text_modified_bitmap[page >> 5] & bit) && !dirty_ram_is_dirty(phys))
         return 1;
 
     /* Flagged (a guarded write that differed, an overlay-dirty page, or an
      * intentional runtime data patch): the compiled native code is valid IFF the
      * bytes at the entry still match the reference image. Decide by the ACTUAL
-     * bytes, not the page-dirty heuristic â€” so a data-only change in a page that
+     * bytes, not the page-dirty heuristic — so a data-only change in a page that
      * also holds code (e.g. a translation string table blessed into the ref via
      * dirty_ram_text_bless) does not needlessly block a still-valid function and
      * route it to psx_unknown_dispatch. A genuine code overwrite still diverges. */
@@ -676,11 +676,11 @@ int dirty_ram_text_native_ok(uint32_t phys) {
  * exec_pc is the dispatch/resume address, kept for observability and future
  * use; ranges are validated IN FULL regardless of it. The former
  * [exec_pc, end) clip assumed a continuation "never fetches the patched
- * bytes" behind its resume PC â€” false for any entry with a backward edge:
+ * bytes" behind its resume PC — false for any entry with a backward edge:
  * a post-call continuation re-enters mid-function and loops back into the
  * clipped-away region, executing stale static code (CMR2 overlay
  * corruption, second locus 0x80016B34). A genuinely patched prologue now
- * blocks the whole entry to the interpreter â€” correct, merely slower. */
+ * blocks the whole entry to the interpreter — correct, merely slower. */
 int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
                                          uint32_t count,
                                          uint32_t exec_pc) {
@@ -699,7 +699,7 @@ int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
         any = 1;
         /* Page-clean fast path: every page this range touches is neither
          * guard-modified nor runtime-dirty, so its bytes still equal the
-         * reference image â€” skip the memcmp. This keeps the emitted
+         * reference image — skip the memcmp. This keeps the emitted
          * stale-static guards on inter-piece host transfers near-free on
          * the (overwhelmingly common) pristine pages. */
         {
@@ -761,7 +761,7 @@ void dirty_ram_text_exact_mismatch_stats(uint64_t *count,
 /* Bless an INTENTIONAL data patch into the reference image so the text-divergence
  * guard does not mistake it for self-modifying code. The runtime's own
  * translation layer (text_xlate) patches string/glyph tables that share 4 KB
- * pages â€” and the guard's 256-byte compare window â€” with real compiled functions.
+ * pages — and the guard's 256-byte compare window — with real compiled functions.
  * Without this, patching a data table diverges the page and blocks native
  * dispatch of every function in it (a real function fatally routes to
  * psx_unknown_dispatch). By updating text_ref_image to match the patched bytes,
@@ -819,17 +819,17 @@ void dirty_ram_mark_executable_range(uint32_t phys, uint32_t len) {
 /* Force-interp mode (tooling): PSX_FORCE_INTERP=1 makes ALL RAM above the kernel
  * window report dirty, so every dispatch into game/overlay text routes to the
  * dirty-RAM interpreter (the SAME path overlays take) instead of the compiled
- * image. Interp-path Î”-ruler enabler: lets the cyctest isolation loops be measured
+ * image. Interp-path Δ-ruler enabler: lets the cyctest isolation loops be measured
  * native-INTERP vs Beetle. Consulted by every routing site that already calls
  * dirty_ram_is_dirty (top dispatch, dirty_ram_dispatch_inner gates, the
- * psx_dispatch_game_compiled gates) â€” no emitter/dispatch change needed. */
+ * psx_dispatch_game_compiled gates) — no emitter/dispatch change needed. */
 static int dirty_ram_force_interp(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("PSX_FORCE_INTERP"); s = (e && e[0] && e[0] != '0'); }
     return s;
 }
 
-/* DIAGNOSTIC ONLY (class-B reproduction, NOT a fix â€” Rule -1): PSX_SHELLWIN_INTERP=1
+/* DIAGNOSTIC ONLY (class-B reproduction, NOT a fix — Rule -1): PSX_SHELLWIN_INTERP=1
  * reports the BIOS shell-copy relocated RAM window [0x30000, 0x5AFFF] as dirty, so
  * the compiled dispatch (full_function_emitter.cpp:1380) routes those addresses
  * through the recovering dirty-RAM interp instead of normalize()->shell ROM. This
@@ -888,17 +888,17 @@ void dirty_ram_set_bitmap_words(const uint32_t* words, uint32_t count) {
     if (count > DIRTY_RAM_LIVE_BITMAP_WORDS) count = DIRTY_RAM_LIVE_BITMAP_WORDS;
     for (uint32_t i = 0; i < count; i++)
         dirty_ram_bitmap[i] = words[i];
-    /* Bitmap replace bypasses cleanâ†’dirty transitions; bump so interpreter
+    /* Bitmap replace bypasses clean→dirty transitions; bump so interpreter
      * site caches keyed on g_dirty_ram_code_gen cannot survive a restore. */
     g_dirty_ram_code_gen++;
 }
 
 /* ---- Inc3: watched overlay pages + per-page generation counters ---------
  * Pages covered by a registered overlay function's code range. The store path
- * (the single, audited RAM-write chokepoint â€” all CPU + DMA stores funnel
+ * (the single, audited RAM-write chokepoint — all CPU + DMA stores funnel
  * here) tests the watch bitmap and, on a hit, bumps that page's generation
  * counter. It does NOT eagerly invalidate (Inc1-D did): validity is now decided
- * lazily, per compiled entry, at dispatch time (overlay_loader.c Â§8). The
+ * lazily, per compiled entry, at dispatch time (overlay_loader.c §8). The
  * generation counter lets the loader cheaply detect "did any page covering this
  * entry's code change since I last validated it?" without hashing on the store
  * path. Monotonic: gen only increases, so a sum over an entry's pages is a
@@ -987,16 +987,16 @@ uint64_t overlay_watch_pagegen_sum64(uint32_t phys, uint32_t len) {
 /* Savestate restores RAM via memcpy and never hits the store chokepoint that
  * bumps overlay_page_gen. Without this, ENTRY_VALID overlays keep the gen-gated
  * fast path and run native code against restored bytes they were not validated
- * for â€” hang / freeze after the restored frame presents. */
+ * for — hang / freeze after the restored frame presents. */
 void dirty_ram_text_guard_resync_after_restore(void) {
     ++text_validation_revision;
     /* text_diverged_bitmap is sticky: once a page's entry bytes fail the
      * reference compare, native stays blocked forever. That is correct for
      * forward sim, but after a savestate/RB rewind the restored RAM may
-     * match the reference again â€” leaving the pre-load sticky bit forces
+     * match the reference again — leaving the pre-load sticky bit forces
      * dirty-interp where the peer (or the prior resim) still runs native,
      * forking MotK selfcheck warm #2vs#3 at matched clocks (win#118 class:
-     * coldâ‰¡0, warm FAIL; post-span irq_resume also drifts). Drop both
+     * cold≡0, warm FAIL; post-span irq_resume also drifts). Drop both
      * host-only text-guard bitmaps; live writes re-arm modified, and the
      * next native_ok compare re-decides diverge against restored bytes.
      *
@@ -1068,7 +1068,7 @@ static inline void overlay_watch_note_write(uint32_t phys, uint32_t size) {
         extern void overlay_loader_note_code_write(void);
         overlay_loader_note_code_write();
         /* Self-modification of a currently-executing native entry cannot be
-         * recovered lazily (the next dispatch is too late) â€” the loader
+         * recovered lazily (the next dispatch is too late) — the loader
          * blacklists that entry. Everything else is handled at dispatch. */
         extern void overlay_loader_active_write_check(uint32_t phys, uint32_t size);
         overlay_loader_active_write_check(phys, size);
@@ -1077,7 +1077,7 @@ static inline void overlay_watch_note_write(uint32_t phys, uint32_t size) {
 
 /* Memory control registers: 0x1F801000..0x1F80103F (16 words) + 0x1F801060 (RAM size).
  * Includes expansion base/size, COM_DELAY, SPU_DELAY, CDROM_DELAY etc. */
-static uint32_t mem_ctrl[16];   /* indices 0..15 â†’ addresses 0x1F801000..0x1F80103C */
+static uint32_t mem_ctrl[16];   /* indices 0..15 → addresses 0x1F801000..0x1F80103C */
 static uint32_t ram_size_reg;   /* 0x1F801060 */
 
 /* KSEG2 no-op access telemetry (see the guards in the accessors). */
@@ -1092,14 +1092,14 @@ static uint32_t cache_ctrl;
  * set, a CPU store goes to the caches and never reaches the bus (isc_store). */
 const uint32_t *g_psx_memory_sr_ptr;
 
-/* Interrupt controller â€” non-static so hardware subsystems can set I_STAT bits. */
-uint32_t i_stat;  /* 0x1F801070 â€” interrupt status (AND-acknowledge semantics) */
-uint32_t i_mask;  /* 0x1F801074 â€” interrupt enable mask */
+/* Interrupt controller — non-static so hardware subsystems can set I_STAT bits. */
+uint32_t i_stat;  /* 0x1F801070 — interrupt status (AND-acknowledge semantics) */
+uint32_t i_mask;  /* 0x1F801074 — interrupt enable mask */
 
 /* Shadow-diff device-access detector. run_shadow_diff arms g_shadow_mmio_watch
  * around its single authoritative (interpreter) probe pass; ANY MMIO touch bumps
  * g_shadow_mmio_hits, so the harness can detect a device-touching function and
- * SKIP the validation (native) pass â€” device I/O must never be double-executed
+ * SKIP the validation (native) pass — device I/O must never be double-executed
  * (one spurious card/SIO/DMA write corrupts hardware state). Zero cost when not
  * watching (adds 0). */
 int      g_shadow_mmio_watch = 0;
@@ -1114,7 +1114,7 @@ uint64_t g_mmio_access_count = 0;
     g_shadow_mmio_hits += (uint64_t)g_shadow_mmio_watch; } while (0)
 
 /* Always-on guest store counter, bumped at the top of every raw store
- * (RAM, scratchpad, MMIO, even discarded KSEG2/IsC stores â€” over-counting
+ * (RAM, scratchpad, MMIO, even discarded KSEG2/IsC stores — over-counting
  * is conservative). Second gate of the idle-loop cycle skip: a window with
  * ANY store is not a pure poll loop. CPU stores and in-flight DMA writes
  * both funnel through the psx_write_*_raw chokepoints. */
@@ -1133,7 +1133,7 @@ typedef struct {
     uint32_t old_mask;
     uint32_t new_mask;
     uint32_t caller;     /* g_debug_current_func_addr */
-    uint32_t store_pc;   /* g_debug_last_store_pc â€” exact PC of the SW/SH */
+    uint32_t store_pc;   /* g_debug_last_store_pc — exact PC of the SW/SH */
     uint8_t  width;      /* 8, 16, or 32 */
     uint8_t  bit7_set;   /* 1 if this write SET bit 7 */
     uint8_t  bit7_clear; /* 1 if this write CLEARED bit 7 */
@@ -1169,7 +1169,7 @@ static void imask_trace_record(uint32_t old_val, uint32_t new_val, uint8_t width
  * the freeze heartbeat against g_vblank_raise/deliver counts. */
 uint64_t g_vblank_ack_count = 0;
 
-/* interrupts.c â€” CAUSE.IP2 mirrors the INTC line and must be recomputed at
+/* interrupts.c — CAUSE.IP2 mirrors the INTC line and must be recomputed at
  * every point (I_STAT & I_MASK) can change. Both writers below are such a
  * point: an ack can drop the line, a mask write can drop or raise it. */
 extern void psx_irq_refresh_cause_ip2(void);
@@ -1246,7 +1246,7 @@ static inline uint16_t read_ram_half(uint32_t phys) {
 }
 
 /* SCPH-1001 store-PC keys for code that runs relocated (docs/SEGMENT_AWARE_CODE.md
- * Â§9). `pc` is the PC the CPU executes the store at, which the compiled BIOS
+ * §9). `pc` is the PC the CPU executes the store at, which the compiled BIOS
  * (BiosAddressModel::runtime_pc) and the interpreter both stamp; `rom` is the
  * store's address in the image. A RAM PC alone is ambiguous: another BIOS, or
  * game code once the region is reused, can run a store there. So the key
@@ -1285,7 +1285,7 @@ void memory_init(const char* bios_path) {
     psx_ram_apply_size_request();
     memset(ram, 0, sizeof(ram));
     memset(scratchpad, 0, sizeof(scratchpad));
-    /* Rematch re-enters without process exit â€” wipe sticky I/O regs that
+    /* Rematch re-enters without process exit — wipe sticky I/O regs that
      * live outside device *_init (I_STAT/I_MASK cleared in interrupts_init). */
     memset(mem_ctrl, 0, sizeof(mem_ctrl));
     ram_size_reg = 0;
@@ -1315,11 +1315,11 @@ void memory_init(const char* bios_path) {
 
 /* Unmapped-register access INSIDE the I/O window (0x1F801000..0x1F803FFF):
  * real hardware open-buses these (reads return garbage, writes vanish; no
- * fault) and games genuinely hit them â€” Tomba2's late attract sweeps a wild
+ * fault) and games genuinely hit them — Tomba2's late attract sweeps a wild
  * byte loop across the whole window (bzero/read over a 0xDF80xxxx pointer).
  * Beetle returns 0 / ignores. Match it: count + (already ring-traced by the
  * callers' mmio trace hooks) + open-bus. Genuinely unknown-DEVICE reads are
- * still observable via the always-on MMIO rings and these counters â€” probes
+ * still observable via the always-on MMIO rings and these counters — probes
  * query the rings, per the ring-buffer doctrine. mmio_fatal is retired. */
 uint64_t g_io_openbus_reads;
 uint64_t g_io_openbus_writes;
@@ -1477,14 +1477,14 @@ static void mmio_write32(uint32_t addr, uint32_t val) {
     }
     /* Expansion 2 / POST: 0x1F802000..0x1F802FFF */
     if (addr >= 0x1F802000u && addr <= 0x1F802FFFu) {
-        return; /* POST port â€” ignore */
+        return; /* POST port — ignore */
     }
     { /* open-bus (Beetle parity) */ g_io_openbus_writes++; return;; }
 }
 
 static uint16_t mmio_read16_impl(uint32_t addr) {
     SHADOW_NOTE_MMIO();
-    /* Memory control: 0x1F801000..0x1F80103C â€” halfword lane of the 32-bit
+    /* Memory control: 0x1F801000..0x1F80103C — halfword lane of the 32-bit
      * register (games touch EXP1/EXP2 config with sub-word accesses; Tomba2's
      * late attract byte-writes 0x1F801000). */
     if (addr >= 0x1F801000u && addr <= 0x1F80103Fu) {
@@ -1542,7 +1542,7 @@ static void mmio_write16(uint32_t addr, uint16_t val) {
     psx_devices_mmio_sync_at(addr, 1);
     SHADOW_NOTE_MMIO();
     debug_server_trace_mmio_write(addr, (uint32_t)val, 2);
-    /* Memory control: 0x1F801000..0x1F80103C â€” halfword lane RMW. */
+    /* Memory control: 0x1F801000..0x1F80103C — halfword lane RMW. */
     if (addr >= 0x1F801000u && addr <= 0x1F80103Fu) {
         uint32_t idx = (addr - 0x1F801000u) >> 2;
         uint32_t shift = 8u * (addr & 2u);
@@ -1550,7 +1550,7 @@ static void mmio_write16(uint32_t addr, uint16_t val) {
                       | ((uint32_t)val << shift);
         return;
     }
-    /* RAM size register: 0x1F801060 â€” halfword lane RMW. */
+    /* RAM size register: 0x1F801060 — halfword lane RMW. */
     if (addr >= 0x1F801060u && addr <= 0x1F801063u) {
         uint32_t shift = 8u * (addr & 2u);
         ram_size_reg = (ram_size_reg & ~(0xFFFFu << shift))
@@ -1607,7 +1607,7 @@ static void mmio_write16(uint32_t addr, uint16_t val) {
 
 static uint8_t mmio_read8_impl(uint32_t addr) {
     SHADOW_NOTE_MMIO();
-    /* Memory control: 0x1F801000..0x1F80103C â€” byte lane of the 32-bit reg. */
+    /* Memory control: 0x1F801000..0x1F80103C — byte lane of the 32-bit reg. */
     if (addr >= 0x1F801000u && addr <= 0x1F80103Fu) {
         uint32_t v = mem_ctrl[(addr - 0x1F801000u) >> 2];
         return (uint8_t)(v >> (8u * (addr & 3u)));
@@ -1625,7 +1625,7 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
     if (addr >= 0x1F801040u && addr <= 0x1F80104Fu) {
         return (uint8_t)sio_read(addr & ~3u);
     }
-    /* DMA: 0x1F801080..0x1F8010FF â€” byte reads return the corresponding
+    /* DMA: 0x1F801080..0x1F8010FF — byte reads return the corresponding
      * byte of the 32-bit register.  The BIOS shell reads DICR (0x1F8010F4)
      * as individual bytes during interrupt handling. */
     if (addr >= 0x1F801080u && addr <= 0x1F8010FFu) {
@@ -1662,7 +1662,7 @@ static void mmio_write8(uint32_t addr, uint8_t val) {
     psx_devices_mmio_sync_at(addr, 1);
     SHADOW_NOTE_MMIO();
     debug_server_trace_mmio_write(addr, (uint32_t)val, 1);
-    /* Memory control: 0x1F801000..0x1F80103C â€” byte lane RMW. Tomba2's late
+    /* Memory control: 0x1F801000..0x1F80103C — byte lane RMW. Tomba2's late
      * attract byte-writes the EXP1 base register at 0x1F801000; only the
      * 32-bit path covered the block and the byte path fatal'd. */
     if (addr >= 0x1F801000u && addr <= 0x1F80103Fu) {
@@ -1672,7 +1672,7 @@ static void mmio_write8(uint32_t addr, uint8_t val) {
                       | ((uint32_t)val << shift);
         return;
     }
-    /* RAM size register: 0x1F801060 â€” byte lane RMW (Tomba2 late attract). */
+    /* RAM size register: 0x1F801060 — byte lane RMW (Tomba2 late attract). */
     if (addr >= 0x1F801060u && addr <= 0x1F801063u) {
         uint32_t shift = 8u * (addr & 3u);
         ram_size_reg = (ram_size_reg & ~(0xFFu << shift))
@@ -1695,7 +1695,7 @@ static void mmio_write8(uint32_t addr, uint8_t val) {
         sio_write(addr & ~3u, (uint32_t)val);
         return;
     }
-    /* DMA: 0x1F801080..0x1F8010FF â€” byte writes update the corresponding
+    /* DMA: 0x1F801080..0x1F8010FF — byte writes update the corresponding
      * byte of the 32-bit register.  Needed for DICR byte-level access. */
     if (addr >= 0x1F801080u && addr <= 0x1F8010FFu) {
         uint32_t aligned = addr & ~3u;
@@ -1704,7 +1704,7 @@ static void mmio_write8(uint32_t addr, uint8_t val) {
         dma_write_masked(aligned, (uint32_t)val << shift, mask);
         return;
     }
-    /* Timers: 0x1F801100..0x1F80112F â€” byte writes update the addressed byte
+    /* Timers: 0x1F801100..0x1F80112F — byte writes update the addressed byte
      * lane of the 32-bit register. Byte stores to timer registers are valid
      * hardware accesses; mmio_write16/32 already route here via timers_write, so
      * write8 must too (otherwise a guest `sb` to a timer fails loud). */
@@ -1740,7 +1740,7 @@ static void mmio_write8(uint32_t addr, uint8_t val) {
 /* --- Read functions --- */
 
 /* lockstep: 1 while a guest-direct memory op's REAL body runs, so nested ops
- * (device-emulation reads triggered by an MMIO write, etc.) are not recorded â€”
+ * (device-emulation reads triggered by an MMIO write, etc.) are not recorded —
  * the shadow replay verifies writes without performing them, so it never sees
  * those device-internal accesses. Interrupt-handler ops are excluded too
  * (psx_get_in_exception): the replay runs only the block, never the handler. */
@@ -1768,7 +1768,7 @@ uint32_t psx_read_word(uint32_t addr) {
 /* Untraced word peek for HOST-SIDE inspection: same address decode as a guest
  * read, but no lockstep record, no lockstep-replay substitution, and no
  * data-shard/DuckStation capture. Use this for anything the guest did not
- * actually execute â€” residency guards, host-side checks, diagnostics â€” so a
+ * actually execute — residency guards, host-side checks, diagnostics — so a
  * host inspection can never appear in a guest read stream (which would both
  * dirty every divergence comparison and, under replay, return replayed data
  * instead of resident bytes). Never use it to service a guest load. */
@@ -1779,14 +1779,14 @@ uint32_t psx_peek_word_untraced(uint32_t addr) {
  * (0x1FFFFFFF), then fold the 2nd-4th main-RAM mirrors: real hardware mirrors the
  * 2 MB DRAM across the WHOLE 0..0x7FFFFF physical window (PSX-SPX memorymap,
  * "Memory Mirrors": "2MB RAM can be mirrored to the first 8MB"). A game
- * may legitimately place its stack at the top of that window â€” Tsumu Light computes
+ * may legitimately place its stack at the top of that window — Tsumu Light computes
  * sp = (ramtop-8)|0x80000000 with its ramtop constant 0x00800000, giving sp=0x807FFFF8
  * (top of the 4th mirror). Without this fold those accesses miss DRAM (`< RAM_SIZE`
  * fails) and hit open bus: stores drop, loads return 0, so the first saved return
  * address reads back 0 and `jr ra` derails to PC=0. Identity for phys < RAM_SIZE, so
  * normal-range RAM is byte-identical; MMIO/scratchpad/BIOS (>= 0x800000) untouched. */
 static uint32_t psx_read_word_raw(uint32_t addr) {
-    /* KSEG2 cache control â€” before physical translation. */
+    /* KSEG2 cache control — before physical translation. */
     if (addr == 0xFFFE0130u) return cache_ctrl;
     /* KSEG2 (0xC0000000+): only cache control (0xFFFE0130, above where
      * applicable) exists there. PSX-SPX memorymap ("Memory Map") lists only
@@ -1801,7 +1801,7 @@ static uint32_t psx_read_word_raw(uint32_t addr) {
     uint32_t phys = psx_phys_addr(addr);
 
     if (phys < RAM_SIZE) {
-        /* Host LE load â€” same bytes as the shift-or form; VLC/decode hot paths
+        /* Host LE load — same bytes as the shift-or form; VLC/decode hot paths
          * issue millions of aligned main-RAM LWs per second. */
         uint32_t v;
         memcpy(&v, &ram[phys], sizeof(v));
@@ -1818,7 +1818,7 @@ static uint32_t psx_read_word_raw(uint32_t addr) {
             return v;
         }
     }
-    /* Expansion 1: 0x1F000000..0x1F7FFFFF â€” no device, open bus */
+    /* Expansion 1: 0x1F000000..0x1F7FFFFF — no device, open bus */
     {
         uint32_t off;
         if (mod_memory_offset(phys, 4u, &off)) {
@@ -1854,7 +1854,7 @@ static uint32_t psx_read_word_raw(uint32_t addr) {
 /* ---- VSync callback-pointer provenance probe (MMX6 boot wedge) -------------
  * The kernel VSync/RCnt callback-block pointer at phys 0x79D44 (KSEG0 0x80079D44)
  * is corrupted to 0x016F0110 at frame ~1188 by a write whose g_debug_last_store_pc
- * is STALE (so it is not a compiled/dirty-interp store â€” a DMA or runtime mem-op
+ * is STALE (so it is not a compiled/dirty-interp store — a DMA or runtime mem-op
  * with a wrong destination). This always-on ring records EVERY write to that word
  * at the unified RAM-write chokepoint, tagging CPU-vs-DMA via the dma.c exec flags,
  * so the real corrupting writer (and, if DMA, its channel + madr) is captured even
@@ -2096,9 +2096,9 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
      * DMA and host stores drop it below (pgxp_untracked_store). */
     /* IsC first, before any decode (cpu_store_isolated). */
     if (cpu_store_isolated()) { isc_store(addr, val, 4); return; }
-    /* KSEG2 cache control â€” before physical translation. */
+    /* KSEG2 cache control — before physical translation. */
     if (addr == 0xFFFE0130u) { cache_ctrl = val; return; }
-    /* KSEG2 guard â€” see psx_read_word_raw. */
+    /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_writes++; return; }
 
     uint32_t phys = psx_phys_addr_store(addr);
@@ -2151,7 +2151,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
          * Ape Escape LOAD: this suppress is tip-only (post-483a0d4) and leaves
          * libcard parked after the 81 52 00 probe (A6C10 nested, B4E38=0, never
          * re-enables I_MASK bit7 / never TX 0x57). Opt out unless explicitly
-         * enabled â€” Tomba can set PSX_TOMB_CARD_EVCB_PROTECT=1. */
+         * enabled — Tomba can set PSX_TOMB_CARD_EVCB_PROTECT=1. */
         {
             static int s_tomb_evcb_protect = -1;
             if (s_tomb_evcb_protect < 0) {
@@ -2198,7 +2198,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
             return;
         }
     }
-    /* Expansion 1: 0x1F000000..0x1F7FFFFF â€” ignore writes */
+    /* Expansion 1: 0x1F000000..0x1F7FFFFF — ignore writes */
     {
         uint32_t off;
         if (mod_memory_offset(phys, 4u, &off)) {
@@ -2247,7 +2247,7 @@ uint16_t psx_read_half(uint32_t addr) {
     return v;
 }
 static uint16_t psx_read_half_raw(uint32_t addr) {
-        /* KSEG2 guard â€” see psx_read_word_raw. */
+        /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_reads++; return 0; }
     uint32_t phys = psx_phys_addr(addr);
 
@@ -2304,7 +2304,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     if (g_psx_track_last_store) g_guest_last_store_addr = 0xFFFFFFFFu;
     if (cpu_store_isolated()) { isc_store(addr, val, 2); return; }
 
-        /* KSEG2 guard â€” see psx_read_word_raw. */
+        /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_writes++; return; }
     uint32_t phys = psx_phys_addr_store(addr);
 
@@ -2374,7 +2374,7 @@ uint8_t psx_read_byte(uint32_t addr) {
     return v;
 }
 static uint8_t psx_read_byte_raw(uint32_t addr) {
-        /* KSEG2 guard â€” see psx_read_word_raw. */
+        /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_reads++; return 0; }
     uint32_t phys = psx_phys_addr(addr);
 
@@ -2411,12 +2411,12 @@ static uint8_t psx_read_byte_raw(uint32_t addr) {
  * region wait (main RAM = +3, libretro.cpp:884), and a completion cost (+2 CPU /
  * +1 LWC2); the (region+completion) becomes a per-register LDAbsorb "give-back" that
  * following instructions consume instead of their own +1 base (pipeline write-back
- * overlap). The Â§1 base + GPR_DEPRES + DO_LDS that bracket this run in psx_cyc.h.
+ * overlap). The §1 base + GPR_DEPRES + DO_LDS that bracket this run in psx_cyc.h.
  *
  * These functions own the WHOLE per-instruction interlock for a CPU load (they call
  * psx_cyc_base/deps/lds), so the emitters/interp invoke them in place of the prior
  * cpu->read_* call and emit NO separate psx_cyc_step for the load. They return the
- * raw value via the UNCHARGED psx_read_* (cpu->read_* is now uncharged too â€” the
+ * raw value via the UNCHARGED psx_read_* (cpu->read_* is now uncharged too — the
  * data-access cost is charged exactly once, here). Keyed on the runtime effective
  * physical address (KUSEG/KSEG0/KSEG1 alias the same DRAM).
  *
@@ -2455,7 +2455,7 @@ static inline void psx_load_charge_cycles(uint32_t cycles) {
 
 /* Beetle MemRW device-region READ wait (libretro.cpp:859-1131), the device-dependent
  * part of a load's access cost (added to the timestamp before the +completion). `size`
- * is the access width in bytes (1/2/4) â€” the SPU and CDC waits are width-dependent.
+ * is the access width in bytes (1/2/4) — the SPU and CDC waits are width-dependent.
  * Reads only; writes are posted (~free) in MemRW. phys is the masked physical address. */
 static inline uint32_t psx_mmio_read_wait(uint32_t phys, uint32_t size) {
     /* Main RAM, mirrored across phys 0..0x7FFFFF (libretro.cpp:874 `A < 0x00800000`). */
@@ -2488,7 +2488,7 @@ static inline uint32_t psx_mmio_read_wait(uint32_t phys, uint32_t size) {
     return 0u;       /* unknown / open-bus region */
 }
 
-/* Beetle ReadMemory data-access timing (cpu.cpp:369-448), after Â§1/deps/DO_LDS.
+/* Beetle ReadMemory data-access timing (cpu.cpp:369-448), after §1/deps/DO_LDS.
  * compl_cost = 2 (CPU load) / 1 (LWC2); arm_rt = GPR to arm as pending load, or
  * 0x20 = none (LWC2, dest is a GTE reg). size = access width in bytes (1/2/4). */
 static inline void psx_cyc_readmem(CPUState* cpu, uint32_t phys, uint32_t size,
@@ -2503,7 +2503,7 @@ static inline void psx_cyc_readmem(CPUState* cpu, uint32_t phys, uint32_t size,
         return;
     }
     /* fudge (424): +2 iff the predecessor committed no load (read_fudge==0x20).
-     * Combined with region+completion into one advance â€” deadline catch-up
+     * Combined with region+completion into one advance — deadline catch-up
      * replays exact event boundaries, so splitting the charge is only host cost. */
     uint32_t region = psx_mmio_read_wait(phys, size);  /* device-region wait */
     uint32_t cost = region + compl_cost;               /* LDAbsorb = region + completion */
@@ -2512,12 +2512,12 @@ static inline void psx_cyc_readmem(CPUState* cpu, uint32_t phys, uint32_t size,
     psx_cpu_charge(fudge + cost);   /* CPU charge: [timing] guest_cycle_scale */
     cpu->ld_which_t = (uint8_t)arm_rt;
     /* PROOF GATE (PSX_POLL_PROOF=N, default 0/off): a FLAT, non-absorbed extra N
-     * cycles per main-RAM data read â€” replicates the historical "+6 cyc/main-RAM
+     * cycles per main-RAM data read — replicates the historical "+6 cyc/main-RAM
      * read" fix (mmx6_memcard_invalid_rootcause) that lengthened MMX6's card
      * busy-poll so it outlasts the VBlank-paced async card op. Unlike the
      * region+completion above (which arms ld_absorb and gets given back in a
      * tight loop), this is pure added cost. If setting this makes the MMX6 save
-     * load, the card regression is confirmed as poll-vs-op timing. TEMPORARY â€”
+     * load, the card regression is confirmed as poll-vs-op timing. TEMPORARY —
      * the faithful fix models the uncached data-read cost properly. */
     if (phys < 0x00800000u) {
         static int s_pp = -1;
@@ -2535,7 +2535,7 @@ int psx_load_delay_enabled(void) {
     return g_psx_load_delay;
 }
 
-/* The interlock half of a load (Â§1+deps+(cancel)+DO_LDS+ReadMemory). Gated on
+/* The interlock half of a load (§1+deps+(cancel)+DO_LDS+ReadMemory). Gated on
  * PSX_ENABLE_BLOCK_CYCLES so the Beetle-oracle build (cycles off) does a plain read. */
 static inline void psx_cyc_load_timing(CPUState* cpu, uint32_t addr, uint32_t size,
                                        uint32_t rt, uint32_t reg_mask) {
@@ -2613,8 +2613,8 @@ uint8_t psx_cyc_load_byte(CPUState* cpu, uint32_t addr, uint32_t rt, uint32_t re
     return psx_read_byte(addr);
 }
 
-/* LWC2 (GTE load): Â§1/DO_LDS done by psx_cyc_step(cpu,0); the GTE deadline stall by
- * psx_gte_stall â€” both emitted before this call. 32-bit access, completion +1, no
+/* LWC2 (GTE load): §1/DO_LDS done by psx_cyc_step(cpu,0); the GTE deadline stall by
+ * psx_gte_stall — both emitted before this call. 32-bit access, completion +1, no
  * LDWhich arm. */
 uint32_t psx_cyc_lwc2_read(CPUState* cpu, uint32_t addr) {
 #ifdef PSX_ENABLE_BLOCK_CYCLES
@@ -2682,7 +2682,7 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     if (g_psx_track_last_store) g_guest_last_store_addr = 0xFFFFFFFFu;
     if (cpu_store_isolated()) { isc_store(addr, val, 1); return; }
 
-        /* KSEG2 guard â€” see psx_read_word_raw. */
+        /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_writes++; return; }
     uint32_t phys = psx_phys_addr_store(addr);
 
