@@ -43,6 +43,9 @@ void gpu_depth24_upload_span_reset(void){}
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
 int gpu_ws_display_width(void){return 320;}
 int render_pass_netplay_enabled(void){return 0;}
+/* Hidden tests explicitly select swap interval zero and have no frontend
+ * cadence owner. Shared by display-history tests which include this fixture. */
+int psx_present_vsync_owns_cadence(void){return 0;}
 /* No frontend overlays, queued screenshots or guest debug-gate state here.
  * These are the same typed inactive frontend providers used by the existing
  * display-history fixture (which includes this file). The real renderer,

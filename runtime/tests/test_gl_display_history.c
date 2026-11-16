@@ -13,7 +13,6 @@ void gpu_hd_textures_track_upload(int x,int y,int w,int h,const uint16_t *p){(vo
 void gpu_hd_textures_invalidate(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
 void gpu_hd_textures_begin_copy(int sx,int sy,int x,int y,int w,int h){(void)sx;(void)sy;(void)x;(void)y;(void)w;(void)h;}
 void gpu_hd_textures_end_copy(void){}
-int psx_present_vsync_owns_cadence(void){return 0;}
 uint64_t latency_ring_current_frame(void){return 0;}
 void latency_ring_replay_frame(uint64_t frame){(void)frame;}
 
