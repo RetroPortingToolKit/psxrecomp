@@ -2334,6 +2334,9 @@ void FullFunctionEmitter::emit_dispatch(
     out += "#endif\n";
     out += "#endif\n";
 
+    out += "        /* A handled hook/static body has completed this logical entry.\n";
+    out += "         * Classify shell/dirty fallbacks only when a backend is still needed. */\n";
+    out += "        if (!found) {\n";
     out += "        /* Game EXEs can overlap the BIOS shell copy window at\n";
     out += "         * physical 0x30000-0x5AFFF. If the target belongs to the\n";
     out += "         * active game text range, route it through the game/dirty-RAM\n";
@@ -2389,6 +2392,7 @@ void FullFunctionEmitter::emit_dispatch(
     out += "        if (!found && (game_shell_overlap || game_text_in_shell_window ||\n";
     out += "            (psx_game_address_in_text(addr) && dirty_ram_is_dirty(game_phys)))) {\n";
     out += "            found = dirty_ram_dispatch(cpu, addr, stop_addr);\n";
+    out += "        }\n";
     out += "        }\n";
     out += "#endif\n";
     out += "        uint32_t phys = normalize(addr);\n";

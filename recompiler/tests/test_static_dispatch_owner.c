@@ -18,12 +18,13 @@ uint32_t g_debug_current_func_addr;
 int g_psx_mod_guest_functions = 1;
 static int tier, mode, graph_calls, native_calls, fallback_calls, trace_calls;
 static int boundary_redirect, escape;
+static int game_started=1, legacy_safe=1, legacy_classifications;
 static jmp_buf escape_jmp;
 static char hooks[16];
 static unsigned hook_count;
 static void hook(char c) { if (hook_count < sizeof hooks - 1) hooks[hook_count++] = c; }
 static uint32_t normalize(uint32_t addr) { return addr & 0x1fffffffu; }
-static int fntrace_is_game_started(void) { return 1; }
+static int fntrace_is_game_started(void) { return game_started; }
 static void fntrace_record(CPUState *cpu, uint32_t addr) {
     (void)cpu; (void)addr; ++trace_calls;
     assert(trace_calls < 100100);
@@ -43,7 +44,11 @@ static int override(CPUState *cpu, uint32_t phys) { (void)cpu; (void)phys; hook(
 static int (*g_psx_func_override_hook)(CPUState *, uint32_t) = override;
 static int psx_game_address_in_text(uint32_t addr) { (void)addr; return 1; }
 static int dirty_ram_is_dirty(uint32_t phys) { (void)phys; return 1; }
-static int dirty_ram_text_native_ok(uint32_t phys) { (void)phys; return 1; }
+static int dirty_ram_text_native_ok(uint32_t phys) {
+    assert(phys >= 0x30000u && phys <= 0x5afffu);
+    ++legacy_classifications;
+    return legacy_safe;
+}
 static int psx_kernel_bless_dispatchable(uint32_t phys) { (void)phys; return 0; }
 static void debug_server_trace_dispatch(uint32_t addr) { (void)addr; abort(); }
 static PsxRecompFunc psx_bios_hit_body(CPUState *cpu, uint32_t a, uint32_t p, PsxRecompFunc fn) {
@@ -79,7 +84,7 @@ static void graph(CPUState *cpu, uint32_t addr) {
 }
 static int dirty_ram_dispatch_game_direct(CPUState *cpu, uint32_t addr) {
     hook('N');
-    if (mode == 7 || g_psx_dispatch_depth != 1) return 0;
+    if (mode == 7 || !game_started || g_psx_dispatch_depth != 1) return 0;
     ++native_calls; graph(cpu, addr); return 1;
 }
 void fntrace_record_tail(CPUState *cpu, uint32_t addr) { fntrace_record(cpu, addr); }
@@ -110,16 +115,38 @@ static void reset(CPUState *cpu) {
     hooks[0] = 0; hook_count = 0;
     tier = mode = graph_calls = native_calls = fallback_calls = trace_calls = 0;
     g_psx_dispatch_depth = g_psx_call_bail = boundary_redirect = escape = 0;
+    game_started = legacy_safe = 1; legacy_classifications = 0;
 }
 int main(void) {
     CPUState cpu;
     const char *expected[] = {"GHSO", "G", "GH", "GHS", "GHSO"};
     for (int t = 1; t <= 4; ++t) {
         reset(&cpu); tier = t;
-        psx_dispatch_impl(&cpu, 0x80010000u, 0x80010008u);
+        /* This address overlaps the BIOS shell: handled hooks must not run
+         * the discarded legacy byte classification after completing the call. */
+        psx_dispatch_impl(&cpu, 0x80030000u, 0x80010008u);
         hooks[hook_count] = 0;
         assert(strcmp(hooks, expected[t]) == 0 && graph_calls == 0 && cpu.pc == 0);
+        assert(legacy_classifications == 0);
     }
+    reset(&cpu);
+    psx_dispatch_impl(&cpu, 0x80030000u, 0x80010008u);
+#if PSX_NATIVE_STATIC_CALLS && !defined(PSX_BIOS_MODULE_BUILD)
+    assert(native_calls == 1 && fallback_calls == 0 && legacy_classifications == 0);
+#else
+    assert(native_calls == 0 && fallback_calls == 1 && legacy_classifications == 1);
+#endif
+    /* A rejected native/mutable entry still executes the original fallback
+     * classifier and live-byte backend. Pre-start image matching stays live. */
+    reset(&cpu); mode = 7; legacy_safe = 0;
+    psx_dispatch_impl(&cpu, 0x80030000u, 0x80010008u);
+    assert(native_calls == 0 && fallback_calls == 1 && legacy_classifications == 1);
+    reset(&cpu); game_started = 0;
+    psx_dispatch_impl(&cpu, 0x80030000u, 0x80010008u);
+    assert(native_calls == 0 && fallback_calls == 1 && legacy_classifications == 1);
+    reset(&cpu); game_started = legacy_safe = 0;
+    psx_dispatch_impl(&cpu, 0x80030000u, 0x80010008u);
+    assert(native_calls == 0 && fallback_calls == 1 && legacy_classifications == 1);
     reset(&cpu); mode = 4;
     psx_dispatch_impl(&cpu, 0x80010000u, 0x80010008u);
     assert(graph_calls == 2 && cpu.gpr[2] == 1 && cpu.pc == 0);
@@ -152,6 +179,6 @@ int main(void) {
     reset(&cpu); escape = 1;
     if (!setjmp(escape_jmp)) { psx_dispatch_impl(&cpu, 0x80010000u, 0); abort(); }
     assert(cpu.pc == 0x80010008u);
-    puts("emitted owner hooks, continuations, recursion, thread, stop and IRQ checks passed");
+    puts("emitted owner handled-entry zero legacy checks, unchanged failed/pre-start fallback, hooks, continuations, recursion, thread, stop and IRQ checks passed");
     return 0;
 }
