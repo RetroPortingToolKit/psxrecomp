@@ -1402,6 +1402,7 @@ if(BUILD_TESTING)
                 capture_history
                 cli_retail_bios_profile
                 codegen_host_bios_stems
+                codegen_host_toolchain_keep_pack
                 default_renderer_guards
                 mod_owned_display_controls
                 fmv_quiet_guards
