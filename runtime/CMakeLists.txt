@@ -23,6 +23,56 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(netplay_host_startup_test tests/test_netplay_host_startup.cpp
+        src/netplay_host_profile.c src/psx_sha256.c)
+    target_include_directories(netplay_host_startup_test PRIVATE include)
+    add_test(NAME netplay_host_startup_test COMMAND netplay_host_startup_test)
+    add_executable(host_fp_environment_test tests/test_host_fp_environment.c
+        src/host_fp_environment.c)
+    target_include_directories(host_fp_environment_test PRIVATE include)
+    if(MSVC)
+        target_compile_options(host_fp_environment_test PRIVATE /fp:strict)
+    else()
+        target_compile_options(host_fp_environment_test PRIVATE -frounding-math)
+        if(NOT WIN32)
+            target_link_libraries(host_fp_environment_test PRIVATE m)
+        endif()
+    endif()
+    add_test(NAME host_fp_environment_test COMMAND host_fp_environment_test)
+    add_executable(host_executable_identity_test tests/test_host_executable_identity.cpp
+        src/host_executable_identity.cpp src/psx_sha256_file.cpp src/psx_sha256.c)
+    target_include_directories(host_executable_identity_test PRIVATE include)
+    if(WIN32)
+        target_link_libraries(host_executable_identity_test PRIVATE bcrypt)
+    endif()
+    add_test(NAME host_executable_identity_test COMMAND host_executable_identity_test
+        "$<TARGET_FILE:host_executable_identity_test>")
+    add_executable(host_session_nonce_test tests/test_host_session_nonce.c src/host_session_nonce.c)
+    target_include_directories(host_session_nonce_test PRIVATE include)
+    if(WIN32)
+        target_link_libraries(host_session_nonce_test PRIVATE bcrypt)
+    endif()
+    add_test(NAME host_session_nonce_test COMMAND host_session_nonce_test)
+    add_executable(netplay_host_gate_test tests/test_netplay_host_gate.c
+        src/netplay_host_gate.c src/netplay_host_profile.c src/psx_sha256.c)
+    target_include_directories(netplay_host_gate_test PRIVATE include)
+    add_test(NAME netplay_host_gate_test COMMAND netplay_host_gate_test)
+    add_executable(netplay_host_profile_test tests/test_netplay_host_profile.c
+        src/netplay_host_profile.c src/psx_sha256.c)
+    target_include_directories(netplay_host_profile_test PRIVATE include)
+    add_test(NAME netplay_host_profile_test COMMAND netplay_host_profile_test)
+    if(TARGET SDL3::SDL3)
+        add_executable(netplay_host_cpu_sdl3_test tests/test_netplay_host_cpu_sdl3.c
+            src/netplay_host_cpu_sdl3.c src/netplay_host_profile.c src/psx_sha256.c)
+        target_include_directories(netplay_host_cpu_sdl3_test PRIVATE include)
+        target_compile_definitions(netplay_host_cpu_sdl3_test PRIVATE PSX_SDL3=1)
+        target_link_libraries(netplay_host_cpu_sdl3_test PRIVATE SDL3::SDL3)
+        add_test(NAME netplay_host_cpu_sdl3_test COMMAND netplay_host_cpu_sdl3_test)
+    endif()
+    add_executable(netplay_host_cpu_unknown_test tests/test_netplay_host_cpu_sdl3.c
+        src/netplay_host_cpu_sdl3.c src/netplay_host_profile.c src/psx_sha256.c)
+    target_include_directories(netplay_host_cpu_unknown_test PRIVATE include)
+    add_test(NAME netplay_host_cpu_unknown_test COMMAND netplay_host_cpu_unknown_test)
     add_executable(timers_test tests/test_timers.c src/timers.c src/psx_video_timing.c)
     target_include_directories(timers_test PRIVATE include)
     target_compile_definitions(timers_test PRIVATE PSX_ENABLE_BLOCK_CYCLES=1)
@@ -562,6 +612,13 @@ if(BUILD_TESTING)
                 --sdl-root "${PSX_GL_READBACK_SDL_ROOT}"
                 --output "${CMAKE_CURRENT_BINARY_DIR}/gl-display-history-results")
         set_tests_properties(gl_display_history_test PROPERTIES LABELS "gpu;opengl;hardware" TIMEOUT 180)
+        add_test(NAME gl_presentation_rate_test
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_readback_region.py"
+                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_presentation_rate.c"
+                --compiler-bin "${PSX_GL_READBACK_COMPILER_BIN}"
+                --sdl-root "${PSX_GL_READBACK_SDL_ROOT}"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-presentation-rate-results")
+        set_tests_properties(gl_presentation_rate_test PROPERTIES LABELS "gpu;opengl;hardware" TIMEOUT 180)
     else()
         message(STATUS "gl_readback_region_test: not registered (requires MinGW, SDL3 headers/static library in PSX_GL_READBACK_SDL_ROOT and gcc.exe/g++.exe in PSX_GL_READBACK_COMPILER_BIN)")
     endif()
