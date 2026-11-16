@@ -45,17 +45,20 @@ for arm in (
 
 # Precedence is positional in the helper body: override, then lock, then the
 # launcher's own value. Reordering these silently changes which source of truth
-# wins, and both wrong orders are plausible-looking.
+# wins, and both wrong orders are plausible-looking. Other helpers in the header
+# also return launcher_mode, so read the order inside this helper's body only.
+RESOLVE_BODY = LAUNCHER_DEVICE.split("inline int resolve_player_mode_after_launcher(", 1)[1]
 assert (
-    LAUNCHER_DEVICE.index("if (mod_override_mode >= 0) return mod_override_mode;")
-    < LAUNCHER_DEVICE.index("if (lock_mode) return locked_mode;")
-    < LAUNCHER_DEVICE.index("return launcher_mode;")
+    RESOLVE_BODY.index("if (mod_override_mode >= 0) return mod_override_mode;")
+    < RESOLVE_BODY.index("if (lock_mode) return locked_mode;")
+    < RESOLVE_BODY.index("return launcher_mode;")
 ), "resolution precedence must be override > lock > launcher"
 
 # The C++ unit test hard-codes 1/2 rather than dragging config_loader.h's
 # dependency chain into a header-only test. Pin the enum so it cannot drift.
+# Values after DIGITAL (PAD_MODE_NEGCON = 3) are not hard-coded there.
 assert (
-    "enum PadMode { PAD_MODE_ANALOG = 1, PAD_MODE_DIGITAL = 2 };"
+    "enum PadMode { PAD_MODE_ANALOG = 1, PAD_MODE_DIGITAL = 2"
     in CONFIG_LOADER
 ), "PadMode values changed; test_launcher_pad_mode_resolve.cpp hard-codes them"
 
@@ -81,7 +84,11 @@ assert "player_mode[i] = PSXRecompV4::PAD_MODE_DIGITAL;" not in MAIN, (
     "a launcher-exit path is overwriting a seat's configured mode with "
     "DIGITAL again"
 )
-assert MAIN.count("ls.pad_mode[i] = player_mode[i];") == 2, (
+# launcher_pad_mode_to_launcher() passes the mode through unchanged except a
+# neGcon seat on a launcher without that choice, which the readback restores
+# (launcher_pad_mode_from_launcher).
+assert MAIN.count("ls.pad_mode[i] = PSXRecompV4::launcher_pad_mode_to_launcher("
+                  "player_mode[i],kLauncherNegconMode);") == 2, (
     "the host must seed the launcher with the seat's configured mode "
     "verbatim, at both launcher-entry sites"
 )
