@@ -1165,12 +1165,39 @@ static int autocompile_request_impl(void) {
     char full[sizeof(s_cmd) + 32];   /* grows with s_cmd: the wrapper must never be the new truncation point */
     snprintf(full, sizeof(full), "cmd.exe /C \"%s\"", s_cmd);
 
-    STARTUPINFOA si;
+    STARTUPINFOEXA si;
     memset(&si, 0, sizeof(si));
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = wr;
-    si.hStdError  = wr;
+    si.StartupInfo.cb = sizeof(si);
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdOutput = wr;
+    si.StartupInfo.hStdError  = wr;
+    /* Only the log pipe belongs to the compiler. With inheritance on and no
+     * handle list the child gets every inheritable handle open at this
+     * instant (every fopen() handle is one), and an open save, replay or
+     * settings file then cannot be renamed or removed until the compile run
+     * ends. Without the list no child is started; the provider retries. */
+    HANDLE inherit_list[1] = { wr };   /* stdout and stderr share it */
+    SIZE_T attr_size = 0;
+    (void)InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
+    si.lpAttributeList = attr_size
+        ? (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, attr_size)
+        : NULL;
+    if (!si.lpAttributeList ||
+        !InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &attr_size)) {
+        if (si.lpAttributeList) HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
+        CloseHandle(wr); CloseHandle(rd);
+        autocompile_note_failure();
+        return 0;
+    }
+    if (!UpdateProcThreadAttribute(si.lpAttributeList, 0,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit_list, sizeof(inherit_list),
+            NULL, NULL)) {
+        DeleteProcThreadAttributeList(si.lpAttributeList);
+        HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
+        CloseHandle(wr); CloseHandle(rd);
+        autocompile_note_failure();
+        return 0;
+    }
     PROCESS_INFORMATION pi;
     memset(&pi, 0, sizeof(pi));
     /* Kill-on-close job for the whole compile tree. Created before the child
@@ -1196,6 +1223,8 @@ static int autocompile_request_impl(void) {
      * priority, while the live compile script also defaults to one worker. */
     char *child_env = s_cache_dir[0] ? ac_child_environment(s_cache_dir) : NULL;
     if (s_cache_dir[0] && !child_env) {
+        DeleteProcThreadAttributeList(si.lpAttributeList);
+        HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
         if (job) CloseHandle(job);
         CloseHandle(rd); CloseHandle(wr);
         autocompile_note_failure();
@@ -1203,8 +1232,10 @@ static int autocompile_request_impl(void) {
     }
     BOOL ok = CreateProcessA(NULL, full, NULL, NULL, TRUE,
                              CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS |
-                                 CREATE_SUSPENDED,
-                             child_env, s_cwd[0] ? s_cwd : NULL, &si, &pi);
+                                 CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
+                             child_env, s_cwd[0] ? s_cwd : NULL, &si.StartupInfo, &pi);
+    DeleteProcThreadAttributeList(si.lpAttributeList);
+    HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
     free(child_env);
     CloseHandle(wr);
     if (!ok) {
