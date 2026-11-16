@@ -65,6 +65,17 @@ static int g_relaunch_is_helper;
 static char g_wizard_bios[1100];
 /* Set when heal removes a broken latest/ / stamp at wizard open. */
 static char g_tc_repair_note[320];
+/* The system's error of the last rename aside that failed (GetLastError on
+ * Windows, errno elsewhere). */
+static long g_tc_aside_error;
+/* The step of the toolchain check that failed last (toolchain_bin_is_healthy);
+ * "" after a check that passed. The player reads it in the sentences below. */
+static const char* g_tc_check_step = "";
+#define TC_STEP_CMAKE   "cmake does not run"
+#define TC_STEP_MISSING "clang or the linker is missing from the pack"
+#define TC_STEP_CLANG   "clang does not run"
+#define TC_STEP_TEMP    "a test file could not be written to the temporary folder"
+#define TC_STEP_LINK    "a one-line test program did not compile and link"
 /* Set when host_persist_setup receives an explicit bios_path (including ""
  * for OpenBIOS). Distinguishes intentional OpenBIOS clear from "unset". */
 static int g_wizard_bios_explicit;
@@ -537,6 +548,7 @@ static int find_python(char* out, size_t cap) {
  * over for the rest of this process instead, so that the lookup can find
  * another pack. An install clears the list. */
 static char g_tc_rejected[8][1400];
+static const char* g_tc_rejected_step[8];   /* the step each one failed at */
 static int g_tc_rejected_n = 0;
 
 static int toolchain_bin_is_rejected(const char* bin) {
@@ -557,8 +569,85 @@ static int toolchain_bin_is_rejected(const char* bin) {
 static void toolchain_bin_reject(const char* bin) {
     if (!bin || !bin[0] || toolchain_bin_is_rejected(bin))
         return;
-    if (g_tc_rejected_n < (int)(sizeof(g_tc_rejected) / sizeof(g_tc_rejected[0])))
+    if (g_tc_rejected_n < (int)(sizeof(g_tc_rejected) / sizeof(g_tc_rejected[0]))) {
+        g_tc_rejected_step[g_tc_rejected_n] = g_tc_check_step;
         snprintf(g_tc_rejected[g_tc_rejected_n++], sizeof(g_tc_rejected[0]), "%s", bin);
+    }
+}
+
+/* The step a passed-over pack failed at, "" for a pack that is not on the list. */
+static const char* toolchain_bin_rejected_step(const char* bin) {
+    int i;
+    if (!bin || !bin[0])
+        return "";
+    for (i = 0; i < g_tc_rejected_n; ++i) {
+#if defined(_WIN32)
+        if (_stricmp(g_tc_rejected[i], bin) == 0)
+#else
+        if (strcmp(g_tc_rejected[i], bin) == 0)
+#endif
+            return g_tc_rejected_step[i] ? g_tc_rejected_step[i] : "";
+    }
+    return "";
+}
+
+/* What a player reads about the toolchain. Each sentence says only what the
+ * program knows: which step of the check failed, or which error the system
+ * gave, and what was left as it was. */
+static void toolchain_text_check_failed(char* out, size_t cap, const char* step) {
+    snprintf(out, cap,
+             "The portable toolchain did not pass its check: %s. It was not "
+             "removed. Download the latest pack to replace it.", step);
+}
+
+static void toolchain_text_new_pack_failed(char* out, size_t cap, const char* step) {
+    snprintf(out, cap,
+             "The new toolchain pack did not pass its check: %s. The installed "
+             "toolchain was not changed.", step);
+}
+
+/* The download into the temporary folder, and the put back of the installed
+ * pack after the new one failed its check. */
+#define TOOLCHAIN_DOWNLOAD_NO_FOLDER "the temporary folder could not be created"
+#define TOOLCHAIN_DOWNLOAD_NO_WRITE \
+    "the pack could not be written into the temporary folder"
+
+static void toolchain_text_download_failed(char* out, size_t cap, const char* reason) {
+    snprintf(out, cap,
+             "The toolchain pack was not downloaded: %s. The installed "
+             "toolchain was not changed. Check the free space and the "
+             "permissions of the temporary folder, then try again.", reason);
+}
+
+static void toolchain_text_put_back_failed(char* out, size_t cap, const char* step) {
+    snprintf(out, cap,
+             "The new toolchain pack did not pass its check: %s. The installed "
+             "toolchain could not be put back under its name. It was left in "
+             "the same place, with .old- at the start of its name. Download the "
+             "latest pack to install the toolchain again.", step);
+}
+
+/* `error` is GetLastError() on Windows and errno elsewhere, from the rename. */
+static void toolchain_text_rename_failed(char* out, size_t cap, long error) {
+#if defined(_WIN32)
+    if (error == 32) {
+        snprintf(out, cap,
+                 "Another program holds the installed toolchain folder open "
+                 "(Windows error 32). The toolchain was not changed. Close the "
+                 "programs that use it, for example a running build, and try again.");
+        return;
+    }
+    if (error == 5) {
+        snprintf(out, cap,
+                 "Windows refused to rename the installed toolchain folder (error "
+                 "5, access denied). The toolchain was not changed. A file in it "
+                 "may be open in another program, or the folder may be protected.");
+        return;
+    }
+#endif
+    snprintf(out, cap,
+             "The installed toolchain folder could not be renamed (system error "
+             "%ld). The toolchain was not changed.", error);
 }
 
 static void toolchain_rejects_clear(void) {
@@ -837,6 +926,98 @@ static int resolve_toolchain_bin(char* out, size_t cap) {
     return 0;
 }
 
+/* Two PATH entries name the same folder: case and the two slashes do not
+ * matter on Windows, a trailing slash does not matter anywhere. */
+static int path_entry_is(const char* entry, size_t len, const char* folder) {
+    size_t flen = strlen(folder), i;
+    while (len > 1 && (entry[len - 1] == '/' || entry[len - 1] == '\\'))
+        --len;
+    while (flen > 1 && (folder[flen - 1] == '/' || folder[flen - 1] == '\\'))
+        --flen;
+    if (len != flen)
+        return 0;
+    for (i = 0; i < len; ++i) {
+        char a = entry[i], b = folder[i];
+#if defined(_WIN32)
+        if (a == '/') a = '\\';
+        if (b == '/') b = '\\';
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+#endif
+        if (a != b)
+            return 0;
+    }
+    return 1;
+}
+
+/* Put `first` and `second` (either may be empty) once at the head of PATH and
+ * take their other copies out. Calling it again changes nothing.
+ *
+ * Activation used to prepend both at every call into a buffer of 8,192
+ * characters. A host that relaunched itself grew PATH by a few folders a
+ * generation, and a PATH longer than the buffer was cut off in the middle of
+ * an entry. A PATH grown that way was then too long for the readiness check's
+ * command line, and a whole pack was judged unusable. */
+static void path_put_in_front(const char* first, const char* second) {
+#if defined(_WIN32)
+    const char sep = ';';
+#else
+    const char sep = ':';
+#endif
+    const char* old = getenv("PATH");
+    const char* front[2];
+    size_t cap, pos = 0;
+    char* neu;
+    int k;
+    front[0] = (first && first[0]) ? first : NULL;
+    front[1] = (second && second[0] && !(front[0] && path_entry_is(second, strlen(second), front[0])))
+                   ? second : NULL;
+    if (!front[0] && !front[1])
+        return;
+    cap = (old ? strlen(old) : 0) + (front[0] ? strlen(front[0]) : 0) +
+          (front[1] ? strlen(front[1]) : 0) + 4;
+    neu = (char*)malloc(cap);
+    if (!neu)
+        return;
+    for (k = 0; k < 2; ++k) {
+        if (!front[k])
+            continue;
+        if (pos)
+            neu[pos++] = sep;
+        memcpy(neu + pos, front[k], strlen(front[k]));
+        pos += strlen(front[k]);
+    }
+    if (old) {
+        const char* p = old;
+        while (*p) {
+            const char* end = strchr(p, sep);
+            size_t len = end ? (size_t)(end - p) : strlen(p);
+            if (!(front[0] && path_entry_is(p, len, front[0])) &&
+                !(front[1] && path_entry_is(p, len, front[1]))) {
+                neu[pos++] = sep;
+                memcpy(neu + pos, p, len);
+                pos += len;
+            }
+            if (!end)
+                break;
+            p = end + 1;
+        }
+    }
+    neu[pos] = '\0';
+    if (!old || strcmp(old, neu) != 0) {
+#if defined(_WIN32)
+        if (_putenv_s("PATH", neu) != 0)
+#else
+        if (setenv("PATH", neu, 1) != 0)
+#endif
+            fprintf(stderr,
+                    "psxrecomp-codegen: PATH could not be set with the toolchain "
+                    "folders in front (%u characters); it stays as it is\n",
+                    (unsigned)pos);
+    }
+    free(neu);
+}
+
 static void activate_toolchain_path(void) {
     char pack_root[1400];
     g_toolchain_bin[0] = '\0';
@@ -870,27 +1051,11 @@ static void activate_toolchain_path(void) {
         }
     }
 
-    const char* old = getenv("PATH");
+    path_put_in_front(py_path_dir, g_toolchain_bin);
 #if defined(_WIN32)
-    char neu[8192];
-    if (py_path_dir[0])
-        snprintf(neu, sizeof(neu), "%s;%s%s%s", py_path_dir, g_toolchain_bin,
-                 old ? ";" : "", old ? old : "");
-    else
-        snprintf(neu, sizeof(neu), "%s%s%s", g_toolchain_bin, old ? ";" : "",
-                 old ? old : "");
-    _putenv_s("PATH", neu);
     if (py_exe[0])
         _putenv_s("RETCOMM_PYTHON", py_exe);
 #else
-    char neu[8192];
-    if (py_path_dir[0])
-        snprintf(neu, sizeof(neu), "%s:%s%s%s", py_path_dir, g_toolchain_bin,
-                 old ? ":" : "", old ? old : "");
-    else
-        snprintf(neu, sizeof(neu), "%s%s%s", g_toolchain_bin, old ? ":" : "",
-                 old ? old : "");
-    setenv("PATH", neu, 1);
     if (py_exe[0])
         setenv("RETCOMM_PYTHON", py_exe, 1);
 #endif
@@ -2308,9 +2473,11 @@ static int set_dir_aside(const char* path, char* aside, size_t cap) {
 #if defined(_WIN32)
         if (MoveFileExA(path, aside, 0))
             return 1;
+        g_tc_aside_error = (long)GetLastError();
 #else
         if (rename(path, aside) == 0)
             return 1;
+        g_tc_aside_error = (long)errno;
 #endif
         break;
     }
@@ -2872,13 +3039,22 @@ static int host_download_url_to_file(const char* url, const char* dest,
              "curl.exe -fsSL --retry 3 --retry-delay 2 -o \"%s\" \"%s\"", dest,
              url);
     if (!run_cmdline_wait(cmd, &code) || code != 0) {
-        snprintf(err_msg, err_cap,
-                 "Toolchain download failed (curl exit %lu). Check network / "
-                 "curl.exe.",
-                 (unsigned long)code);
+        if (code == 23)   /* curl's write error: nothing could be written */
+            toolchain_text_download_failed(err_msg, err_cap,
+                                           TOOLCHAIN_DOWNLOAD_NO_WRITE);
+        else
+            snprintf(err_msg, err_cap,
+                     "Toolchain download failed (curl exit %lu). Check network / "
+                     "curl.exe.",
+                     (unsigned long)code);
         return 0;
     }
-    return path_is_file(dest);
+    if (!path_is_file(dest)) {   /* curl is done and the pack is not there */
+        toolchain_text_download_failed(err_msg, err_cap,
+                                       TOOLCHAIN_DOWNLOAD_NO_WRITE);
+        return 0;
+    }
+    return 1;
 }
 
 static int host_extract_zip(const char* zip_path, const char* dest_dir,
@@ -2938,6 +3114,7 @@ static int host_download_url_to_file(const char* url, const char* dest,
                                      char* err_msg, size_t err_cap) {
     char cmd[4096];
     char parent[1400];
+    int status;
     if (!dirname_copy(parent, sizeof(parent), dest)) {
         snprintf(err_msg, err_cap, "Bad download destination.");
         return 0;
@@ -2946,11 +3123,21 @@ static int host_download_url_to_file(const char* url, const char* dest,
     unlink(dest);
     snprintf(cmd, sizeof(cmd),
              "curl -fsSL --retry 3 --retry-delay 2 -o \"%s\" \"%s\"", dest, url);
-    if (system(cmd) != 0) {
-        snprintf(err_msg, err_cap, "Toolchain download failed (curl).");
+    status = system(cmd);
+    if (status != 0) {
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 23)   /* curl's write error */
+            toolchain_text_download_failed(err_msg, err_cap,
+                                           TOOLCHAIN_DOWNLOAD_NO_WRITE);
+        else
+            snprintf(err_msg, err_cap, "Toolchain download failed (curl).");
         return 0;
     }
-    return path_is_file(dest);
+    if (!path_is_file(dest)) {   /* curl is done and the pack is not there */
+        toolchain_text_download_failed(err_msg, err_cap,
+                                       TOOLCHAIN_DOWNLOAD_NO_WRITE);
+        return 0;
+    }
+    return 1;
 }
 
 static int host_extract_zip(const char* zip_path, const char* dest_dir,
@@ -3229,11 +3416,10 @@ static int host_install_toolchain_from_zip(
      * is touched. */
     {
         char staged_bin[1500];
+        g_tc_check_step = TC_STEP_CMAKE;   /* no bin folder to run cmake from */
         if (!join_path(staged_bin, sizeof(staged_bin), pack, "bin") ||
             !toolchain_bin_is_healthy(staged_bin)) {
-            snprintf(err_msg, err_cap,
-                     "The downloaded toolchain did not pass its check. "
-                     "The installed toolchain was not changed.");
+            toolchain_text_new_pack_failed(err_msg, err_cap, g_tc_check_step);
             rmtree_path(staging);
             return 0;
         }
@@ -3256,9 +3442,7 @@ static int host_install_toolchain_from_zip(
     if (path_is_link(dest)) {
         remove_pointer_only(dest);
     } else if (path_exists_any(dest) && !set_dir_aside(dest, aside, sizeof(aside))) {
-        snprintf(err_msg, err_cap,
-                 "The installed toolchain is in use by another program. It was "
-                 "not changed. Close the running build and try again.");
+        toolchain_text_rename_failed(err_msg, err_cap, g_tc_aside_error);
         rmtree_path(staging);
         return 0;
     }
@@ -3346,15 +3530,26 @@ static int host_install_toolchain_from_zip(
     }
     /* The new pack passed its check where it was unpacked and fails it in its
      * place. The pack that was installed goes back under its name. */
-    if (aside[0]) {
-        rmtree_path(dest);
-        if (restore_dir_aside(aside, dest) &&
-            unwrap_toolchain_pack_root(dest, pack, sizeof(pack)))
-            set_toolchain_latest_pointer(cache_root, pack);
+    {
+        int back = 1;   /* nothing was installed before, or it is back under its name */
+        if (aside[0]) {
+            rmtree_path(dest);
+            back = restore_dir_aside(aside, dest);
+            if (back && unwrap_toolchain_pack_root(dest, pack, sizeof(pack)))
+                set_toolchain_latest_pointer(cache_root, pack);
+        }
+        /* The check's own sentence when the check named a step: the one that
+         * says the installed pack is what it was, or the one that says it is
+         * left under its dot-name. The older text otherwise. */
+        if (g_tc_check_step[0] && back)
+            toolchain_text_new_pack_failed(err_msg, err_cap, g_tc_check_step);
+        else if (g_tc_check_step[0])
+            toolchain_text_put_back_failed(err_msg, err_cap, g_tc_check_step);
+        else
+            snprintf(err_msg, err_cap,
+                     "Extracted toolchain but cmake.exe is missing or will not run "
+                     "(bin\\cmake.exe --version failed).");
     }
-    snprintf(err_msg, err_cap,
-             "Extracted toolchain but cmake.exe is missing or will not run "
-             "(bin\\cmake.exe --version failed).");
     return 0;
 }
 
@@ -3387,6 +3582,11 @@ static int host_download_and_install_toolchain(
     snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/psxrecomp-tc-%d", (int)getpid());
 #endif
     mkdir_p(tmp_dir);
+    if (!path_is_dir(tmp_dir)) {
+        toolchain_text_download_failed(err_msg, err_cap,
+                                       TOOLCHAIN_DOWNLOAD_NO_FOLDER);
+        return 0;
+    }
     if (!join_path(zip_path, sizeof(zip_path), tmp_dir, asset)) {
         snprintf(err_msg, err_cap, "Temp path too long.");
         return 0;
@@ -3549,12 +3749,16 @@ static int toolchain_bin_compiler_works(const char* bin) {
     if (!bin || !bin[0])
         return 0;
 #if defined(_WIN32)
-    if (!join_path(clang, sizeof(clang), bin, "clang.exe") || !path_is_file(clang))
+    if (!join_path(clang, sizeof(clang), bin, "clang.exe") || !path_is_file(clang)) {
+        g_tc_check_step = TC_STEP_MISSING;
         return 0;
+    }
     if (!join_path(lld, sizeof(lld), bin, "ld.lld.exe") || !path_is_file(lld)) {
         /* Some Windows packs only ship lld.exe — accept either. */
-        if (!join_path(lld, sizeof(lld), bin, "lld.exe") || !path_is_file(lld))
+        if (!join_path(lld, sizeof(lld), bin, "lld.exe") || !path_is_file(lld)) {
+            g_tc_check_step = TC_STEP_MISSING;
             return 0;
+        }
     }
 #else
     if (!join_path(clang, sizeof(clang), bin, "clang") || !path_is_file(clang)) {
@@ -3565,43 +3769,87 @@ static int toolchain_bin_compiler_works(const char* bin) {
          * A pack without clang is the normal macOS layout, not a broken one. */
         return 1;
 #  else
+        g_tc_check_step = TC_STEP_MISSING;
         return 0;
 #  endif
     }
-    if (!join_path(lld, sizeof(lld), bin, "ld.lld") || !path_is_file(lld))
+    if (!join_path(lld, sizeof(lld), bin, "ld.lld") || !path_is_file(lld)) {
+        g_tc_check_step = TC_STEP_MISSING;
         return 0;
+    }
 #endif
-    if (!cmake_path_runs(clang))
+    if (!cmake_path_runs(clang)) {
+        g_tc_check_step = TC_STEP_CLANG;
         return 0;
+    }
 
 #if defined(_WIN32)
     {
         char tdir[512];
         DWORD tn = GetTempPathA(sizeof(tdir), tdir);
-        if (tn == 0 || tn >= sizeof(tdir))
+        if (tn == 0 || tn >= sizeof(tdir)) {
+            g_tc_check_step = TC_STEP_TEMP;
             return 0;
+        }
         snprintf(src, sizeof(src), "%spsxrecomp-tc-probe-%lu.c", tdir,
                  (unsigned long)GetCurrentProcessId());
         snprintf(exe, sizeof(exe), "%spsxrecomp-tc-probe-%lu.exe", tdir,
                  (unsigned long)GetCurrentProcessId());
     }
 #else
-    snprintf(src, sizeof(src), "/tmp/psxrecomp-tc-probe-%d.c", (int)getpid());
-    snprintf(exe, sizeof(exe), "/tmp/psxrecomp-tc-probe-%d", (int)getpid());
+    {
+        /* TMPDIR when it is set, as other programs do; /tmp otherwise. */
+        const char* tdir = getenv("TMPDIR");
+        if (!tdir || !tdir[0])
+            tdir = "/tmp";
+        snprintf(src, sizeof(src), "%s/psxrecomp-tc-probe-%d.c", tdir, (int)getpid());
+        snprintf(exe, sizeof(exe), "%s/psxrecomp-tc-probe-%d", tdir, (int)getpid());
+    }
 #endif
 
     f = fopen(src, "wb");
-    if (!f)
+    if (!f) {
+        g_tc_check_step = TC_STEP_TEMP;
         return 0;
+    }
     fputs("int main(void){return 0;}\n", f);
     fclose(f);
 
 #if defined(_WIN32)
-    /* Prepend pack bin so clang picks this tree's lld, not a system linker. */
-    snprintf(cmd, sizeof(cmd),
-             "cmd.exe /C \"set \"PATH=%s;%%PATH%%\" && \"%s\" \"%s\" -o \"%s\" "
-             ">NUL 2>&1\"",
-             bin, clang, src, exe);
+    /* Pack bin in front of PATH so clang picks this tree's lld, not a system
+     * linker. The child gets that PATH from this process's environment, for
+     * the time of the check. It used to be written into the command
+     * (set "PATH=<bin>;%PATH%" && ...): cmd expands %PATH% inside the line and
+     * a cmd line holds 8,191 characters, so with a long PATH the line was
+     * refused ("The input line is too long."), the compile "failed" and a
+     * whole pack was judged unusable. */
+    {
+        const char* old = getenv("PATH");
+        char* saved = old ? _strdup(old) : NULL;
+        size_t need = strlen(bin) + 1 + (old ? strlen(old) : 0) + 1;
+        char* with_bin = (char*)malloc(need);
+        int in_front = 0;
+        if (with_bin) {
+            snprintf(with_bin, need, "%s%s%s", bin, (old && old[0]) ? ";" : "",
+                     old ? old : "");
+            in_front = (_putenv_s("PATH", with_bin) == 0);
+        }
+        if (!in_front)
+            /* One variable holds 32,767 characters at most. clang still finds
+             * its own linker beside itself; the check runs with PATH as it is. */
+            fprintf(stderr,
+                    "psxrecomp-codegen: PATH is too long to put the pack's bin "
+                    "folder in front for the toolchain check; the check runs "
+                    "with PATH as it is\n");
+        snprintf(cmd, sizeof(cmd),
+                 "cmd.exe /C \"\"%s\" \"%s\" -o \"%s\" >NUL 2>&1\"",
+                 clang, src, exe);
+        ok = run_cmd_exit_zero(cmd);
+        if (in_front)
+            _putenv_s("PATH", saved ? saved : "");
+        free(with_bin);
+        free(saved);
+    }
 #else
     /* Prefer the pack linker explicitly so PATH cannot hide a broken lld. */
     (void)lld; /* used via -fuse-ld when present; path already validated */
@@ -3609,8 +3857,8 @@ static int toolchain_bin_compiler_works(const char* bin) {
              "env PATH=\"%s:$PATH\" \"%s\" -fuse-ld=lld \"%s\" -o \"%s\" "
              ">/dev/null 2>&1",
              bin, clang, src, exe);
-#endif
     ok = run_cmd_exit_zero(cmd);
+#endif
 #if defined(_WIN32)
     DeleteFileA(src);
     DeleteFileA(exe);
@@ -3618,6 +3866,8 @@ static int toolchain_bin_compiler_works(const char* bin) {
     unlink(src);
     unlink(exe);
 #endif
+    if (!ok)
+        g_tc_check_step = TC_STEP_LINK;
     return ok;
 }
 
@@ -3667,6 +3917,7 @@ static int host_system_compiler_ready(void) {
 
 static int toolchain_bin_is_healthy(const char* bin) {
     char cmake[1200];
+    g_tc_check_step = TC_STEP_CMAKE;   /* until cmake has run */
     if (!bin || !bin[0])
         return 0;
 #if defined(_WIN32)
@@ -3677,6 +3928,7 @@ static int toolchain_bin_is_healthy(const char* bin) {
     if (!join_path(cmake, sizeof(cmake), bin, "cmake") || !cmake_path_runs(cmake))
         return 0;
 #endif
+    g_tc_check_step = "";
     return toolchain_bin_compiler_works(bin);
 }
 
@@ -3710,6 +3962,7 @@ static void heal_broken_toolchain_pointers(void) {
     char bases[12][1400];
     int n = collect_toolchain_cache_bases(bases, 12);
     int failed = 0;
+    const char* failed_step = "";
     toolchain_put_back_set_aside();
     for (int i = 0; i < n; ++i) {
         char latest[1400], root[1400], bin[1400];
@@ -3734,16 +3987,16 @@ static void heal_broken_toolchain_pointers(void) {
             toolchain_bin_reject(bin);
         }
         failed = 1;   /* said again at each check, as long as the pack is there */
+        failed_step = toolchain_bin_rejected_step(bin);
+        if (!failed_step[0])
+            failed_step = g_tc_check_step;   /* the list was full: this check's own step */
     }
     if (failed) {
         clear_project_toolchain_stamp();
         g_toolchain_bin[0] = '\0';
         g_cli_toolchain_bin[0] = '\0';
         g_cmake[0] = '\0';
-        snprintf(g_tc_repair_note, sizeof(g_tc_repair_note),
-                 "The portable toolchain did not pass its check (the compiler "
-                 "or the linker does not run). It was not removed. Download "
-                 "the latest pack to replace it.");
+        toolchain_text_check_failed(g_tc_repair_note, sizeof(g_tc_repair_note), failed_step);
     }
 }
 
@@ -3761,11 +4014,8 @@ static void discard_unhealthy_active_toolchain(void) {
     g_toolchain_bin[0] = '\0';
     g_cli_toolchain_bin[0] = '\0';
     g_cmake[0] = '\0';
-    if (!g_tc_repair_note[0]) {
-        snprintf(g_tc_repair_note, sizeof(g_tc_repair_note),
-                 "Portable toolchain is installed but cannot compile/link "
-                 "(path or library error). Redownload the latest pack.");
-    }
+    if (!g_tc_repair_note[0])
+        toolchain_text_check_failed(g_tc_repair_note, sizeof(g_tc_repair_note), g_tc_check_step);
 }
 
 static int active_toolchain_meets_min(void) {
