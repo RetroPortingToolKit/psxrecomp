@@ -399,6 +399,11 @@ typedef struct PGXPNativeWord {
 } PGXPNativeWord;
 int pgxp_native_capture_words(const uint32_t *addresses, const uint32_t *values,
                               PGXPNativeWord *out, uint32_t count);
+/* One logical LH/LHU input. Unlike a word load it neither validates nor ends
+ * the unconsumed half of the source word. address is the actual half address;
+ * the receipt holds the extended value and its known upper half. */
+int pgxp_native_capture_half(uint32_t address, uint16_t value, int sign_extend,
+                             PGXPNativeWord *out);
 int pgxp_native_publish_words(const uint32_t *destinations,
                               const PGXPNativeWord *words, uint32_t count);
 /* The caller has already materialized the GPR word. r0 is refused. */

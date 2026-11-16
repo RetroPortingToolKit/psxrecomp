@@ -1109,6 +1109,31 @@ extern "C" int pgxp_native_capture_words(const uint32_t *addresses,
     return 1;
 }
 
+extern "C" int pgxp_native_capture_half(uint32_t address, uint16_t value,
+                                         int sign_extend, PGXPNativeWord *out) {
+    uint32_t canonical;
+    if (!out || (address & 1u) || !packet_shadow_address(address & ~3u, &canonical)) return 0;
+    PGXPNativeWord result{};
+    result.word.address = canonical;
+    result.word.source_generation = s_gen;
+    result.word.value = sign_extend ? (uint32_t)(int32_t)(int16_t)value : value;
+    result.word.valid = s_enabled ? 1u : 0u;
+    result.word.flags = PGXP_F_VY;
+    result.word.y16 = (int32_t)(int16_t)(result.word.value >> 16) * 65536;
+    const PGXPValue *source = pgxp_ptr(address);
+    const bool high = (address & 2u) != 0;
+    if (source && source->gen == s_gen && !(source->flags & PGXP_F_UNCLAMPED) &&
+        (source->flags & (high ? PGXP_F_VY : PGXP_F_VX)) &&
+        (uint16_t)(source->value >> (high ? 16 : 0)) == value) {
+        result.word.flags |= PGXP_F_VX;
+        result.word.x16 = high ? source->y16 : source->x16;
+        if (source->flags & (high ? PGXP_F_DY : PGXP_F_DX)) result.word.flags |= PGXP_F_DX;
+    }
+    *out = result;
+    if (g_pgxp_active) ++s_hook_stats.native_words_captured;
+    return 1;
+}
+
 extern "C" int pgxp_native_publish_words(const uint32_t *destinations,
                                          const PGXPNativeWord *words,
                                          uint32_t count) {

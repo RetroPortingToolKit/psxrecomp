@@ -382,6 +382,24 @@ int main() {
     PGXPNativeWord control_word{};
     CHECK(pgxp_native_capture_words(inputs,&Packed,&control_word,1));
     const auto before_exact_query=capture(Address,Packed);
+    PGXPNativeWord half_receipt{};
+    CHECK(pgxp_native_capture_half(Address,uint16_t(Packed),0,&half_receipt));
+    CHECK(half_receipt.word.value==uint16_t(Packed));
+    CHECK(half_receipt.word.flags==PGXP_F_VXY&&half_receipt.word.x16==before_exact_query.x16&&half_receipt.word.y16==0);
+    CHECK(half_receipt.source==0);
+    const uint32_t half_destination=Other;
+    CHECK(pgxp_native_publish_words(&half_destination,&half_receipt,1));
+    const auto native_half=capture(Other,uint16_t(Packed));
+    psx_pgxp_load(&machine,0x94250000u,Address,uint16_t(Packed));
+    psx_pgxp_store(&machine,0xAC250000u,Other,uint16_t(Packed));
+    check_attributes(native_half,capture(Other,uint16_t(Packed)));
+    CHECK(pgxp_native_capture_half(Address+2,uint16_t(Packed>>16),1,&half_receipt));
+    CHECK(half_receipt.word.value==(uint32_t)(int32_t)(int16_t)(Packed>>16));
+    CHECK(!pgxp_native_capture_half(Address+1,0,0,&half_receipt));
+    // A half input leaves even stale metadata in the other half untouched.
+    CHECK(pgxp_native_capture_half(Address+2,uint16_t(Packed>>16)^1u,0,&half_receipt));
+    CHECK(!(half_receipt.word.flags&PGXP_F_VX));
+    check_attributes(before_exact_query,capture(Address,Packed));
     CHECK(!pgxp_native_word_exact(Address,Packed));
     CHECK(pgxp_native_word_exact(Address,Packed^0x00010001u)); // both carried halves mismatch
     check_attributes(before_exact_query,capture(Address,Packed));
@@ -404,6 +422,14 @@ int main() {
     double native_scalar=-1;
     CHECK(pgxp_native_gte_scalar(25,8,&native_scalar)&&native_scalar==8.375);
     CHECK(!pgxp_native_gte_scalar(25,9,&native_scalar)&&native_scalar==8.375);
+    CHECK(pgxp_native_scalar_data(9,301,301.5,1));
+    CHECK(pgxp_native_gte_scalar(9,301,&native_scalar)&&native_scalar==301.5);
+    CHECK(!pgxp_native_gte_scalar(9,302,&native_scalar));
+    CHECK(pgxp_native_scalar_data(9,301,301.0,0));
+    CHECK(!pgxp_native_gte_scalar(9,301,&native_scalar));
+    CHECK(!pgxp_native_scalar_data(14,Packed,0,0)); // FIFO belongs to the vertex boundary
+    pgxp_suppress_begin();CHECK(pgxp_native_scalar_data(9,302,302.5,1));pgxp_suppress_end();
+    CHECK(!pgxp_native_gte_scalar(9,302,&native_scalar));
     machine.lo=7;CHECK(pgxp_native_scalar_gpr(&machine,33,7.75,1));
     machine.gpr[5]=7;psx_pgxp_alu(&machine,0x00002812u,7,7,0); // MFLO a1
     psx_pgxp_store(&machine,0xAC250000u,Other,7);
