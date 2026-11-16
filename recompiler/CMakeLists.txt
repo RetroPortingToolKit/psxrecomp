@@ -1409,6 +1409,7 @@ if(BUILD_TESTING)
                 frame_interpolation_display_rate
                 frame_interpolation_flip_source
                 hybrid_dev_any_input
+                netplay_boot_mode_wiring
                 launcher_pad_mode_wiring
                 netplay_start_failure_wiring
                 jalr_link_register_guards
