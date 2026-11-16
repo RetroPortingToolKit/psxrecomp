@@ -353,14 +353,16 @@ int main(void) {
     PSX_BLOCK_EDGE(&cpu, 0x80012340u);
     VERIFY(s_edge_calls == reads_edge_calls,
            "schedule-stable MMIO does not force a common slow block edge");
-    psx_devices_mmio_sync_at(0x1F8010A8u, 1);
-    VERIFY(psx_next_service_cycle == 0,
-           "DMA register writes still invalidate the pre-handler schedule");
     psx_devices_mmio_sync_at(0x1F801040u, 0);
     VERIFY(psx_next_service_cycle == 0,
            "side-effecting SIO reads retain conservative invalidation");
     VERIFY(s_sio_cycles == 61 && s_device_calls == calls_before,
            "SIO observation uses its own elapsed interval");
+    /* A DMA write must also materialize CD. Test it after the unchanged
+     * SIO-only interval assertion, rather than changing that assertion. */
+    psx_devices_mmio_sync_at(0x1F8010A8u, 1);
+    VERIFY(psx_next_service_cycle == 0,
+           "DMA register writes still invalidate the pre-handler schedule");
     psx_devices_mmio_sync_at(0x1F801800u, 1);
     s_cd_ready = 0; s_cd_cycles_remaining = 7; s_dma_ready_cycles = 0;
     psx_advance_cycles(7); psx_devices_mmio_sync_at(0x1F801814u, 0);
