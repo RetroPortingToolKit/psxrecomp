@@ -32,6 +32,7 @@ set(PSXRECOMP_CODEGEN_HASH_SRCS
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/pgxp_hook_emitter.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/pgxp_dataflow.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/pgxp_operation_flow.h
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/pgxp_demand_regions.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/pgxp_operation.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/function_discovery.cpp
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/function_discovery.h

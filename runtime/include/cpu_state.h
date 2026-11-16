@@ -420,6 +420,19 @@ void debug_server_cyc_observe(uint32_t block_leader_phys);
 #ifndef PSX_OVERLAY_DLL_BUILD
 extern volatile uint32_t g_psx_last_block;
 #if defined(__GNUC__) || defined(__clang__)
+static inline __attribute__((always_inline)) int psx_debug_block_interest(uint32_t pc) {
+#elif defined(_MSC_VER)
+static __forceinline int psx_debug_block_interest(uint32_t pc) {
+#else
+static inline int psx_debug_block_interest(uint32_t pc) {
+#endif
+    const uint32_t phys = pc & 0x1FFFFFFFu;
+    return g_psx_debug_block_interest ||
+        phys == 0x0006AB3Cu || phys == 0x0006AAF0u ||
+        phys == 0x0006ACFCu || phys == 0x0006AD08u || phys == 0x00069CC4u;
+}
+#define PSX_DEBUG_BLOCK_INTEREST(pc) psx_debug_block_interest(pc)
+#if defined(__GNUC__) || defined(__clang__)
 static inline __attribute__((always_inline)) void psx_debug_block_observe(uint32_t pc) {
 #elif defined(_MSC_VER)
 static __forceinline void psx_debug_block_observe(uint32_t pc) {
@@ -430,17 +443,17 @@ static inline void psx_debug_block_observe(uint32_t pc) {
     g_psx_last_block = phys;
     /* The five address adapters have effects without an armed watch. With
      * emitted literal PCs their comparisons fold away at ordinary leaders. */
-    if (g_psx_debug_block_interest ||
-        phys == 0x0006AB3Cu || phys == 0x0006AAF0u ||
-        phys == 0x0006ACFCu || phys == 0x0006AD08u || phys == 0x00069CC4u)
+    if (PSX_DEBUG_BLOCK_INTEREST(phys))
         debug_server_cyc_observe(phys);
 }
 #define PSX_DEBUG_BLOCK_OBSERVE(pc) psx_debug_block_observe(pc)
 #else
 /* No imported host-interest view is required by the overlay ABI. */
+#define PSX_DEBUG_BLOCK_INTEREST(pc) ((void)(pc), 1)
 #define PSX_DEBUG_BLOCK_OBSERVE(pc) debug_server_cyc_observe(pc)
 #endif
 #else
+#define PSX_DEBUG_BLOCK_INTEREST(pc) 0
 #define PSX_DEBUG_BLOCK_OBSERVE(pc) ((void)0)
 #endif
 #ifdef __cplusplus

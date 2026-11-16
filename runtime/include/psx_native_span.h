@@ -24,6 +24,26 @@ static inline void psx_native_span_charge(uint32_t cycles) {
 #endif
 }
 
+/* Pure preview of this maintained charge, not another event prediction or
+ * admission/read-set walk. Native observation charges only call out at the
+ * sampling bound; device/IRQ delivery stays at the existing block edge. */
+static inline int psx_native_span_charge_observable(uint32_t raw_cycles) {
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_OVERLAY_DLL_BUILD)
+    if (g_ls_replay_active || g_psx_guest_time_frozen || g_event_step_conservative ||
+        psx_in_device_service || g_ls_mode || g_ds_recording || g_psx_render_pass_active ||
+        g_overlay_flush_pending_cycles || g_psx_cyc_batch || g_psx_cyc_local_acc)
+        return 1;
+    const uint32_t charge = g_psx_gcs_recip_q16 == 65536u ? raw_cycles :
+        psx_gcs_scaled_charge(raw_cycles, g_psx_gcs_recip_q16, g_psx_gcs_frac);
+    if (!charge) return 0;
+    return charge > UINT64_MAX - psx_cycle_count ||
+        psx_cycle_count + charge >= psx_next_cycle_sample;
+#else
+    (void)raw_cycles;
+    return 1; /* Portable/reference/DLL uses its canonical charge owner. */
+#endif
+}
+
 /* Direct RAM values are safe only while no read observer owns the access.
  * MMIO, instrumented reads, unusual segments and mirror-edge crossings use
  * the normal callback, which also publishes device work before the read.

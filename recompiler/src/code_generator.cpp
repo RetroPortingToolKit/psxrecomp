@@ -189,13 +189,90 @@ std::string CodeGenerator::emit_mid_block_cycle_charge(uint32_t addr,
     return ss.str();
 }
 
+std::string CodeGenerator::region_materializer(const PgxpRegionState& state) const {
+    uint32_t mask=0,x[2]={},y[2]={};
+    for(unsigned r=1;r<32;++r)if(state[r].known) {
+        const uint32_t bit=uint32_t(1)<<r;mask|=bit;
+        for(unsigned m=0;m<2;++m) { if(state[r].flags[m]&1)x[m]|=bit;if(state[r].flags[m]&2)y[m]|=bit; }
+    }
+    const auto key=fmt::format("{}_{}_{}_{}_{}",mask,x[0],y[0],x[1],y[1]);
+    const auto name=precision_region_owner_+"_receipt_"+key;
+    precision_region_materializers_[name]=fmt::format(
+        "static void {}(CPUState *cpu) {{ psx_pgxp_region_materialize(cpu,0x{:08X}u,0x{:08X}u,0x{:08X}u,0x{:08X}u,0x{:08X}u); }}\n",
+        name,mask,x[0],y[0],x[1],y[1]);
+    return name;
+}
+std::string CodeGenerator::region_flush() {
+    bool any=false;for(unsigned r=1;r<32;++r)any|=precision_region_state_[r].known;
+    const auto out=any ? config_.indent+region_materializer(precision_region_state_)+"(cpu);\n" : "";
+    precision_region_state_={};return out;
+}
+void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
+    std::vector<PgxpFlowBlock> blocks;
+    std::set<uint32_t> roots{cfg.function_start};
+    precision_region_opaque_.clear();
+    for(const auto& [pc,b]:cfg.blocks) {
+        PgxpFlowBlock f{pc,{},b.successors};
+        const auto type=b.exit_instr.type;
+        f.boundary=type!=ControlFlowType::None && type!=ControlFlowType::Branch && type!=ControlFlowType::Jump;
+        if(type==ControlFlowType::JumpLink||type==ControlFlowType::JumpLinkReg) {
+            roots.insert(b.exit_instr.address+8u);f.successors={b.exit_instr.address+8u};
+        }
+        if(type==ControlFlowType::None)f.successors={b.end_addr+4u};
+        uint32_t end=b.end_addr;
+        if(b.exit_instr.has_delay_slot)end=std::max(end,b.exit_instr.address+4u);
+        for(uint32_t a=pc;a<=end;a+=4u) {
+            const auto w=exe_.read_word(a);if(!w){precision_region_plan_={};return;}
+            auto text=translate_instruction_core(a,*w);
+            const bool control=ControlFlowAnalyzer::is_control_flow(*w);
+            bool opaque=extra_labels_.count(a)||!mod_instruction_call(a,*w).empty()||
+                find_mod_immediate_site(a,*w)||!draw_distance_clamp_prefix(a,*w).empty()||
+                text.find("psx_")!=std::string::npos||text.find("gte_")!=std::string::npos;
+            if(control && (f.boundary || pgxp_flow_effect(*w).barrier || !mod_instruction_call(a,*w).empty()))opaque=true;
+            if(type==ControlFlowType::Branch && a==b.exit_instr.address) {
+                const auto condition=generate_branch_condition(*w,a);
+                if(condition.find("psx_")!=std::string::npos||condition.find("gte_")!=std::string::npos)opaque=true;
+            }
+            const unsigned op=*w>>26,rt=(*w>>16)&31u;
+            if(op>=0x20&&op<=0x26&&rt)if(auto next=exe_.read_word(a+4u)) {
+                if(pgxp_flow_effect(*next).uses&(UINT64_C(1)<<rt)) {
+                    opaque=true;precision_region_opaque_.insert(a+4u);
+                }
+            }
+            if(opaque)precision_region_opaque_.insert(a);
+            f.instructions.push_back({a,*w,opaque});
+        }
+        blocks.push_back(std::move(f));
+    }
+    for(auto& b:blocks)for(auto& i:b.instructions)if(precision_region_opaque_.count(i.address))i.opaque=true;
+    precision_region_plan_=pgxp_region_plan(blocks,roots);
+}
+
 std::string CodeGenerator::emit_interrupt_check(uint32_t resume_pc,
                                                 const std::string& indent) const {
+    if(precision_region_body_) {
+        auto found=precision_region_plan_.entry.find(resume_pc);
+        if(found==precision_region_plan_.entry.end())
+            return indent+region_materializer(precision_region_state_)+"(cpu);\n"+
+                indent+fmt::format("PSX_BLOCK_EDGE(cpu,0x{:08X}u);\n",runtime_pc(resume_pc));
+        auto normalize=precision_region_state_;
+        for(unsigned r=1;r<32;++r)if(found->second[r]==normalize[r])normalize[r]={};
+        bool any=false;for(unsigned r=1;r<32;++r)any|=normalize[r].known;
+        std::string out=indent+"{ const uint32_t _region_pc=cpu->pc;\n";
+        out+=indent+fmt::format("if(psx_block_edge_materialize(cpu,0x{:08X}u,{})) {{\n",runtime_pc(resume_pc),region_materializer(precision_region_state_));
+        out+=indent+"    if(g_psx_call_bail || cpu->pc!=_region_pc) return;\n";
+        out+=indent+fmt::format("    goto canonical_block_{:08X};\n",resume_pc);
+        out+=indent+"} }\n";
+        if(any)out+=indent+region_materializer(normalize)+"(cpu); /* incompatible precision join */\n";
+        return out;
+    }
     return indent + precision_operation_receipt_ + fmt::format("PSX_BLOCK_EDGE(cpu, 0x{:08X}u);\n", runtime_pc(resume_pc));
 }
 
 std::string CodeGenerator::emit_interrupt_check_expr(const std::string& resume_pc_expr,
                                                      const std::string& indent) const {
+    if(precision_region_body_) return indent+region_materializer(precision_region_state_)+"(cpu);\n"+
+        indent+fmt::format("PSX_BLOCK_EDGE(cpu, {});\n", resume_pc_expr);
     return indent + precision_operation_receipt_ + fmt::format("PSX_BLOCK_EDGE(cpu, {});\n", resume_pc_expr);
 }
 
@@ -1032,6 +1109,24 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr,
                                       : translate_instruction_core(addr, instr);
     const bool ordinary = !imm_site && hook.empty() && clamp.empty() &&
         body.find("psx_") == std::string::npos && body.find("gte_") == std::string::npos;
+    if(precision_region_body_) {
+        const auto before=precision_region_state_;
+        const auto hook_at=body.find("PGXP_ALU(");
+        const bool candidate=ordinary && !precision_region_opaque_.count(addr) &&
+            hook_at!=std::string::npos && body.find("PGXP_ALU(",hook_at+1u)==std::string::npos;
+        unsigned destination=0;PgxpRegionValue value;
+        if(candidate && pgxp_region_definition(instr,before,destination,value)) {
+            const bool saved=precision_operation_body_;precision_operation_body_=true;
+            const auto integer=translate_instruction_core(addr,instr);
+            precision_operation_body_=saved;
+            precision_region_state_[destination]=value;
+            return integer+" /* precision-demand: native integer definition */";
+        }
+        const auto effect=pgxp_flow_effect(instr);
+        if(!ordinary || effect.defines || effect.uses || effect.barrier || (instr>>26)>=0x10u)
+            return region_flush()+hook+body;
+        return hook+body;
+    }
     bool dead_shadow = false;
     if (ordinary && precision_dead_alu_.count(addr)) {
         const auto at = body.find("PGXP_ALU(");
@@ -2134,7 +2229,7 @@ std::string CodeGenerator::translate_basic_block(
     const BasicBlock& block,
     const ControlFlowGraph& cfg) {
 
-    if (!precision_operation_reentry_) {
+    if (!precision_region_body_ && !precision_operation_reentry_) {
         std::vector<PgxpFlowInstruction> words;
         uint32_t end=block.end_addr;
         if(block.exit_instr.has_delay_slot)end=std::max(end,block.exit_instr.address+4u);
@@ -2205,6 +2300,7 @@ std::string CodeGenerator::translate_basic_block(
     }
     std::stringstream ss;
     PgxpPlainSpan precision_span;
+    if(precision_region_body_)precision_region_state_=precision_region_plan_.entry.at(block.start_addr);
 
     // Block label
     ss << fmt::format("block_{:08X}:\n", block.start_addr);
@@ -2214,6 +2310,17 @@ std::string CodeGenerator::translate_basic_block(
     // Beetle's before-instruction sample and the cycle_compare.py anchor
     // semantics, so ANY block-leader PC is anchorable on both backends (not just
     // function entries). Debug-only: prod (PSX_NO_DEBUG_TOOLS) emits nothing.
+    bool region_pending=false;
+    if(precision_region_body_)for(unsigned r=1;r<32;++r)region_pending|=precision_region_state_[r].known;
+    if(region_pending) {
+        uint32_t charge=0;
+        uint32_t end=block.end_addr;
+        if(block.exit_instr.has_delay_slot)end=std::max(end,block.exit_instr.address+4u);
+        for(uint32_t a=block.start_addr;a<=end;a+=4u)if(auto w=exe_.read_word(a))charge+=psx_native_instr_cycles(*w,runtime_pc(a));
+        ss<<config_.indent<<fmt::format("if(PSX_DEBUG_BLOCK_INTEREST(0x{:08X}u) || g_psx_precise_slice || psx_native_span_charge_observable({}u)) {{\n",runtime_pc(block.start_addr),charge);
+        ss<<config_.indent<<"    "<<region_materializer(precision_region_state_)<<"(cpu);\n";
+        ss<<config_.indent<<fmt::format("    goto canonical_block_{:08X};\n",block.start_addr)<<config_.indent<<"}\n";
+    }
     ss << "#ifndef PSX_NO_DEBUG_TOOLS\n";
     ss << config_.indent
        << fmt::format("PSX_DEBUG_BLOCK_OBSERVE(0x{:08X}u);\n", block.start_addr);
@@ -2560,6 +2667,8 @@ std::string CodeGenerator::translate_basic_block(
         } else {
             // Control flow is handled at block exit
             if (addr == exit_branch_addr) {
+                if(precision_region_body_ && (precision_region_opaque_.count(addr) ||
+                    (block.exit_instr.type!=ControlFlowType::Branch && block.exit_instr.type!=ControlFlowType::Jump)))ss<<region_flush();
                 // Jumps (j/jal/jr/jalr) and reserved words never reach
                 // generate_branch_condition; check them here.
                 check_explicit_branch_site(addr, block.exit_instr.instruction);
@@ -2820,6 +2929,7 @@ std::string CodeGenerator::translate_basic_block(
                         }
                         if (ra_loaded_from_non_sp) break;
                     }
+                    if(precision_region_body_)ss<<region_flush();
                     if (config_.ws_backdrop_unsquash_funcs.count(cfg.function_start)) {
                         ss << config_.indent
                            << "gte_ws_set_suppress(0);  /* widescreen: end far-backdrop un-squash (8C) */\n";
@@ -3084,12 +3194,20 @@ std::string CodeGenerator::translate_basic_block(
     // a C label/function boundary, preserve the physical fall-through without
     // consuming an interrupt/cooldown check at the artificial boundary.
     if (block.exit_instr.type == ControlFlowType::None && !block.successors.empty()) {
+        if(precision_region_body_) {
+            auto state=precision_region_state_;
+            const auto at=precision_region_plan_.entry.find(block.successors[0]);
+            for(unsigned r=1;r<32;++r)if(at!=precision_region_plan_.entry.end() && at->second[r]==state[r])state[r]={};
+            bool any=false;for(unsigned r=1;r<32;++r)any|=state[r].known;
+            if(any)ss<<config_.indent<<region_materializer(state)<<"(cpu);\n";
+        }
         ss << config_.indent << precision_operation_receipt_;
         ss << config_.indent << fmt::format("/* fall through to block_{:08X} */\n",
                                            block.successors[0]);
     } else if (block.exit_instr.type == ControlFlowType::None) {
         uint32_t next_addr = block.end_addr + 4;
         if (known_functions_.count(next_addr) > 0) {
+            if(precision_region_body_)ss<<region_flush();
             ss << config_.indent << precision_operation_receipt_;
             ss << emit_stale_static_guard(runtime_pc(next_addr), config_.indent);
             ss << config_.indent
@@ -3315,6 +3433,31 @@ GeneratedFunction CodeGenerator::generate_function(
         blocks_ss << "\n" << translate_basic_block(block, cfg);
     }
 
+    std::string private_blocks, private_fallthrough_receipt;
+    precision_region_owner_=func.name+"_precision";
+    precision_region_materializers_.clear();
+    prepare_precision_regions(cfg);
+    // Inline mid-block jump-table entries and local cycle accumulators need a
+    // separate receipt for every entrance; retain the full canonical function.
+    const bool regions=cps_enabled_ && !config_.overlay_mode && extra_labels_.empty() &&
+        !config_.load_charge_batch_funcs.count(func.start_addr) && precision_region_plan_.definitions;
+    if(regions) {
+        precision_region_body_=true;
+        for(uint32_t pc:cfg.block_order)private_blocks+="\n"+translate_basic_block(cfg.blocks.at(pc),cfg);
+        private_fallthrough_receipt=region_flush();
+        precision_region_body_=false;
+        // Private labels remain under this exact native owner. Canonical escapes
+        // skip consumed function hooks AND the edge already serviced above.
+        for(size_t at=0;(at=private_blocks.find("block_",at))!=std::string::npos;) {
+            const bool label=at+14u<=private_blocks.size() &&
+                private_blocks.substr(at+6u,8u).find_first_not_of("0123456789ABCDEF")==std::string::npos;
+            if(!label){at+=6;continue;} // Never rename psx_block_edge_materialize.
+            if(at>=10 && private_blocks.substr(at-10,10)=="canonical_") {
+                private_blocks.erase(at-10,10);at+=14;
+            } else {private_blocks.insert(at,"precision_");at+=24;}
+        }
+    }
+
     // FAITHFUL RE-ENTRY — every basic-block leader is a dispatchable continuation
     // (MMX6 boot-wedge class B, resume PC 0x8005B07C). psx_check_interrupts_at is
     // emitted at EVERY block leader, so ANY leader can be published as an async-RFE
@@ -3381,6 +3524,11 @@ GeneratedFunction CodeGenerator::generate_function(
             if (!seen.insert(c).second) continue;
             // The key is the PC the trampoline hands back (cpu->pc), so it
             // is a runtime PC; the label is the compile identity (§5.2).
+            if(regions && precision_region_plan_.roots.count(c) && cfg.blocks.count(c)) {
+                body_ss<<"#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_COSIM) && !defined(PSX_OVERLAY_DLL_BUILD)\n";
+                body_ss<<config_.indent<<fmt::format("        case 0x{:08X}u: goto precision_block_{:08X};\n",runtime_pc(c),c);
+                body_ss<<"#else\n";
+            }
             if (partial_block_cycle_count(c, cfg) != 0) {
                 body_ss << config_.indent << fmt::format("        case 0x{:08X}u:\n", runtime_pc(c));
                 body_ss << emit_mid_block_cycle_charge(c, cfg, config_.indent + "            ");
@@ -3389,6 +3537,7 @@ GeneratedFunction CodeGenerator::generate_function(
                 body_ss << config_.indent
                         << fmt::format("        case 0x{:08X}u: goto block_{:08X};\n", runtime_pc(c), c);
             }
+            if(regions && precision_region_plan_.roots.count(c) && cfg.blocks.count(c))body_ss<<"#endif\n";
             cps_continuation_owner_[c] = func.start_addr;
         }
         if (config_.overlay_mode) {
@@ -3480,7 +3629,10 @@ GeneratedFunction CodeGenerator::generate_function(
                               func.start_addr, func.size, cfg.blocks.size());
     }
 
+    if(regions)body_ss<<"#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_COSIM) && !defined(PSX_OVERLAY_DLL_BUILD)\n"
+        <<config_.indent<<fmt::format("goto precision_block_{:08X};\n",func.start_addr)<<"#endif\n";
     body_ss << blocks_ss.str();
+    const size_t canonical_suffix_at=body_ss.str().size();
 
     // Only a reachable, unterminated final C block needs a safety-net transfer.
     if (!fallthrough_name.empty() && !cfg.block_order.empty()) {
@@ -3519,6 +3671,11 @@ GeneratedFunction CodeGenerator::generate_function(
         }
     }
     body_ss << "    ;  /* label compatibility: C requires a statement after the last label */\n";
+    if(regions) {
+        const std::string canonical_suffix=body_ss.str().substr(canonical_suffix_at);
+        body_ss<<"    return;\n#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_COSIM) && !defined(PSX_OVERLAY_DLL_BUILD)\n";
+        body_ss<<"    /* precision-demand-regions: "<<precision_region_plan_.definitions<<" integer definitions; canonical opaque entries retained */\n    {\n"<<private_blocks<<private_fallthrough_receipt<<canonical_suffix<<"    }\n#endif\n";
+    }
     if (native_tail_scope) {
         body_ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n"
                 << config_.indent << "}  /* publish charges and end execution-local lifetimes */\n"
@@ -3541,6 +3698,11 @@ GeneratedFunction CodeGenerator::generate_function(
             annotation_prefix = fmt::format("/* [NOTE] {} */\n", note);
     }
 
+    if(regions) {
+        annotation_prefix+="#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_COSIM) && !defined(PSX_OVERLAY_DLL_BUILD)\n";
+        for(const auto& [name,text]:precision_region_materializers_)annotation_prefix+=text;
+        annotation_prefix+="#endif\n";
+    }
     result.full_code = annotation_prefix + result.signature + "\n" + result.body;
     result.line_count = std::count(result.full_code.begin(), result.full_code.end(), '\n');
 
@@ -3984,7 +4146,7 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     ss << "extern void cosim_instr(uint32_t pc);\n";
     ss << "#endif\n";
     ss << "#include \"psx_static_calls.h\"\n/* psx-native-tail-game-v1 */\n";
-    ss << "/* psx-pgxp-operations-v2 */\n";
+    ss << "/* psx-pgxp-demand-regions-v1; psx-pgxp-operations-v2 */\n";
     ss << "extern int  psx_game_text_native_ok(uint32_t addr);  /* stale-static guard (dispatch shard) */\n";
     ss << "extern int  psx_datashard_enter(CPUState* cpu, uint32_t key);  /* data-shard replay/capture (data_shards.c) */\n";
     ss << "extern void psx_mod_instruction(CPUState*, uint32_t, uint32_t);\n";
@@ -4131,7 +4293,7 @@ std::string CodeGenerator::build_shared_decls_header(const std::vector<Generated
     h << "/* Generated by PSXRecomp - shared declarations for split full.c shards. DO NOT EDIT. */\n";
     h << "#pragma once\n";
     h << "#include \"psx_runtime.h\"\n\n";
-    h << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-operations-v2 */\n\n";
+    h << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-demand-regions-v1; psx-pgxp-operations-v2 */\n\n";
     emit_runtime_externs(h);
     emit_unaligned_helpers(h, /*as_inline=*/true);
     if (!gen_funcs.empty()) {
@@ -4156,7 +4318,7 @@ std::string CodeGenerator::generate_file(
     // Include the generic PSX runtime header.
     // This provides CPUState, GTE/trap declarations, and call_by_address().
     ss << "#include \"psx_runtime.h\"\n\n";
-    ss << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-operations-v2 */\n\n";
+    ss << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-demand-regions-v1; psx-pgxp-operations-v2 */\n\n";
     emit_runtime_externs(ss);
     emit_unaligned_helpers(ss, /*as_inline=*/false);
 

@@ -24,6 +24,8 @@ def main():
     parser.add_argument('--ninja', required=True)
     parser.add_argument('--edge-assembly-only', action='store_true')
     parser.add_argument('--clock-only', action='store_true')
+    parser.add_argument('--materialize-only', action='store_true',
+                        help='run affected cold-edge/upcoming-charge clock products only')
     parser.add_argument('--overlay-charge-source', type=Path)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
@@ -34,6 +36,18 @@ def main():
             '#define PSX_OBSERVATION_WAIT_SITE(pc) ((pc) == 0x8002E6C0u)\n'
             '#define PSX_OBSERVATION_WAIT_SITE_VALUES 0x8002E6C0u\n'
             '#define PSX_OBSERVATION_WAIT_SITE_COUNT 1u\n')
+        if args.materialize_only:
+            for opt in ['0', '2']:
+                exe = temp/f'materialized-clock-{opt}.exe'
+                run([args.cc, '-std=c11', '-O'+opt, '-DPSX_NO_DEBUG_TOOLS',
+                     '-DPSX_OBSERVATION_TIME=1', '-DPSX_NATIVE_CPU_SPANS=1',
+                     '-DPSX_TEST_BLOCK_MATERIALIZE=1',
+                     '-I'+str(inc), '-I'+str(temp),
+                     str(root/'runtime/tests/test_psx_cycle_event_boundaries.c'),
+                     str(root/'runtime/src/psx_cycles.c'), '-o', str(exe)])
+                run([str(exe)])
+            print('PASS O0/O2 maintained clocks and cold precision materialization boundaries')
+            return
         # Exercise the actual callback without linking the entire overlay loader.
         overlay_source = args.overlay_charge_source or root/'runtime/src/overlay_loader.c'
         overlay_text = overlay_source.read_text(encoding='utf-8')

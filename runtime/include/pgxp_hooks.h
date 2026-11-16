@@ -59,6 +59,9 @@ struct CPUState;
  */
 void psx_pgxp_load  (struct CPUState *cpu, uint32_t instr, uint32_t addr, uint32_t value);
 void psx_pgxp_store (struct CPUState *cpu, uint32_t instr, uint32_t addr, uint32_t value);
+/* Complete compiler-owned GPR receipts at an actual precision/observer boundary. */
+void psx_pgxp_region_materialize(struct CPUState *cpu, uint32_t mask,
+    uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1);
 void psx_pgxp_alu   (struct CPUState *cpu, uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2);
 void psx_pgxp_muldiv(struct CPUState *cpu, uint32_t instr, uint32_t hi, uint32_t lo, uint32_t s1, uint32_t s2);
 void psx_pgxp_cop2  (struct CPUState *cpu, uint32_t instr, uint32_t value, uint32_t addr);

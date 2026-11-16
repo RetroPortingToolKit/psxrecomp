@@ -1718,6 +1718,24 @@ static int alu_scalar(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2,
 
 static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2);
 
+extern "C" void psx_pgxp_region_materialize(struct CPUState *cpu, uint32_t mask,
+        uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1) {
+    if (!g_pgxp_active || !cpu) return;
+    flush_plain_writes();
+    const uint32_t x = s_cpu_mode ? x1 : x0, y = s_cpu_mode ? y1 : y0;
+    mask &= ~1u;
+    for (uint32_t r = 1; mask && r < 32; ++r) {
+        const uint32_t bit = UINT32_C(1) << r;
+        if (!(mask & bit)) continue;
+        mask &= ~bit;
+        const uint32_t value = cpu->gpr[r];
+        pv_reset(&s_gpr[r], value);
+        if (x & bit) { s_gpr[r].x16 = (int32_t)((uint32_t)(uint16_t)value << 16); s_gpr[r].flags |= PGXP_F_VX; }
+        if (y & bit) { s_gpr[r].y16 = (int32_t)(value & 0xffff0000u); s_gpr[r].flags |= PGXP_F_VY; }
+        sc_kill(&s_gpr_s[r]);
+    }
+}
+
 extern "C" void psx_pgxp_alu(struct CPUState *cpu, uint32_t instr,
                              uint32_t result, uint32_t s1, uint32_t s2) {
     (void)cpu;

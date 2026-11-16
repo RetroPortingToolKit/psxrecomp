@@ -2,6 +2,7 @@
 #include "pgxp_hooks.h"
 #include "mod_memory.h"
 #include "cpu_state.h"
+#include "../../recompiler/src/pgxp_demand_regions.h"
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
@@ -595,6 +596,61 @@ int main() {
     actual[0]=8;seed(StoreNative+64,Packed,(8<<16)+16384);
     CHECK(!psx_pgxp_operation_begin(&proof,0,0,&access,1,0,1,0));
 #endif
+    // Compare actual canonical instruction results with compiler receipts in
+    // both CPU modes, including equal-word overwrite of existing source/scalar.
+    for(int mode=0;mode<2;++mode) {
+        pgxp_set_enabled(1);pgxp_set_cpu_mode(mode);pgxp_set_source_tracking(1);
+        PSXRecomp::PgxpRegionState abstract{};
+        struct Step {uint32_t word,left,right,value;};
+        const Step steps[]={
+            {0x3c038000u,0,0x8000u,0x80000000u},
+            {0x24631234u,0x80000000u,0x1234u,0x80001234u},
+            {0x34630080u,0x80001234u,0x80u,0x800012b4u},
+            {0x28630010u,0x800012b4u,0x10u,1u},
+            {0x24630002u,1u,2u,3u},
+            {0x3c038000u,0,0x8000u,0x80000000u},
+            {0x34637000u,0x80000000u,0x7000u,0x80007000u},
+            {0x24632000u,0x80007000u,0x2000u,0x80009000u}, // unsigned no-carry, signed low crosses
+            {0x3c038000u,0,0x8000u,0x80000000u},
+            {0x34638000u,0x80000000u,0x8000u,0x80008000u},
+            {0x2463ffffu,0x80008000u,0xffffffffu,0x80007fffu}, // unsigned no-borrow
+        };
+        for(const auto& step:steps) {
+            unsigned dst=0;PSXRecomp::PgxpRegionValue recipe;
+            CHECK(PSXRecomp::pgxp_region_definition(step.word,abstract,dst,recipe));
+            const uint32_t bit=1u<<dst;CPUState state{};state.gpr[dst]=step.value;
+            if((step.word>>26)==15) {
+                seed(Other,step.value,(8<<16)+32768);
+                CHECK(pgxp_tag_word_source(Other,step.value,991));
+                psx_pgxp_load(&state,0x8c030000u,Other,step.value);
+            } else if((step.word>>26)==10)
+                CHECK(pgxp_native_scalar_gpr(&state,dst,double(step.value)+.25,1));
+            psx_pgxp_alu(&state,step.word,step.value,step.left,step.right);
+            psx_pgxp_store(&state,0xac030000u,Other,step.value);
+            const auto expected=capture(Other,step.value);
+            double canonical_scalar=0,actual_scalar=0;
+            const int had_scalar=pgxp_native_gpr_scalar(dst,step.value,&canonical_scalar);
+            CHECK(pgxp_native_scalar_gpr(&state,dst,double(step.value)+.25,1));
+            psx_pgxp_region_materialize(&state,bit,
+                (recipe.flags[0]&1)?bit:0,(recipe.flags[0]&2)?bit:0,
+                (recipe.flags[1]&1)?bit:0,(recipe.flags[1]&2)?bit:0);
+            psx_pgxp_store(&state,0xac030000u,Other,step.value);
+            check_attributes(expected,capture(Other,step.value));
+            CHECK(pgxp_load_source(Other,step.value)==0);
+            CHECK(pgxp_native_gpr_scalar(dst,step.value,&actual_scalar)==had_scalar);
+            if(had_scalar)CHECK(canonical_scalar==actual_scalar);
+            abstract[dst]=recipe;
+        }
+        // Unknown/source/scalar-bearing input cannot be declared plain merely
+        // because integer address/branch consumers follow it.
+        unsigned dst;PSXRecomp::PgxpRegionValue recipe;PSXRecomp::PgxpRegionState unknown{};
+        CHECK(!PSXRecomp::pgxp_region_definition(0x24630004u,unknown,dst,recipe));
+        CHECK(!PSXRecomp::pgxp_region_definition(0x00641821u,unknown,dst,recipe));
+        // An exact low scalar can become a fractional DIV/MULT input later.
+        unknown[3].known=unknown[3].constant=true;unknown[3].value=7;
+        unknown[3].flags[0]=unknown[3].flags[1]=3;
+        CHECK(!PSXRecomp::pgxp_region_definition(0x24630004u,unknown,dst,recipe));
+    }
     gpu_bytes = 0; // pages retained on the host are not guest allocations
     CHECK(!pgxp_capture_word_shadow(Arena, Packed, &refused));
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");

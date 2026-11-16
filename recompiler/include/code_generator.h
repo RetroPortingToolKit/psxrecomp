@@ -12,6 +12,7 @@
 #include "function_analysis.h"
 #include "control_flow.h"
 #include "../src/pgxp_operation_flow.h"
+#include "../src/pgxp_demand_regions.h"
 #include "../src/annotations.hpp"
 #include "../src/config_loader.h"
 
@@ -398,6 +399,15 @@ public:
 private:
     const PS1Executable& exe_;
     CodeGenConfig config_;
+    bool precision_region_body_ = false;
+    PgxpRegionPlan precision_region_plan_;
+    PgxpRegionState precision_region_state_{};
+    mutable std::map<std::string,std::string> precision_region_materializers_;
+    std::set<uint32_t> precision_region_opaque_;
+    std::string precision_region_owner_;
+    std::string region_materializer(const PgxpRegionState&) const;
+    std::string region_flush();
+    void prepare_precision_regions(const ControlFlowGraph&);
     std::string native_tail_caller_;
     bool native_tail_signature_ = true; // alias bodies have an extra entry argument
     uint32_t code_seg_;  // set from the image in the constructor; see set_code_segment()

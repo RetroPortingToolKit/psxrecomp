@@ -30,6 +30,23 @@ static uint32_t s_vblank_phase;
 static int s_cd_ready = 0;
 static uint32_t s_dma_ready_cycles = 0;
 static int s_cd_raise_irq;
+#if defined(PSX_TEST_BLOCK_MATERIALIZE) && PSX_TEST_BLOCK_MATERIALIZE
+#include "psx_native_span.h"
+volatile int g_ds_recording;
+void (*g_overlay_flush_pending_cycles)(void);
+static unsigned s_materializations, s_missing_receipt;
+static uint32_t s_receipt;
+static int s_require_receipt, s_redirect_observer;
+static CPUState *s_receipt_cpu;
+static void fixture_check_receipt(void) {
+    if(s_require_receipt && (!s_materializations || s_receipt!=0x12345678u))
+        ++s_missing_receipt;
+}
+static void fixture_materialize(CPUState *cpu) {
+    ++s_materializations;s_receipt=cpu->gpr[2];s_receipt_cpu=cpu;
+}
+static void fixture_foreign_flush(void) { ++s_missing_receipt; }
+#endif
 
 #if defined(PSX_TEST_OVERLAY_CHARGE) && PSX_TEST_OVERLAY_CHARGE
 #define TEST_OVERLAY_CPU_CHARGE(cycles) overlay_cpu_charge(cycles)
@@ -68,7 +85,12 @@ void timers_advance(uint32_t cycles) { s_timer_cycles += cycles; }
 static uint64_t fixture_timer_cycles(void) { return s_timer_cycles; }
 static void fixture_timer_reset(void) { s_timer_cycles = 0; }
 #endif
-void interrupts_advance_cycles(uint32_t cycles) { s_vblank_phase += cycles; }
+void interrupts_advance_cycles(uint32_t cycles) {
+#if defined(PSX_TEST_BLOCK_MATERIALIZE) && PSX_TEST_BLOCK_MATERIALIZE
+    fixture_check_receipt();
+#endif
+    s_vblank_phase += cycles;
+}
 void interrupts_service_scheduled_events(void) {}
 
 uint32_t interrupts_cycles_to_vblank(void) { return 564480u - s_vblank_phase % 564480u; }
@@ -114,13 +136,147 @@ void psx_observation_edge(CPUState *cpu, uint32_t pc, int wait_site) {
     s_edge_calls++;
     if (wait_site) s_wait_calls++;
     psx_observation_wait_active = wait_site;
+#if defined(PSX_TEST_BLOCK_MATERIALIZE) && PSX_TEST_BLOCK_MATERIALIZE
+    fixture_check_receipt();
+#endif
     psx_devices_observe();
+#if defined(PSX_TEST_BLOCK_MATERIALIZE) && PSX_TEST_BLOCK_MATERIALIZE
+    if(s_redirect_observer) {
+        cpu->pc=0x80024680u;cpu->gpr[2]=0x89ABCDEFu;
+        g_psx_call_bail=1;g_event_step_conservative=1;g_psx_savestate_pending=0;
+    }
+#endif
 }
 extern uint32_t psx_cycle_sample_period;
 extern void (*psx_cycle_sample_hook)(uint64_t, uint32_t);
 static unsigned s_samples;
-static void sample(uint64_t cycle, uint32_t periods) { (void)cycle; s_samples += periods; }
+static void sample(uint64_t cycle, uint32_t periods) {
+    (void)cycle;s_samples += periods;
+#if defined(PSX_TEST_BLOCK_MATERIALIZE) && PSX_TEST_BLOCK_MATERIALIZE
+    fixture_check_receipt();
+    if(s_redirect_observer && s_receipt_cpu) {
+        s_receipt_cpu->pc=0x80024680u;s_receipt_cpu->gpr[2]=0x89ABCDEFu;
+        g_event_step_conservative=1;
+    }
+#endif
+}
 #define VERIFY(c, text) do { if (!(c)) { fprintf(stderr, "FAIL %s\n", text); return 1; } } while (0)
+#endif
+
+#if defined(PSX_TEST_BLOCK_MATERIALIZE) && PSX_TEST_BLOCK_MATERIALIZE
+static void materialize_case_reset(CPUState *cpu) {
+    s_require_receipt=0;
+    memset(cpu,0,sizeof *cpu);cpu->gpr[2]=0x12345678u;cpu->pc=0x80010000u;
+    g_psx_guest_time_frozen=g_ls_replay_active=g_ls_mode=g_ds_recording=0;
+    g_psx_render_pass_active=g_event_step_conservative=g_psx_call_bail=0;
+    psx_in_device_service=psx_defer_switch_pending=g_psx_savestate_pending=0;
+    psx_observation_wait_active=g_ls_suppress_record=0;
+    g_psx_cyc_batch=0;g_psx_cyc_local_acc=NULL;g_overlay_flush_pending_cycles=NULL;
+    i_stat=i_mask=0;s_cd_raise_irq=0;s_cd_ready=1;s_cd_dma_active=0;
+    s_dma_next_event=s_spu_next_sample=UINT32_MAX;s_vblank_phase=0;
+    psx_cycle_count=0;psx_cycle_sample_period=0;psx_cycle_sample_hook=NULL;
+    psx_cycles_resync_after_restore(NULL);
+    g_psx_gcs_recip_q16=65536u;g_psx_gcs_frac=0;
+    psx_next_service_cycle=10000u;psx_next_cycle_sample=UINT64_MAX;
+    s_materializations=s_missing_receipt=0;s_receipt=0;
+    s_redirect_observer=0;s_receipt_cpu=NULL;s_require_receipt=1;
+}
+static int materialized_edge_products(void) {
+    CPUState cpu;
+    materialize_case_reset(&cpu);
+    const uint64_t edges=psx_observation_block_edges;
+    const unsigned devices=s_device_calls,slow=s_edge_calls;
+    g_ls_suppress_record=2;
+    VERIFY(!psx_block_edge_materialize(&cpu,0x80010000u,fixture_materialize) &&
+           !s_materializations && psx_observation_block_edges==edges+1 &&
+           g_ls_suppress_record==1 && s_edge_calls==slow,
+           "quiet materializing edge keeps maintained counts/suppression without receipts or callbacks");
+    VERIFY(!psx_native_span_charge_observable(3u),"quiet actual charge has no observer");
+    psx_native_span_charge(3u);
+    VERIFY(psx_cycle_count==3u && s_device_calls==devices && !s_materializations,
+           "quiet charged region advances the real clock without materialization/device walks");
+
+    materialize_case_reset(&cpu);
+    cpu.cop0[12]=0x401u;i_stat=i_mask=4u;
+    VERIFY(psx_block_edge_materialize(&cpu,0x80010000u,fixture_materialize) &&
+           s_materializations==1 && !s_missing_receipt,
+           "due IRQ materializes before the real observation boundary");
+
+    materialize_case_reset(&cpu);
+    psx_devices_refresh_observation_deadline();
+    VERIFY(!psx_native_span_charge_observable(564480u),
+           "device deadline alone does not invent a callback in an on-demand charge");
+    psx_native_span_charge(564480u);
+    VERIFY(s_vblank_phase==0 && psx_cycle_count==564480u,
+           "frame work remains deferred to the maintained observation edge");
+    VERIFY(psx_block_edge_materialize(&cpu,0x80010000u,fixture_materialize) &&
+           s_materializations==1 && !s_missing_receipt && s_vblank_phase==564480u,
+           "frame publication sees materialized receipts before catch-up");
+
+    materialize_case_reset(&cpu);
+    g_psx_savestate_pending=1;s_redirect_observer=1;
+    VERIFY(psx_block_edge_materialize(&cpu,0x80010000u,fixture_materialize) &&
+           s_materializations==1 && !s_missing_receipt && s_receipt==0x12345678u &&
+           cpu.pc==0x80024680u && cpu.gpr[2]==0x89ABCDEFu &&
+           g_psx_call_bail && g_event_step_conservative && !g_psx_savestate_pending,
+           "returning observer CPU redirect/bail/policy is never overwritten by cold-edge publication");
+
+    materialize_case_reset(&cpu);
+    psx_cycle_sample_period=4;psx_cycle_sample_hook=sample;psx_next_cycle_sample=2;
+    g_psx_gcs_recip_q16=21845u;g_psx_gcs_frac=65535u;
+    const unsigned samples=s_samples;
+    VERIFY(psx_native_span_charge_observable(4u) && !psx_native_span_charge_observable(1u) &&
+           !psx_native_span_charge_observable(0u) && psx_cycle_count==0 && g_psx_gcs_frac==65535u,
+           "upcoming charge preview is pure and includes exact fractional carry/sample boundary");
+    fixture_materialize(&cpu);s_redirect_observer=1;
+    psx_native_span_charge(4u);
+    VERIFY(psx_cycle_count==2u && g_psx_gcs_frac==21843u && s_samples==samples+1 &&
+           !s_missing_receipt && cpu.pc==0x80024680u && cpu.gpr[2]==0x89ABCDEFu,
+           "sample callback sees receipts before actual charge and retains its CPU result");
+
+    materialize_case_reset(&cpu);
+    psx_cycle_sample_period=4;psx_cycle_sample_hook=sample;psx_next_cycle_sample=2;
+    g_psx_cyc_batch=2;
+    const unsigned batched_samples=s_samples;
+    VERIFY(psx_native_span_charge_observable(0u) && g_psx_cyc_batch==2u && psx_cycle_count==0,
+           "pending charge preview never flushes or consumes a batch");
+    VERIFY(psx_block_edge_materialize(&cpu,0x80010000u,fixture_materialize) &&
+           s_materializations==1 && !s_missing_receipt && !g_psx_cyc_batch &&
+           psx_cycle_count==2u && s_samples==batched_samples+1,
+           "edge materializes before batch publication can sample the CPU");
+
+    materialize_case_reset(&cpu);
+    g_overlay_flush_pending_cycles=fixture_foreign_flush;
+    VERIFY(psx_native_span_charge_observable(1u) && !s_missing_receipt && psx_cycle_count==0,
+           "foreign pending owner is conservatively observable without invoking it");
+    VERIFY(psx_block_edge_materialize(&cpu,0x80010000u,fixture_materialize) &&
+           s_materializations==1 && !s_missing_receipt,
+           "foreign-owner private edge escapes without adding a new flush callback");
+
+    materialize_case_reset(&cpu);
+    uint32_t local=0;g_psx_cyc_local_acc=&local;
+    VERIFY(psx_native_span_charge_observable(1u) && !local && psx_cycle_count==0,
+           "even an empty local charge owner requires canonical execution");
+    g_psx_cyc_local_acc=NULL;
+    for(unsigned mode=0;mode<4;mode++) {
+        materialize_case_reset(&cpu);
+        if(mode==0)g_psx_guest_time_frozen=1;
+        if(mode==1)g_ls_replay_active=1;
+        if(mode==2)g_event_step_conservative=1;
+        if(mode==3)psx_in_device_service=1;
+        const uint64_t before=psx_observation_block_edges;
+        VERIFY(psx_native_span_charge_observable(1u) && psx_cycle_count==0,
+               "unsupported charge contexts stay pure and canonical");
+        VERIFY(psx_block_edge_materialize(&cpu,0x80010000u,fixture_materialize) &&
+               s_materializations==1 && !s_missing_receipt,
+               "unsupported private edge materializes before canonical escape");
+        VERIFY(psx_observation_block_edges==before+(mode<2?0u:1u),
+               "freeze/replay keep original public edge bookkeeping");
+    }
+    materialize_case_reset(&cpu);s_require_receipt=0;
+    fprintf(stderr,"PASS cold materialization before IRQ/frame/sample/batch callbacks, pure fractional charge preview, redirect/bail and canonical unsupported paths\n");
+    return 0;
+}
 #endif
 
 int main(void) {
@@ -478,5 +634,8 @@ int main(void) {
 #endif
     fprintf(stderr, "PASS cross-device deadline preserves D-1 + 1 causality; "
                     "idle skip bounded by the SPU sample deadline\n");
+#if defined(PSX_TEST_BLOCK_MATERIALIZE) && PSX_TEST_BLOCK_MATERIALIZE
+    if(materialized_edge_products()) return 1;
+#endif
     return 0;
 }
