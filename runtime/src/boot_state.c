@@ -707,20 +707,31 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     return ok;
 }
 
-int boot_state_save(const CPUState* cpu, uint32_t bios_checksum,
-                    uint32_t entry_pc, const char* path) {
+typedef struct {
+    const CPUState* cpu;
+    uint32_t        bios_checksum;
+    uint32_t        entry_pc;
+} BsFileSave;
+
+static int boot_state_file_writer(FILE* f, void* ctx) {
+    const BsFileSave* s = (const BsFileSave*)ctx;
     BsOut o;
-    if (!psx_mod_snapshot_ready()) return 0;
-    FILE* f = fopen(path, "wb");
-    int ok;
-    if (!f) return 0;
     memset(&o, 0, sizeof o);
     o.f = f;
-    ok = boot_state_save_to(&o, cpu, bios_checksum, entry_pc);
-    fclose(f);
-    if (!ok)
-        remove(path);
-    return ok;
+    return boot_state_save_to(&o, s->cpu, s->bios_checksum, s->entry_pc);
+}
+
+/* The snapshot goes to `<path>.tmp` and replaces `path` only when complete, so
+ * a refused or failed save keeps the previous state file intact instead of
+ * truncating it. */
+int boot_state_save(const CPUState* cpu, uint32_t bios_checksum,
+                    uint32_t entry_pc, const char* path) {
+    BsFileSave s;
+    if (!psx_mod_snapshot_ready()) return 0;
+    s.cpu = cpu;
+    s.bios_checksum = bios_checksum;
+    s.entry_pc = entry_pc;
+    return boot_state_write_file_atomic(path, boot_state_file_writer, &s);
 }
 
 static int boot_state_save_buffer_ex(const CPUState* cpu, uint32_t bios_checksum,
