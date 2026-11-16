@@ -22,7 +22,7 @@ def main():
             ('REFERENCE', 'ON', 'ON', False, True),
             ('ENHANCED', 'OFF', 'ON', False, True),
         ):
-            source.write_text('/* psx-pgxp-dataflow-v1 */\n' if marker else '/* older generation */\n')
+            source.write_text('/* psx-pgxp-dataflow-v2 */\n' if marker else '/* psx-pgxp-dataflow-v1 */\n')
             driver = work/'check.cmake'
             driver.write_text('''cmake_minimum_required(VERSION 3.20)
 set(PSXRECOMP_ROOT "@ROOT@")

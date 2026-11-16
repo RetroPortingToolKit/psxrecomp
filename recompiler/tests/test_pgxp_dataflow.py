@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compile actual emitted GTE-to-packet code against the full PGXP engine."""
 import argparse
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import re
@@ -18,7 +19,7 @@ def run(argv, verbose=True, **kw):
     p = subprocess.run([str(x) for x in argv], capture_output=True, text=True,
                        encoding='utf-8', errors='replace', **kw)
     if p.returncode:
-        raise RuntimeError(' '.join(map(str, argv)) + '\n' + p.stdout + p.stderr)
+        raise RuntimeError(' '.join(map(str, argv)) + '\nexit code: %d (0x%08X)\n' % (p.returncode, p.returncode & 0xffffffff) + p.stdout + p.stderr)
     if p.stdout and verbose:
         print(p.stdout, end='', flush=True)
     return p
@@ -65,9 +66,14 @@ def main():
     ap.add_argument('--recompiler', required=True)
     ap.add_argument('--cc', required=True)
     ap.add_argument('--cxx', required=True)
+    ap.add_argument('--work-dir', type=Path,
+                    help='Retain generated sources, objects and executable for a focused diagnosis')
     a = ap.parse_args()
-    with tempfile.TemporaryDirectory(prefix='psx-pgxp-flow-') as folder:
+    with (nullcontext(str(a.work_dir)) if a.work_dir else
+          tempfile.TemporaryDirectory(prefix='psx-pgxp-flow-')) as folder:
         work = Path(folder)
+        if a.work_dir:
+            work.mkdir(parents=True, exist_ok=False)
         base, words = program()
         header = bytearray(2048); header[:8] = b'PS-X EXE'
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
@@ -78,7 +84,10 @@ def main():
         run([a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', ROOT], verbose=False)
         sources = sorted(out.glob('*_full*.c'))
         text = '\n'.join(x.read_text(encoding='utf-8') for x in sources)
-        dead_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_DEAD_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
+        dead_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_(?:DEAD|ELIDED)_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
+        elided_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_ELIDED_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
+        if words[21] not in elided_words or words[1] in elided_words or words[4] in elided_words:
+            raise RuntimeError('actual lifetime elision crossed an observation or kept an overwritten record')
         if not {words[1], words[4], words[21]} <= dead_words:
             raise RuntimeError('actual CFG emitter failed to remove cross-block control/dead-copy hooks')
         for word in words[7:15] + [words[18], words[28]]:
@@ -86,8 +95,9 @@ def main():
                 raise RuntimeError('actual emitter removed live coordinate arithmetic 0x%08X' % word)
         if words[64] in dead_words:
             raise RuntimeError('actual emitter lost a conditional external caller boundary')
-        print('Actual emitted precision hooks: %d dead-ALU markers, %d retained ALU hooks' %
-              (len(re.findall(r'PGXP_FLOW_DEAD_ALU\(', text)),
+        print('Actual emitted precision hooks: %d elided lifetimes, %d deferred dead writes, %d retained ALU hooks' %
+              (len(re.findall(r'PGXP_FLOW_ELIDED_ALU\(', text)),
+               len(re.findall(r'PGXP_FLOW_DEAD_ALU\(', text)),
                len(re.findall(r'PGXP_(?:PLAIN_)?ALU\(', text))), flush=True)
         common = ['-O2', '-ffunction-sections', '-fdata-sections', '-DPSX_PGXP=1',
                   '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_NO_DEBUG_TOOLS=1',

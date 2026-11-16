@@ -17,7 +17,7 @@ function(psxrecomp_pgxp_dataflow target)
                 message(FATAL_ERROR "Precision dataflow requires regenerated game sources: ${_source}")
             endif()
             file(READ "${_source}" _text LIMIT 2048)
-            if(NOT _text MATCHES "psx-pgxp-dataflow-v1")
+            if(NOT _text MATCHES "psx-pgxp-dataflow-v2")
                 message(FATAL_ERROR "Regenerate game sources before selecting PSX_PGXP_DATAFLOW: ${_source}")
             endif()
         endforeach()
@@ -29,7 +29,7 @@ function(psxrecomp_pgxp_dataflow target)
     file(CONFIGURE OUTPUT "${_directory}/selected.c" CONTENT
         "const unsigned psx_build_precision_dataflow = ${_native}u;\n" @ONLY)
     psxrecomp_add_implementation(${target}
-        NAME precision-dataflow CONTRACT cfg-dead-shadow-${_native}-v1
+        NAME precision-dataflow CONTRACT cfg-shadow-lifetimes-${_native}-v2
         HLE_SOURCES "${_directory}/selected.c"
         LLE_SOURCES "${_directory}/selected.c"
         CONTRACT_FILES "${PSXRECOMP_ROOT}/recompiler/src/pgxp_dataflow.h"

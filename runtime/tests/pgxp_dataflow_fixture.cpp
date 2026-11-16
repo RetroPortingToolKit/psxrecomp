@@ -13,6 +13,7 @@ static unsigned char ram[0x200000],scratch[1024];
 extern "C" {
 uint8_t *g_psx_ram=ram,*g_psx_scratchpad=scratch;
 PSXDirectMemoryStats g_psx_direct_memory_stats;
+PSXMemoryWidthStats g_psx_memory_width_stats;
 uint32_t g_debug_last_store_pc,g_debug_current_func_addr;
 volatile uint32_t g_psx_last_fn_entry; // Release's real entry observer writes this slot
 uint64_t psx_cycle_count,psx_next_service_cycle=UINT64_MAX;
@@ -79,7 +80,10 @@ static void run(Product& result,bool native,unsigned variant) {
 }
 int main() {
     for(unsigned v=0;v<32;++v) {
-        run(reference,false,v);run(candidate,true,v);
+        if(!v){std::fputs("RUN first reference PGXP product\n",stderr);std::fflush(stderr);}
+        run(reference,false,v);
+        if(!v){std::fputs("RUN first native PGXP product\n",stderr);std::fflush(stderr);}
+        run(candidate,true,v);
         if(std::memcmp(&reference.cpu,&candidate.cpu,sizeof(CPUState))||
            std::memcmp(reference.bytes,candidate.bytes,sizeof ram)||reference.cycles!=candidate.cycles) {
             std::fprintf(stderr,"FAIL variant%u guest product differs\n",v);return 1;
