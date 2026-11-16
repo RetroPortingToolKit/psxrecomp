@@ -1424,6 +1424,7 @@ if(BUILD_TESTING)
                 overlay_segment_gate
                 recomp_ui_root_override
                 render_pass_guards
+                run_report_cdrom_counters
                 pal_cadence_host_refresh
                 sdl3_main_single_include
                 spu_sample_scheduler_default

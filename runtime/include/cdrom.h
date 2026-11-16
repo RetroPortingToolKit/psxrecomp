@@ -69,6 +69,11 @@ void cdrom_warm_route_stats_json(char* out, int cap);
  * Diagnostics only: recording never changes CD scheduling or delivery. */
 void cdrom_timing_reset(void);
 void cdrom_timing_stats_json(char* out, int cap);
+/* Read streams of this process: how many started, how many ended before
+ * their first sector, and the longest run of those in a row. The run report
+ * carries them (psx_last_run_report.json "cdrom"), so a game whose reads
+ * never deliver can be found from a release build. Diagnostics only. */
+void cdrom_silent_read_stats(uint32_t *starts, uint32_t *silent, uint32_t *longest_run);
 int cdrom_get_delivered_lba(void);
 /* Presentation-only stream identity. Advances on a successful SetLoc or
  * seek, independent of host time; not part of emulated controller state. */
