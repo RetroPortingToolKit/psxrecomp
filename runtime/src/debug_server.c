@@ -12092,6 +12092,64 @@ static void handle_card_trace_dump(int id, const char *json)
     free(out);
 }
 
+/* Derived optional-write routing, owned by the same emulation-thread range
+ * configuration as the recorders. No guest data or event is cached here.
+ * RAM covers every supported backing size; scratch has one conservative page.
+ * Unrepresented addresses retain the old exact scanning path. */
+#define DEBUG_WRITE_INTEREST_SHIFT 12u
+#define DEBUG_WRITE_INTEREST_RAM_PAGES ((8u * 1024u * 1024u) >> DEBUG_WRITE_INTEREST_SHIFT)
+#define DEBUG_WRITE_INTEREST_SCRATCH DEBUG_WRITE_INTEREST_RAM_PAGES
+static uint8_t s_debug_write_interest[DEBUG_WRITE_INTEREST_RAM_PAGES + 1u];
+static unsigned s_debug_write_interest_enabled;
+static int s_debug_write_interest_dirty = 1;
+
+static void debug_server_write_interest_invalidate(void) {
+    s_debug_write_interest_dirty = 1;
+}
+
+static void debug_server_write_interest_add(uint32_t lo, uint32_t hi, unsigned mask) {
+    const uint32_t ram_end = DEBUG_WRITE_INTEREST_RAM_PAGES << DEBUG_WRITE_INTEREST_SHIFT;
+    if (hi <= lo) return;
+    if (lo < ram_end) {
+        const uint32_t end = hi < ram_end ? hi : ram_end;
+        for (uint32_t page = lo >> DEBUG_WRITE_INTEREST_SHIFT;
+             page <= ((end - 1u) >> DEBUG_WRITE_INTEREST_SHIFT); ++page)
+            s_debug_write_interest[page] |= (uint8_t)mask;
+    }
+    if (lo < 0x1F800400u && hi > 0x1F800000u)
+        s_debug_write_interest[DEBUG_WRITE_INTEREST_SCRATCH] |= (uint8_t)mask;
+}
+
+static PSX_DEBUG_COLD void debug_server_write_interest_rebuild(void) {
+    memset(s_debug_write_interest, 0, sizeof s_debug_write_interest);
+    s_debug_write_interest_enabled = 0;
+    if (s_wtrace_trans && s_wtrace_trans_range_count > 0) {
+        s_debug_write_interest_enabled |= 1u;
+        for (int i = 0; i < s_wtrace_trans_range_count; ++i)
+            debug_server_write_interest_add(s_wtrace_trans_ranges[i].lo, s_wtrace_trans_ranges[i].hi, 1u);
+    }
+    if (s_wtrace_boot && s_wtrace_boot_range_count > 0) {
+        s_debug_write_interest_enabled |= 2u;
+        for (int i = 0; i < s_wtrace_boot_range_count; ++i)
+            debug_server_write_interest_add(s_wtrace_boot_ranges[i].lo, s_wtrace_boot_ranges[i].hi, 2u);
+    }
+    if (s_wtrace && s_wtrace_range_count > 0) {
+        s_debug_write_interest_enabled |= 4u;
+        for (int i = 0; i < s_wtrace_range_count; ++i)
+            debug_server_write_interest_add(s_wtrace_ranges[i].lo, s_wtrace_ranges[i].hi, 4u);
+    }
+    s_debug_write_interest_dirty = 0;
+}
+
+static inline unsigned debug_server_write_interest_lookup(uint32_t phys) {
+    if (s_debug_write_interest_dirty) debug_server_write_interest_rebuild();
+    if (phys < (DEBUG_WRITE_INTEREST_RAM_PAGES << DEBUG_WRITE_INTEREST_SHIFT))
+        return s_debug_write_interest[phys >> DEBUG_WRITE_INTEREST_SHIFT];
+    if (phys >= 0x1F800000u && phys < 0x1F800400u)
+        return s_debug_write_interest[DEBUG_WRITE_INTEREST_SCRATCH];
+    return s_debug_write_interest_enabled;
+}
+
 /* Only optional recorder dispatch is cold. Catch-all/fingerprint/live event
  * recording stays in the hot function, before the real memory mutation. Boot
  * dispatch must continue after its storage is full: it still counts matches. */
@@ -12137,10 +12195,8 @@ void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
             rec_event(REC_KIND_SP_W, phys, new_val, g_debug_last_store_pc, ra);
     }
     wtrace_all_record(phys, new_val, width);
-    const unsigned observers =
-        ((s_wtrace_trans && s_wtrace_trans_range_count > 0 && old_val != new_val) ? 1u : 0u) |
-        ((s_wtrace_boot && s_wtrace_boot_range_count > 0) ? 2u : 0u) |
-        ((s_wtrace && s_wtrace_range_count > 0) ? 4u : 0u);
+    unsigned observers = debug_server_write_interest_lookup(phys);
+    if (old_val == new_val) observers &= ~1u;
     if (observers)
         debug_server_trace_write_optional(phys, old_val, new_val, width, observers);
 }
@@ -12247,6 +12303,7 @@ static void handle_wtrace_range(int id, const char *json)
     s_wtrace_ranges[0].lo = lo;
     s_wtrace_ranges[0].hi = hi;
     s_wtrace_range_count = (lo != hi) ? 1 : 0;
+    debug_server_write_interest_invalidate();
     send_fmt("{\"id\":%d,\"ok\":true,\"lo\":\"0x%08X\",\"hi\":\"0x%08X\"}",
              id, lo, hi);
 }
@@ -12260,6 +12317,7 @@ static void handle_wtrace_add(int id, const char *json)
     if (!json_get_str(json, "lo", lo_str, sizeof(lo_str))) { send_err(id, "missing lo"); return; }
     if (!json_get_str(json, "hi", hi_str, sizeof(hi_str))) { send_err(id, "missing hi"); return; }
     int slot = s_wtrace_range_count++;
+    debug_server_write_interest_invalidate();
     s_wtrace_ranges[slot].lo = hex_to_u32(lo_str) & 0x1FFFFFFFu;
     s_wtrace_ranges[slot].hi = hex_to_u32(hi_str) & 0x1FFFFFFFu;
     send_fmt("{\"id\":%d,\"ok\":true,\"slot\":%d,\"lo\":\"0x%08X\",\"hi\":\"0x%08X\"}",
@@ -12276,6 +12334,7 @@ static void handle_wtrace_del(int id, const char *json)
     for (int i = slot; i < s_wtrace_range_count - 1; i++)
         s_wtrace_ranges[i] = s_wtrace_ranges[i + 1];
     s_wtrace_range_count--;
+    debug_server_write_interest_invalidate();
     send_ok(id);
 }
 
@@ -12285,6 +12344,7 @@ static void handle_wtrace_disarm_all(int id, const char *json)
 {
     (void)json;
     s_wtrace_range_count = 0;
+    debug_server_write_interest_invalidate();
     send_ok(id);
 }
 
@@ -17176,9 +17236,11 @@ malformed:
         s_wtrace_boot_ranges[s_wtrace_boot_range_count].lo = lo[i];
         s_wtrace_boot_ranges[s_wtrace_boot_range_count].hi = hi[i];
         s_wtrace_boot_range_count++;
+        debug_server_write_interest_invalidate();
         s_wtrace_trans_ranges[s_wtrace_trans_range_count].lo = lo[i];
         s_wtrace_trans_ranges[s_wtrace_trans_range_count].hi = hi[i];
         s_wtrace_trans_range_count++;
+        debug_server_write_interest_invalidate();
     }
     s_wtrace_env_ranges = n;
     return n;
@@ -17392,6 +17454,7 @@ void debug_server_init(int port)
     s_wtrace_boot_total = 0;
     s_wtrace_boot_count = 0;
     s_wtrace_boot_range_count = 0;
+    debug_server_write_interest_invalidate();
 
     /* Always-on catch-all wtrace ring (8 MB). Records EVERY RAM write
      * with lean fields (no register window). Sized for ~1 second of
@@ -17410,6 +17473,7 @@ void debug_server_init(int port)
     s_wtrace_trans_seq = 0;
     s_wtrace_trans_head = 0;
     s_wtrace_trans_range_count = 0;
+    debug_server_write_interest_invalidate();
 
     fntrace_arm_from_env("PSX_FNTRACE_ARM");
 
@@ -17539,14 +17603,17 @@ void debug_server_init(int port)
     s_wtrace_ranges[21].lo = 0x00007260u;
     s_wtrace_ranges[21].hi = 0x00007270u;
     s_wtrace_range_count = 22;
+    debug_server_write_interest_invalidate();
 
     s_wtrace_boot_ranges[0].lo = 0x00097420u; /* movie/frame handoff state */
     s_wtrace_boot_ranges[0].hi = 0x00097430u;
     s_wtrace_boot_range_count = 1;
+    debug_server_write_interest_invalidate();
 
     s_wtrace_trans_ranges[0].lo = 0x00097420u; /* movie/frame handoff state */
     s_wtrace_trans_ranges[0].hi = 0x00097430u;
     s_wtrace_trans_range_count = 1;
+    debug_server_write_interest_invalidate();
 
 #if DEFAULT_DEBUG_PORT == 4470
     /* Tomba STR/FMVs: movie state, CD sector descriptor ring, and CD globals.
@@ -17614,6 +17681,7 @@ void debug_server_init(int port)
     s_wtrace_ranges[31].lo = 0x00097420u; /* movie/frame handoff state */
     s_wtrace_ranges[31].hi = 0x00097430u;
     s_wtrace_range_count = 32;
+    debug_server_write_interest_invalidate();
 
     s_wtrace_boot_ranges[0].lo = 0x0009B3B0u; /* slot0 callbacks */
     s_wtrace_boot_ranges[0].hi = 0x0009B3C4u;
@@ -17640,6 +17708,7 @@ void debug_server_init(int port)
     s_wtrace_boot_ranges[11].lo = 0x00097420u; /* movie/frame handoff state */
     s_wtrace_boot_ranges[11].hi = 0x00097430u;
     s_wtrace_boot_range_count = 12;
+    debug_server_write_interest_invalidate();
 
     s_wtrace_trans_ranges[0].lo = 0x0000E1F4u; /* BIOS TCB save areas */
     s_wtrace_trans_ranges[0].hi = 0x0000E400u;
@@ -17662,6 +17731,7 @@ void debug_server_init(int port)
     s_wtrace_trans_ranges[9].lo = 0x00097420u; /* movie/frame handoff state */
     s_wtrace_trans_ranges[9].hi = 0x00097430u;
     s_wtrace_trans_range_count = 10;
+    debug_server_write_interest_invalidate();
 #endif
 
     /* Launch-time extra ranges for the boot + transition write rings, so any

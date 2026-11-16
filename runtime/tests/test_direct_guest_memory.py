@@ -35,12 +35,24 @@ def check_observer_dispatch(root, work, cc):
             end += 1
         return source[start:end]
 
+    # Range commands and init mutate only these counts, including assigning the
+    # same count after replacing bounds. Each site must invalidate derived pages.
+    import re
+    mutations = list(re.finditer(
+        r"(?m)^[ \t]*(?:(?:int slot = )?s_wtrace_(?:boot_|trans_)?range_count"
+        r"(?:\+\+|--| = [^;\n]+);[^\n]*)$", source))
+    assert len(mutations) == 14
+    for mutation in mutations:
+        assert source[mutation.end():].splitlines()[1].strip() == \
+            "debug_server_write_interest_invalidate();"
+
     preamble = r'''
 #include "cpu_state.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define PSX_DEBUG_COLD
 #define REC_KIND_RAM_W 2
 #define REC_KIND_SP_W 12
@@ -52,7 +64,14 @@ static unsigned events[32],n,watch_entries,probe_entries,ls_calls,nd_reads,boot_
 static uint32_t g_psx_last_block,g_debug_last_store_pc;
 static void *s_wtrace_trans,*s_wtrace_boot,*s_wtrace;
 static int s_wtrace_trans_range_count,s_wtrace_boot_range_count,s_wtrace_range_count;
-static struct {uint32_t lo,hi;} s_wtrace_ranges[2];
+typedef struct {uint32_t lo,hi;} FixtureRange;
+static FixtureRange s_wtrace_ranges[2],s_wtrace_boot_ranges[2],s_wtrace_trans_ranges[2];
+static int boot_full;
+static unsigned boot_stored;
+static int in_ranges(const FixtureRange *ranges,int count,uint32_t p){
+ for(int i=0;i<count;i++)if(p>=ranges[i].lo&&p<ranges[i].hi)return 1;
+ return 0;
+}
 static void event(unsigned e){assert(n<32);events[n++]=e;}
 uint32_t g_psx_ram_size=0x200000u;
 static int psx_fp_write_eligible(uint32_t p,uint32_t size){return p<size;}
@@ -62,8 +81,8 @@ static void card_trace_record(uint32_t p,uint32_t o,uint32_t v,uint8_t w){(void)
 static void fp_record_write(uint32_t p,uint32_t v,uint32_t pc){(void)p;(void)v;(void)pc;event(1);}
 static void rec_event(uint8_t kind,uint32_t p,uint32_t v,uint32_t pc,uint32_t ra){(void)p;(void)v;(void)pc;(void)ra;event(kind);}
 static void wtrace_all_record(uint32_t p,uint32_t v,uint8_t w){(void)p;(void)v;(void)w;event(3);}
-static void wtrace_transition_record(uint32_t p,uint32_t o,uint32_t v,uint8_t w){(void)p;assert(o!=v&&w==4);event(4);}
-static void wtrace_boot_record(uint32_t p,uint32_t o,uint32_t v,uint8_t w){(void)p;(void)o;(void)v;(void)w;boot_total++;event(5);}
+static void wtrace_transition_record(uint32_t p,uint32_t o,uint32_t v,uint8_t w){assert(o!=v&&w==4);if(in_ranges(s_wtrace_trans_ranges,s_wtrace_trans_range_count,p))event(4);}
+static void wtrace_boot_record(uint32_t p,uint32_t o,uint32_t v,uint8_t w){(void)o;(void)v;(void)w;if(!in_ranges(s_wtrace_boot_ranges,s_wtrace_boot_range_count,p))return;boot_total++;if(!boot_full){boot_stored++;event(5);}}
 static void wtrace_record(uint32_t p,uint32_t o,uint32_t v,uint8_t w){(void)p;(void)o;(void)v;(void)w;event(6);}
 static void cyc_watch_observe(uint32_t p){(void)p;watch_entries++;if(s_cyc_watch_armed)event(7);}
 static void pc_probe_observe(uint32_t p){(void)p;probe_entries++;if(s_pc_probe_armed)event(8);}
@@ -79,16 +98,64 @@ int main(void){
  assert(n==3&&events[0]==1&&events[1]==2&&events[2]==3);
  s_wtrace_trans=s_wtrace_boot=s_wtrace=(void*)1;
  s_wtrace_trans_range_count=s_wtrace_boot_range_count=s_wtrace_range_count=1;
- s_wtrace_ranges[0].lo=0x100;s_wtrace_ranges[0].hi=0x200;n=0;
+ s_wtrace_ranges[0]=(FixtureRange){0x100,0x200};
+ s_wtrace_boot_ranges[0]=s_wtrace_trans_ranges[0]=s_wtrace_ranges[0];
+ debug_server_write_interest_invalidate();n=0;
  debug_server_trace_write_check(0x100,3,9,4);
  assert(n==7);for(unsigned i=0;i<7;i++)assert(events[i]==i);
  n=0;debug_server_trace_write_check(0x110,9,9,4);
  assert(n==5&&events[0]==1&&events[1]==2&&events[2]==3&&events[3]==5&&events[4]==6);
- assert(boot_total==2); /* matching totals must survive a full boot ring */
+ assert(boot_total==2&&boot_stored==2);
+ boot_full=1;n=0;debug_server_trace_write_check(0x110,9,9,4);
+ assert(boot_total==3&&boot_stored==2&&n==4&&events[3]==6);
+ boot_full=0;
  n=0;g_psx_render_pass_active=1;debug_server_trace_write_check(0x100,3,9,4);assert(n==0);
  g_psx_render_pass_active=0;s_fmv_quiet=1;debug_server_trace_write_check(0x100,3,9,4);assert(n==1&&events[0]==10);
- s_fmv_quiet=0;s_wtrace_trans=s_wtrace_boot=s_wtrace=NULL;n=0;
+ s_fmv_quiet=0;s_wtrace_trans=s_wtrace_boot=s_wtrace=NULL;
+ debug_server_write_interest_invalidate();n=0;
  debug_server_trace_write_check(0x1F800000,3,9,4);assert(n==3&&events[1]==REC_KIND_SP_W);
+ /* Conservative pages only route: exact half-open ranges still decide. */
+ s_wtrace_trans=s_wtrace_boot=s_wtrace=(void*)1;
+ s_wtrace_range_count=2;s_wtrace_boot_range_count=s_wtrace_trans_range_count=1;
+ s_wtrace_ranges[0]=(FixtureRange){0x1fff,0x2001};
+ s_wtrace_ranges[1]=(FixtureRange){0x2000,0x2004};
+ s_wtrace_trans_ranges[0]=(FixtureRange){0x2000,0x2004};
+ s_wtrace_boot_ranges[0]=(FixtureRange){0x2ffe,0x3000};
+ debug_server_write_interest_invalidate();
+ assert(debug_server_write_interest_lookup(0x1000)==4);
+ assert(debug_server_write_interest_lookup(0x2000)==7);
+ assert(debug_server_write_interest_lookup(0x3000)==0);
+ n=0;debug_server_trace_write_check(0x1ffe,3,9,4);assert(n==3);
+ n=0;debug_server_trace_write_check(0x1fff,3,9,4);assert(n==4&&events[3]==6);
+ n=0;debug_server_trace_write_check(0x2000,3,9,4);
+ assert(n==5&&events[3]==4&&events[4]==6); /* overlap records once */
+ n=0;debug_server_trace_write_check(0x2004,3,9,4);assert(n==3);
+ n=0;debug_server_trace_write_check(0x2fff,3,9,4);assert(n==4&&events[3]==5);
+ n=0;debug_server_trace_write_check(0x3000,3,9,4);assert(n==3);
+ /* Same-count replacement and deletion/compaction must take effect now. */
+ s_wtrace_ranges[0]=(FixtureRange){0x7000,0x7100};
+ s_wtrace_ranges[1]=(FixtureRange){0x70f0,0x7200};
+ debug_server_write_interest_invalidate();
+ assert(!(debug_server_write_interest_lookup(0x1fff)&4));
+ n=0;debug_server_trace_write_check(0x70ff,3,9,4);assert(n==4&&events[3]==6);
+ s_wtrace_ranges[0]=s_wtrace_ranges[1];s_wtrace_range_count--;
+ debug_server_write_interest_invalidate();
+ n=0;debug_server_trace_write_check(0x7000,3,9,4);assert(n==3);
+ s_wtrace_range_count=0;debug_server_write_interest_invalidate();
+ assert(debug_server_write_interest_lookup(0x70ff)==0);
+ /* Unrepresented/raw aliases stay conservative; the actual memory fixture
+    separately checks real cached/uncached RAM aliases and old-value effects. */
+ assert(debug_server_write_interest_lookup(0x80002000)==3);
+ assert(debug_server_write_interest_lookup(0xa0002000)==3);
+ s_wtrace_boot_range_count=s_wtrace_trans_range_count=0;s_wtrace_range_count=1;
+ s_wtrace_ranges[0]=(FixtureRange){0x1f8003ff,0x1f800400};
+ debug_server_write_interest_invalidate();
+ n=0;debug_server_trace_write_check(0x1f8003fe,3,9,4);assert(n==3);
+ n=0;debug_server_trace_write_check(0x1f8003ff,3,9,4);
+ assert(n==4&&events[1]==REC_KIND_SP_W&&events[3]==6);
+ assert(debug_server_write_interest_lookup(0x1f800400)==4); /* conservative outside scratch */
+ s_wtrace_range_count=0;debug_server_write_interest_invalidate();
+ assert(debug_server_write_interest_lookup(0x1f8003ff)==0);
  n=0;debug_server_cyc_observe(0x80012340);assert(g_psx_last_block==0x12340&&ls_calls==1&&!watch_entries&&!probe_entries);
  ls_armed=1;debug_server_cyc_observe(0x80012344);assert(n==1&&events[0]==9&&ls_calls==2);
  s_cyc_watch_armed=s_pc_probe_armed=1;n=0;debug_server_cyc_observe(0x80012348);
@@ -97,10 +164,12 @@ int main(void){
  debug_server_cyc_observe(0x8006AAF0);assert(nd_reads==2&&watch_entries==2&&probe_entries==2);
  s_fmv_quiet=1;unsigned before=ls_calls;debug_server_cyc_observe(0x80012350);
  assert(g_psx_last_block==0x12350&&ls_calls==before);
- puts("PASS actual observer routing: mandatory rings/order, optional live flags, ND and first lockstep leader");
+ puts("PASS actual observer routing: page interest/exact edges/reconfiguration, mandatory order, boot totals, ND and first lockstep leader");
 }
 '''
-    actual = "\n".join(body(name) for name in (
+    routing = source[source.index("/* Derived optional-write routing"):
+                     source.index("/* Only optional recorder dispatch is cold.")]
+    actual = routing + "\n".join(body(name) for name in (
         "debug_server_cyc_observe_optional", "debug_server_cyc_observe",
         "debug_server_trace_write_optional", "debug_server_trace_write_check"))
     path = work / "existing-observer-dispatch.c"
