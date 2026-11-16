@@ -2910,8 +2910,16 @@ std::string CodeGenerator::translate_basic_block(
                         ss << emit_interrupt_check(target, config_.indent);
                         ss << config_.indent << fmt::format("cpu->pc = 0x{:08X}u;\n", runtime_pc(target));
                         if (native_tail_signature_ && !native_tail_caller_.empty() && !config_.overlay_mode && known_functions_.count(target)) {
+                            // The old body boundary ends its automatic cycle
+                            // guards before the owner may admit another body.
+                            // A guaranteed tail return cannot leave those
+                            // cleanup lifetimes active, even after a manual flush.
+                            ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n";
                             ss << config_.indent << fmt::format(
-                                "PSX_TRY_NATIVE_TAIL(cpu, 0x{:08X}u, {}, func_{:08X});\n", runtime_pc(target), native_tail_caller_, target);
+                                "_psx_native_tail_pc = 0x{:08X}u;\n", runtime_pc(target));
+                            ss << config_.indent << fmt::format(
+                                "_psx_native_tail_body = func_{:08X};\n", target);
+                            ss << config_.indent << "goto psx_native_tail_transfer;\n#endif\n";
                         }
                         ss << config_.indent << fmt::format("return;  /* CPS jal -> 0x{:08X} */\n", runtime_pc(target));
                     } else {
@@ -3253,7 +3261,15 @@ GeneratedFunction CodeGenerator::generate_function(
     }
 
     std::stringstream body_ss;
+    const bool native_tail_scope = blocks_ss.str().find("goto psx_native_tail_transfer;") != std::string::npos;
     body_ss << "{\n";
+    if (native_tail_scope) {
+        body_ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n"
+                << config_.indent << "uint32_t _psx_native_tail_pc = 0;\n"
+                << config_.indent << "PsxNativeTailBody _psx_native_tail_body = 0;\n"
+                << config_.indent << "{  /* execution scope: automatic cycle cleanup ends before transfer */\n"
+                << "#endif\n";
+    }
     body_ss << "#if defined(PSX_ENABLE_BLOCK_CYCLES) && "
                "(defined(__GNUC__) || defined(__clang__))\n"
             << config_.indent
@@ -3428,6 +3444,16 @@ GeneratedFunction CodeGenerator::generate_function(
         }
     }
     body_ss << "    ;  /* label compatibility: C requires a statement after the last label */\n";
+    if (native_tail_scope) {
+        body_ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n"
+                << config_.indent << "}  /* publish charges and end execution-local lifetimes */\n"
+                << config_.indent << "return;\n"
+                << "psx_native_tail_transfer:\n"
+                << config_.indent << fmt::format(
+                       "PSX_TRY_NATIVE_TAIL(cpu, _psx_native_tail_pc, {}, _psx_native_tail_body);\n", func.name)
+                << config_.indent << "return;  /* refused/handled transfer returns to its original flat owner */\n"
+                << "#endif\n";
+    }
     body_ss << "}\n";
 
     result.body = body_ss.str();
