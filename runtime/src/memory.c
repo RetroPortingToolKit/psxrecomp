@@ -31,6 +31,7 @@
 #include "render_pass.h"
 #include "render_pass_plan.h"
 #include "starvation_ring.h"
+#include "text_source_guard.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -571,6 +572,18 @@ static uint32_t g_text_exact_last_mismatch = 0;
 static uint32_t g_text_exact_last_live = 0;
 static uint32_t g_text_exact_last_ref = 0;
 
+/* Pages where the boot executable the console loads differs from the image
+ * the static code was generated from (text_source_guard.h). The reference
+ * image above cannot show this: an installed product reads it from the mounted
+ * disc, so it agrees with RAM. A disc of a multi-disc set that carries the
+ * program with a per-disc code difference would otherwise run the other
+ * disc's compiled instruction. Native code never runs over such a page; the
+ * interpreter runs the loaded bytes. Unlike the modified and diverged bitmaps
+ * this is not RAM state: it is fixed for the loaded executable, so a restore
+ * or a reset does not clear it. Only registering an image does. */
+static uint32_t text_foreign_bitmap[DIRTY_RAM_BITMAP_WORDS];
+static uint32_t g_text_foreign_pages = 0;
+
 void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
                                    uint32_t len) {
     if (!bytes || len == 0 || phys_lo >= RAM_LIVE) return;
@@ -580,6 +593,8 @@ void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
     text_ref_hi = phys_lo + len;
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
+    memset(text_foreign_bitmap, 0, sizeof(text_foreign_bitmap));
+    g_text_foreign_pages = 0;
     g_text_native_blocked = 0;
     g_text_diverged_pages = 0;
     g_text_exact_mismatches = 0;
@@ -591,6 +606,36 @@ void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
 }
 
 int dirty_ram_text_image_registered(void) { return text_ref_image != NULL; }
+
+/* Compare the boot executable image the console loads (`loaded`, at phys_lo)
+ * with the per-page CRCs of the image the static code was generated from.
+ * Call after dirty_ram_register_text_image. Returns the number of pages that
+ * differ; *first_phys receives the lowest one. */
+uint32_t dirty_ram_text_note_source_image(const uint8_t *loaded,
+                                          uint32_t phys_lo, uint32_t len,
+                                          const uint32_t *source_crc32,
+                                          uint32_t source_count,
+                                          uint32_t source_phys_lo,
+                                          uint32_t source_len,
+                                          uint32_t *first_phys) {
+    memset(text_foreign_bitmap, 0, sizeof(text_foreign_bitmap));
+    if (phys_lo >= RAM_LIVE) {
+        g_text_foreign_pages = 0;
+        if (first_phys) *first_phys = 0;
+        return 0;
+    }
+    if (len > RAM_LIVE - phys_lo) len = RAM_LIVE - phys_lo;
+    g_text_foreign_pages = psx_text_source_mismatch(
+        loaded, phys_lo, len, source_crc32, source_count, source_phys_lo,
+        source_len, text_foreign_bitmap, DIRTY_RAM_BITMAP_WORDS, first_phys);
+    return g_text_foreign_pages;
+}
+
+uint32_t dirty_ram_text_foreign_pages(void) { return g_text_foreign_pages; }
+
+static inline int text_page_foreign(uint32_t page) {
+    return (text_foreign_bitmap[page >> 5] >> (page & 31u)) & 1u;
+}
 
 static inline void text_guard_note_write(uint32_t phys, uint32_t val, int size) {
     if (!text_ref_image) return;
@@ -617,6 +662,10 @@ int dirty_ram_text_native_ok(uint32_t phys) {
 
     uint32_t page = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t bit = 1u << (page & 31u);
+    if (g_text_foreign_pages && text_page_foreign(page)) {
+        g_text_native_blocked++;
+        return 0;
+    }
     if (text_diverged_bitmap[page >> 5] & bit) {
         g_text_native_blocked++;
         return 0;
@@ -674,6 +723,21 @@ int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
             return 0;
         }
         any = 1;
+        /* The loaded executable differs from the generated-from image on a
+         * page this range touches: the static body is not this disc's code.
+         * One compare of a counter when no page differs, which is every disc
+         * the build was generated from. */
+        if (g_text_foreign_pages) {
+            uint32_t fp0 = phys >> DIRTY_RAM_PAGE_SHIFT;
+            uint32_t fp1 = (phys + len - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+            uint32_t fp;
+            for (fp = fp0; fp <= fp1; fp++) {
+                if (text_page_foreign(fp)) {
+                    g_text_native_blocked++;
+                    return 0;
+                }
+            }
+        }
         /* Page-clean fast path: every page this range touches is neither
          * guard-modified nor runtime-dirty, so its bytes still equal the
          * reference image — skip the memcmp. This keeps the emitted

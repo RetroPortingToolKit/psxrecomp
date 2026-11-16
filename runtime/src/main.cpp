@@ -310,42 +310,41 @@ extern "C" void     dirty_ram_register_text_image(uint32_t phys_lo,
                                                   const uint8_t *bytes,
                                                   uint32_t len);
 
-/* Arm the dirty-RAM text-image guard with the boot EXE bytes. The guard is
- * load-bearing: dispatch native-safety (dirty_ram_text_native_ok) and the
- * fntrace alternate game-start latch both key off the registered image, so
- * every install must arm it — not just repo checkouts that happen to carry a
- * loose EXE copy next to game.toml. Source order:
- *   1. The local EXE file from game.toml (dev checkouts; recompiler input).
- *   2. The boot EXE extracted from the mounted disc image (end-user installs
- *      — the disc is the same bytes the BIOS loads, i.e. the true reference).
- * Registration passes ownership of the malloc'd buffer to memory.c. */
-static void arm_text_image_guard(const std::string &exe_path,
-                                 uint32_t load_address,
-                                 const std::string &disc_path) {
-    const uint32_t phys_lo = load_address & 0x1FFFFFFFu;
-    /* 1. Local EXE file (skip the 2048-byte PS-X EXE header). */
-    if (!exe_path.empty()) {
-        std::ifstream ef(exe_path, std::ios::binary | std::ios::ate);
-        if (ef) {
-            std::streamsize sz = ef.tellg();
-            if (sz > 2048) {
-                uint32_t img_len = (uint32_t)(sz - 2048);
-                uint8_t *img = (uint8_t *)std::malloc(img_len);
-                if (img) {
-                    ef.seekg(2048, std::ios::beg);
-                    if (ef.read((char *)img, img_len)) {
-                        dirty_ram_register_text_image(phys_lo, img, img_len);
-                        std::fprintf(stdout,
-                            "psxrecomp: text image guard armed (0x%08X..0x%08X, local EXE)\n",
-                            load_address, load_address + img_len);
-                        return;
-                    }
-                    std::free(img);
-                }
-            }
-        }
-    }
-    /* 2. Extract the boot EXE from the disc image. */
+extern "C" uint32_t dirty_ram_text_note_source_image(
+    const uint8_t *loaded, uint32_t phys_lo, uint32_t len,
+    const uint32_t *source_crc32, uint32_t source_count,
+    uint32_t source_phys_lo, uint32_t source_len, uint32_t *first_phys);
+/* Generated dispatcher, or game_dispatch_compat.c when it has no table. */
+extern "C" const uint32_t *psx_game_source_page_crc32(uint32_t *count,
+                                                      uint32_t *phys_lo,
+                                                      uint32_t *len);
+
+/* Tell the guard which pages of the executable the console loads differ from
+ * the executable the static code was generated from (text_source_guard.h).
+ * A disc of a set that carries the program with a per-disc code byte is the
+ * case: its differing page must run from RAM, not from the other disc's
+ * compiled function. `loaded` is not kept. */
+static void note_text_source_image(const uint8_t *loaded, uint32_t phys_lo,
+                                   uint32_t len, const char *what) {
+    uint32_t count = 0, source_lo = 0, source_len = 0, first = 0;
+    const uint32_t *crcs = psx_game_source_page_crc32(&count, &source_lo, &source_len);
+    if (!crcs || count == 0) return;
+    const uint32_t pages = dirty_ram_text_note_source_image(
+        loaded, phys_lo, len, crcs, count, source_lo, source_len, &first);
+    if (pages)
+        std::fprintf(stdout,
+            "psxrecomp: text image guard: %u page(s) of the %s differ from the "
+            "executable this build was generated from (first 0x%08X); code on "
+            "those pages runs from RAM\n",
+            pages, what, first | 0x80000000u);
+}
+
+/* The boot EXE image (without its 2048-byte header) on the mounted disc, or
+ * nullptr. The caller owns the malloc'd buffer. */
+static uint8_t *read_disc_boot_image(const std::string &exe_path,
+                                     const std::string &disc_path,
+                                     uint32_t *out_len,
+                                     std::string *out_name) {
     if (!disc_path.empty()) {
         PS1::ISOReader iso;
         if (iso.Open(disc_path)) {
@@ -397,18 +396,76 @@ static void arm_text_image_guard(const std::string &exe_path,
                         if (img) {
                             memcpy(img, file + 2048, img_len);
                             std::free(file);
-                            dirty_ram_register_text_image(phys_lo, img, img_len);
-                            std::fprintf(stdout,
-                                "psxrecomp: text image guard armed (0x%08X..0x%08X, disc %s)\n",
-                                load_address, load_address + img_len,
-                                boot_name.c_str());
-                            return;
+                            *out_len = img_len;
+                            *out_name = boot_name;
+                            return img;
                         }
                     }
                     std::free(file);
                 }
             }
         }
+    }
+    return nullptr;
+}
+
+/* Arm the dirty-RAM text-image guard with the boot EXE bytes. The guard is
+ * load-bearing: dispatch native-safety (dirty_ram_text_native_ok) and the
+ * fntrace alternate game-start latch both key off the registered image, so
+ * every install must arm it — not just repo checkouts that happen to carry a
+ * loose EXE copy next to game.toml. Source order:
+ *   1. The local EXE file from game.toml (dev checkouts; recompiler input).
+ *   2. The boot EXE extracted from the mounted disc image (end-user installs
+ *      — the disc is the same bytes the BIOS loads, i.e. the true reference).
+ * Registration passes ownership of the malloc'd buffer to memory.c. */
+static void arm_text_image_guard(const std::string &exe_path,
+                                 uint32_t load_address,
+                                 const std::string &disc_path) {
+    const uint32_t phys_lo = load_address & 0x1FFFFFFFu;
+    /* The console loads the mounted disc's boot EXE, whichever image becomes
+     * the reference below. Read it first so the source-image check always
+     * judges the bytes that will be in RAM. */
+    uint32_t disc_len = 0;
+    std::string disc_name;
+    uint8_t *disc_img = read_disc_boot_image(exe_path, disc_path, &disc_len, &disc_name);
+    /* 1. Local EXE file (skip the 2048-byte PS-X EXE header). */
+    if (!exe_path.empty()) {
+        std::ifstream ef(exe_path, std::ios::binary | std::ios::ate);
+        if (ef) {
+            std::streamsize sz = ef.tellg();
+            if (sz > 2048) {
+                uint32_t img_len = (uint32_t)(sz - 2048);
+                uint8_t *img = (uint8_t *)std::malloc(img_len);
+                if (img) {
+                    ef.seekg(2048, std::ios::beg);
+                    if (ef.read((char *)img, img_len)) {
+                        dirty_ram_register_text_image(phys_lo, img, img_len);
+                        std::fprintf(stdout,
+                            "psxrecomp: text image guard armed (0x%08X..0x%08X, local EXE)\n",
+                            load_address, load_address + img_len);
+                        if (disc_img)
+                            note_text_source_image(disc_img, phys_lo, disc_len,
+                                                   "mounted disc's boot executable");
+                        else
+                            note_text_source_image(img, phys_lo, img_len,
+                                                   "local boot executable");
+                        std::free(disc_img);
+                        return;
+                    }
+                    std::free(img);
+                }
+            }
+        }
+    }
+    /* 2. The boot EXE from the disc image. */
+    if (disc_img) {
+        dirty_ram_register_text_image(phys_lo, disc_img, disc_len);
+        std::fprintf(stdout,
+            "psxrecomp: text image guard armed (0x%08X..0x%08X, disc %s)\n",
+            load_address, load_address + disc_len, disc_name.c_str());
+        note_text_source_image(disc_img, phys_lo, disc_len,
+                               "mounted disc's boot executable");
+        return;
     }
     std::fprintf(stdout,
         "psxrecomp: WARNING: text image guard NOT armed (no local EXE, no disc "

@@ -219,6 +219,17 @@ void     dirty_ram_text_guard_resync_after_restore(void);
 void     dirty_ram_mark_executable_range(uint32_t phys, uint32_t len);
 void     dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
                                        uint32_t len);
+/* Pages where the boot executable the console loads differs from the image the
+ * static code was generated from (text_source_guard.h). Native text dispatch
+ * is refused on them. Call after dirty_ram_register_text_image. */
+uint32_t dirty_ram_text_note_source_image(const uint8_t *loaded,
+                                          uint32_t phys_lo, uint32_t len,
+                                          const uint32_t *source_crc32,
+                                          uint32_t source_count,
+                                          uint32_t source_phys_lo,
+                                          uint32_t source_len,
+                                          uint32_t *first_phys);
+uint32_t dirty_ram_text_foreign_pages(void);
 int      dirty_ram_text_native_ok(uint32_t phys);
 /* Exact CFG ranges; exec_pc clips ranges that end before the resume PC. */
 int      dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
