@@ -1875,6 +1875,147 @@ static int host_persist_setup_discs(void* ctx, const char* const* disc_paths,
     return 0;
 }
 
+/* Give the product the disc set the wizard recorded, when it has none.
+ *
+ * The wizard writes disc.cfg at the project root and tries build-release/ too,
+ * but before the first build build-release/ does not exist, so that copy fails
+ * silently. The runtime reads disc.cfg only beside its own exe, so the first
+ * start asked for the disc again while the BIOS (which has a project-root
+ * fallback below) was remembered. The whole file is copied, so a multi-disc
+ * set keeps one path per line. An existing product-side disc.cfg is a pick
+ * the player made in the product and is left alone. */
+static void sync_project_disc_cfg_to_product(const char* near_exe) {
+    char dir[1100], dst[1200], src[1200];
+    char body[PSX_HOST_MAX_DISCS * 1030];
+    size_t n;
+    FILE* f;
+
+    if (!near_exe || !near_exe[0] || !g_project_root[0])
+        return;
+    if (!dirname_copy(dir, sizeof(dir), near_exe) ||
+        !join_path(dst, sizeof(dst), dir, "disc.cfg") ||
+        !join_path(src, sizeof(src), g_project_root, "disc.cfg"))
+        return;
+    if (host_paths_same_file(src, dst))
+        return;
+    f = fopen(dst, "rb");
+    if (f) {
+        int c = fgetc(f);
+        fclose(f);
+        if (c != EOF && c != '\n' && c != '\r')
+            return;
+    }
+    f = fopen(src, "rb");
+    if (!f)
+        return;
+    n = fread(body, 1, sizeof(body) - 1, f);
+    fclose(f);
+    body[n] = '\0';
+    while (n && (body[n - 1] == '\n' || body[n - 1] == '\r' ||
+                 body[n - 1] == ' ' || body[n - 1] == '\t'))
+        body[--n] = '\0';
+    if (!n)
+        return;
+    write_line_file(dst, body);
+}
+
+/* Give the product the settings saved beside the setup exe, when it has none.
+ *
+ * The setup host and the product each read settings.toml beside their own
+ * exe, so the first start of the product lost the settings made in the
+ * setup launcher. Every byte is copied. An existing product settings file,
+ * even an empty one, is the player's and is left alone: the copy is written
+ * to a temporary file that this call creates new, and is put in place only
+ * when nothing has the product name yet. */
+static void sync_project_settings_to_product(const char* near_exe) {
+    char dir[1100], src[1200], dst[1200], tmp[1250];
+    unsigned char bytes[16384];
+    size_t n;
+    int ok = 1;
+    FILE* in;
+    FILE* existing;
+#if defined(_WIN32)
+    HANDLE out;
+#else
+    int out;
+#endif
+
+    if (!near_exe || !near_exe[0] || !g_project_root[0] ||
+        !dirname_copy(dir, sizeof(dir), near_exe) ||
+        !join_path(src, sizeof(src), g_project_root, "settings.toml") ||
+        !join_path(dst, sizeof(dst), dir, "settings.toml") ||
+        host_paths_same_file(src, dst))
+        return;
+    in = fopen(src, "rb");
+    if (!in)
+        return;
+    existing = fopen(dst, "rb");
+    if (existing) {
+        fclose(existing);
+        fclose(in);
+        return;
+    }
+    if (snprintf(tmp, sizeof(tmp), "%s.setup.tmp", dst) >= (int)sizeof(tmp)) {
+        fclose(in);
+        return;
+    }
+#if defined(_WIN32)
+    out = CreateFileA(tmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (out == INVALID_HANDLE_VALUE) {
+        fclose(in);
+        return;
+    }
+#else
+    out = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (out < 0) {
+        fclose(in);
+        return;
+    }
+#endif
+    while (ok && (n = fread(bytes, 1, sizeof(bytes), in)) != 0) {
+        size_t done = 0;
+        while (done < n) {
+#if defined(_WIN32)
+            DWORD written = 0;
+            if (!WriteFile(out, bytes + done, (DWORD)(n - done), &written, NULL) || !written) {
+                ok = 0;
+                break;
+            }
+#else
+            ssize_t written = write(out, bytes + done, n - done);
+            if (written <= 0) {
+                if (written < 0 && errno == EINTR)
+                    continue;
+                ok = 0;
+                break;
+            }
+#endif
+            done += (size_t)written;
+        }
+    }
+    if (ferror(in))
+        ok = 0;
+    fclose(in);
+#if defined(_WIN32)
+    if (!CloseHandle(out))
+        ok = 0;
+    /* Without MOVEFILE_REPLACE_EXISTING the move refuses an existing file. */
+    if (ok)
+        ok = MoveFileExA(tmp, dst, 0) != 0;
+    if (!ok)
+        DeleteFileA(tmp);
+#else
+    if (close(out) != 0)
+        ok = 0;
+    /* link refuses an existing file; rename would replace it. */
+    if (ok)
+        ok = link(tmp, dst) == 0;
+    unlink(tmp);   /* only the temporary file this call created */
+#endif
+    if (!ok)
+        fprintf(stderr, "psxrecomp-codegen: could not hand settings.toml to the product\n");
+}
+
 static void persist_relaunch_sidecars(const char* near_exe,
                                       const char* disc_path) {
     char bios_line[1100];
@@ -1888,7 +2029,10 @@ static void persist_relaunch_sidecars(const char* near_exe,
             join_path(project_sidecar, sizeof(project_sidecar), g_project_root,
                       "disc.cfg"))
             write_line_file(project_sidecar, disc_path);
+    } else {
+        sync_project_disc_cfg_to_product(near_exe);
     }
+    sync_project_settings_to_product(near_exe);
 
     bios_line[0] = '\0';
     if (g_wizard_bios[0] &&
@@ -5230,6 +5374,8 @@ void psxrecomp_codegen_host_forward_if_built(
     fprintf(stderr,
             "psxrecomp-codegen: setup host forwarding to product build:\n  %s\n",
             g_exe_path);
+    sync_project_disc_cfg_to_product(g_exe_path);
+    sync_project_settings_to_product(g_exe_path);
 
 #if defined(_WIN32)
     {
