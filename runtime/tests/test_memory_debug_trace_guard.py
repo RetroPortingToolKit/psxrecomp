@@ -411,7 +411,13 @@ def assert_observers_preserved(memory: str) -> None:
 
 def write_fixture(work: pathlib.Path, memory_source: pathlib.Path) -> pathlib.Path:
     for name, content in (("harness_common.h", HARNESS_COMMON_H),
-                          ("stubs.c", STUBS_C),
+                          # This standalone recipe does not link the real observer
+                          # modules. Supply only their exact typed zero-state storage;
+                          # the shared full-memory fixture still links real providers.
+                          ("stubs.c", STUBS_C + '\n#include "parity_trace.h"\n'
+                           '#include "card_data_writes.h"\n'
+                           'uint32_t g_parity_trace_armed = 0;\n'
+                           'volatile int g_card_data_write_armed = 0;\n'),
                           ("trace_counting.c", TRACE_COUNTING_C),
                           ("trace_empty.c", TRACE_EMPTY_C),
                           ("driver.c", DRIVER_C)):
