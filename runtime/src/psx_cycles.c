@@ -334,6 +334,10 @@ static uint32_t devices_cycles_to_next_internal_event(unsigned *source) {
     return best;
 }
 
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+#include "psx_device_observation.inc"
+#endif
+
 /* Wait-loop observation boundary. Device catch-up remains mask-blind and
  * replays every intermediate timer/DMA/SIO transition, but a CPU loop with no
  * stores or MMIO cannot observe a masked IRQ until it becomes deliverable.
@@ -342,6 +346,17 @@ static uint32_t devices_cycles_to_next_internal_event(unsigned *source) {
  * unconditional ceiling so frame pacing is never crossed in one jump. */
 static uint32_t devices_cycles_to_next_idle_event(void) {
     extern uint32_t i_mask;
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    uint64_t best = observation_due(OBS_FRAME, i_mask);
+    for (unsigned i = 0; i < OBS_COUNT; ++i) {
+        if (i == OBS_SPU && !(i_mask & (1u << IRQ_SPU))) continue;
+        const uint64_t at = observation_due(i, i_mask);
+        if (at < best) best = at;
+    }
+    if (best <= psx_cycle_count) return 1u;
+    const uint64_t distance = best - psx_cycle_count;
+    return distance > UINT32_MAX ? UINT32_MAX : (uint32_t)distance;
+#else
     uint32_t best = interrupts_cycles_to_vblank();
     uint32_t t = timers_cycles_to_irq(i_mask);  if (t < best) best = t;
     uint32_t c = cdrom_cycles_to_irq(i_mask);   if (c < best) best = c;
@@ -356,6 +371,7 @@ static uint32_t devices_cycles_to_next_idle_event(void) {
     }
     if (best == 0) best = 1;
     return best;
+#endif
 }
 
 /* Test/diagnostic accessor for the idle-skip observation boundary above. */
@@ -368,25 +384,22 @@ void psx_devices_refresh_observation_deadline(void) {
     extern uint32_t i_stat, i_mask;
     /* A latched source cannot raise another observable edge before guest MMIO
      * acknowledges it. Frame pacing is unconditional, even with SR/IM masked. */
-    uint32_t mask = i_mask & ~i_stat;
-    uint32_t next = interrupts_cycles_to_vblank();
-    unsigned reason=PSX_HR_DEADLINE_VBLANK;
-    uint32_t d = timers_cycles_to_irq(mask); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_TIMER);}
-    d = cdrom_cycles_to_irq(mask); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_CD);}
-    d = dma_cycles_to_deliverable_irq(mask); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_DMA);}
-    /* DMA publishes RAM and GPU data independently of interrupt delivery.
-     * CPU RAM polling cannot defer these publications until a later frame.
-     * A waiting CD DMA also depends on masked CD readiness becoming live. */
-    d = dma_cycles_to_internal_event(); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_DMA);}
-    if (dma_cdrom_transfer_active()) {
-        d = cdrom_cycles_to_irq(0xFFFFFFFFu); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_CD);}
-    }
-    d = sio_cycles_to_irq(mask); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_SIO);}
-    if (mask & (1u << IRQ_SPU)) {
-        d = psx_spu_sample_event_cycles_to_next(); if (d < next) {next=d;PSX_HR_SET(reason,PSX_HR_DEADLINE_SPU);}
-    }
-    if (next == 0u) next = 1u;
-    psx_next_service_cycle = s_devices_synced_cycle + (uint64_t)next;
+    const uint32_t mask = i_mask & ~i_stat;
+    uint64_t next = observation_due(OBS_FRAME, mask);
+    unsigned reason = PSX_HR_DEADLINE_VBLANK;
+#define OBS_HORIZON(device, irq_mask, why) do { \
+    const uint64_t at = observation_due(device, irq_mask); \
+    if (at < next) { next = at; PSX_HR_SET(reason, why); } \
+} while (0)
+    OBS_HORIZON(OBS_TIMER, mask, PSX_HR_DEADLINE_TIMER);
+    OBS_HORIZON(OBS_CD, mask, PSX_HR_DEADLINE_CD);
+    OBS_HORIZON(OBS_DMA, UINT32_MAX, PSX_HR_DEADLINE_DMA);
+    if (dma_cdrom_transfer_active())
+        OBS_HORIZON(OBS_CD, UINT32_MAX, PSX_HR_DEADLINE_CD);
+    OBS_HORIZON(OBS_SIO, mask, PSX_HR_DEADLINE_SIO);
+    if (mask & (1u << IRQ_SPU)) OBS_HORIZON(OBS_SPU, mask, PSX_HR_DEADLINE_SPU);
+#undef OBS_HORIZON
+    psx_next_service_cycle = next;
     PSX_HR_SET(s_hr_deadline_source,reason);
     (void)reason;
 }
@@ -406,7 +419,7 @@ static void psx_devices_recompute_deadline(void) {
 #endif
 }
 
-void psx_devices_service_to_now_cause(unsigned request) {
+static void psx_devices_service_mask(unsigned request, unsigned observed) {
     if (g_psx_guest_time_frozen) { psx_cycle_freeze_tick(); return; }
     if (s_in_device_service) return;                 /* device code charged cycles: absorb */
     if (g_plp_cycle_diag) g_plp_svc_calls++;
@@ -426,6 +439,10 @@ void psx_devices_service_to_now_cause(unsigned request) {
     g_psx_cycle_fast_limit = 0;
     s_in_device_service = 1;
     uint64_t target = psx_cycle_count;
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    observation_catch_up(target, observed);
+#else
+    (void)observed;
     if (s_devices_synced_cycle < target) {
         /* Rewind and re-play the gap in event-bounded chunks so device
          * callbacks see the same incremental psx_cycle_count they always did
@@ -459,6 +476,7 @@ void psx_devices_service_to_now_cause(unsigned request) {
         }
         s_devices_synced_cycle = target;
     }
+#endif
     psx_cycle_sample_check(target);
     psx_devices_recompute_deadline();
     psx_in_device_service = 0;
@@ -480,6 +498,14 @@ void psx_devices_service_to_now_cause(unsigned request) {
     }
 }
 
+void psx_devices_service_to_now_cause(unsigned request) {
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    psx_devices_service_mask(request, OBS_ALL);
+#else
+    psx_devices_service_mask(request, 0);
+#endif
+}
+
 void psx_devices_service_to_now(void) {
     psx_devices_service_to_now_cause(PSX_HR_REQUEST_OTHER);
 }
@@ -495,10 +521,20 @@ static void psx_devices_observe_cause(unsigned request) {
     psx_cyc_batch_flush();
     if (g_ls_replay_active || psx_in_device_service) return;
     if (g_psx_guest_time_frozen) { psx_cycle_freeze_tick(); return; }
-    if (s_devices_synced_cycle != psx_cycle_count) psx_devices_service_to_now_cause(request);
+    if (s_materialized_cycle != psx_cycle_count) psx_devices_service_to_now_cause(request);
     else psx_devices_recompute_deadline();
 }
 void psx_devices_observe(void) { psx_devices_observe_cause(PSX_HR_REQUEST_OBSERVATION); }
+#endif
+
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+void psx_devices_mmio_sync_at(uint32_t addr, int write) {
+    psx_cyc_batch_flush();
+    if (g_ls_replay_active || psx_in_device_service) return;
+    if (g_psx_guest_time_frozen) { psx_cycle_freeze_tick(); return; }
+    psx_devices_service_mask(PSX_HR_REQUEST_MMIO, observation_mmio_mask(addr, write));
+    psx_next_service_cycle = 0; /* handler may re-arm a different event */
+}
 #endif
 
 void psx_devices_mmio_sync(void) {
@@ -523,6 +559,9 @@ void psx_devices_mmio_sync(void) {
  * g_event_step_conservative diagnostic; also keeps the deadline-path state
  * coherent so the two can interleave (the runtime toggle flips mid-run). */
 static void psx_advance_cycles_exact(uint32_t cycles) {
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    if (!psx_in_device_service) psx_devices_service_to_now();
+#endif
 #ifdef PSX_COSIM
     /* First-divergence oracle: the guest-cycle counter is the ONLY clock both backends
      * share identically, so it is the alignment point for the full-state hash. */
@@ -550,6 +589,9 @@ static void psx_advance_cycles_exact(uint32_t cycles) {
 #endif
     }
     s_devices_synced_cycle = psx_cycle_count;
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    observation_anchor(psx_cycle_count);
+#endif
     psx_next_service_cycle = 0;
 }
 
@@ -581,6 +623,10 @@ void psx_advance_cycles_slow(uint32_t cycles) {
 #ifdef PSX_COSIM
     psx_advance_cycles_exact(cycles);
 #elif defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    if (g_event_step_conservative && !psx_in_device_service) {
+        psx_advance_cycles_exact(cycles);
+        return;
+    }
     psx_cycle_count += (uint64_t)cycles;
     if (!psx_in_device_service && psx_cycle_count >= psx_next_cycle_sample)
         psx_observation_sample();
@@ -970,12 +1016,14 @@ void psx_idle_note_check(CPUState *cpu, uint32_t check_pc) {
      * hundred cycles. For the store-counter shape, measure from now: an
      * overstated distance lands the skip after the event and delivers the
      * IRQ late (R4 boot, frame 961: +402 cycles). */
+#if !defined(PSX_OBSERVATION_TIME) || !PSX_OBSERVATION_TIME
     if (s_idle_iter_edges || s_idle_mem_progress) {
         const uint64_t lag = psx_cycle_count > s_devices_synced_cycle
             ? psx_cycle_count - s_devices_synced_cycle : 0;
         if ((uint64_t)dist <= lag) return;
         dist -= (uint32_t)lag;
     }
+#endif
     if (dist <= q) return;               /* one real iteration reaches it */
     uint32_t k;
     if (s_idle_iter_edges == 0)
@@ -1032,6 +1080,9 @@ void psx_cycles_resync_after_restore(CPUState *cpu) {
     g_psx_cyc_batch_limit  = 0;
     g_psx_cyc_bb_defer     = 0;
     s_devices_synced_cycle = psx_cycle_count;
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    observation_anchor(psx_cycle_count);
+#endif
     s_next_cycle_sample = 0;
     psx_next_service_cycle = 0;   /* recompute on next charge */
     psx_in_device_service  = 0;
@@ -1091,6 +1142,9 @@ void psx_cycles_reset_for_boot(void) {
     g_psx_cyc_bb_defer     = 0;
     psx_cycle_count        = 0;
     s_devices_synced_cycle = 0;
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    observation_anchor(0);
+#endif
     s_next_service_cycle   = 0;
     s_in_device_service    = 0;
     g_psx_cycle_fast_limit = 0;

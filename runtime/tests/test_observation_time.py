@@ -67,8 +67,19 @@ def main():
                      str(root/'runtime/tests/test_psx_cycle_event_boundaries.c'),
                      str(root/'runtime/src/psx_cycles.c'), '-o', str(exe)])
                 run([str(exe)])
+        # Reuse the clock fixture with actual root counters for the affected
+        # on-demand vs conservative elapsed-time/IRQ differential.
+        for opt in ['0', '2']:
+            exe = temp/f'clock-real-timers-{opt}.exe'
+            run([args.cc, '-std=c11', '-O'+opt, '-DPSX_NO_DEBUG_TOOLS',
+                 '-DPSX_ENABLE_BLOCK_CYCLES=1', '-DPSX_OBSERVATION_TIME=1',
+                 '-DPSX_CLOCK_REAL_TIMERS=1', '-I'+str(inc), '-I'+str(temp),
+                 str(root/'runtime/tests/test_psx_cycle_event_boundaries.c'),
+                 str(root/'runtime/src/psx_cycles.c'), str(root/'runtime/src/timers.c'),
+                 str(root/'runtime/src/psx_video_timing.c'), '-o', str(exe)])
+            run([str(exe)])
         if args.clock_only:
-            print('PASS O0/O2 reference/native clocks and actual overlay charge callback')
+            print('PASS O0/O2 reference/native clocks, actual overlay callback and production timer differential')
             return
         # These compile real bodies; they do not establish runtime IRQ/PCM parity.
         for source in ['interrupts.c', 'interrupts_block_audio.c', 'spu_observation_time.c']:

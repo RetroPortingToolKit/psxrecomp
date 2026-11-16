@@ -7,6 +7,8 @@
 #include "psx_cycles.h"
 #include "psx_cycle_freeze.h"
 #include "cpu_state.h"
+#include "timers.h"
+#include <string.h>
 
 #include <stdint.h>
 int g_boot_state_cpu_timing_restored;
@@ -35,7 +37,8 @@ static int s_cd_raise_irq;
 #define TEST_OVERLAY_CPU_CHARGE(cycles) psx_advance_cycles(cycles)
 #endif
 
-void sio_advance(uint32_t cycles) { (void)cycles; }
+static uint64_t s_sio_cycles, s_timer_cycles;
+void sio_advance(uint32_t cycles) { s_sio_cycles += cycles; }
 
 void cdrom_advance(uint32_t cycles) {
     s_device_calls++;
@@ -53,15 +56,29 @@ void dma_advance(uint32_t cycles) {
     if (s_cd_ready) s_dma_ready_cycles += cycles;
 }
 
-void timers_advance(uint32_t cycles) { (void)cycles; }
+#if defined(PSX_CLOCK_REAL_TIMERS) && PSX_CLOCK_REAL_TIMERS
+static uint64_t fixture_timer_cycles(void) { return timers_read(TIMER_BASE); }
+static void fixture_timer_reset(void) { timers_init(); }
+void psx_irq_raise(uint32_t bit, uint32_t detail) { (void)detail; i_stat |= 1u << bit; }
+void event_ring_record_aux(uint16_t kind, uint8_t detail, uint32_t aux) {
+    (void)kind; (void)detail; (void)aux;
+}
+#else
+void timers_advance(uint32_t cycles) { s_timer_cycles += cycles; }
+static uint64_t fixture_timer_cycles(void) { return s_timer_cycles; }
+static void fixture_timer_reset(void) { s_timer_cycles = 0; }
+#endif
 void interrupts_advance_cycles(uint32_t cycles) { s_vblank_phase += cycles; }
 void interrupts_service_scheduled_events(void) {}
 
 uint32_t interrupts_cycles_to_vblank(void) { return 564480u - s_vblank_phase % 564480u; }
+#if !defined(PSX_CLOCK_REAL_TIMERS) || !PSX_CLOCK_REAL_TIMERS
 uint32_t timers_cycles_to_irq(uint32_t mask) { (void)mask; return UINT32_MAX; }
+#endif
 uint32_t cdrom_cycles_to_irq(uint32_t mask) {
     return s_cd_ready || !(mask & (1u << 2)) ? UINT32_MAX : s_cd_cycles_remaining;
 }
+uint32_t cdrom_cycles_to_internal_event(void) { return cdrom_cycles_to_irq(UINT32_MAX); }
 static uint32_t s_dma_next_event = UINT32_MAX;
 static int s_cd_dma_active;
 uint32_t dma_cycles_to_internal_event(void) { return s_dma_next_event; }
@@ -306,6 +323,86 @@ int main(void) {
     VERIFY(requests==psx_device_service_calls && deadlines==requests,"service classifications partition actual calls");
     PSX_HR_GPU_HOLD_BEGIN();psx_cycles_reset_for_boot();PSX_HR_GPU_HOLD_END();
     VERIFY(!psx_hr_gpu_hold_depth,"reset/early-clear cannot leak or underflow hold context");
+#endif
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    /* Addressed GPU/timer observations must not advance unrelated quiet
+     * SIO/CD/frame state. Materialization is required at an actual read or
+     * full snapshot barrier, including at the same global timeline position. */
+    g_event_step_conservative = 0; i_mask = 0; i_stat = 0;
+    s_cd_ready = 1; s_dma_next_event = UINT32_MAX; s_spu_next_sample = UINT32_MAX;
+    s_cd_dma_active = 0; s_vblank_phase = 0; s_sio_cycles = 0; fixture_timer_reset();
+    psx_cycles_reset_for_boot();
+    calls_before = s_device_calls;
+    psx_advance_cycles(37); psx_devices_mmio_sync_at(0x1F801814u, 0);
+    psx_advance_cycles(11); psx_devices_mmio_sync_at(0x1F801814u, 0);
+    VERIFY(s_device_calls == calls_before && s_sio_cycles == 0 &&
+           fixture_timer_cycles() == 0 && s_vblank_phase == 0,
+           "GPU MMIO leaves unrelated quiet devices unmaterialized");
+    psx_advance_cycles(13); psx_devices_mmio_sync_at(0x1F801100u, 0);
+    VERIFY(fixture_timer_cycles() == 61 && s_device_calls == calls_before && s_sio_cycles == 0,
+           "timer reads materialize elapsed arithmetic without unrelated catch-up");
+    psx_devices_mmio_sync_at(0x1F801040u, 0);
+    VERIFY(s_sio_cycles == 61 && s_device_calls == calls_before,
+           "SIO observation uses its own elapsed interval");
+    psx_devices_mmio_sync_at(0x1F801800u, 1);
+    s_cd_ready = 0; s_cd_cycles_remaining = 7; s_dma_ready_cycles = 0;
+    psx_advance_cycles(7); psx_devices_mmio_sync_at(0x1F801814u, 0);
+    VERIFY(s_cd_ready && s_dma_ready_cycles == 1 && psx_cycle_count == 68,
+           "unrelated MMIO still processes real CD-to-DMA event with one boundary cycle");
+    psx_devices_service_to_now();
+    VERIFY(s_sio_cycles == 68 && fixture_timer_cycles() == 68 && s_vblank_phase == 68,
+           "same-position snapshot barrier materializes every pending device interval");
+    g_event_step_conservative = 1; calls_before = s_device_calls;
+    psx_advance_cycles(3);
+    VERIFY(psx_cycle_count == 71 && s_device_calls == calls_before + 3 &&
+           s_sio_cycles == 71 && fixture_timer_cycles() == 71 && s_vblank_phase == 71,
+           "runtime conservative fallback retains single-cycle servicing");
+    g_event_step_conservative = 0; calls_before = s_device_calls;
+    psx_advance_cycles(9); psx_devices_mmio_sync_at(0x1F801814u, 0);
+    VERIFY(psx_cycle_count == 80 && s_device_calls == calls_before,
+           "return from conservative stepping re-anchors independent clocks");
+    psx_cycle_count = 20; psx_cycles_resync_after_restore(NULL);
+    fixture_timer_reset();
+    psx_advance_cycles(4); psx_devices_mmio_sync_at(0x1F801100u, 0);
+    VERIFY(fixture_timer_cycles() == 4 && psx_cycle_count == 24,
+           "restore never replays pre-restore elapsed device time");
+#if defined(PSX_CLOCK_REAL_TIMERS) && PSX_CLOCK_REAL_TIMERS
+    /* Compare production counter arithmetic/IRQ state at a real observation
+     * against the same clock's single-cycle conservative path. */
+    uint16_t counts[2][3], targets[2][3];
+    uint32_t modes[2][3], fractions[2][3], status[2];
+    int32_t lines[2][3];
+    uint64_t raises[2][3];
+    extern uint64_t g_timer_irq_fired[3];
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        g_event_step_conservative = (int)pass;
+        i_mask = i_stat = 0; s_vblank_phase = 0; s_cd_ready = 1;
+        psx_cycles_reset_for_boot(); timers_init();
+        memset(g_timer_irq_fired, 0, sizeof(uint64_t) * 3);
+        timers_write(TIMER_BASE + 0x28, 10);
+        timers_write(TIMER_BASE + 0x24, 0x58); /* repeat, target reset + dwell */
+        timers_write(TIMER_BASE + 0x08, 19);
+        timers_write(TIMER_BASE + 0x04, 0x158); /* divided dotclock */
+        for (unsigned tick = 0; tick < 1000; ++tick) {
+            psx_advance_cycles(1);
+            if (tick % 17 == 0) psx_devices_mmio_sync_at(0x1F801814u, 0);
+        }
+        psx_devices_service_to_now();
+        timers_get_snapshot(counts[pass], modes[pass], targets[pass], lines[pass], fractions[pass]);
+        status[pass] = i_stat;
+        memcpy(raises[pass], g_timer_irq_fired, sizeof(raises[pass]));
+    }
+    VERIFY(!memcmp(counts[0], counts[1], sizeof(counts[0])) &&
+           !memcmp(targets[0], targets[1], sizeof(targets[0])) &&
+           !memcmp(modes[0], modes[1], sizeof(modes[0])) &&
+           !memcmp(lines[0], lines[1], sizeof(lines[0])) &&
+           !memcmp(fractions[0], fractions[1], sizeof(fractions[0])) &&
+           !memcmp(raises[0], raises[1], sizeof(raises[0])) && status[0] == status[1],
+           "production root counter/IRQ state matches conservative timeline across unrelated MMIO");
+    g_event_step_conservative = 0;
+    fprintf(stderr, "PASS production timer snapshot/IRQ differential against conservative stepping\n");
+#endif
+    fprintf(stderr, "PASS addressed quiet-device elimination, CD/DMA dependency, full barrier, conservative switch and restore\n");
 #endif
     fprintf(stderr, "PASS cross-device deadline preserves D-1 + 1 causality; "
                     "idle skip bounded by the SPU sample deadline\n");

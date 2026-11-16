@@ -56,10 +56,14 @@ function(psxrecomp_observation_time target)
         set_property(TARGET ${target} PROPERTY SOURCES "${_selected}")
     endif()
     psxrecomp_add_implementation(${target}
-        NAME machine-time CONTRACT observation-boundaries-${_native}-v1
+        NAME machine-time CONTRACT per-device-observation-${_native}-v2
         HLE_SOURCES "${_directory}/native.c"
         LLE_SOURCES "${_directory}/reference.c"
         CONTRACT_FILES "${PSXRECOMP_ROOT}/runtime/src/psx_cycles.c"
+                       "${PSXRECOMP_ROOT}/runtime/src/psx_device_observation.inc"
+                       "${PSXRECOMP_ROOT}/runtime/src/cdrom.c"
+                       "${PSXRECOMP_ROOT}/runtime/include/cdrom.h"
+                       "${PSXRECOMP_ROOT}/runtime/src/memory.c"
                        "${PSXRECOMP_ROOT}/runtime/include/psx_cycles.h"
                        "${PSXRECOMP_ROOT}/runtime/include/psx_cycle_freeze.h"
                        "${PSXRECOMP_ROOT}/runtime/include/psx_block_edge.h"

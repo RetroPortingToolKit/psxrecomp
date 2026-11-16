@@ -45,6 +45,14 @@ void     psx_icache_shadow_abort(void);
  * guest-cycle position and force a deadline recompute. memory.c calls
  * this at the top of every device-MMIO read/write. */
 void psx_devices_mmio_sync(void);
+/* Addressed CPU MMIO barrier; reference retains the full-device service. */
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+void psx_devices_mmio_sync_at(uint32_t addr, int write);
+#else
+static inline void psx_devices_mmio_sync_at(uint32_t addr, int write) {
+    (void)addr; (void)write; psx_devices_mmio_sync();
+}
+#endif
 void psx_devices_service_to_now(void);
 void psx_devices_service_to_now_cause(unsigned request);
 
@@ -201,13 +209,13 @@ static inline void psx_advance_cycles(uint32_t cycles) {
 #else
 #if defined(__GNUC__) || defined(__clang__)
 #if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
-    if (__builtin_expect(g_ls_replay_active | g_psx_guest_time_frozen, 0)) {
+    if (__builtin_expect(g_ls_replay_active | g_psx_guest_time_frozen | g_event_step_conservative, 0)) {
 #else
     if (__builtin_expect(g_ls_replay_active | g_event_step_conservative, 0)) {
 #endif
 #else
 #if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
-    if (g_ls_replay_active || g_psx_guest_time_frozen) {
+    if (g_ls_replay_active || g_psx_guest_time_frozen || g_event_step_conservative) {
 #else
     if (g_ls_replay_active || g_event_step_conservative) {
 #endif
