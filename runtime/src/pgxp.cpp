@@ -1262,6 +1262,14 @@ extern "C" int pgxp_native_scalar_gpr(CPUState *cpu, uint32_t reg, double precis
     return 1;
 }
 
+extern "C" int pgxp_native_gpr_scalar(uint32_t reg, uint32_t expected, double *precise) {
+    if (!precise || reg == 0u || reg >= 34u || !g_pgxp_active || !s_cpu_mode) return 0;
+    flush_plain_writes();
+    if (!sc_valid(&s_gpr_s[reg], expected)) return 0;
+    *precise = s_gpr_s[reg].v;
+    return 1;
+}
+
 extern "C" int pgxp_native_gte_scalar(uint32_t reg, uint32_t expected, double *precise) {
     if (!precise || reg >= 32u || !g_pgxp_active || !s_cpu_mode ||
         !sc_valid(&s_gte_s[reg], expected)) return 0;

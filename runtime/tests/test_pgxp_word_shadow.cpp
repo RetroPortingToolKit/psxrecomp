@@ -27,7 +27,7 @@ static void seed(uint32_t address,uint32_t packed,int32_t x) {
 static void check_attributes(const PGXPWordShadow& a,const PGXPWordShadow& b) {
     CHECK(a.valid==b.valid && a.value==b.value && a.address==b.address);
     CHECK(a.x16==b.x16 && a.y16==b.y16 && a.z==b.z && a.flags==b.flags);
-    CHECK(!std::memcmp(&a.projection,&b.projection,sizeof a.projection));
+    CHECK(!(a.flags&PGXP_F_PROJECTION)||!std::memcmp(&a.projection,&b.projection,sizeof a.projection));
 }
 int main() {
     pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_projection_tracking(1);
@@ -418,10 +418,14 @@ int main() {
     const auto scalar_output=capture(Other,8);
     CHECK(scalar_output.valid&&scalar_output.flags==PGXP_F_VXY&&scalar_output.x16==(8<<16)+24576);
     CHECK(pgxp_load_source(Other,8)==0);
-    psx_pgxp_cop2(&machine,0x4885C800u,8,0); // MTC2 a1,MAC1
+    psx_pgxp_cop2(&machine,0x48854800u,8,0); // MTC2 a1,IR1: maintained scalar input
     double native_scalar=-1;
-    CHECK(pgxp_native_gte_scalar(25,8,&native_scalar)&&native_scalar==8.375);
-    CHECK(!pgxp_native_gte_scalar(25,9,&native_scalar)&&native_scalar==8.375);
+    CHECK(pgxp_native_gte_scalar(9,8,&native_scalar)&&native_scalar==8.375);
+    CHECK(!pgxp_native_gte_scalar(9,9,&native_scalar)&&native_scalar==8.375);
+    CHECK(pgxp_native_gpr_scalar(5,8,&native_scalar)&&native_scalar==8.375);
+    CHECK(!pgxp_native_gpr_scalar(5,9,&native_scalar)&&native_scalar==8.375);
+    machine.gpr[5]=100000000u;CHECK(pgxp_native_scalar_gpr(&machine,5,100000000.5,1));
+    CHECK(pgxp_native_gpr_scalar(5,machine.gpr[5],&native_scalar)&&native_scalar==100000000.5);
     CHECK(pgxp_native_scalar_data(9,301,301.5,1));
     CHECK(pgxp_native_gte_scalar(9,301,&native_scalar)&&native_scalar==301.5);
     CHECK(!pgxp_native_gte_scalar(9,302,&native_scalar));

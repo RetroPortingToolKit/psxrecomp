@@ -429,6 +429,9 @@ int pgxp_native_import_control(uint32_t reg, const PGXPNativeWord *word);
  * is an explicit input-provenance result, never inferred from equal integers.
  * Half/source metadata is ended; a later scalar-to-half consumer validates it. */
 int pgxp_native_scalar_gpr(struct CPUState *cpu, uint32_t reg, double precise, int tracked);
+/* Inspect a caller-live scalar without consuming or changing its register.
+ * Equal integer values alone are not evidence that a scalar is untracked. */
+int pgxp_native_gpr_scalar(uint32_t reg, uint32_t expected, double *precise);
 /* A logical native GTE input/output with scalar precision and no packed-half
  * lineage. value is the transferred word before the GTE register's masking. */
 int pgxp_native_scalar_data(uint32_t reg, uint32_t value, double precise, int tracked);
