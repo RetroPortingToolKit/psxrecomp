@@ -235,7 +235,7 @@ std::string CodeGenerator::translate_lui(uint32_t instr) {
         return "/* nop: write to $zero */";
     }
 
-    return fmt::format("{} = 0x{:04X} << 16;  /* 0x{:08X} */",
+    return fmt::format("{} = 0x{:04X}u << 16;  /* 0x{:08X} */",
                        reg_name(rt), imm, ((uint32_t)imm) << 16);
 }
 

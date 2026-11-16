@@ -135,7 +135,7 @@ int main(void) {
         uint8_t *phase=test_find_section(saved,len,BS_SEC_GAME_START,&phase_offset,&phase_bytes);
         assert(phase);
         uint32_t count=read32(saved+28);
-        assert(saved[4]==9 && read32(phase)==(uint32_t)started);
+        assert(read32(saved + 4)==BOOT_STATE_VERSION_WITHOUT_HOST && read32(phase)==(uint32_t)started);
         fntrace_restore_game_started(!started); ram[0x100]=0; cpu.pc=0;
         assert(boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
         assert(fntrace_is_game_started()==started && ram[0x100]==0xab && cpu.pc==0x80050044);

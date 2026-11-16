@@ -1279,7 +1279,7 @@ static int boot_state_load_buffer_impl(const uint8_t* file, size_t file_len,
         }
         s->tag = tag;
         if (tag == BS_SEC_MOD_HOST) {
-            if (h.version < 10u || host_section) { ok = 0; break; }
+            if (h.version < BOOT_STATE_VERSION || host_section) { ok = 0; break; }
             host_section = s;
         }
         if (!validate_section(tag, s->p, s->len)) { ok = 0; break; }
@@ -1292,7 +1292,7 @@ static int boot_state_load_buffer_impl(const uint8_t* file, size_t file_len,
         ok = 0;
     if (ok && h.version >= 9u && !(seen & (1u << BS_SEC_GAME_START)))
         ok = 0;
-    if (ok && h.version >= 10u && !host_section)
+    if (ok && h.version >= BOOT_STATE_VERSION && !host_section)
         ok = 0;
 
     /* PASS 2 -- apply. Every section passed validate_section, whose checks
