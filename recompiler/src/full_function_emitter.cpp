@@ -937,7 +937,7 @@ bool FullFunctionEmitter::emit_function(
             // space the entry hook + cyc_watch use — relocated kernel funcs
             // (ROM 0x1FC10000+) run at RAM 0x500+, so the raw ROM addr would
             // never match a RAM anchor.
-            out += fmt::format("    debug_server_cyc_observe(0x{:08X}u);\n",
+            out += fmt::format("    PSX_DEBUG_BLOCK_OBSERVE(0x{:08X}u);\n",
                                normalize_address(addr));
             out += "#endif\n";
             // First-divergence co-sim oracle (COSIM_ORACLE.md): lean block-leader hook.

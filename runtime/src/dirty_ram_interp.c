@@ -3984,6 +3984,10 @@ int g_ls_mode = 0;
 int g_ls_replay_active = 0;
 int g_ls_suppress_record = 0;
 
+/* Host-generated block observers read this single conservative owner word.
+ * Watch bits belong to debug_server.c; only this file changes the LS bit. */
+volatile uint32_t g_psx_debug_block_interest = 0;
+
 static uint32_t s_ls_frame_lo = 0, s_ls_frame_hi = 0;   /* hi==0 => disabled */
 
 typedef struct { uint8_t is_write, size; uint32_t addr, val; } ls_op_t;
@@ -4043,7 +4047,20 @@ static struct {
 static ls_op_t s_lsf_div_trace[48];
 static int     s_lsf_div_trace_n = 0, s_lsf_div_idx = 0;
 
-void ls_set_window(uint32_t lo, uint32_t hi) { s_ls_frame_lo = lo; s_ls_frame_hi = hi; }
+static void ls_debug_block_interest_refresh(void) {
+    /* Keep a configured block window admitted even beyond its last frame:
+     * the first outside-window leader must perform the original cleanup. */
+    uint32_t interest = g_psx_debug_block_interest & ~PSX_DEBUG_BLOCK_LOCKSTEP;
+    if (s_ls_frame_hi != 0 || s_lsf_active)
+        interest |= PSX_DEBUG_BLOCK_LOCKSTEP;
+    g_psx_debug_block_interest = interest;
+}
+
+void ls_set_window(uint32_t lo, uint32_t hi) {
+    s_ls_frame_lo = lo;
+    s_ls_frame_hi = hi;
+    ls_debug_block_interest_refresh();
+}
 void ls_set_record_only(int on) { s_ls_record_only = on; }
 void ls_func_set_window(uint32_t lo, uint32_t hi) { s_lsf_frame_lo = lo; s_lsf_frame_hi = hi; }
 void ls_func_set_record_only(int on) { s_lsf_record_only = on; }
@@ -4412,6 +4429,7 @@ void ls_func_enter(uint32_t entry_pc, CPUState *cpu) {
     s_lsf_frame = frame;
     s_lsf_saw_irq = 0;
     s_lsf_active = 1;
+    ls_debug_block_interest_refresh();
     s_lsf_recording = 0;
 }
 
@@ -4420,12 +4438,14 @@ void ls_func_exit(uint32_t entry_pc, CPUState *cpu, int handled) {
     if (s_lsf_dispatch_entry != entry_pc) {
         g_ls_mode = 0;
         s_lsf_active = 0;
+        ls_debug_block_interest_refresh();
         s_lsf_recording = 0;
         s_lsf_div.skipped_conflict++;
         return;
     }
     g_ls_mode = 0;
     s_lsf_active = 0;
+    ls_debug_block_interest_refresh();
     if (!s_lsf_recording) {
         s_lsf_div.skipped_unhandled++;
         return;

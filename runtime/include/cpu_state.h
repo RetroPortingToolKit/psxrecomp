@@ -401,4 +401,50 @@ static inline void debug_server_log_call_entry(uint32_t func_addr) {
 #endif
 #endif
 
+/* Generated debug block leaders always publish the current physical PC for
+ * late guest-PC profiling. Only real observer owners enter the maintained
+ * callback. Ownership is published by watch/lockstep transitions on the emulation
+ * thread; g_ls_mode alone cannot admit the first lockstep leader. These bits are
+ * host-only: old/generated DLLs retain the public callback fallback. */
+enum {
+    PSX_DEBUG_BLOCK_CYCLE = 1u,
+    PSX_DEBUG_BLOCK_PC = 2u,
+    PSX_DEBUG_BLOCK_LOCKSTEP = 4u
+};
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern volatile uint32_t g_psx_debug_block_interest;
+#ifndef PSX_NO_DEBUG_TOOLS
+void debug_server_cyc_observe(uint32_t block_leader_phys);
+#ifndef PSX_OVERLAY_DLL_BUILD
+extern volatile uint32_t g_psx_last_block;
+#if defined(__GNUC__) || defined(__clang__)
+static inline __attribute__((always_inline)) void psx_debug_block_observe(uint32_t pc) {
+#elif defined(_MSC_VER)
+static __forceinline void psx_debug_block_observe(uint32_t pc) {
+#else
+static inline void psx_debug_block_observe(uint32_t pc) {
+#endif
+    uint32_t phys = pc & 0x1FFFFFFFu;
+    g_psx_last_block = phys;
+    /* The five address adapters have effects without an armed watch. With
+     * emitted literal PCs their comparisons fold away at ordinary leaders. */
+    if (g_psx_debug_block_interest ||
+        phys == 0x0006AB3Cu || phys == 0x0006AAF0u ||
+        phys == 0x0006ACFCu || phys == 0x0006AD08u || phys == 0x00069CC4u)
+        debug_server_cyc_observe(phys);
+}
+#define PSX_DEBUG_BLOCK_OBSERVE(pc) psx_debug_block_observe(pc)
+#else
+/* No imported host-interest view is required by the overlay ABI. */
+#define PSX_DEBUG_BLOCK_OBSERVE(pc) debug_server_cyc_observe(pc)
+#endif
+#else
+#define PSX_DEBUG_BLOCK_OBSERVE(pc) ((void)0)
+#endif
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* PSXRECOMP_CPU_STATE_H */

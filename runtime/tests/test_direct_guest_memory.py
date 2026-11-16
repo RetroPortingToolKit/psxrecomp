@@ -46,8 +46,40 @@ def check_observer_dispatch(root, work, cc):
         assert source[mutation.end():].splitlines()[1].strip() == \
             "debug_server_write_interest_invalidate();"
 
+    # Publish the fast gate at actual watch/LS owner transitions, never from
+    # g_ls_mode or listener presence. Keep every mutation covered by this seam.
+    interp = (root / "runtime/src/dirty_ram_interp.c").read_text(encoding="utf-8")
+    header = (root / "runtime/include/cpu_state.h").read_text(encoding="utf-8")
+    assert "#define PSX_DEBUG_BLOCK_OBSERVE(pc) debug_server_cyc_observe(pc)" in header
+    assert "#define PSX_DEBUG_BLOCK_OBSERVE(pc) ((void)0)" in header
+    for emitter in ("code_generator.cpp", "full_function_emitter.cpp"):
+        generated = (root / "recompiler/src" / emitter).read_text(encoding="utf-8")
+        assert "PSX_DEBUG_BLOCK_OBSERVE(0x{:08X}u);" in generated
+    for text, pattern, refresh, expected in (
+        (source, r"(?m)^[ \t]*s_(?:cyc_watch|pc_probe)_armed = [01];[^\n]*$",
+         "debug_server_watch_interest_refresh();", 9),
+        (interp, r"(?m)^[ \t]*s_lsf_active = [01];[^\n]*$",
+         "ls_debug_block_interest_refresh();", 3),
+    ):
+        changes = list(re.finditer(pattern, text))
+        assert len(changes) == expected, (pattern, len(changes))
+        for change in changes:
+            assert text[change.end():].splitlines()[1].strip() == refresh
+
+    def owner_body(name):
+        match = re.search(r"(?m)^(?:static )?void " + name + r"\([^;]*?\)\s*\{", interp)
+        assert match, name
+        start = match.start()
+        brace = interp.index("{", start)
+        end, depth = brace + 1, 1
+        while depth:
+            depth += (interp[end] == "{") - (interp[end] == "}")
+            end += 1
+        return interp[start:end]
+
     preamble = r'''
 #include "cpu_state.h"
+#include "psx_memory.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -62,7 +94,8 @@ static int s_fmv_quiet,g_psx_render_pass_active,s_fp;
 static int64_t s_rec_frame=0;
 static int s_cyc_watch_armed,s_pc_probe_armed,ls_armed;
 static unsigned events[32],n,watch_entries,probe_entries,ls_calls,nd_reads,boot_total;
-static uint32_t g_psx_last_block,g_debug_last_store_pc;
+volatile uint32_t g_psx_last_block,g_psx_debug_block_interest;
+static uint32_t g_debug_last_store_pc;
 static void *s_wtrace_trans,*s_wtrace_boot,*s_wtrace;
 static int s_wtrace_trans_range_count,s_wtrace_boot_range_count,s_wtrace_range_count;
 typedef struct {uint32_t lo,hi;} FixtureRange;
@@ -87,7 +120,8 @@ static void wtrace_boot_record(uint32_t p,uint32_t o,uint32_t v,uint8_t w){(void
 static void wtrace_record(uint32_t p,uint32_t o,uint32_t v,uint8_t w){(void)p;(void)o;(void)v;(void)w;event(6);}
 static void cyc_watch_observe(uint32_t p){(void)p;watch_entries++;if(s_cyc_watch_armed)event(7);}
 static void pc_probe_observe(uint32_t p){(void)p;probe_entries++;if(s_pc_probe_armed)event(8);}
-void ls_at_leader(uint32_t p,CPUState *c){assert(p==g_psx_last_block&&c==&cpu);ls_calls++;if(ls_armed)event(9);}
+static void (*fixture_ls_owner)(uint32_t,CPUState*);
+void ls_at_leader(uint32_t p,CPUState *c){assert(p==g_psx_last_block&&c==&cpu);ls_calls++;if(ls_armed)event(9);if(fixture_ls_owner)fixture_ls_owner(p,c);}
 static unsigned sreg_fixture_mode,sreg_word_reads,sreg_half_reads,sreg_effects,sreg_read_n;
 static uint32_t sreg_reads[32],sreg_root=0x80000100u;
 int g_ls_mode,g_ls_replay_active,g_ram_read_watch_active,g_dma_exec_depth,g_host_store_depth;
@@ -183,16 +217,25 @@ int main(void){
  assert(debug_server_write_interest_lookup(0x1f800400)==4); /* conservative outside scratch */
  s_wtrace_range_count=0;debug_server_write_interest_invalidate();
  assert(debug_server_write_interest_lookup(0x1f8003ff)==0);
- n=0;debug_server_cyc_observe(0x80012340);assert(g_psx_last_block==0x12340&&ls_calls==1&&!watch_entries&&!probe_entries);
- ls_armed=1;debug_server_cyc_observe(0x80012344);assert(n==1&&events[0]==9&&ls_calls==2);
- s_cyc_watch_armed=s_pc_probe_armed=1;n=0;debug_server_cyc_observe(0x80012348);
+ n=0;PSX_DEBUG_BLOCK_OBSERVE(0x80012340);assert(g_psx_last_block==0x12340&&!ls_calls&&!watch_entries&&!probe_entries);
+ /* First LS leader is admitted while g_ls_mode is still zero. */
+ ls_armed=1;g_psx_debug_block_interest=PSX_DEBUG_BLOCK_LOCKSTEP;
+ PSX_DEBUG_BLOCK_OBSERVE(0x80012344);assert(n==1&&events[0]==9&&ls_calls==1);
+ s_cyc_watch_armed=s_pc_probe_armed=1;debug_server_watch_interest_refresh();
+ assert(g_psx_debug_block_interest==7);n=0;PSX_DEBUG_BLOCK_OBSERVE(0x80012348);
  assert(n==3&&events[0]==7&&events[1]==8&&events[2]==9);
- s_cyc_watch_armed=s_pc_probe_armed=ls_armed=0;cpu.gpr[31]=0x100;n=0;
- debug_server_cyc_observe(0x8006AAF0);assert(nd_reads==2&&watch_entries==2&&probe_entries==2);
- s_fmv_quiet=1;unsigned before=ls_calls;debug_server_cyc_observe(0x80012350);
+ s_cyc_watch_armed=s_pc_probe_armed=ls_armed=0;debug_server_watch_interest_refresh();
+ assert(g_psx_debug_block_interest==PSX_DEBUG_BLOCK_LOCKSTEP);g_psx_debug_block_interest=0;cpu.gpr[31]=0x100;n=0;
+ PSX_DEBUG_BLOCK_OBSERVE(0x8006AAF0);assert(nd_reads==2&&watch_entries==2&&probe_entries==2);
+ /* Every unarmed ND address still reaches the exact optional body. */
+ static const uint32_t nd_pc[]={0x8006AB3C,0x8006ACFC,0x8006AD08,0x80069CC4};
+ for(unsigned i=0;i<4;i++){unsigned calls=ls_calls,w=watch_entries,p=probe_entries;
+  PSX_DEBUG_BLOCK_OBSERVE(nd_pc[i]);assert(g_psx_last_block==(nd_pc[i]&0x1FFFFFFFu)&&ls_calls==calls+1&&watch_entries==w+1&&probe_entries==p+1);}
+ s_fmv_quiet=1;unsigned before=ls_calls;g_psx_debug_block_interest=PSX_DEBUG_BLOCK_CYCLE;
+ PSX_DEBUG_BLOCK_OBSERVE(0x80012350);
  assert(g_psx_last_block==0x12350&&ls_calls==before);
  /* The12-PC admission is pure; actual focused records keep every field/order. */
- s_fmv_quiet=0;sreg_fixture_mode=1;cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;
+ s_fmv_quiet=0;g_psx_debug_block_interest=0;sreg_fixture_mode=1;cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;
  sreg_reset_reads();sreg_trace_record(0x80012340u);assert(!sreg_word_reads&&!sreg_half_reads&&!s_sreg_trace_seq);
  int *owners[]={&g_ls_mode,&g_ls_replay_active,&g_ram_read_watch_active,&g_dma_exec_depth,&g_host_store_depth,&g_psx_render_pass_active};
  for(unsigned i=0;i<sizeof owners/sizeof owners[0];i++){
@@ -226,7 +269,33 @@ int main(void){
  g_ds_recording=g_ram_read_watch_active=1;sreg_reset_reads();sreg_trace_record(focus[0]);assert(s_sreg_trace_seq==13&&sreg_word_reads==11&&sreg_half_reads==2&&sreg_effects==13);g_ds_recording=g_ram_read_watch_active=0;
  sreg_root=0;sreg_reset_reads();sreg_trace_record(focus[0]);assert(sreg_word_reads==1&&s_sreg_trace_seq==13);sreg_root=0x80000100;
  debug_cpu_ptr=NULL;sreg_reset_reads();sreg_trace_record(focus[0]);assert(!sreg_word_reads&&s_sreg_trace_seq==13);debug_cpu_ptr=&cpu;
- puts("PASS actual observer routing: existing page/ND/lockstep and S-register12-PC admission, zero quiet nonfocus reads, full focus fields/order, observer/private owner fallbacks");
+ /* Use the real LS owner/leader bodies; replay internals are unchanged seams. */
+ fixture_ls_owner=fixture_ls_owner_at_leader;sreg_fixture_mode=0;s_ls_record_only=s_lsf_record_only=1;
+ s_frame_count=7;unsigned quiet=ls_calls;PSX_DEBUG_BLOCK_OBSERVE(0x80012340);
+ assert(ls_calls==quiet&&!g_ls_mode);
+ ls_set_window(7,8);assert(g_psx_debug_block_interest==PSX_DEBUG_BLOCK_LOCKSTEP);
+ PSX_DEBUG_BLOCK_OBSERVE(0x80012340);assert(g_ls_mode==1&&s_ls_prev_valid&&s_ls_block==0x12340&&s_ls_R0.gpr[16]==cpu.gpr[16]);
+ PSX_DEBUG_BLOCK_OBSERVE(0x80012344);assert(g_ls_mode==1&&s_ls_div.blocks_checked==1&&s_ls_block==0x12344);
+ s_frame_count=9;PSX_DEBUG_BLOCK_OBSERVE(0x80012348);assert(!g_ls_mode&&!s_ls_prev_valid);
+ /* Keep armed window admission outside its frame range, until explicit clear. */
+ assert(g_psx_debug_block_interest==PSX_DEBUG_BLOCK_LOCKSTEP);ls_set_window(0,0);
+ assert(!g_psx_debug_block_interest);quiet=ls_calls;PSX_DEBUG_BLOCK_OBSERVE(0x8001234C);assert(ls_calls==quiet);
+ ls_func_set_window(10,12);assert(!g_psx_debug_block_interest);s_frame_count=10;
+ ls_func_enter(0x80012000,&cpu);assert(s_lsf_active&&!s_lsf_recording&&!g_ls_mode&&g_psx_debug_block_interest==4);
+ PSX_DEBUG_BLOCK_OBSERVE(0x80012000);assert(s_lsf_recording&&g_ls_mode==1&&s_lsf_entry==0x80012000);
+ ls_func_exit(0x80012000,&cpu,1);assert(!s_lsf_active&&!g_ls_mode&&!g_psx_debug_block_interest&&s_lsf_div.segments_checked==1);
+ ls_func_enter(0x80012000,&cpu);ls_func_exit(0x80012004,&cpu,1);
+ assert(!s_lsf_active&&!g_psx_debug_block_interest&&s_lsf_div.skipped_conflict==1);
+ ls_func_enter(0x80012000,&cpu);ls_func_exit(0x80012000,&cpu,0);
+ assert(!s_lsf_active&&!g_psx_debug_block_interest&&s_lsf_div.skipped_unhandled==1);
+ fixture_in_exception=1;ls_func_enter(0x80012000,&cpu);assert(!s_lsf_active&&!g_psx_debug_block_interest&&s_lsf_div.skipped_irq==1);fixture_in_exception=0;
+ g_ls_replay_active=1;ls_func_enter(0x80012000,&cpu);assert(!s_lsf_active&&!g_psx_debug_block_interest&&s_lsf_div.skipped_conflict==2);g_ls_replay_active=0;
+ /* Watch publication preserves LS ownership and LS transitions preserve watches. */
+ s_pc_probe_armed=1;debug_server_watch_interest_refresh();ls_set_window(10,12);assert(g_psx_debug_block_interest==6);
+ ls_set_window(0,0);assert(g_psx_debug_block_interest==2);s_pc_probe_armed=0;debug_server_watch_interest_refresh();assert(!g_psx_debug_block_interest);
+ /* Unknown/DLL/interpreter callers retain the original public fallback. */
+ quiet=ls_calls;debug_server_cyc_observe(0x80012340);assert(ls_calls==quiet+1&&g_psx_last_block==0x12340);
+ puts("PASS actual observer routing: inline block publication, quiet zero callbacks, all ND addresses, watch publication, real LS first/end-window/function owners, fallback; existing pages/S-register records retained");
 }
 '''
     routing = source[source.index("/* Derived optional-write routing"):
@@ -241,12 +310,31 @@ int main(void){
         "static SregTraceEntry s_sreg_trace[SREG_TRACE_CAP];",
         "static uint64_t s_sreg_trace_seq; static SregLastEntry s_sreg_last[32];",
         "static uint64_t s_frame_count=7;")) + "\n"
+    owner_declarations = r'''
+static uint32_t s_ls_frame_lo,s_ls_frame_hi,s_lsf_frame_lo,s_lsf_frame_hi;
+static int s_ls_record_only,s_lsf_record_only,s_lsf_active,s_lsf_recording,s_lsf_saw_irq;
+static int s_ls_prev_valid,s_ls_trace_n,s_ls_trace_idx,s_ls_overflow,s_ls_mismatch,s_ls_m_kind;
+static CPUState s_ls_R0,s_lsf_R0;
+static uint32_t s_ls_block,s_lsf_entry,s_lsf_dispatch_entry,s_lsf_frame;
+static struct {int found;uint64_t blocks_checked;} s_ls_div;
+static struct {int found;uint64_t segments_checked,skipped_irq,skipped_overflow,skipped_unhandled,skipped_conflict,skipped_disabled;} s_lsf_div;
+int g_ls_dirty_observe;
+static int fixture_in_exception;
+int psx_get_in_exception(void){return fixture_in_exception;}
+static void ls_replay_and_compare(CPUState *c,uint32_t f,uint32_t p){(void)c;(void)f;(void)p;assert(0);}
+static void lsf_replay_and_compare(CPUState *c,uint32_t f,uint32_t p){(void)c;(void)f;(void)p;assert(0);}
+'''
+    owners = owner_declarations + "\n".join(owner_body(name) for name in (
+        "ls_debug_block_interest_refresh", "ls_set_window", "ls_func_set_window",
+        "ls_func_enter", "ls_func_exit", "ls_at_leader"))
+    owners = owners.replace("void ls_at_leader(", "static void fixture_ls_owner_at_leader(")
     actual = sreg_declarations + routing + "\n".join(body(name) for name in (
+        "debug_server_watch_interest_refresh",
         "debug_server_cyc_observe_optional", "debug_server_cyc_observe",
         "debug_server_trace_write_optional", "history_record_live_write", "debug_server_trace_write_check",
         "sreg_trace_focus_func", "sreg_last_slot", "sreg_trace_quiet_bus", "sreg_trace_record"))
     path = work / "existing-observer-dispatch.c"
-    path.write_text(preamble + actual + cases, encoding="utf-8")
+    path.write_text(preamble + actual + owners + cases, encoding="utf-8")
     for opt in ("-O0", "-O2"):
         exe = work / ("observer.exe" if os.name == "nt" else "observer")
         subprocess.run([cc, "-std=c11", opt, "-UNDEBUG", "-Werror",

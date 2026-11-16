@@ -2252,6 +2252,15 @@ typedef struct {
 } CycWatchEntry;
 static PSX_BSS CycWatchEntry s_cyc_watch_ring[CYC_WATCH_RING_CAP];
 static volatile int s_cyc_watch_armed = 0; /* 1 = recording active */
+static volatile int s_pc_probe_armed = 0;
+
+static void debug_server_watch_interest_refresh(void) {
+    uint32_t interest = g_psx_debug_block_interest &
+                        ~(PSX_DEBUG_BLOCK_CYCLE | PSX_DEBUG_BLOCK_PC);
+    if (s_cyc_watch_armed) interest |= PSX_DEBUG_BLOCK_CYCLE;
+    if (s_pc_probe_armed) interest |= PSX_DEBUG_BLOCK_PC;
+    g_psx_debug_block_interest = interest;
+}
 static uint32_t s_cyc_watch_anchor_phys = 0; /* armed anchor (A / start), masked to phys */
 static uint32_t s_cyc_watch_anchor_raw = 0;  /* armed anchor as supplied (for echo) */
 static uint32_t s_cyc_watch_max_hits = 16;   /* stop after this many hits */
@@ -2308,7 +2317,10 @@ static inline void cyc_watch_observe(uint32_t block_leader_phys)
             e->psx_cycle_count = cyc_now - s_cyc_watch_region_start;  /* Δ(B-A) */
             s_cyc_watch_hits++;
             s_cyc_watch_in_region = 0;
-            if (s_cyc_watch_hits >= s_cyc_watch_max_hits) s_cyc_watch_armed = 0;
+            if (s_cyc_watch_hits >= s_cyc_watch_max_hits) {
+                s_cyc_watch_armed = 0;
+                debug_server_watch_interest_refresh();
+            }
         }
         return;
     }
@@ -2316,6 +2328,7 @@ static inline void cyc_watch_observe(uint32_t block_leader_phys)
     if (block_leader_phys != s_cyc_watch_anchor_phys) return;  /* ── single-anchor ── */
     if (s_cyc_watch_hits >= s_cyc_watch_max_hits) {
         s_cyc_watch_armed = 0;                      /* full: stop sampling */
+        debug_server_watch_interest_refresh();
         return;
     }
     CycWatchEntry *e = &s_cyc_watch_ring[s_cyc_watch_hits];
@@ -2323,7 +2336,10 @@ static inline void cyc_watch_observe(uint32_t block_leader_phys)
     e->pc              = block_leader_phys;
     e->psx_cycle_count = cyc_now;
     s_cyc_watch_hits++;
-    if (s_cyc_watch_hits >= s_cyc_watch_max_hits) s_cyc_watch_armed = 0;
+    if (s_cyc_watch_hits >= s_cyc_watch_max_hits) {
+        s_cyc_watch_armed = 0;
+        debug_server_watch_interest_refresh();
+    }
 }
 
 /* ---- pc_probe: multi-PC block-leader counters + reg samples (default-off) ----
@@ -2357,7 +2373,6 @@ typedef struct {
     uint32_t ot_base;
     uint32_t ot_index;
 } PcProbeSample;
-static volatile int s_pc_probe_armed = 0;
 static int          s_pc_probe_n = 0;
 static PcProbeSlot  s_pc_probe[PC_PROBE_MAX_PCS];
 static PcProbeSample s_pc_probe_samples[PC_PROBE_SAMPLE_CAP];
@@ -2367,6 +2382,7 @@ static uint32_t     s_pc_probe_sample_max = 32;
 static void pc_probe_clear_state(void)
 {
     s_pc_probe_armed = 0;
+    debug_server_watch_interest_refresh();
     s_pc_probe_n = 0;
     s_pc_probe_sample_n = 0;
     memset(s_pc_probe, 0, sizeof(s_pc_probe));
@@ -2733,7 +2749,9 @@ static inline void pc_probe_observe(uint32_t block_leader_phys)
  * (which samples before every instruction). This lets cyc_watch anchor ANY
  * block-leader PC — interior loop tops, prologue exits — not just function
  * entries, which is required for a clean, KNOWN-instruction-sequence ruler.
- * Disarmed cost = one volatile load + return (see cyc_watch_observe). */
+ * New host-generated leaders publish the PC inline and enter here only for
+ * actual observer interest. The public callback remains the conservative
+ * interpreter/older-code/DLL fallback, with the original body and ordering. */
 static PSX_DEBUG_COLD void debug_server_cyc_observe_optional(uint32_t phys) {
     /* ND debug: PSX_ND_WOOD_CLEAR80=1 clears model+184 bit0x80 at the flag-load
      * leader so 0x5CF/'cras' models enter NdIntroWoodBatchSetup's textured path.
@@ -12391,6 +12409,7 @@ static void cyc_watch_arm(uint32_t raw, uint32_t end_raw, int n)
     if (n > CYC_WATCH_RING_CAP) n = CYC_WATCH_RING_CAP;
     /* Disarm first so the hot path can't sample mid-reset. */
     s_cyc_watch_armed = 0;
+    debug_server_watch_interest_refresh();
     s_cyc_watch_anchor_raw  = raw;
     s_cyc_watch_anchor_phys = raw & 0x1FFFFFFFu;
     s_cyc_watch_end_raw     = end_raw;
@@ -12403,6 +12422,7 @@ static void cyc_watch_arm(uint32_t raw, uint32_t end_raw, int n)
     s_cyc_watch_last_cycle  = 0xFFFFFFFFFFFFFFFFull;
     memset(s_cyc_watch_ring, 0, sizeof(s_cyc_watch_ring));
     s_cyc_watch_armed = 1;
+    debug_server_watch_interest_refresh();
 }
 
 /* cyc_watch — arm an anchor PC. {"pc":"0x...","n":16}. Clears the ring,
@@ -12461,6 +12481,7 @@ static void handle_cyc_watch_clear(int id, const char *json)
 {
     (void)json;
     s_cyc_watch_armed = 0;
+    debug_server_watch_interest_refresh();
     s_cyc_watch_hits  = 0;
     s_cyc_watch_anchor_phys = 0;
     s_cyc_watch_anchor_raw  = 0;
@@ -12496,6 +12517,7 @@ static void handle_pc_probe_arm(int id, const char *json)
         return;
     }
     s_pc_probe_armed = 1;
+    debug_server_watch_interest_refresh();
     send_fmt("{\"id\":%d,\"ok\":true,\"armed\":1,\"n_pcs\":%d,\"sample_max\":%u,\"nd_intro\":%d}",
              id, s_pc_probe_n, s_pc_probe_sample_max, nd);
 }
@@ -17654,6 +17676,7 @@ void debug_server_init(int port)
                 if (pcs && *pcs) pc_probe_parse_list(pcs);
                 if (s_pc_probe_n > 0) {
                     s_pc_probe_armed = 1;
+                    debug_server_watch_interest_refresh();
                     fprintf(stdout, "psxrecomp: pc_probe armed (%d pcs)\n", s_pc_probe_n);
                 }
             }

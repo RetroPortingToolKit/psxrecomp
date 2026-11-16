@@ -2216,7 +2216,7 @@ std::string CodeGenerator::translate_basic_block(
     // function entries). Debug-only: prod (PSX_NO_DEBUG_TOOLS) emits nothing.
     ss << "#ifndef PSX_NO_DEBUG_TOOLS\n";
     ss << config_.indent
-       << fmt::format("debug_server_cyc_observe(0x{:08X}u);\n", block.start_addr);
+       << fmt::format("PSX_DEBUG_BLOCK_OBSERVE(0x{:08X}u);\n", block.start_addr);
     ss << "#endif\n";
     // First-divergence co-sim oracle (COSIM_ORACLE.md): lean per-block-leader hook,
     // present only in the clean PSX_COSIM build (independent of the debug tools).
