@@ -2703,6 +2703,15 @@ static inline void pc_probe_observe(uint32_t block_leader_phys)
     }
 }
 
+/* Internal cold observers keep their original ordering and live state. */
+#if defined(__GNUC__) || defined(__clang__)
+#define PSX_DEBUG_COLD __attribute__((noinline, cold))
+#elif defined(_MSC_VER)
+#define PSX_DEBUG_COLD __declspec(noinline)
+#else
+#define PSX_DEBUG_COLD
+#endif
+
 /* Exported per-basic-block-leader cycle observer. Emitted by the recompiler at
  * EVERY compiled block leader (under #ifndef PSX_NO_DEBUG_TOOLS, so prod builds
  * emit nothing — zero overhead) so native's cycle observation matches Beetle's
@@ -2710,14 +2719,7 @@ static inline void pc_probe_observe(uint32_t block_leader_phys)
  * block-leader PC — interior loop tops, prologue exits — not just function
  * entries, which is required for a clean, KNOWN-instruction-sequence ruler.
  * Disarmed cost = one volatile load + return (see cyc_watch_observe). */
-void debug_server_cyc_observe(uint32_t block_leader_phys) {
-#ifdef PSX_NO_DEBUG_TOOLS
-    (void)block_leader_phys;
-    return;
-#else
-    uint32_t phys = block_leader_phys & 0x1FFFFFFFu;
-    g_psx_last_block = phys;
-    if (s_fmv_quiet) return;
+static PSX_DEBUG_COLD void debug_server_cyc_observe_optional(uint32_t phys) {
     /* ND debug: PSX_ND_WOOD_CLEAR80=1 clears model+184 bit0x80 at the flag-load
      * leader so 0x5CF/'cras' models enter NdIntroWoodBatchSetup's textured path.
      * Fires before lw v1,184(a2) @ AB3C. Default-off. */
@@ -2788,8 +2790,24 @@ void debug_server_cyc_observe(uint32_t block_leader_phys) {
     }
     cyc_watch_observe(phys);
     pc_probe_observe(phys);
-    /* #2 lockstep comparator: per-basic-block compiled-vs-interp check. Self-gates
-     * on the armed frame window; ~free (one branch) when disarmed. */
+}
+
+void debug_server_cyc_observe(uint32_t block_leader_phys) {
+#ifdef PSX_NO_DEBUG_TOOLS
+    (void)block_leader_phys;
+#else
+    uint32_t phys = block_leader_phys & 0x1FFFFFFFu;
+    g_psx_last_block = phys;
+    if (s_fmv_quiet) return;
+    /* These existing address adapters have effects even without an armed
+     * watch. Never skip them based on the watch flags or a guessed title. */
+    if (s_cyc_watch_armed || s_pc_probe_armed ||
+        phys == 0x0006AB3Cu || phys == 0x0006AAF0u ||
+        phys == 0x0006ACFCu || phys == 0x0006AD08u || phys == 0x00069CC4u)
+        debug_server_cyc_observe_optional(phys);
+    /* Lockstep owns private window/function-scope state. g_ls_mode==0 does
+     * NOT mean disarmed: its first leader starts recording. Keep this exact
+     * maintained call (and its own inactive gate), after optional observers. */
     { extern void ls_at_leader(uint32_t, CPUState*); extern CPUState *debug_cpu_ptr;
       ls_at_leader(phys, debug_cpu_ptr); }
 #endif
@@ -12024,7 +12042,7 @@ static inline int is_card_critical_addr(uint32_t phys) {
             * (slot 0 — the success event) and HwCARD-NEW invisible. */
            (phys >= 0x0000E028u && phys < 0x0000E0ECu);
 }
-static void card_trace_record(uint32_t phys, uint32_t old_val, uint32_t new_val, uint8_t width) {
+static PSX_DEBUG_COLD void card_trace_record(uint32_t phys, uint32_t old_val, uint32_t new_val, uint8_t width) {
     uint64_t seq = s_card_trace_seq++;
     CardTraceEntry *e = &s_card_trace[seq & (CARD_TRACE_CAP - 1u)];
     e->seq = seq; e->phys = phys; e->old_val = old_val; e->new_val = new_val;
@@ -12074,6 +12092,23 @@ static void handle_card_trace_dump(int id, const char *json)
     free(out);
 }
 
+/* Only optional recorder dispatch is cold. Catch-all/fingerprint/live event
+ * recording stays in the hot function, before the real memory mutation. Boot
+ * dispatch must continue after its storage is full: it still counts matches. */
+static PSX_DEBUG_COLD void debug_server_trace_write_optional(uint32_t phys,
+    uint32_t old_val, uint32_t new_val, uint8_t width, unsigned observers) {
+    if (observers & 1u) wtrace_transition_record(phys, old_val, new_val, width);
+    if (observers & 2u) wtrace_boot_record(phys, old_val, new_val, width);
+    if (observers & 4u) {
+        for (int i = 0; i < s_wtrace_range_count; i++) {
+            if (phys >= s_wtrace_ranges[i].lo && phys < s_wtrace_ranges[i].hi) {
+                wtrace_record(phys, old_val, new_val, width);
+                return;
+            }
+        }
+    }
+}
+
 /* Multi-range check called from memory.c write paths.
  * Iterates up to 8 ranges; records if any match.
  * The always-on catch-all ring is recorded UNCONDITIONALLY first so
@@ -12102,15 +12137,12 @@ void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
             rec_event(REC_KIND_SP_W, phys, new_val, g_debug_last_store_pc, ra);
     }
     wtrace_all_record(phys, new_val, width);
-    wtrace_transition_record(phys, old_val, new_val, width);
-    wtrace_boot_record(phys, old_val, new_val, width);
-    if (s_wtrace_range_count == 0) return;
-    for (int i = 0; i < s_wtrace_range_count; i++) {
-        if (phys >= s_wtrace_ranges[i].lo && phys < s_wtrace_ranges[i].hi) {
-            wtrace_record(phys, old_val, new_val, width);
-            return;
-        }
-    }
+    const unsigned observers =
+        ((s_wtrace_trans && s_wtrace_trans_range_count > 0 && old_val != new_val) ? 1u : 0u) |
+        ((s_wtrace_boot && s_wtrace_boot_range_count > 0) ? 2u : 0u) |
+        ((s_wtrace && s_wtrace_range_count > 0) ? 4u : 0u);
+    if (observers)
+        debug_server_trace_write_optional(phys, old_val, new_val, width, observers);
 }
 
 /* MMIO write trace — called from memory.c mmio_write32/16/8. */
