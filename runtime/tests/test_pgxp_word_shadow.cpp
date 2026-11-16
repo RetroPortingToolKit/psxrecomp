@@ -346,6 +346,37 @@ int main() {
     CHECK(pgxp_load_source(Other, Packed) == 0); // active native overwrite ends it
     CHECK(pgxp_debug_shadow(2, 16, &live, &value, &flags, &sx, &sy, &sz));
     CHECK(live && value == 321 && flags == 0);
+    // A native constant output is a known-exact packed word, rather than a
+    // shadowless value. Match the maintained LUI/ORI result at a real store.
+    pgxp_set_enabled(1); pgxp_set_cpu_mode(1);
+    for (uint32_t constant : {0x01000401u, 0x8000FFFFu}) {
+        machine.gpr[3] = constant;
+        psx_pgxp_alu(&machine, 0x3C030000u, constant & 0xFFFF0000u, 0, 0);
+        psx_pgxp_alu(&machine, 0x34630000u | (constant & 65535u), constant,
+                     constant & 0xFFFF0000u, constant & 65535u);
+        psx_pgxp_store(&machine, 0xAC230000u, Other, constant);
+        const auto expected_exact = capture(Other, constant);
+        psx_pgxp_plain_values[3] = Packed;
+        psx_pgxp_plain_mask |= 1u << 3;
+        pgxp_native_exact_gpr(&machine, (1u << 3) | 1u);
+        CHECK(!(psx_pgxp_plain_mask & (1u << 3)));
+        psx_pgxp_store(&machine, 0xAC230000u, Other, constant);
+        check_attributes(expected_exact, capture(Other, constant));
+        CHECK(pgxp_load_source(Other, constant) == 0);
+    }
+    pgxp_set_source_tracking(0); pgxp_set_enabled(0);
+    pgxp_native_exact_gpr(&machine, 1u << 3);
+    CHECK(pgxp_debug_shadow(1, 3, &live, &value, &flags, &sx, &sy, &sz) && !live);
+    CHECK(pgxp_set_source_tracking(1));
+    CHECK(pgxp_tag_word_source(Address, Packed, 919));
+    psx_pgxp_load(&machine, 0x8C230000u, Address, Packed);
+    machine.gpr[3] = Packed;
+    pgxp_suppress_begin(); pgxp_native_exact_gpr(&machine, 1u << 3); pgxp_suppress_end();
+    psx_pgxp_store(&machine, 0xAC230000u, Other, Packed);
+    CHECK(pgxp_load_source(Other, Packed) == 919);
+    pgxp_native_exact_gpr(&machine, 1u << 3);
+    psx_pgxp_store(&machine, 0xAC230000u, Other, Packed);
+    CHECK(pgxp_load_source(Other, Packed) == 0);
     gpu_bytes = 0; // pages retained on the host are not guest allocations
     CHECK(!pgxp_capture_word_shadow(Arena, Packed, &refused));
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");

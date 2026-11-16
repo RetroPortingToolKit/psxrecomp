@@ -402,6 +402,11 @@ int pgxp_native_import_sxy(uint32_t reg, const PGXPNativeWord *word);
  * Pending plain-ALU writes are committed before the clobber, so cannot later
  * resurrect metadata. A GTE mask may name only ordinary data registers. */
 void pgxp_native_clobber(struct CPUState *cpu, uint32_t gpr_mask, uint32_t gte_mask);
+/* Publish known-exact packed integer outputs of a whole native operation.
+ * Unlike clobber, both signed halves are exact (the LUI/constant-construction
+ * contract). This ends prior scalar/source lineage even when bits are equal;
+ * it does not claim that a guest instruction constructed the native output. */
+void pgxp_native_exact_gpr(struct CPUState *cpu, uint32_t gpr_mask);
 
 /* Refused precise-word lookups, newest at (seq - 1) % cap (TCP pgxp_miss_ring). */
 enum {

@@ -1211,6 +1211,22 @@ extern "C" void pgxp_native_clobber(CPUState *cpu, uint32_t gpr_mask,
 /* CPU-mode hooks: arithmetic (tier 2, default off)                           */
 /* ------------------------------------------------------------------------- */
 
+extern "C" void pgxp_native_exact_gpr(CPUState *cpu, uint32_t gpr_mask) {
+    if (!cpu || !g_pgxp_active) return;
+    flush_plain_writes();
+    psx_pgxp_plain_mask &= ~gpr_mask;
+    for (uint32_t r = 1; r < 32u; ++r) {
+        if (!(gpr_mask & (UINT32_C(1) << r))) continue;
+        const uint32_t value = cpu->gpr[r];
+        pv_reset(&s_gpr[r], value);
+        s_gpr[r].x16 = (int32_t)(int16_t)value * 65536;
+        s_gpr[r].y16 = (int32_t)(int16_t)(value >> 16) * 65536;
+        s_gpr[r].flags = PGXP_F_VXY;
+        sc_kill(&s_gpr_s[r]);
+    }
+    ++s_hook_stats.native_clobbers;
+}
+
 /* One 16-bit operand component in 16.16: a tracked half contributes its
  * sub-pixel value; an untracked half contributes its exact integer value
  * (adding an exact offset to a tracked coordinate keeps the fraction). */
