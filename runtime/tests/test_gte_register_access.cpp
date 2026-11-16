@@ -1513,6 +1513,30 @@ int main() {
     CHECK(g_test_mod_counters["vr.nclip.render.zero"] == 0);
     g_test_render_projective=0; eye={}; gte_render_pose_set(&eye);
     pgxp_set_projection_tracking(0);
+    // A packet job owns one maintained GTEState, instead of unpacking and
+    // repacking CPU registers around every logical command. Exercise FIFO,
+    // FLAG, IRGB aliases and command chaining against the ordinary bridge.
+    pgxp_set_enabled(0);pgxp_set_source_tracking(0);pgxp_set_culling(0);
+    uint32_t packet_rng=0x7348291u;
+    for(unsigned trial=0;trial<32;++trial) {
+        CPUState regular{};
+        for(unsigned i=0;i<32;++i) {
+            packet_rng=packet_rng*1664525u+1013904223u;regular.gte_data[i]=packet_rng;
+            packet_rng=packet_rng*1664525u+1013904223u;regular.gte_ctrl[i]=packet_rng;
+        }
+        gte_canonicalize_cpu_state(&regular);CPUState owned=regular;
+        GTEState packet_job;psx_hle_gte_packet_load(packet_job,owned);
+        for(uint32_t command:{0x01400006u,0x0168002Eu,0x0780010u,0x043E412u,0x0F8002Au}) {
+            psx_hle_gte_execute(&regular,command);
+            CHECK(psx_hle_gte_packet_command(packet_job,command));
+            psx_hle_gte_packet_store(owned,packet_job);
+            CHECK(!std::memcmp(regular.gte_data,owned.gte_data,sizeof regular.gte_data));
+            CHECK(!std::memcmp(regular.gte_ctrl,owned.gte_ctrl,sizeof regular.gte_ctrl));
+        }
+        const auto unchanged=packet_job;
+        CHECK(!psx_hle_gte_packet_command(packet_job,0x0280030u)); // RTPT needs capture ownership
+        CHECK(!std::memcmp(&unchanged,&packet_job,sizeof unchanged));
+    }
     std::puts("PASS: canonical GTE register helpers match GTEState transfer oracle");
     return 0;
 }

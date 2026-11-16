@@ -911,6 +911,17 @@ int main(int argc, char** argv) {
           !psx_mod_instruction_range_has_hook(0x80003100u, 0x80003104u) &&
           psx_mod_instruction_range_has_hook(0xC0003004u, 0xC0003008u),
           "native operation ranges include observer/mutator/address hooks, aliases, empty ranges and invalid-range refusal");
+    PSXModNativeInstructionAdapter handled_instruction{0x80003004u,0x90A30014u,test_instruction};
+    check(!psx_mod_instruction_range_has_unhandled_hook(0xA0003004u,0xA0003008u,&handled_instruction,1) &&
+          psx_mod_instruction_range_has_unhandled_hook(0x80003004u,0x80003008u,nullptr,0) &&
+          psx_mod_instruction_range_has_unhandled_hook(0x80003004u,0x8000300Cu,&handled_instruction,1),
+          "native event recognition is exact and never exempts a memory-address adapter");
+    handled_instruction.expected^=1u;
+    check(psx_mod_instruction_range_has_unhandled_hook(0x80003004u,0x80003008u,&handled_instruction,1),
+          "a changed adapter instruction refuses the native operation");
+    handled_instruction.expected^=1u;handled_instruction.callback=test_guest_function;
+    check(psx_mod_instruction_range_has_unhandled_hook(0x80003004u,0x80003008u,&handled_instruction,1),
+          "another callback at an allowed address remains an unhandled observer/mutator");
     psx_host_hud_draw(64, 64);
     check(hud_calls == 0, "activation clears the prior session HUD before resetting plugins");
     check(activation_calls == 1,

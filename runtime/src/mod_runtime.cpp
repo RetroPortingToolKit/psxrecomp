@@ -4099,6 +4099,32 @@ extern "C" int psx_mod_instruction_range_has_hook(uint32_t begin, uint32_t end) 
     return 0;
 }
 
+extern "C" int psx_mod_instruction_range_has_unhandled_hook(uint32_t begin, uint32_t end,
+    const PSXModNativeInstructionAdapter *handled, uint32_t count) {
+    using namespace PSXRecompV4;
+    if (!g_psx_mod_instruction_hooks || mod_plan_hooks_parked()) return 0;
+    if (begin >= 0xC0000000u || end <= begin || end > 0xC0000000u ||
+        (count && !handled)) return 1;
+    const uint32_t low = function_entry_key(begin);
+    const uint64_t high = uint64_t(low) + (end - begin);
+    if (high > 0x20000000u) return 1;
+    const auto& hooks = active_instruction_hooks();
+    auto it = std::lower_bound(hooks.begin(), hooks.end(), low,
+                              [](const auto& h, uint32_t k) { return h.key < k; });
+    for (; it != hooks.end() && it->key < high; ++it) {
+        if (it->memory_address) return 1;
+        if (!it->callback) continue;
+        bool matched = false;
+        for (uint32_t i = 0; i < count; ++i)
+            if (handled[i].address < 0xC0000000u && handled[i].callback &&
+                function_entry_key(handled[i].address) == it->key &&
+                handled[i].expected == it->expected && handled[i].callback == it->callback)
+                matched = true;
+        if (!matched) return 1;
+    }
+    return 0;
+}
+
 extern "C" int psx_mod_register_memory_address_plugin(const char* id, uint32_t pc,
     uint32_t expected, PSXModMemoryAddressCallback callback) {
     return id && PSXRecompV4::mod_register_memory_address_plugin(id, pc, expected, callback);

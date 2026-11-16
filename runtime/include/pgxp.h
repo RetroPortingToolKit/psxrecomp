@@ -356,6 +356,14 @@ void pgxp_projective_scope_end(PGXPProjectiveScope *scope);
  * to the sandbox's current generation. This never promotes an older timeline's
  * stale metadata. All restores, including clearing a shadow, are journaled.
  * Receipts are runtime-only host data: do not persist them in game saves. */
+/* The maintained half/projection attributes, also used by native geometry.
+ * Derived halves accept guest arithmetic's rounding window; unclamped values
+ * describe an intact projected word and must not be repacked as independent halves. */
+enum {
+    PGXP_F_VX=1u<<0, PGXP_F_VY=1u<<1, PGXP_F_VZ=1u<<2,
+    PGXP_F_PROJECTION=1u<<3, PGXP_F_DX=1u<<4, PGXP_F_DY=1u<<5,
+    PGXP_F_UNCLAMPED=1u<<6, PGXP_F_VXY=PGXP_F_VX|PGXP_F_VY
+};
 typedef struct PGXPWordShadow {
     uint32_t address, value, source_generation, valid;
     int32_t x16, y16;
@@ -407,6 +415,26 @@ void pgxp_native_clobber(struct CPUState *cpu, uint32_t gpr_mask, uint32_t gte_m
  * contract). This ends prior scalar/source lineage even when bits are equal;
  * it does not claim that a guest instruction constructed the native output. */
 void pgxp_native_exact_gpr(struct CPUState *cpu, uint32_t gpr_mask);
+/* Native geometry can compose a packed matrix word directly from validated
+ * vertex halves. Its receipt uses the current generation, clears whole-source
+ * lineage when parents differ, and carries the computed half values. */
+int pgxp_native_import_control(uint32_t reg, const PGXPNativeWord *word);
+/* Publish a full scalar result owned by a native operation. reg32/33 name
+ * HI/LO; other slots are GPRs. The CPU value is already materialized. tracked
+ * is an explicit input-provenance result, never inferred from equal integers.
+ * Half/source metadata is ended; a later scalar-to-half consumer validates it. */
+int pgxp_native_scalar_gpr(struct CPUState *cpu, uint32_t reg, double precise, int tracked);
+/* A logical native GTE input/output with scalar precision and no packed-half
+ * lineage. value is the transferred word before the GTE register's masking. */
+int pgxp_native_scalar_data(uint32_t reg, uint32_t value, double precise, int tracked);
+/* Read a full scalar produced by a maintained native GTE command. The actual
+ * integer result must match; untracked output stays untracked. */
+int pgxp_native_gte_scalar(uint32_t reg, uint32_t expected, double *precise);
+/* Side-effect-free admission predicate for an integer-only native input.
+ * Untracked/bit-mismatched halves do not carry the current value; matching
+ * halves must be exact integers. Full-word projection values are refused.
+ * No shadow is validated, invalidated or promoted by this query. */
+int pgxp_native_word_exact(uint32_t address, uint32_t expected);
 
 /* Refused precise-word lookups, newest at (seq - 1) % cap (TCP pgxp_miss_ring). */
 enum {

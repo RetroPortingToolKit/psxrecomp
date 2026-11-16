@@ -52,21 +52,6 @@ extern "C" int gte_geometry_correction_lookup_probe(uint32_t packed,
 /* Shadow storage                                                             */
 /* ------------------------------------------------------------------------- */
 
-enum {
-    PGXP_F_VX = 1u << 0,   /* low half  (screen X) tracked                    */
-    PGXP_F_VY = 1u << 1,   /* high half (screen Y) tracked                    */
-    PGXP_F_VZ = 1u << 2,   /* projected depth rode along intact               */
-    PGXP_F_PROJECTION = 1u << 3,
-    /* The tracked half was DERIVED by guest arithmetic that rounds (a CPU
-     * divide of a precise sum, see the scalar tier below), so the guest
-     * integer is that arithmetic's rounding of the value, not its floor: the
-     * precise value may sit up to one pixel below or two above it. */
-    PGXP_F_DX = 1u << 4,
-    PGXP_F_DY = 1u << 5,
-    PGXP_F_UNCLAMPED = 1u << 6, /* exact GTE projection; intact word only */
-    PGXP_F_VXY = PGXP_F_VX | PGXP_F_VY,
-};
-
 struct PGXPValue {
     int32_t  x16, y16;   /* sub-pixel screen coords, 16.16                    */
     uint16_t z;          /* projected SZ depth (perspective source), 0 = none */
@@ -1225,6 +1210,63 @@ extern "C" void pgxp_native_exact_gpr(CPUState *cpu, uint32_t gpr_mask) {
         sc_kill(&s_gpr_s[r]);
     }
     ++s_hook_stats.native_clobbers;
+}
+
+extern "C" int pgxp_native_import_control(uint32_t reg, const PGXPNativeWord *word) {
+    if (reg >= 32u || !native_word_valid(word)) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();
+    PGXPValue restored = value_from_word_shadow(&word->word);
+    if (!word->word.valid) { restored.value = word->word.value; restored.gen = s_gen; }
+    s_gtc[reg] = restored;
+    source_set(&s_gtc[reg], word->source);
+    sc_kill(&s_gtc_s[reg]);
+    return 1;
+}
+
+extern "C" int pgxp_native_scalar_gpr(CPUState *cpu, uint32_t reg, double precise, int tracked) {
+    if (!cpu || reg == 0u || reg >= 34u || (tracked && !std::isfinite(precise))) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();
+    if (reg < 32u) psx_pgxp_plain_mask &= ~(UINT32_C(1) << reg);
+    const uint32_t value = reg < 32u ? cpu->gpr[reg] : reg == 32u ? cpu->hi : cpu->lo;
+    pv_reset(&s_gpr[reg], value);
+    if (tracked && s_cpu_mode) sc_set(&s_gpr_s[reg], precise, value);
+    else sc_kill(&s_gpr_s[reg]);
+    ++s_hook_stats.native_clobbers;
+    return 1;
+}
+
+extern "C" int pgxp_native_gte_scalar(uint32_t reg, uint32_t expected, double *precise) {
+    if (!precise || reg >= 32u || !g_pgxp_active || !s_cpu_mode ||
+        !sc_valid(&s_gte_s[reg], expected)) return 0;
+    *precise = s_gte_s[reg].v;
+    return 1;
+}
+
+extern "C" int pgxp_native_scalar_data(uint32_t reg, uint32_t value, double precise, int tracked) {
+    if (reg >= 32u || (reg >= 12u && reg <= 15u) || (tracked && !std::isfinite(precise))) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();pv_reset(&s_gte[reg], value);
+    if (tracked && s_cpu_mode) sc_set(&s_gte_s[reg], precise, value);
+    else sc_kill(&s_gte_s[reg]);
+    return 1;
+}
+
+extern "C" int pgxp_native_word_exact(uint32_t address, uint32_t expected) {
+    uint32_t canonical;
+    if (!packet_shadow_address(address, &canonical)) return 0;
+    const PGXPValue *value = pgxp_ptr(address);
+    if (!g_pgxp_active || !value || value->gen != s_gen) return 1;
+    if ((value->flags & (PGXP_F_PROJECTION | PGXP_F_UNCLAMPED)) && value->value == expected) return 0;
+    for (unsigned axis = 0; axis < 2; ++axis) {
+        const uint32_t mask = axis ? 0xFFFF0000u : 0xFFFFu;
+        if (!(value->flags & (axis ? PGXP_F_VY : PGXP_F_VX)) ||
+            ((value->value ^ expected) & mask)) continue;
+        const int32_t exact = (int32_t)(int16_t)(expected >> (16u * axis)) * 65536;
+        if ((axis ? value->y16 : value->x16) != exact) return 0;
+    }
+    return 1;
 }
 
 /* One 16-bit operand component in 16.16: a tracked half contributes its

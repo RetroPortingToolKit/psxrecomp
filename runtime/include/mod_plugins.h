@@ -73,6 +73,16 @@ void psx_mod_instruction(struct CPUState* cpu, uint32_t address, uint32_t instru
  * well as mutations. This reports any active instruction/address adapter; a
  * caller that skips the original instruction can conservatively refuse it. */
 int psx_mod_instruction_range_has_hook(uint32_t begin, uint32_t end);
+/* A whole operation may explicitly implement a known adapter's semantic
+ * event. Recognition is exact (PC, instruction and callback); read-only is
+ * not a blanket exemption. Address adapters and every other hook still refuse.
+ * This query invokes nothing and does not alter the active hook registry. */
+typedef struct PSXModNativeInstructionAdapter {
+    uint32_t address, expected;
+    PSXModFunctionEntryCallback callback;
+} PSXModNativeInstructionAdapter;
+int psx_mod_instruction_range_has_unhandled_hook(uint32_t begin, uint32_t end,
+    const PSXModNativeInstructionAdapter *handled, uint32_t count);
 extern uint32_t g_psx_mod_instruction_hooks;
 /* Redirect one audited load/store's effective address without changing its
  * base register, destination, data, branch state or timing. Registration and

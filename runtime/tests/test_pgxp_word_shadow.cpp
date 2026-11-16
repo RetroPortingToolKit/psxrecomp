@@ -377,6 +377,42 @@ int main() {
     pgxp_native_exact_gpr(&machine, 1u << 3);
     psx_pgxp_store(&machine, 0xAC230000u, Other, Packed);
     CHECK(pgxp_load_source(Other, Packed) == 0);
+    pgxp_set_enabled(1);pgxp_set_cpu_mode(1);
+    seed(Address,Packed,(8<<16)+24576);CHECK(pgxp_tag_word_source(Address,Packed,819));
+    PGXPNativeWord control_word{};
+    CHECK(pgxp_native_capture_words(inputs,&Packed,&control_word,1));
+    const auto before_exact_query=capture(Address,Packed);
+    CHECK(!pgxp_native_word_exact(Address,Packed));
+    CHECK(pgxp_native_word_exact(Address,Packed^0x00010001u)); // both carried halves mismatch
+    check_attributes(before_exact_query,capture(Address,Packed));
+    CHECK(pgxp_load_source(Address,Packed)==819);
+    CHECK(!pgxp_native_import_control(32,&control_word));
+    CHECK(pgxp_native_import_control(8,&control_word));
+    machine.gpr[5]=Packed;
+    psx_pgxp_cop2(&machine,0x48454000u,Packed,0); // CFC2 a1,control8
+    psx_pgxp_store(&machine,0xAC250000u,Other,Packed);
+    auto expected_control=control_word.word;expected_control.address=Other&0x1FFFFFFFu;
+    check_attributes(expected_control,capture(Other,Packed));
+    CHECK(pgxp_load_source(Other,Packed)==819);
+    machine.gpr[5]=8;
+    CHECK(pgxp_native_scalar_gpr(&machine,5,8.375,1));
+    psx_pgxp_store(&machine,0xAC250000u,Other,8);
+    const auto scalar_output=capture(Other,8);
+    CHECK(scalar_output.valid&&scalar_output.flags==PGXP_F_VXY&&scalar_output.x16==(8<<16)+24576);
+    CHECK(pgxp_load_source(Other,8)==0);
+    psx_pgxp_cop2(&machine,0x4885C800u,8,0); // MTC2 a1,MAC1
+    double native_scalar=-1;
+    CHECK(pgxp_native_gte_scalar(25,8,&native_scalar)&&native_scalar==8.375);
+    CHECK(!pgxp_native_gte_scalar(25,9,&native_scalar)&&native_scalar==8.375);
+    machine.lo=7;CHECK(pgxp_native_scalar_gpr(&machine,33,7.75,1));
+    machine.gpr[5]=7;psx_pgxp_alu(&machine,0x00002812u,7,7,0); // MFLO a1
+    psx_pgxp_store(&machine,0xAC250000u,Other,7);
+    CHECK(capture(Other,7).x16==(7<<16)+49152);
+    CHECK(!pgxp_native_word_exact(Other,7));
+    machine.gpr[5]=7;CHECK(pgxp_native_scalar_gpr(&machine,5,7.0,1));
+    psx_pgxp_store(&machine,0xAC250000u,Other,7);CHECK(pgxp_native_word_exact(Other,7));
+    CHECK(!pgxp_native_scalar_gpr(&machine,0,0,0));
+    CHECK(!pgxp_native_scalar_gpr(&machine,34,0,0));
     gpu_bytes = 0; // pages retained on the host are not guest allocations
     CHECK(!pgxp_capture_word_shadow(Arena, Packed, &refused));
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");

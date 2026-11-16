@@ -2496,6 +2496,25 @@ extern "C" void psx_hle_gte_execute(CPUState* cpu, uint32_t cmd) {
     gte_execute_impl(cpu, cmd, !PSX_EXECUTION_ENHANCED);
 }
 
+void psx_hle_gte_packet_load(PSXRecomp::GTE::GTEState& state, const CPUState& cpu) {
+    gte_import_cpu_state(&state, &cpu);
+}
+
+bool psx_hle_gte_packet_command(PSXRecomp::GTE::GTEState& state, uint32_t cmd) {
+    switch (cmd & 63u) {
+    case 0x06: case 0x10: case 0x12: case 0x2A: case 0x2D: case 0x2E:
+        gte_run_command(&state, cmd);
+        pgxp_gte_op_end(cmd & 63u);
+        return true;
+    default:
+        return false; // no projection/capture or unsupported observer effects
+    }
+}
+
+void psx_hle_gte_packet_store(CPUState& cpu, const PSXRecomp::GTE::GTEState& state) {
+    gte_export_cpu_state(&cpu, &state);
+}
+
 #ifdef PSX_GTE_REGISTER_TEST
 /* Preserved pre-optimization bridge: test oracle for full command marshaling. */
 extern "C" void gte_test_execute_reference(CPUState* cpu, uint32_t cmd) {
