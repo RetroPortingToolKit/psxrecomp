@@ -4,6 +4,11 @@
 #include "psx_static_calls.h"
 #include <assert.h>
 
+/* Capture modules are outside this validity fixture, but the production
+ * memory view still retains their correctly typed, inactive live state. */
+uint32_t g_parity_trace_armed;
+volatile int g_card_data_write_armed;
+
 static uint8_t reference[0x4000];
 static const uint32_t ranges[] = { 0x80010ff8u, 16u, 0x80012000u, 16u };
 static const uint32_t other[] = { 0x80013000u, 16u };
