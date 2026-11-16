@@ -42,8 +42,15 @@ def main():
         work = Path(td)
         (work / "harness_common.h").write_text(memory_fixture.HARNESS_COMMON_H, encoding="utf-8")
         (work / "stubs.c").write_text(stubs, encoding="utf-8")
-        (work / "trace.c").write_text(memory_fixture.TRACE_COUNTING_C, encoding="utf-8")
-        policies = ((1, True),) if args.headroom_disabled else ((0, True), (1, True), (1, False))
+        trace = memory_fixture.TRACE_COUNTING_C.replace(
+            'void debug_server_trace_write_check(',
+            'void fixture_note_trace(uint32_t, uint32_t, uint32_t, uint8_t);\n'
+            'void debug_server_trace_write_check(').replace(
+            '    (void)phys;',
+            '    fixture_note_trace(phys, old_val, new_val, width);')
+        assert 'fixture_note_trace(phys, old_val, new_val, width);' in trace
+        (work / "trace.c").write_text(trace, encoding="utf-8")
+        policies = ((1, True), (1, False)) if args.headroom_disabled else ((0, True), (1, True), (1, False))
         for direct, production in policies:
             for opt in ("-O0", "-O2"):
                 exe = work / ("fixture.exe" if os.name == "nt" else "fixture")
