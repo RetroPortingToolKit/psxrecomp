@@ -1,4 +1,5 @@
 #include "../src/pgxp_dataflow.h"
+#include "../src/pgxp_operation_flow.h"
 #include <cstdio>
 #include <cstdlib>
 using namespace PSXRecomp;
@@ -67,5 +68,39 @@ int main() {
     // demand proof found the original write dead along every successor.
     CHECK(pgxp_elided_alu_flow(diamond,pgxp_dead_alu_flow(diamond)).empty());
     CHECK(pgxp_elided_alu_flow({geometry},pgxp_dead_alu_flow({geometry})).empty());
+    // Entire integer operation: canonical memory admission, no precision
+    // operand, exact LUI and one final plain GPR receipt after all arithmetic.
+    std::vector<PgxpFlowInstruction> integer{{0,i(15,0,12,0x8000)},
+        {4,i(35,12,2,0x2000)},{8,0},{12,i(9,2,2,7)},
+        {16,i(10,2,3,0x7fff)},{20,0x03e00008},{24,0}};
+    auto operation=pgxp_integer_operation(integer);
+    CHECK(operation.valid && operation.reads==0 && operation.loads==1 && operation.alu==3);
+    CHECK(operation.exact==(1u<<12) && operation.plain==((1u<<2)|(1u<<3)));
+    CHECK(operation.memory.size()==1 && operation.memory[0].address=="2147491840u");
+    auto mmio=integer;mmio[0]={0,i(15,0,12,0x1f80)};
+    CHECK(!pgxp_integer_operation(mmio).valid); // known MMIO never adds an always-refused path
+    auto hazardous=integer;hazardous[2]={8,i(9,2,2,1)};
+    CHECK(!pgxp_integer_operation(hazardous).valid); // architectural load-delay input
+    auto transported=integer;transported.insert(transported.end()-2,{19,i(43,4,2)});
+    CHECK(!pgxp_integer_operation(transported).valid); // charge/observer boundary retained
+    auto scalar=integer;scalar[0]={0,r(8,9,0,0x18)};
+    CHECK(!pgxp_integer_operation(scalar).valid); // caller-live HI/LO not guessed plain
+    auto observer=integer;observer[0].opaque=true;
+    CHECK(!pgxp_integer_operation(observer).valid);
+    // Real interprocedural roots: a no-GTE callee may store the caller's GTE
+    // output. Memory transport and unknown calls remain distinct from geometry.
+    PgxpOperationFunction caller;caller.address=0;
+    caller.blocks={{0,{{0,0x48087000},{4,0x0c000040},{8,0x03e00008}},{},true}};
+    PgxpOperationFunction callee;callee.address=0x100;
+    callee.blocks={{0x100,{{0x100,i(43,4,8)},{0x104,0x03e00008}},{},true}};
+    auto summaries=pgxp_operation_summaries({caller,callee});
+    CHECK(summaries.at(0).stored&PgxpGteRoot);
+    CHECK(!summaries.at(0x100).gte && summaries.at(0x100).stored==(UINT64_C(1)<<8));
+    callee.blocks[0].instructions={{0x100,i(35,5,8)},{0x104,0},
+        {0x108,i(43,4,8)},{0x10c,0x03e00008},{0x110,0}};
+    summaries=pgxp_operation_summaries({caller,callee});
+    CHECK(summaries.at(0x100).stored&PgxpMemoryRoot); // no-GTE LW/SW is NOT plain
+    caller.blocks[0].instructions[1].word=0x0c000080;
+    CHECK(pgxp_operation_summaries({caller,callee}).at(0).opaque);
     std::puts("PASS: precision CFG joins/loops/GTE arithmetic/aliases/unknown edges/delay/HI-LO/lifetime boundaries");
 }

@@ -157,6 +157,7 @@ void pgxp_invalidate_all(void);
  * belong to a different sub-pixel projection, so drop the shadow of the
  * touched RAM / scratchpad word by provenance, not by value (memory.c). */
 void pgxp_invalidate_word(uint32_t addr);
+#include "pgxp_operation.h"
 
 /* Counted suppression bracket for speculative native-validation passes and
  * the GTE replay sandbox: hooks and producers no-op inside it. */
@@ -299,6 +300,7 @@ typedef struct PGXPHookStats {
     uint64_t alu, load, store, cop2, muldiv, plain_batches, plain_registers;
     uint64_t native_words_captured, native_words_published;
     uint64_t native_sxy_imports, native_clobbers, native_gpr_imports;
+    uint64_t operations, operation_refusals, operation_alu, operation_loads, operation_stores;
 } PGXPHookStats;
 void pgxp_get_hook_stats(PGXPHookStats *out);
 /* Count one geometry-corrected triangle with `precise` (0..3) precise

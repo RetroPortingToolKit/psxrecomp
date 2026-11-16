@@ -507,6 +507,45 @@ int main() {
     CHECK(pgxp_tag_word_source(HalfNative,Packed,919));
     CHECK(pgxp_native_publish_half(HalfNative,&half_source,0,0));
     CHECK(pgxp_load_source(HalfNative,0x000C0007u)==0);
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+    pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_source_tracking(1);
+    // Whole integer receipts must reproduce canonical scalar/half behavior.
+    struct IntegerCase {uint32_t instruction,input,result,kind;};
+    const IntegerCase cases[]={
+        {0x3c061234u,0,0x12340000u,1}, // LUI: both exact
+        {0x00053400u,0x76543210u,0x32100000u,3}, // SLL16: zero low half
+        {0x00053402u,0x76543210u,0x00007654u,2}, // SRL16: exact high half
+        {0x30a60000u,0x76543210u,0,4}, // ANDI0: two exact zero halves
+        {0x24a60007u,17,24,0}, // untracked ADDIU
+        {0x28a60020u,17,1,0}, // SLTI kills coordinate lifetime
+    };
+    for(const auto& c:cases) {
+        pgxp_invalidate_all();CPUState cpu{};cpu.gpr[5]=c.input;
+        pgxp_native_clobber(&cpu,1u<<5,0);
+        cpu.gpr[6]=c.result;
+        psx_pgxp_alu(&cpu,c.instruction,c.result,c.input,c.instruction&0xffffu);
+        psx_pgxp_store(&cpu,0xac060000u,Other,c.result);
+        const auto expected=capture(Other,c.result);
+        pgxp_native_clobber(&cpu,(1u<<5)|(1u<<6),0);
+        CHECK(psx_pgxp_operation_begin(&cpu,1u<<5,nullptr,0,1,0,0));
+        psx_pgxp_operation_end(&cpu,c.kind==0?1u<<6:0,c.kind==1?1u<<6:0,
+            c.kind==2?1u<<6:0,c.kind==3?1u<<6:0,c.kind==4?1u<<6:0);
+        psx_pgxp_store(&cpu,0xac060000u,Other,c.result);
+        check_attributes(expected,capture(Other,c.result));
+    }
+    CPUState proof{};proof.gpr[5]=7;pgxp_native_clobber(&proof,1u<<5,0);
+    CHECK(pgxp_native_scalar_gpr(&proof,5,7.25,1));
+    CHECK(!psx_pgxp_operation_begin(&proof,1u<<5,nullptr,0,1,0,0));
+    uint8_t actual[]={8,0,12,0};PSXPGXPOperationAccess access{Address,4,actual};
+    pgxp_write_owned(Address,Packed,4);
+    CHECK(psx_pgxp_operation_begin(&proof,0,&access,1,0,1,0));
+    CHECK(pgxp_tag_word_source(Address,Packed,811));
+    CHECK(!psx_pgxp_operation_begin(&proof,0,&access,1,0,1,0));
+    pgxp_write_owned(Address,Packed,4);actual[0]^=1;
+    CHECK(!psx_pgxp_operation_begin(&proof,0,&access,1,0,1,0));
+    actual[0]=8;seed(Address,Packed,(8<<16)+16384);
+    CHECK(!psx_pgxp_operation_begin(&proof,0,&access,1,0,1,0));
+#endif
     gpu_bytes = 0; // pages retained on the host are not guest allocations
     CHECK(!pgxp_capture_word_shadow(Arena, Packed, &refused));
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");

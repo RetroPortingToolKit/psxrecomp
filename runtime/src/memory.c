@@ -1922,10 +1922,24 @@ int g_host_store_depth;   /* >0 inside psx_host_write_* */
  * word: two projections that round to the same integers differ in their
  * fractions and depth, so the old shadow would be believed for a value it
  * did not produce. Drop the touched word's shadow instead. */
-static inline void pgxp_untracked_store(uint32_t phys) {
+static inline void pgxp_untracked_store(uint32_t phys, uint32_t value, uint32_t width) {
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+    pgxp_write_owned(phys, value, width);
+#else
+    (void)value; (void)width;
     if (g_dma_exec_depth > 0 || g_host_store_depth > 0)
         pgxp_invalidate_word(phys);
+#endif
 }
+
+/* The existing inline/DLL observer boundary, with no extra per-access
+ * forwarding layer. Observers still see pre-write bytes/precision first. */
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+void psx_direct_precision_write(uint32_t phys, uint32_t old_value, uint32_t value, uint8_t width) {
+    debug_server_trace_write_check(phys, old_value, value, width);
+    pgxp_write_owned(phys, value, width);
+}
+#endif
 
 static inline int cpu_store_isolated(void) {
     return g_psx_memory_sr_ptr && (*g_psx_memory_sr_ptr & 0x10000u) && g_dma_exec_depth == 0 &&
@@ -2184,7 +2198,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
 #ifdef PSX_COSIM
         { extern void cosim_note_ram_write(uint32_t,uint32_t); cosim_note_ram_write(phys, 4); }
 #endif
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 4u);
         ram[phys]     = (uint8_t)(val);
         ram[phys + 1] = (uint8_t)(val >> 8);
         ram[phys + 2] = (uint8_t)(val >> 16);
@@ -2194,6 +2208,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     {
         uint32_t off;
         if (mod_gpu_dma_memory_offset(phys, 4u, &off)) {
+            pgxp_untracked_store(phys, val, 4u);
             memcpy(mod_gpu_dma_memory + off, &val, sizeof(val));
             return;
         }
@@ -2202,6 +2217,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     {
         uint32_t off;
         if (mod_memory_offset(phys, 4u, &off)) {
+            pgxp_untracked_store(phys, val, 4u);
             memcpy(mod_memory + off, &val, sizeof(val));
             return;
         }
@@ -2215,7 +2231,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
           | ((uint32_t)scratchpad[off + 2] << 16)
           | ((uint32_t)scratchpad[off + 3] << 24),
             val, 4);
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 4u);
         scratchpad[off]     = (uint8_t)(val);
         scratchpad[off + 1] = (uint8_t)(val >> 8);
         scratchpad[off + 2] = (uint8_t)(val >> 16);
@@ -2318,7 +2334,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
 #ifdef PSX_COSIM
         { extern void cosim_note_ram_write(uint32_t,uint32_t); cosim_note_ram_write(phys, 2); }
 #endif
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 2u);
         ram[phys]     = (uint8_t)(val);
         ram[phys + 1] = (uint8_t)(val >> 8);
         return;
@@ -2326,6 +2342,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     {
         uint32_t off;
         if (mod_gpu_dma_memory_offset(phys, 2u, &off)) {
+            pgxp_untracked_store(phys, val, 2u);
             mod_gpu_dma_memory[off] = (uint8_t)val;
             mod_gpu_dma_memory[off + 1u] = (uint8_t)(val >> 8);
             return;
@@ -2334,6 +2351,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     {
         uint32_t off;
         if (mod_memory_offset(phys, 2u, &off)) {
+            pgxp_untracked_store(phys, val, 2u);
             mod_memory[off] = (uint8_t)val;
             mod_memory[off + 1u] = (uint8_t)(val >> 8);
             return;
@@ -2345,7 +2363,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
         debug_server_trace_write_check(phys,
             (uint32_t)scratchpad[off] | ((uint32_t)scratchpad[off + 1] << 8),
             (uint32_t)val, 2);
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 2u);
         scratchpad[off]     = (uint8_t)(val);
         scratchpad[off + 1] = (uint8_t)(val >> 8);
         return;
@@ -2696,13 +2714,14 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
 #ifdef PSX_COSIM
         { extern void cosim_note_ram_write(uint32_t,uint32_t); cosim_note_ram_write(phys, 1); }
 #endif
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 1u);
         ram[phys] = val;
         return;
     }
     {
         uint32_t off;
         if (mod_gpu_dma_memory_offset(phys, 1u, &off)) {
+            pgxp_untracked_store(phys, val, 1u);
             mod_gpu_dma_memory[off] = val;
             return;
         }
@@ -2710,6 +2729,7 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     {
         uint32_t off;
         if (mod_memory_offset(phys, 1u, &off)) {
+            pgxp_untracked_store(phys, val, 1u);
             mod_memory[off] = val;
             return;
         }
@@ -2718,7 +2738,7 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     if (phys >= 0x1F800000u && phys <= 0x1F8003FFu) {
         debug_server_trace_write_check(phys, (uint32_t)scratchpad[phys - 0x1F800000u],
                                        (uint32_t)val, 1);
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 1u);
         scratchpad[phys - 0x1F800000u] = val;
         return;
     }
@@ -2779,7 +2799,11 @@ const PSXDirectMemoryView *psx_direct_memory_host_view(void) {
 #else
         &g_psx_memory_width_stats,
 #endif
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+        psx_direct_precision_write
+#else
         debug_server_trace_write_check
+#endif
     };
     return &view;
 }

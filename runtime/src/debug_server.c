@@ -12624,7 +12624,9 @@ static void handle_pgxp_hook_stats(int id, const char *json)
              "\"alu\":%llu,\"load\":%llu,\"store\":%llu,\"cop2\":%llu,"
              "\"muldiv\":%llu,\"plain_batches\":%llu,\"plain_registers\":%llu,"
              "\"native_words_captured\":%llu,\"native_words_published\":%llu,"
-             "\"native_sxy_imports\":%llu,\"native_clobbers\":%llu,\"native_gpr_imports\":%llu}",
+             "\"native_sxy_imports\":%llu,\"native_clobbers\":%llu,\"native_gpr_imports\":%llu,"
+             "\"operations\":%llu,\"operation_refusals\":%llu,\"operation_alu\":%llu,"
+             "\"operation_loads\":%llu,\"operation_stores\":%llu}",
              id, (unsigned long long)s.alu, (unsigned long long)s.load,
              (unsigned long long)s.store, (unsigned long long)s.cop2,
              (unsigned long long)s.muldiv, (unsigned long long)s.plain_batches,
@@ -12633,7 +12635,10 @@ static void handle_pgxp_hook_stats(int id, const char *json)
              (unsigned long long)s.native_words_published,
              (unsigned long long)s.native_sxy_imports,
              (unsigned long long)s.native_clobbers,
-             (unsigned long long)s.native_gpr_imports);
+             (unsigned long long)s.native_gpr_imports,
+             (unsigned long long)s.operations, (unsigned long long)s.operation_refusals,
+             (unsigned long long)s.operation_alu, (unsigned long long)s.operation_loads,
+             (unsigned long long)s.operation_stores);
 }
 
 static void handle_dma_hold_stats(int id, const char *json)

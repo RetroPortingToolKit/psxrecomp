@@ -6,6 +6,7 @@
 #ifndef PSX_NATIVE_SPAN_H
 #define PSX_NATIVE_SPAN_H
 
+#include "pgxp_operation.h"
 #include "cpu_state.h"
 #include "psx_memory.h"
 #include "psx_direct_memory.h"
@@ -72,6 +73,41 @@ static inline void psx_native_span_note_load(uint32_t addr, const uint8_t *view,
     }
 #else
     (void)addr; (void)view; (void)width;
+#endif
+}
+
+/* The whole operation has no intermediate precision observation. Unknown
+ * execution owners and instrumented policies retain canonical instruction hooks. */
+static inline int psx_pgxp_operation_allowed(CPUState *cpu) {
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS && !defined(PSX_OVERLAY_DLL_BUILD)
+    return cpu && !g_ls_mode && !g_ls_replay_active && !g_ds_recording &&
+        !g_ram_read_watch_active && !g_dma_exec_depth && !g_host_store_depth &&
+        !g_psx_render_pass_active && !psx_direct_pending_cycles() &&
+        !(g_psx_memory_sr_ptr && (*g_psx_memory_sr_ptr & 0x10000u)) &&
+        cpu->read_word==psx_read_word && cpu->read_half==psx_read_half && cpu->read_byte==psx_read_byte;
+#else
+    (void)cpu;return 0;
+#endif
+}
+
+/* Admission only; no guest access/count/charge and no substituted callback.
+ * Use the maintained native memory policy, including live observers/owners. */
+static inline const uint8_t *psx_pgxp_operation_memory(CPUState *cpu,
+                                                       uint32_t address, uint32_t kind) {
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS && !defined(PSX_OVERLAY_DLL_BUILD)
+    const uint32_t width = kind & 0xffu;
+    if(!psx_pgxp_operation_allowed(cpu))return NULL;
+    if (!cpu || (width != 1u && width != 2u && width != 4u) || (address & (width - 1u))) return NULL;
+    if (kind & 0x100u) {
+        if ((width==4u && cpu->write_word!=psx_write_word) ||
+            (width==2u && cpu->write_half!=psx_write_half) ||
+            (width==1u && cpu->write_byte!=psx_write_byte)) return NULL;
+        return psx_direct_store_view(address,width);
+    }
+    if (cpu->read_word!=psx_read_word || cpu->read_half!=psx_read_half || cpu->read_byte!=psx_read_byte) return NULL;
+    return psx_native_span_load_view(cpu,address & ~3u,4u);
+#else
+    (void)cpu; (void)address; (void)kind; return NULL;
 #endif
 }
 

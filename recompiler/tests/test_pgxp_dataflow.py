@@ -58,6 +58,12 @@ def program():
     i(9, 0, 19, 0x2468); words += [0x03E00008, 0]
     words += [0] * (128-len(words))
     i(43, 4, 19, 24); words += [0x03E00008, 0]
+    # Whole nongeometry load/ALU operation with boundary-owned receipts.
+    words += [0] * (192-len(words))
+    i(15, 0, 12, 0x8000); i(35, 12, 2, 0x2000); words.append(0)
+    i(9, 2, 2, 7); i(10, 2, 3, 0x7fff); words += [0x03E00008, 0]
+    words += [0] * (256-len(words))
+    i(9, 20, 2, 1); words += [0x03E00008, 0]
     return base, words
 
 
@@ -68,6 +74,7 @@ def main():
     ap.add_argument('--cxx', required=True)
     ap.add_argument('--work-dir', type=Path,
                     help='Retain generated sources, objects and executable for a focused diagnosis')
+    ap.add_argument('--operations', action='store_true', help='qualify guarded whole integer operations and write ownership')
     a = ap.parse_args()
     with (nullcontext(str(a.work_dir)) if a.work_dir else
           tempfile.TemporaryDirectory(prefix='psx-pgxp-flow-')) as folder:
@@ -79,7 +86,7 @@ def main():
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
             struct.pack_into('<I', header, offset, value)
         exe = work / 'flow.psx'; exe.write_bytes(header + struct.pack('<%dI' % len(words), *words))
-        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n', encoding='utf-8')
+        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n', encoding='utf-8')
         out = work / 'generated'
         run([a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', ROOT], verbose=False)
         sources = sorted(out.glob('*_full*.c'))
@@ -102,8 +109,19 @@ def main():
               (len(re.findall(r'PGXP_FLOW_ELIDED_ALU\(', text)),
                len(re.findall(r'PGXP_FLOW_DEAD_ALU\(', text)),
                len(re.findall(r'PGXP_(?:PLAIN_)?ALU\(', text))), flush=True)
+        if a.operations:
+            function = re.search(r'\bvoid func_80010300\(CPUState\* cpu\)\s*\{', text)
+            if not function:
+                raise RuntimeError('actual emitted nongeometry function definition missing')
+            start = text.index('psx-pgxp-integer-operation-v1', function.end())
+            end = text.index('} else\n#endif', start)
+            if re.search(r'\bPGXP_(?:ALU|LOAD|STORE|COP2|MULDIV|FLOW_|PLAIN_)', text[start:end]):
+                raise RuntimeError('actual nongeometry operation retained an instruction hook')
+            if 'psx_pgxp_operation_begin' not in text[start:end] or 'psx_pgxp_operation_end' not in text[start:end]:
+                raise RuntimeError('actual nongeometry operation lacks its boundary proof/receipt')
+            print('Actual nongeometry load/ALU emitted operation: zero instruction PGXP hooks; canonical fallback retained', flush=True)
         common = ['-O2', '-ffunction-sections', '-fdata-sections', '-DPSX_PGXP=1',
-                  '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_NO_DEBUG_TOOLS=1',
+                  '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_NO_DEBUG_TOOLS=1', '-Werror',
                   '-I', str(ROOT/'runtime/include'), '-I', str(out)]
         objects = []
         for selected, name in ((0, 'reference'), (1, 'candidate')):
@@ -113,7 +131,7 @@ def main():
                               else 'flow_'+name+'_'+symbol) for symbol in sorted(names))
             c.write_text(aliases+text, encoding='utf-8')
             obj = work / (name+'.o')
-            run([a.cc, *common, '-DPSX_PGXP_DATAFLOW='+str(selected), '-c', c, '-o', obj])
+            run([a.cc, *common, '-DPSX_PGXP_DATAFLOW='+str(selected), '-DPSX_PGXP_OPERATIONS='+str(int(a.operations and selected)), '-c', c, '-o', obj])
             objects.append(obj)
         for compiler, source, name in (
             (a.cc, ROOT/'runtime/src/psx_ram_geometry.c', 'ram'),
@@ -121,10 +139,12 @@ def main():
             (a.cxx, ROOT/'runtime/tests/pgxp_test_mod_memory.cpp', 'mod-memory'),
             (a.cxx, ROOT/'runtime/tests/pgxp_dataflow_fixture.cpp', 'fixture')):
             obj = work/(name+'.o')
-            run([compiler, *common, '-DPSX_PGXP_DATAFLOW=1', '-c', source, '-o', obj]); objects.append(obj)
+            run([compiler, *common, '-DPSX_PGXP_DATAFLOW=1', '-DPSX_PGXP_OPERATIONS='+str(int(a.operations)), '-c', source, '-o', obj]); objects.append(obj)
         defined, undefined = nm_symbols(objects)
         provided = library_symbols(a.cc)
         stubs = {s for s in undefined-defined-provided if not s.startswith('__')}
+        if any('pgxp_operation' in s or 'pgxp_write_owned' in s for s in stubs):
+            raise RuntimeError('candidate precision implementation is missing; cannot substitute a linker seam')
         result_exe = work/('products.exe' if os.name == 'nt' else 'products')
         for _ in range(20):
             write_stubs(work/'stubs.c', stubs)

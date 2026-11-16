@@ -71,8 +71,14 @@ int main(void) {
         psx_write_word(a, PACKED);
         produce(a);
         psx_write_word(a, PACKED);
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+        check(!precise(a), "write ownership ends same-value CPU lineage before typed publication");
+        produce(a);
+        check(precise(a), "typed CPU/GTE receipt republishes after the actual write");
+#else
         check(precise(a), i ? "scratchpad: CPU store keeps the hooked shadow"
                             : "RAM: CPU store keeps the hooked shadow");
+#endif
 
         /* The identical word written by DMA is not the projected vertex. */
         g_dma_exec_depth = 1;
@@ -105,6 +111,27 @@ int main(void) {
     g_dma_exec_depth = 0;
     check(!precise(0x80100000u), "DMA store through a mirror drops the shadow");
 
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+    pgxp_set_source_tracking(1);
+    for(unsigned i=0;i<2;++i) {
+        const uint32_t a=addrs[i];PGXPWordShadow old,now;
+        psx_write_word(a,PACKED);produce(a);check(pgxp_tag_word_source(a,PACKED,701),"source tag");
+        check(pgxp_capture_word_shadow(a,PACKED,&old),"capture before typed half write");
+        psx_host_write_half(a+2u,(uint16_t)(PACKED>>16));
+        check(pgxp_capture_word_shadow(a,PACKED,&now),"capture after typed half write");
+        check((now.flags&PGXP_F_VX) && !(now.flags&(PGXP_F_VY|PGXP_F_VZ)) && now.x16==old.x16,
+              "untouched low half survives host high-half write");
+        check(pgxp_load_source(a,PACKED)==0,"partial write ends whole-word lineage");
+        produce(a);check(pgxp_tag_word_source(a,PACKED,702),"source-only setup");
+        pgxp_checkpoint_begin();psx_write_word(a,PACKED);pgxp_checkpoint_rollback();
+        check(precise(a)&&pgxp_load_source(a,PACKED)==702,"write effect participates in checkpoint rollback");
+        pgxp_suppress_begin();psx_write_word(a,PACKED);pgxp_suppress_end();
+        check(precise(a)&&pgxp_load_source(a,PACKED)==702,"suppressed write leaves live metadata untouched");
+        pgxp_invalidate_word(a);check(pgxp_tag_word_source(a,PACKED,703),"source-only receipt");
+        psx_write_byte(a,(uint8_t)PACKED);
+        check(pgxp_load_source(a,PACKED)==0,"same-value byte ends source-only lineage");
+    }
+#endif
     if (failures) {
         fprintf(stderr, "pgxp_untracked_store_test: %d FAILURES\n", failures);
         return 1;

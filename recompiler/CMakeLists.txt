@@ -922,6 +922,11 @@ if(BUILD_TESTING)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pgxp_dataflow.py
                 --recompiler $<TARGET_FILE:psxrecomp-game>
                 --cc ${CMAKE_C_COMPILER} --cxx ${CMAKE_CXX_COMPILER})
+        add_test(NAME pgxp_operation_products
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pgxp_dataflow.py
+                --recompiler $<TARGET_FILE:psxrecomp-game>
+                --cc ${CMAKE_C_COMPILER} --cxx ${CMAKE_CXX_COMPILER} --operations)
     endif()
     if(Python3_Interpreter_FOUND AND CMAKE_GENERATOR STREQUAL "Ninja")
         add_test(NAME runtime_ipo_configuration

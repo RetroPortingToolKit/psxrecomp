@@ -11,6 +11,7 @@
 #include "ps1_exe_parser.h"
 #include "function_analysis.h"
 #include "control_flow.h"
+#include "../src/pgxp_operation_flow.h"
 #include "../src/annotations.hpp"
 #include "../src/config_loader.h"
 
@@ -407,6 +408,9 @@ private:
     std::set<uint32_t> extra_labels_;    // Mid-block addresses that need inline labels (jump table targets)
     std::set<uint32_t> precision_dead_alu_; // CFG-proven unused shadow results
     std::set<uint32_t> precision_elided_alu_; // lifetime ends before any observation
+    bool precision_operation_reentry_ = false, precision_operation_body_ = false;
+    std::string precision_operation_receipt_;
+    std::map<uint32_t, PgxpOperationSummary> precision_operation_summaries_;
     const AnnotationTable* annotations_ = nullptr;
 
     // Forward declarations for every psx_alias_body_XXXXXXXX() emitted by
