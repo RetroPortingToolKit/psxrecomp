@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compile actual emitted GTE-to-packet code against the full PGXP engine."""
 import argparse
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import re
@@ -18,7 +19,7 @@ def run(argv, verbose=True, **kw):
     p = subprocess.run([str(x) for x in argv], capture_output=True, text=True,
                        encoding='utf-8', errors='replace', **kw)
     if p.returncode:
-        raise RuntimeError(' '.join(map(str, argv)) + '\n' + p.stdout + p.stderr)
+        raise RuntimeError(' '.join(map(str, argv)) + '\nexit code: %d (0x%08X)\n' % (p.returncode, p.returncode & 0xffffffff) + p.stdout + p.stderr)
     if p.stdout and verbose:
         print(p.stdout, end='', flush=True)
     return p
@@ -65,9 +66,14 @@ def main():
     ap.add_argument('--recompiler', required=True)
     ap.add_argument('--cc', required=True)
     ap.add_argument('--cxx', required=True)
+    ap.add_argument('--work-dir', type=Path,
+                    help='Retain generated sources, objects and executable for a focused diagnosis')
     a = ap.parse_args()
-    with tempfile.TemporaryDirectory(prefix='psx-pgxp-flow-') as folder:
+    with (nullcontext(str(a.work_dir)) if a.work_dir else
+          tempfile.TemporaryDirectory(prefix='psx-pgxp-flow-')) as folder:
         work = Path(folder)
+        if a.work_dir:
+            work.mkdir(parents=True, exist_ok=False)
         base, words = program()
         header = bytearray(2048); header[:8] = b'PS-X EXE'
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):

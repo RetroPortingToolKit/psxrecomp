@@ -79,7 +79,10 @@ static void run(Product& result,bool native,unsigned variant) {
 }
 int main() {
     for(unsigned v=0;v<32;++v) {
-        run(reference,false,v);run(candidate,true,v);
+        if(!v){std::fputs("RUN first reference PGXP product\n",stderr);std::fflush(stderr);}
+        run(reference,false,v);
+        if(!v){std::fputs("RUN first native PGXP product\n",stderr);std::fflush(stderr);}
+        run(candidate,true,v);
         if(std::memcmp(&reference.cpu,&candidate.cpu,sizeof(CPUState))||
            std::memcmp(reference.bytes,candidate.bytes,sizeof ram)||reference.cycles!=candidate.cycles) {
             std::fprintf(stderr,"FAIL variant%u guest product differs\n",v);return 1;
