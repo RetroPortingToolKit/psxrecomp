@@ -181,6 +181,12 @@ int      dirty_ram_is_dirty(uint32_t phys);
  * on writes into the body. Runtime-patched bodies (pad/SIO install stubs)
  * never verify and keep interpreting — faithful either way. */
 int      psx_kernel_bless_dispatchable(uint32_t phys);
+/* Nonzero when the active image's bless table fits the runtime's
+ * verify-state array. When it does not, bless is off for the whole run.
+ * Reads only; sets *entries and *capacity when non-NULL. */
+int      psx_kernel_bless_table_fits(uint32_t *entries, uint32_t *capacity);
+/* Bless latch: -1 not decided yet, 0 off, 1 on. Reads only. */
+int      psx_kernel_bless_state(void);
 /* True when a declared kernel patch range ENDS at this RAM address. The
  * emitter registered that PC as a continuation key, so the interpreter hands
  * straight-line flow back to static dispatch there and only the guest's
@@ -188,6 +194,7 @@ int      psx_kernel_bless_dispatchable(uint32_t phys);
 int      psx_kernel_patch_range_ends_at(uint32_t phys);
 void     psx_kernel_bless_note_range(uint32_t phys, uint32_t len);
 void     psx_kernel_bless_stats(uint64_t out[8]);
+void     psx_kernel_bless_paranoid_stats(uint64_t out[5]);
 void     psx_kernel_bless_resync_after_restore(void);
 /* Soft-return rematch / BIOS switch: drop latched SCPH↔OpenBIOS window +
  * CLEAN/MISMATCH so the next kbless_on() re-reads psx_bios_image. */

@@ -530,6 +530,49 @@ void psx_crash_trace_dump(const char *reason, void *seh_info) {
     (void)seh_info;
 #endif
 
+    /* Kernel bless decides whether relocated kernel routines run their
+     * compiled bodies or the interpreter, so the report states it. `state`
+     * is -1 before the first kernel-window dispatch, 0 off, 1 on.
+     * `native_hits` counts kernel dispatches served by a blessed body; those
+     * never reach the overlay loader. A table larger than the verify-state
+     * array (disabled_by_overflow) turns bless off for the whole run. The
+     * paranoid fields are 0 unless PSX_KERNEL_BLESS_PARANOID=1; then
+     * paranoid_stale_clean counts rows marked clean over bytes that differ,
+     * and must be 0. */
+    {
+        uint32_t kb_entries = 0, kb_capacity = 0;
+        int kb_fits = psx_kernel_bless_table_fits(&kb_entries, &kb_capacity);
+        uint64_t kb[8] = {0};
+        uint64_t kp[5] = {0};
+        psx_kernel_bless_stats(kb);
+        psx_kernel_bless_paranoid_stats(kp);
+        append_fmt(buf, sizeof(buf), &pos,
+            "  \"kbless\": {\n"
+            "    \"table_entries\": %u,\n"
+            "    \"capacity\": %u,\n"
+            "    \"disabled_by_overflow\": %d,\n"
+            "    \"state\": %d,\n"
+            "    \"clean\": %llu,\n"
+            "    \"mismatch\": %llu,\n"
+            "    \"native_hits\": %llu,\n"
+            "    \"verifies\": %llu,\n"
+            "    \"invalidations\": %llu,\n"
+            "    \"paranoid\": %llu,\n"
+            "    \"paranoid_checks\": %llu,\n"
+            "    \"paranoid_bytes\": %llu,\n"
+            "    \"paranoid_stale_clean\": %llu,\n"
+            "    \"paranoid_stale_mismatch\": %llu\n"
+            "  },\n",
+            kb_entries, kb_capacity, kb_fits ? 0 : 1,
+            psx_kernel_bless_state(),
+            (unsigned long long)kb[1], (unsigned long long)kb[2],
+            (unsigned long long)kb[3], (unsigned long long)kb[4],
+            (unsigned long long)kb[5],
+            (unsigned long long)kp[0], (unsigned long long)kp[1],
+            (unsigned long long)kp[2], (unsigned long long)kp[3],
+            (unsigned long long)kp[4]);
+    }
+
     /* CPU state */
     if (debug_cpu_ptr) {
         CPUState *cpu = debug_cpu_ptr;

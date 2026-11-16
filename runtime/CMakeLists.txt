@@ -402,6 +402,19 @@ if(BUILD_TESTING)
     set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        # Every writer of guest RAM that bypasses psx_write_* tells the
+        # kernel-bless table (psx_kernel_bless_note_range) next to the write.
+        add_test(NAME raw_ram_writers_test COMMAND "${Python3_EXECUTABLE}" -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_raw_ram_writers.py"
+            --src "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            --include "${CMAKE_CURRENT_SOURCE_DIR}/include")
+        # Each generated BIOS profile's kernel-bless table fits the runtime;
+        # a larger one runs with bless off for the whole run.
+        add_test(NAME kbless_table_capacity_test COMMAND "${Python3_EXECUTABLE}" -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kbless_table_capacity.py"
+            --generated "${PSXRECOMP_ROOT}/generated"
+            --memory-c "${CMAKE_CURRENT_SOURCE_DIR}/src/memory.c")
+        set_tests_properties(kbless_table_capacity_test PROPERTIES SKIP_RETURN_CODE 77)
         if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
             add_test(NAME rfe_host_reads_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_host_reads.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME rfe_irq_context_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_irq_context.py --cc ${CMAKE_C_COMPILER})
@@ -1581,6 +1594,28 @@ if(BUILD_TESTING)
     target_include_directories(kernel_patch_ranges_test PRIVATE include)
     add_test(NAME kernel_patch_ranges_test COMMAND kernel_patch_ranges_test)
 
+    # Kernel bless: the verify state of each row follows RAM writes only.
+    # Marking a range executable writes no RAM and must not reset the table;
+    # the generated BIOS dispatch does it on every RAM-alias dispatch of an
+    # exception-handler key. Drives the real memory.c bless code.
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        add_executable(kernel_bless_state_test tests/test_kernel_bless_state.c
+            src/kernel_patch_ranges.c src/psx_ram_geometry.c)
+        target_include_directories(kernel_bless_state_test PRIVATE include)
+        target_compile_options(kernel_bless_state_test PRIVATE
+            -O2 -UNDEBUG -flto -fwhole-program -ffunction-sections -fdata-sections)
+        target_link_options(kernel_bless_state_test PRIVATE -flto -Wl,--gc-sections)
+        add_test(NAME kernel_bless_state_test COMMAND kernel_bless_state_test)
+        add_test(NAME kernel_bless_overflow_test
+            COMMAND kernel_bless_state_test overflow)
+        set_tests_properties(kernel_bless_overflow_test PROPERTIES
+            PASS_REGULAR_EXPRESSION "kernel_bless_state: PASS overflow")
+        add_test(NAME kernel_bless_paranoid_test
+            COMMAND kernel_bless_state_test paranoid)
+        set_tests_properties(kernel_bless_paranoid_test PROPERTIES
+            PASS_REGULAR_EXPRESSION "kernel_bless_state: PASS paranoid")
+    endif()
+
     # The player-facing "skip the BIOS" flag must resolve to the same boot
     # behaviour on retail SCPH-1001 and on the bundled OpenBIOS, whose
     # kernel-call HLE is (correctly) refused for want of a DeliverEvent anchor.
@@ -1734,6 +1769,16 @@ if(BUILD_TESTING)
         include
         ../recompiler/lib/toml11)
     add_test(NAME text_xlate_fix_only_test COMMAND text_xlate_fix_only_test)
+    # Translation patches write RAM directly; they must report it to the
+    # kernel-bless table.
+    add_executable(text_xlate_kernel_bless_test
+        tests/test_text_xlate_kernel_bless.cpp
+        src/text_xlate.cpp
+        src/psx_ram_geometry.c)
+    target_include_directories(text_xlate_kernel_bless_test PRIVATE
+        include
+        ../recompiler/lib/toml11)
+    add_test(NAME text_xlate_kernel_bless_test COMMAND text_xlate_kernel_bless_test)
     add_executable(native_text_test tests/test_native_text.cpp
         src/native_text.cpp third_party/json11/json11.cpp)
     target_include_directories(native_text_test PRIVATE include)

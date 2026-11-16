@@ -4554,6 +4554,7 @@ static void run_shadow_diff_legacy(CPUState *cpu, Candidate *c, uint32_t addr) {
 
     *cpu = cpu0;
     memcpy(ram,  s_ram0,  SHADOW_RAM_SIZE);
+    psx_kernel_bless_note_range(0u, SHADOW_RAM_SIZE);   /* raw RAM write */
     memcpy(spad, s_spad0, SHADOW_SPAD_SIZE);
     uint32_t stop_ra = cpu->gpr[31];   /* entry $ra = the function's return point */
     /* Arm the own-interior native route for the NATIVE pass only (see
@@ -4661,6 +4662,7 @@ static void run_shadow_diff_legacy(CPUState *cpu, Candidate *c, uint32_t addr) {
      * spurious in-progress unwind wedges the guest). */
     *cpu = cpuI;
     memcpy(ram,  s_ramI,  SHADOW_RAM_SIZE);
+    psx_kernel_bless_note_range(0u, SHADOW_RAM_SIZE);   /* raw RAM write */
     memcpy(spad, s_spadI, SHADOW_SPAD_SIZE);
     g_psx_call_bail = 0;
     s_native_exec  = sv;
