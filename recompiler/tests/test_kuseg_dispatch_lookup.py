@@ -600,7 +600,10 @@ def main():
 #include <assert.h>
 #include "psx_memory.h"
 int psx_mod_set_main_ram_8mb(int enabled);   /* runtime psx_ram_geometry.c */
-typedef struct { uint32_t pc; } CPUState;
+/* Use the real OFF/reference validity macro and its existing strict range
+ * validator below; discarded native-cache state is intentionally absent. */
+#include "psx_static_calls.h"
+typedef struct CPUState { uint32_t pc; } CPUState;
 static int allowed = 1, calls = 0, irqs = 0;
 static uint32_t resumed;
 static void dummy(CPUState* cpu) { calls++; resumed = cpu->pc; }
@@ -709,7 +712,10 @@ int main(void) {
 #include <stdint.h>
 #include <stddef.h>
 #include <assert.h>
-typedef struct { uint32_t pc; } CPUState;
+/* Use the real OFF/reference validity macro and its existing strict range
+ * validator below; discarded native-cache state is intentionally absent. */
+#include "psx_static_calls.h"
+typedef struct CPUState { uint32_t pc; } CPUState;
 static int calls = 0;
 static void dummy(CPUState* cpu) { (void)cpu; calls++; }
 static int dirty_ram_text_native_ok_ranges_from(const uint32_t* r, uint32_t n, uint32_t a) {
