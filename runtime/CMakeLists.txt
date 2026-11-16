@@ -1550,6 +1550,23 @@ if(BUILD_TESTING)
     target_link_libraries(overlay_capture_retry_test PRIVATE ${PSX_SDL_LIBRARIES})
     add_test(NAME overlay_capture_retry_test COMMAND overlay_capture_retry_test)
 
+    # The durable capture history (overlay_capture_history = true) keeps one
+    # whole record per snapshot, with unique sequence numbers in line order,
+    # while the emulation thread, the queue's writer and the periodic
+    # capture's writer commit at the same time.
+    add_executable(overlay_capture_history_test
+        tests/test_overlay_capture_history.cpp
+        src/overlay_capture.c
+        src/host_span_ring.c
+        src/psx_ram_geometry.c)
+    target_include_directories(overlay_capture_history_test PRIVATE
+        include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(overlay_capture_history_test PRIVATE
+        SDL_MAIN_HANDLED PSX_OVERLAY_CAPTURE_TEST=1
+        $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(overlay_capture_history_test PRIVATE ${PSX_SDL_LIBRARIES})
+    add_test(NAME overlay_capture_history_test COMMAND overlay_capture_history_test)
+
     # PC evidence stays inside the dirty-page run: nothing recorded in the
     # trailing delay-slot guard word (bead beads-eio.3.190).
     add_executable(overlay_capture_guard_word_test

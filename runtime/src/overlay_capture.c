@@ -72,6 +72,20 @@ static char     s_history_session[64];
 static uint32_t s_history_sequence;
 static uint64_t s_history_last_sig;
 static int      s_history_written;
+/* One lock for the durable history: the three values above and the files it
+ * writes (the addendum, and the copies in the persist folder).
+ * persist_history_snapshot runs on whichever thread committed the snapshot,
+ * after s_commit_mutex is released: the periodic capture's writer, the writer
+ * of the queue of outgoing snapshots, and the emulation thread (at a manual
+ * dump, at shutdown, when a snapshot cannot be queued). With no lock of its
+ * own two of them appended to the addendum at the same time. A record that
+ * holds a snapshot leaves the stdio buffer in several writes, so the two lines
+ * mixed and a reader lost both; two records could also take the same sequence
+ * number.
+ * Created when the history is switched on. With the option off (the default)
+ * it does not exist and nothing takes it. No other lock is taken while it is
+ * held. */
+static SDL_mutex *s_history_mutex;
 static SDL_atomic_t s_autocap_write_state; /* 0 idle, 1 writing, 2 complete */
 
 static uint64_t capture_next_sequence(void)
@@ -220,6 +234,17 @@ void overlay_capture_configure_history(int enabled, const char *persist_dir,
     time_t now;
     struct tm tm_now;
     char stamp[32];
+    if (enabled && !s_history_mutex) {
+        s_history_mutex = SDL_CreateMutex();
+        if (!s_history_mutex) {
+            /* Records written without the lock cannot be trusted. */
+            fprintf(stderr,
+                    "psxrecomp: overlay capture history stays off: no lock for it (%s)\n",
+                    SDL_GetError());
+            enabled = 0;
+        }
+    }
+    if (s_history_mutex) SDL_LockMutex(s_history_mutex);
     s_history_enabled = enabled ? 1 : 0;
     s_history_persist_dir[0] = '\0';
     s_history_sequence = 0;
@@ -249,6 +274,7 @@ void overlay_capture_configure_history(int enabled, const char *persist_dir,
     strftime(stamp, sizeof(stamp), "%Y%m%dT%H%M%SZ", &tm_now);
     snprintf(s_history_session, sizeof(s_history_session), "%s-p%d",
              stamp, capture_process_id());
+    if (s_history_mutex) SDL_UnlockMutex(s_history_mutex);
     if (s_history_enabled) {
         fprintf(stdout,
                 "psxrecomp: durable overlay capture history enabled (%s%s%s)\n",
@@ -704,8 +730,9 @@ static int append_history_reference(const char *persist_path, const char *reason
     return ok;
 }
 
-static void persist_history_snapshot(const char *snapshot_path,
-                                     const char *reason, uint64_t sig)
+/* Under s_history_mutex: see persist_history_snapshot. */
+static void persist_history_snapshot_locked(const char *snapshot_path,
+                                            const char *reason, uint64_t sig)
 {
     char persist_path[800];
     uint32_t sequence;
@@ -741,6 +768,22 @@ static void persist_history_snapshot(const char *snapshot_path,
         s_history_last_sig = sig;
         s_history_written = 1;
     }
+}
+
+/* One record at a time, whichever thread committed the snapshot. The lock
+ * covers the whole step: the "same snapshot as the last record" check, the
+ * sequence number, the copy into the persist folder and the append. So a
+ * record is one whole line, the numbers rise in the order of the lines (one is
+ * left out only when its write fails), and the check reads what the last
+ * record really was. */
+static void persist_history_snapshot(const char *snapshot_path,
+                                     const char *reason, uint64_t sig)
+{
+    /* Off, the default: no lock is taken and nothing is written. */
+    if (!s_history_enabled || !sig) return;
+    if (s_history_mutex) SDL_LockMutex(s_history_mutex);
+    persist_history_snapshot_locked(snapshot_path, reason, sig);
+    if (s_history_mutex) SDL_UnlockMutex(s_history_mutex);
 }
 
 /* Persist one coherent snapshot for three deliberately different roles:
@@ -816,7 +859,8 @@ static uint64_t capture_commit_temp(const char *temp_path, const char *reason,
      * Persist history from the immutable contribution file (not the racy
      * "latest" path, which another writer can replace at any time), and
      * outside the commit lock since durable-history I/O (an optional
-     * persist_dir copy plus a JSONL append) can be comparatively slow. */
+     * persist_dir copy plus a JSONL append) can be comparatively slow. That
+     * step has its own lock, s_history_mutex. */
     if (history_ok) persist_history_snapshot(contribution, reason, sig);
     return history_ok ? sig : 0;
 }
