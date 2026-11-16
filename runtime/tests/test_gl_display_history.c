@@ -13,24 +13,9 @@ void gpu_hd_textures_track_upload(int x,int y,int w,int h,const uint16_t *p){(vo
 void gpu_hd_textures_invalidate(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
 void gpu_hd_textures_begin_copy(int sx,int sy,int x,int y,int w,int h){(void)sx;(void)sy;(void)x;(void)y;(void)w;(void)h;}
 void gpu_hd_textures_end_copy(void){}
-int host_osd_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}
-int host_osd_volume_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
-int psx_rewind_overlay_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
-int psx_host_menu_overlay_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
-int host_osd_needs_present(void){return 0;}
-void host_osd_present_done(void){}
-float psx_rewind_slide(void){return 0;}
-int present_shot_take(char *out,int n){(void)out;(void)n;return 0;}
-void present_shot_done(int ok){(void)ok;}
 int psx_present_vsync_owns_cadence(void){return 0;}
-void latency_ring_mark(LatencyStage stage){(void)stage;}
 uint64_t latency_ring_current_frame(void){return 0;}
 void latency_ring_replay_frame(uint64_t frame){(void)frame;}
-void psx_video_telemetry_compose(int r,int s,int sw,int sh,int dw,int dh,int vw,int vh){
-    (void)r;(void)s;(void)sw;(void)sh;(void)dw;(void)dh;(void)vw;(void)vh;
-}
-void psx_video_telemetry_present(int result){(void)result;}
-void psx_ws_dbg_gate_frame_snapshot(void){}
 
 static uint16_t cpu_before[1024*512],expected[1024*512];
 static void ready(void *user,uint64_t version) { *(uint64_t *)user=version; }

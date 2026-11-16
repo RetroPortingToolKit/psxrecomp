@@ -17,6 +17,7 @@
  * (psx_mod_render_pass_status says which). */
 
 #include "render_pass.h"
+#include "local_pair_prepare.h"
 
 #include <setjmp.h>
 #include <math.h>
@@ -287,6 +288,11 @@ static RenderPassFailure s_attempt;
 static const char *s_checkpoint_failure;
 static RenderStereoStats s_stereo;
 static int s_pair_busy;
+static struct {
+    uint64_t lease,id,cycle;
+    int32_t view[2][3];
+    double elapsed_ms;
+} s_prepared_local;
 /* Whole-pair shedding/recovery policy (bounded in time and count; see
  * stereo_shed_policy.c). Replaces the old attempt counter, which could suppress
  * many pairs after a single over-budget frame. */
@@ -409,6 +415,8 @@ void render_pass_reset_session(void) {
     memset(&s_attempt, 0, sizeof s_attempt);
     memset(&s_stereo, 0, sizeof s_stereo);
     s_stereo.last_eye = -1;
+    if(s_prepared_local.lease)gl_renderer_stereo_parked_cancel(s_prepared_local.lease);
+    memset(&s_prepared_local,0,sizeof s_prepared_local);
     s_pair_busy = 0;
     /* Shedding policy: defaults, then env overrides (PSX_STEREO_SHED=0 gives the
      * baseline diagnostic with shedding fully disabled). */
@@ -1128,7 +1136,7 @@ static int stereo_eye_draw(CPUState *cpu, void *user, uint32_t unused) {
 }
 
 static int render_pair(CPUState *cpu, const PSXModStereoFrame *frame,
-                        PSXModStereoFn fn, void *user, int local) {
+                        PSXModStereoFn fn, void *user, int local, int prepare_only) {
     PSXModRenderPass rect;
     StereoCallback call;
     uint64_t t0, cycle, stores, mismatches, aborted;
@@ -1136,7 +1144,7 @@ static int render_pair(CPUState *cpu, const PSXModStereoFrame *frame,
     uint32_t status;
     int ok = 1;
     /* Refuse re-entry without changing the outer pair's counters/selector. */
-    if (s_pair_busy) return 0;
+    if (s_pair_busy || s_prepared_local.lease) return 0;
     s_stereo.attempts++;
     s_stereo.last_eye = -1;
     if (!cpu || !frame || !fn || frame->struct_size < sizeof *frame ||
@@ -1153,7 +1161,7 @@ static int render_pair(CPUState *cpu, const PSXModStereoFrame *frame,
      * psx_openxr_begin() when a headset is active; opening here covers the
      * desktop stereo path, and the guest-sim gap is the host time since the
      * previous traced frame. */
-    int trace_on = psx_frame_trace_enabled();
+    int trace_on = psx_frame_trace_enabled() && !prepare_only;
     int trace_opened = trace_on ? psx_frame_trace_open() : 0;
     uint64_t now_ms = psx_host_mono_ms();
     if (trace_on) {
@@ -1244,6 +1252,16 @@ static int render_pair(CPUState *cpu, const PSXModStereoFrame *frame,
     elapsed = (double)(gl_renderer_perf_ticks() - t0) * 1000.0 /
               (double)gl_renderer_perf_frequency();
     s_stereo.last_pair_ms = elapsed;
+    if(ok && prepare_only) {
+        const uint64_t lease=gl_renderer_stereo_stage_park();
+        if(lease) {
+            s_prepared_local.lease=lease;s_prepared_local.id=s_stereo.attempts;
+            s_prepared_local.cycle=cycle;s_prepared_local.elapsed_ms=elapsed;
+            memcpy(s_prepared_local.view,s_stereo.eye_view,sizeof s_prepared_local.view);
+            s_pair_busy=0;return 1; /* no published-pair count or freshness credit */
+        }
+        ok=0;s_stereo.last_failure="pair_prepare";
+    }
     const uint64_t publish_t0 = psx_frame_trace_enabled()
                                     ? gl_renderer_perf_ticks() : 0;
     if (ok && !gl_renderer_stereo_publish(s_stereo.attempts, cycle, s_stereo.eye_view)) {
@@ -1358,9 +1376,33 @@ int psx_mod_render_capture_rgba_pair(CPUState *cpu,const PSXModRenderPass *rect,
 }
 int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
                           PSXModStereoFn fn, void *user) {
-    return render_pair(cpu,frame,fn,user,0);
+    return render_pair(cpu,frame,fn,user,0,0);
 }
 int psx_mod_render_local_pair(CPUState *cpu, const PSXModStereoFrame *frame,
                               PSXModStereoFn fn, void *user) {
-    return render_pair(cpu,frame,fn,user,1);
+    return render_pair(cpu,frame,fn,user,1,0);
+}
+
+uint64_t psx_mod_prepare_local_pair(CPUState *cpu,const PSXModStereoFrame *frame,
+    PSXModStereoFn fn,void *user) {
+    return render_pair(cpu,frame,fn,user,1,1)?s_prepared_local.lease:0;
+}
+void psx_mod_cancel_prepared_local_pair(uint64_t lease) {
+    if(lease && lease==s_prepared_local.lease) {
+        gl_renderer_stereo_parked_cancel(lease);memset(&s_prepared_local,0,sizeof s_prepared_local);
+    }
+}
+int psx_mod_commit_prepared_local_pair(uint64_t lease) {
+    if(!lease || lease!=s_prepared_local.lease || s_pair_busy || g_psx_guest_time_frozen)return 0;
+    const uint64_t cycle=psx_get_cycle_count();
+    if(cycle<s_prepared_local.cycle || cycle-s_prepared_local.cycle>4ull*g_psx_vblank_cycles ||
+       transaction_status(3)!=PSX_MOD_RENDER_PASS_READY ||
+       !gl_renderer_stereo_parked_publish(lease,s_prepared_local.id,cycle,s_prepared_local.view)) {
+        psx_mod_cancel_prepared_local_pair(lease);return 0;
+    }
+    s_stereo.pairs++;s_stereo.last_pair_id=s_prepared_local.id;s_stereo.last_guest_cycle=cycle;
+    stereo_shed_policy_note_pair(&s_shed,s_prepared_local.elapsed_ms,psx_host_mono_ms(),1);
+    s_stereo.avg_pair_ms=stereo_shed_policy_avg_ms(&s_shed);
+    s_stereo.last_pair_age_ms=stereo_shed_policy_pair_age_ms(&s_shed,psx_host_mono_ms());
+    memset(&s_prepared_local,0,sizeof s_prepared_local);return 1;
 }

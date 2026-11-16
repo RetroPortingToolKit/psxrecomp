@@ -139,12 +139,22 @@ int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse_backup);
 uint32_t gl_renderer_local_pair_unavailable(void);
 int gl_renderer_stereo_end(uint32_t eye, int keep);
 void gl_renderer_stereo_stage_reset(void);
+/* One bounded pending local pair. Parking swaps owned image handles, without
+ * copying pixels or changing the displayed pair. The returned lease is consumed
+ * once at the original native commit boundary; reset/context/scale changes and
+ * another published pair invalidate it. No guest drawing occurs at commit. */
+uint64_t gl_renderer_stereo_stage_park(void);
+int gl_renderer_stereo_parked_publish(uint64_t lease,uint64_t pair_id,
+    uint64_t guest_cycle,const int32_t view[2][3]);
+void gl_renderer_stereo_parked_cancel(uint64_t lease);
 int gl_renderer_stereo_stage_readback_pair(uint32_t width,uint32_t height,uint8_t *rgba);
 int gl_renderer_stereo_publish(uint64_t pair_id, uint64_t guest_cycle,
                                 const int32_t eye_view[2][3]);
 void gl_renderer_stereo_reset(void);
 int gl_renderer_stereo_set_presentation(uint32_t mode);
 int gl_renderer_local_pair_set_presentation(int enabled);
+/* Stable presentation layout query; no context acquisition or guest state. */
+int gl_renderer_local_pair_presentation_active(void);
 void gl_renderer_stereo_dump_arm(const char *dir, int pairs);
 /* Bounded metadata for explicitly requested PNG evidence, queried over TCP. */
 typedef struct GLRenderStereoCapture {

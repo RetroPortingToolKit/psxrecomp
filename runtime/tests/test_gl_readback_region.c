@@ -42,6 +42,25 @@ void gpu_depth24_upload_span_reset(void){}
 /* Netplay unsplit view and forward-pass opt-in: off in these fixtures. */
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
 int render_pass_netplay_enabled(void){return 0;}
+/* No frontend overlays, queued screenshots or guest debug-gate state here.
+ * These are the same typed inactive frontend providers used by the existing
+ * display-history fixture (which includes this file). The real renderer,
+ * phase images, selection, swap and ownership code remain linked below. */
+int host_osd_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}
+int host_osd_volume_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
+int psx_rewind_overlay_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
+int psx_host_menu_overlay_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
+int host_osd_needs_present(void){return 0;}
+void host_osd_present_done(void){}
+float psx_rewind_slide(void){return 0;}
+int present_shot_take(char *out,int n){(void)out;(void)n;return 0;}
+void present_shot_done(int ok){(void)ok;}
+void latency_ring_mark(LatencyStage stage){(void)stage;}
+void psx_video_telemetry_compose(int r,int s,int sw,int sh,int dw,int dh,int vw,int vh){
+    (void)r;(void)s;(void)sw;(void)sh;(void)dw;(void)dh;(void)vw;(void)vh;
+}
+void psx_video_telemetry_present(int result){(void)result;}
+void psx_ws_dbg_gate_frame_snapshot(void){}
 static int checks,failures;
 static void check(int ok,const char *label){checks++;if(!ok){fprintf(stderr,"FAIL %s\n",label);failures++;}}
 static void verify(const char *label){
@@ -499,6 +518,63 @@ static void verify_view_transactions_and_geometry_export(void) {
  check(!memcmp(gpu_before,gpu_after,sizeof gpu_before),"private geometry/export cannot change native raster");
  check(glGetError()==GL_NO_ERROR,"view transactions and geometry export GL error");
 }
+static void coop_wide_held_pixels(void) {
+ uint8_t *pixels=malloc((size_t)s_hold_tw*s_hold_th*4);check(pixels!=NULL,"wide pair drawable allocation");if(!pixels)return;
+ p_glBindBuffer(0x88EB,0);glPixelStorei(GL_PACK_ALIGNMENT,1);glPixelStorei(PSXGL_PACK_ROW_LENGTH,0);
+ glBindTexture(GL_TEXTURE_2D,s_hold_tex);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+ for(int eye=0;eye<2;++eye){
+  int start=eye?s_hold_tw/2:0,pane=s_hold_tw/2;
+  for(int edge=0;edge<2;++edge){
+   size_t at=((size_t)(s_hold_th/2)*s_hold_tw+start+(edge?pane-4:4))*4;
+   check(pixels[at+(eye?2:0)]>200,"actual composed pane retains world at both physical margins");
+  }
+  int green=0,x=start+pane*77/426;
+  for(int y=0;y<s_hold_th;++y){size_t at=((size_t)y*s_hold_tw+x)*4;
+   if(pixels[at+1]>200 && pixels[at]<20 && pixels[at+2]<20)++green;}
+  check(green>=s_hold_th/5,"actual composed pane retains its own visible HUD meter");
+ }
+ free(pixels);
+}
+
+static void verify_wide_coop_hud(void) {
+ const int S=s_hr_scale;const size_t n=(size_t)426*512*S*S;
+ uint32_t *wide_before=malloc(n*4),*wide_after=malloc(n*4);
+ uint16_t *native_before=malloc(320*240*2),*native_after=malloc(320*240*2);
+ check(wide_before && wide_after && native_before && native_after,"wide pair snapshot allocations");
+ if(!wide_before || !wide_after || !native_before || !native_after)goto cleanup;
+ SDL_SetWindowSize(s_win,1280,360);gl_renderer_set_display_aspect(16,9);
+ gl_renderer_local_pair_set_presentation(1);
+ check(gl_renderer_local_pair_presentation_active(),"per-view adaptive layout query follows active local pair");
+ glb_set_draw_area(0,0,319,239);glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+ glb_wide_configure(426,53);glb_wide_set_target(0);glb_wide_set_view(1,0,0,0);
+ glb_fill_rect(0,0,320,240,0x0421);glb_wide_clear(0,0,512,0x0421);
+ int ow=0,oh=0;check(glb_wide_dump_full(wide_before,n,&ow,&oh,0)>0,"wide pair baseline sidecar");
+ check(gl_renderer_fbo_peek(0,0,320,240,native_before),"wide pair baseline native raster");
+ gl_renderer_stereo_stage_reset();
+ for(int eye=0;eye<2;++eye){
+  check(gl_renderer_local_pair_begin(0,0,320,240,eye!=0),"wide own-view transaction begins");
+  glb_draw_flat_rect(-106,0,532,240,eye?0x7c00:0x001f);
+  glb_draw_flat_rect(20,16,8,60,0x03e0); /* original per-view HUD packet position */
+  check(gl_renderer_stereo_end(eye,1),"complete wide world and HUD image retained");
+ }
+ StereoPair *staged=&s_stereo_pair[1-s_stereo_current];
+ check(staged->image_w==426 && staged->tw[0]==426*S && staged->tw[1]==426*S,"wide pair keeps real expanded image extent");
+ const uint64_t lease=gl_renderer_stereo_stage_park();check(lease!=0,"expanded images can be parked");
+ gl_renderer_stereo_stage_reset();int32_t views[2][3]={{0}};
+ check(gl_renderer_stereo_parked_publish(lease,81,psx_cycle_count,views),"parked wide images publish exactly once");
+ check(!gl_renderer_stereo_parked_publish(lease,82,psx_cycle_count,views),"wide lease consumed once");
+ check(gl_renderer_fbo_peek(0,0,320,240,native_after) && !memcmp(native_before,native_after,320*240*2),"wide pair restores native raster including HUD region");
+ check(glb_wide_dump_full(wide_after,n,&ow,&oh,0)>0 && !memcmp(wide_before,wide_after,n*4),"wide pair restores entire canonical sidecar");
+ check(stereo_present(320,240),"actual wide co-op compositor presents native owned pair");
+ GlPresEvent e;check(gl_renderer_pres_get(gl_renderer_pres_total()-1,&e) && e.lx==0 && e.ly==0 && e.lw==1280 && e.lh==360,"adaptive wide pair fills actual32:9 drawable without4:3 pillars");
+ coop_wide_held_pixels();
+ gl_renderer_stereo_reset();check(!gl_renderer_local_pair_presentation_active(),"session reset releases adaptive pair layout");
+ glb_wide_set_view(0,0,0,0);glb_wide_disable_target();glb_wide_configure(0,0);glb_set_draw_area(0,0,1023,511);
+ gl_renderer_set_display_aspect(4,3);
+cleanup:
+ free(wide_before);free(wide_after);free(native_before);free(native_after);
+}
+
 int main(int argc,char **argv){
  int scale=argc>1?atoi(argv[1]):1;
  if(SDL_Init(SDL_INIT_VIDEO)!=0)return 2;
@@ -508,6 +584,11 @@ int main(int argc,char **argv){
  glb_init(image);glb_set_scale(scale);gl_renderer_set_swap_interval(0);
  if(!gl_renderer_init_context(win))return 2;
  printf("driver=%s renderer=%s scale=%d\n",glGetString(GL_VERSION),glGetString(GL_RENDERER),scale);
+ if(getenv("PSX_STOCK_PAIR_ONLY")){
+  verify_stereo_transactions();verify_wide_coop_hud();
+  printf("checks=%d failures=%d\n",checks,failures);
+  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
+ }
  glb_set_draw_area(0,0,1023,511);glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);glb_set_color_modulation(128,128,128,1);
  verify("initial upload");
  /* Adaptive backdrop reflection must retain every edge texel at both native

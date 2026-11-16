@@ -2173,6 +2173,9 @@ static void update_adaptive_widescreen() {
     int width = 0, height = 0;
     SDL_GetWindowSize(sdl_window, &width, &height);
     if (width <= 0 || height <= 0) return;
+    /* A local pair consumes two physical viewports. The title's projection
+     * and wide sidecar describe ONE pane; the compositor combines them. */
+    if(gl_renderer_local_pair_presentation_active())width/=2;
 
     int num = width, den = height;
     /* A nominal 4:3 client can be one physical pixel wider after fractional-DPI

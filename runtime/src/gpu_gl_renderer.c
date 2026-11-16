@@ -487,6 +487,8 @@ static int  rth_record_mode(void);
 static int presentation_gpu_source(int x,int y,int w,int h,int repeated,int crop[4],
     GLuint *fbo,GLuint *texture,int *scale);
 static void presentation_gpu_capture_record(const void *payload);
+/* GPU-owner replay uses the original queued native presentation boundary. */
+static uint64_t s_presentation_present_cycle=UINT64_MAX;
 /* Render-thread frame cost (dynamic resolution; defined with GL_RT_BACKEND). */
 static uint64_t s_rthf_swap_ns = 0;        /* render thread: time in the swap */
 static uint64_t host_now_ns_rthf(void);
@@ -7813,12 +7815,16 @@ typedef struct StereoPair {
     GLuint tex[2], fbo[2];
     int tw[2], th[2];
     int x, y, w, h;
+    int image_w; /* source w stays native; owned image may include real margins */
     uint32_t mask;
     uint64_t id, cycle;
     int32_t view[2][3];
 } StereoPair;
 static StereoPair s_stereo_pair[2];
+static StereoPair s_stereo_parked;
+static uint64_t s_stereo_parked_lease,s_stereo_parked_next=1;
 static int s_stereo_current, s_stereo_valid, s_stereo_mode;
+static _Atomic int s_local_pair_canvas;
 static GLuint s_local_shared_tex;
 static int s_local_shared_w, s_local_shared_h;
 static uint64_t s_stereo_presents;
@@ -7985,10 +7991,10 @@ static int pass_make_color_fbo(GLuint *tex, GLuint *rb, GLuint *fbo,
 
 /* Copy the rect as the presenter would see it into `tex`. Native-wide first
  * refreshes the band's canonical centre, as the wide present does. */
-static void pass_capture_into(GLuint tex,int x,int y,int w,int h) {
+static void pass_capture_into(GLuint tex,GLuint source,int x,int y,int w,int h) {
     const int scale=s_hr_scale;
     hiw_flush_queue();
-    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,s_hr_fbo);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,source);
     glBindTexture(GL_TEXTURE_2D,tex);
     glCopyTexSubImage2D(GL_TEXTURE_2D,0,0,0,x*scale,y*scale,w*scale,h*scale);
     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,0);
@@ -8338,6 +8344,30 @@ uint32_t gl_renderer_stereo_unavailable(void) {
         return PSX_MOD_RENDER_PASS_BACKEND;
     return PSX_MOD_RENDER_PASS_READY;
 }
+uint64_t gl_renderer_stereo_stage_park(void) {
+    GL_RT_SYNC("stereo_stage_park");
+    StereoPair *p=&s_stereo_pair[1-s_stereo_current];
+    if(!s_ctx || s_pass_active || s_stereo_parked_lease || p->mask!=3u ||
+       p->tw[0]!=p->tw[1] || p->th[0]!=p->th[1])return 0;
+    const StereoPair spare=s_stereo_parked;s_stereo_parked=*p;*p=spare;p->mask=0;
+    s_stereo_parked_lease=s_stereo_parked_next++;
+    if(!s_stereo_parked_lease)s_stereo_parked_lease=s_stereo_parked_next++;
+    return s_stereo_parked_lease;
+}
+void gl_renderer_stereo_parked_cancel(uint64_t lease) {
+    GL_RT_SYNC("stereo_parked_cancel");
+    if(lease && lease==s_stereo_parked_lease){s_stereo_parked_lease=0;s_stereo_parked.mask=0;}
+}
+int gl_renderer_stereo_parked_publish(uint64_t lease,uint64_t id,uint64_t cycle,const int32_t view[2][3]) {
+    GL_RT_SYNC("stereo_parked_publish");
+    if(!lease || lease!=s_stereo_parked_lease || !s_ctx || s_pass_active ||
+       s_stereo_parked.mask!=3u || s_stereo_parked.tw[0]!=(s_stereo_parked.image_w?s_stereo_parked.image_w:s_stereo_parked.w)*s_hr_scale ||
+       s_stereo_parked.th[0]!=s_stereo_parked.h*s_hr_scale)return 0;
+    StereoPair *p=&s_stereo_pair[1-s_stereo_current];
+    const StereoPair spare=*p;*p=s_stereo_parked;s_stereo_parked=spare;
+    s_stereo_parked_lease=0;s_stereo_parked.mask=0;
+    return gl_renderer_stereo_publish(id,cycle,view);
+}
 void gl_renderer_stereo_stage_reset(void) {
     GL_RT_SYNC("stereo_stage_reset");
     s_stereo_pair[1 - s_stereo_current].mask = 0;
@@ -8379,10 +8409,11 @@ int gl_renderer_stereo_stage_readback_pair(uint32_t w,uint32_t h,uint8_t *rgba) 
 static void stereo_invalidate(void) {
     s_stereo_valid = 0;
     s_stereo_pair[0].mask = s_stereo_pair[1].mask = 0;
+    s_stereo_parked.mask=0;s_stereo_parked_lease=0;
 }
 void gl_renderer_stereo_reset(void) {
     GL_RT_SYNC("stereo_reset");
-    stereo_invalidate(); s_stereo_mode = 0; s_stereo_dump_left = 0;
+    stereo_invalidate(); s_stereo_mode = 0; atomic_store(&s_local_pair_canvas,0);s_stereo_dump_left = 0;
     s_stereo_capture_count = 0;
     s_stereo_presents = 0;
 }
@@ -8390,6 +8421,7 @@ int gl_renderer_stereo_set_presentation(uint32_t mode) {
     GL_RT_SYNC("stereo_set_presentation");
     if (mode > 1u) return 0;
     s_stereo_mode = (int)mode;
+    atomic_store(&s_local_pair_canvas,0);
     return 1;
 }
 int gl_renderer_local_pair_set_presentation(int enabled) {
@@ -8397,8 +8429,10 @@ int gl_renderer_local_pair_set_presentation(int enabled) {
     int mode = enabled ? 2 : 0;
     if (s_stereo_mode != mode) stereo_invalidate();
     s_stereo_mode = mode;
+    atomic_store(&s_local_pair_canvas,enabled!=0);
     return 1;
 }
+int gl_renderer_local_pair_presentation_active(void) {return atomic_load(&s_local_pair_canvas);}
 static void stereo_resources_release(void) {
     if (s_local_shared_tex) glDeleteTextures(1, &s_local_shared_tex);
     s_local_shared_tex = 0;
@@ -8408,25 +8442,52 @@ static void stereo_resources_release(void) {
         pass_free_color_fbo(&p->tex[eye], NULL, &p->fbo[eye],
                             &p->tw[eye], &p->th[eye]);
     }
+    for(int eye=0;eye<2;++eye)
+        pass_free_color_fbo(&s_stereo_parked.tex[eye],NULL,&s_stereo_parked.fbo[eye],
+            &s_stereo_parked.tw[eye],&s_stereo_parked.th[eye]);
     stereo_invalidate();
 }
 int gl_renderer_stereo_end(uint32_t eye, int keep) {
     GL_RT_SYNC("stereo_end");
     StereoPair *p = &s_stereo_pair[1 - s_stereo_current];
-    int ok = 0, tw = s_pass_w * s_hr_scale, th = s_pass_h * s_hr_scale;
+    const int requested_keep=keep;
+    int ok = 0, image_w=s_pass_w;
+    GLuint source=s_hr_fbo;int source_x=s_pass_x;
     if (!s_pass_active) return 0;
     flush_flat_batch(); flush_tex_batch(); flush_cpu_upload();
+    /* Capture the SAME native-wide image the ordinary compositor presents.
+     * The transaction already journals/restores its wide band. Do not flatten
+     * a real wider private view back into its canonical VRAM rectangle. */
+    if(s_pass_local==3 && g_wide_w>s_pass_w) {
+        const GLuint wide=pass_wide_fbo_for(s_pass_x);
+        if(wide){
+            /* Same canonical-centre rule as ordinary wide presentation, but
+             * restrict the splice to this transaction's journaled band. */
+            if(wide_center_is_canonical()) {
+                const int native_w=g_wide_w-2*g_wide_off,S=s_hr_scale;
+                if(native_w>0){
+                    pass_blit(s_hr_fbo,wide,s_pass_x*S,s_pass_y*S,g_wide_off*S,s_pass_y*S,
+                              native_w*S,s_pass_h*S,GL_COLOR_BUFFER_BIT);
+                    wst_add(wide_index(wide),g_wide_off,s_pass_y,g_wide_off+native_w,s_pass_y+s_pass_h);
+                }
+            }
+            source=wide;source_x=0;image_w=g_wide_w;
+        }
+    }
+    int tw=image_w*s_hr_scale,th=s_pass_h*s_hr_scale;
+    if(keep && eye==0)p->image_w=image_w;
+    if(keep && eye==1 && p->image_w!=image_w)keep=0;
     if (keep && eye < 2u && (double)tw * th * 16.0 <= 256.0 * 1024.0 * 1024.0 &&
         pass_make_color_fbo(&p->tex[eye], NULL, &p->fbo[eye],
                             &p->tw[eye], &p->th[eye], tw, th,
                             GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE)) {
         (void)pass_gl_errors(); /* distinguish this copy from preceding errors */
-        pass_capture_into(p->tex[eye],s_pass_x,s_pass_y,s_pass_w,s_pass_h);
+        pass_capture_into(p->tex[eye],source,source_x,s_pass_y,image_w,s_pass_h);
         ok = pass_gl_errors() == 0;
         if (ok) p->mask |= 1u << eye;
     }
     transaction_restore();
-    return keep ? ok : 1;
+    return requested_keep?ok:1;
 }
 void gl_renderer_stereo_diag(GLRenderStereoDiag *out) {
     GL_RT_SYNC("stereo_diag");
@@ -8490,6 +8551,8 @@ int gl_renderer_stereo_publish(uint64_t id, uint64_t cycle, const int32_t view[2
     GL_RT_SYNC("stereo_publish");
     StereoPair *p = &s_stereo_pair[1 - s_stereo_current];
     if (p->mask != 3u || p->tw[0] != p->tw[1] || p->th[0] != p->th[1]) return 0;
+    /* Another producer's publication makes a pending older pair obsolete. */
+    s_stereo_parked_lease=0;s_stereo_parked.mask=0;
     p->id = id; p->cycle = cycle;
     memcpy(p->view, view, sizeof p->view);
     s_stereo_current = 1 - s_stereo_current; s_stereo_valid = 1;
@@ -8785,12 +8848,15 @@ static int stereo_present(int w, int h) {
      * same size and state loads stop publishing, and the last pair must not
      * stick on screen. Stale pairs fall back to the flat present below. */
     if (s_stereo_valid &&
-        !render_pass_stereo_pair_fresh(p->cycle, psx_cycle_count, g_psx_vblank_cycles))
+        !render_pass_stereo_pair_fresh(p->cycle,
+            s_presentation_present_cycle!=UINT64_MAX?s_presentation_present_cycle:psx_cycle_count,
+            g_psx_vblank_cycles))
         return 0;
     if (!s_stereo_mode || !s_stereo_valid || s_pass_active ||
-        p->w != w || p->h != h || p->tw[0] != w * s_hr_scale ||
+        p->w != w || p->h != h || p->tw[0] != (p->image_w?p->image_w:w) * s_hr_scale ||
         (s_stereo_mode == 2 ? gl_renderer_local_pair_unavailable() :
                              gl_renderer_stereo_unavailable()) != PSX_MOD_RENDER_PASS_READY) return 0;
+    const int image_w=p->image_w?p->image_w:w;
     SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     gl_perf_present_enter();
     /* Desktop spectator layout while XR runs: default single left eye filled to
@@ -8801,8 +8867,8 @@ static int stereo_present(int w, int h) {
     if (solo)
         letterbox_rect_aspect(ww, wh, p->tw[solo_eye], p->th[solo_eye], &lx, &ly, &lw, &lh);
     else
-        letterbox_rect_aspect(ww, wh, s_stereo_mode == 2 ? 8 : s_aspect_num * 2,
-                              s_stereo_mode == 2 ? 3 : s_aspect_den, &lx, &ly, &lw, &lh);
+        letterbox_rect_aspect(ww,wh,s_stereo_mode==2 && image_w<=w?8:s_aspect_num*2,
+                              s_stereo_mode==2 && image_w<=w?3:s_aspect_den,&lx,&ly,&lw,&lh);
     p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST); glViewport(0, 0, ww, wh);
     glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
@@ -10733,7 +10799,7 @@ static int rth_record_mode(void) {
 
 /* Present records carry the host overlays the emulation thread rasterized. */
 typedef struct RthOvHdr {
-    uint64_t latency_frame;
+    uint64_t latency_frame,guest_cycle;
     int32_t needs_present, has, w[4], h[4];
     float   slide;
     int32_t args[8], nargs;
@@ -10745,6 +10811,7 @@ static int rth_record_present(uint16_t op, int n, const int32_t *v) {
     RthOvHdr hd;
     memset(&hd, 0, sizeof hd);
     hd.latency_frame=latency_ring_current_frame();
+    hd.guest_cycle=psx_get_cycle_count();
     hd.needs_present = host_osd_needs_present();
     for (int i = 0; i < 4; i++) {
         if (ov_image(i, &px[i], &w[i], &h[i]) && px[i] && w[i] > 0 && h[i] > 0) {
@@ -10813,10 +10880,13 @@ static void rth_present_payload(uint16_t op, const uint8_t *p) {
         }
     const int32_t *a = hd.args;
     latency_ring_replay_frame(hd.latency_frame);
+    const uint64_t prior_cycle=s_presentation_present_cycle;
+    s_presentation_present_cycle=hd.guest_cycle;
     if (op == RTH_PRESENT_VRAM)
         gl_renderer_present_vram(a[0], a[1], a[2], a[3], a[4], a[5]);
     else
         (void)gl_renderer_present_wide_fbo(a[0], a[1], a[2], a[3]);
+    s_presentation_present_cycle=prior_cycle;
     latency_ring_replay_frame(UINT64_MAX);
     s_rth_ov.valid = 0;
 }
