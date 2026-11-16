@@ -45,6 +45,7 @@ static uint8_t  spu_ram[SPU_RAM_SIZE];
 static uint16_t spu_regs[SPU_REG_COUNT];
 static uint16_t private_regs[SPU_PRIVATE_VOICES][8];
 static uint8_t private_modes[SPU_PRIVATE_VOICES];
+static uint64_t private_owners[SPU_PRIVATE_VOICES];
 static unsigned private_enabled;
 static inline uint16_t voice_reg(int voice,int reg);
 static uint32_t transfer_addr;
@@ -1082,9 +1083,9 @@ static void key_off(uint32_t mask) {
 /* These opt-in voices never appear in hardware registers, KEYON/KEYOFF,
  * capture channels or ENDX. They share the native sample DSP and main mix.
  * Slots are chosen by the title; a slot's next sound replaces only that slot. */
-int spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode) {
+static int private_voice_play(uint64_t owner,unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode) {
     if(slot>=SPU_PRIVATE_VOICES || !bank || bank>=SPU_SAMPLE_BANKS ||
-       !sample_banks[bank].data || !regs || mode>3u)return 0;
+       !sample_banks[bank].data || !regs || mode>3u || private_owners[slot]!=owner)return 0;
     unsigned index=SPU_VOICE_COUNT+slot;SpuVoice *v=&voices[index];
     private_enabled=1;memcpy(private_regs[slot],regs,sizeof private_regs[slot]);
     private_modes[slot]=(uint8_t)mode;
@@ -1096,19 +1097,63 @@ int spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t regs[8],un
     sweep_env_write(&sweep_voice_env[index][1],regs[1]);
     key_on_count++;spu_event_record(SPU_EV_KEYON,(int)index,v->cur_addr);return 1;
 }
-void spu_private_voice_stop(uint32_t mask) {
+int spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode) {
+    return private_voice_play(0,slot,bank,regs,mode);
+}
+static void private_voice_stop(uint64_t owner,uint32_t mask) {
     for(unsigned slot=0;slot<SPU_PRIVATE_VOICES;++slot) {
         SpuVoice *v=&voices[SPU_VOICE_COUNT+slot];
-        if(!(mask&(1u<<slot)) || !v->active)continue;
+        if(!(mask&(1u<<slot)) || !v->active || private_owners[slot]!=owner)continue;
         spu_event_record(SPU_EV_KEYOFF,SPU_VOICE_COUNT+(int)slot,v->cur_addr);
         v->adsr_phase=ADSR_RELEASE;v->adsr_divider=0;
     }
 }
-int spu_private_voice_volume(unsigned slot,uint16_t left,uint16_t right) {
-    if(slot>=SPU_PRIVATE_VOICES)return 0;
+void spu_private_voice_stop(uint32_t mask) {private_voice_stop(0,mask);}
+static int private_voice_volume(uint64_t owner,unsigned slot,uint16_t left,uint16_t right) {
+    if(slot>=SPU_PRIVATE_VOICES || private_owners[slot]!=owner)return 0;
     private_regs[slot][0]=left;private_regs[slot][1]=right;
     sweep_env_write(&sweep_voice_env[SPU_VOICE_COUNT+slot][0],left);
     sweep_env_write(&sweep_voice_env[SPU_VOICE_COUNT+slot][1],right);return 1;
+}
+int spu_private_voice_volume(unsigned slot,uint16_t left,uint16_t right) {
+    return private_voice_volume(0,slot,left,right);
+}
+static int private_mask_valid(uint64_t owner,uint32_t mask) {
+    return owner && mask && !(mask&~0xFFFFFFu);
+}
+int spu_private_voice_claim(uint64_t owner,uint32_t mask) {
+    if(!private_mask_valid(owner,mask))return 0;
+    for(unsigned slot=0;slot<SPU_PRIVATE_VOICES;++slot)if(mask&(1u<<slot)) {
+        if(private_owners[slot]!=owner &&
+           (private_owners[slot] || voices[SPU_VOICE_COUNT+slot].active))return 0;
+    }
+    for(unsigned slot=0;slot<SPU_PRIVATE_VOICES;++slot)
+        if(mask&(1u<<slot))private_owners[slot]=owner;
+    private_enabled=1;return 1;
+}
+int spu_private_voice_release(uint64_t owner,uint32_t mask) {
+    if(!private_mask_valid(owner,mask))return 0;
+    for(unsigned slot=0;slot<SPU_PRIVATE_VOICES;++slot)if(mask&(1u<<slot)) {
+        if(private_owners[slot]!=owner || voices[SPU_VOICE_COUNT+slot].active)return 0;
+    }
+    for(unsigned slot=0;slot<SPU_PRIVATE_VOICES;++slot)
+        if(mask&(1u<<slot))private_owners[slot]=0;
+    return 1;
+}
+uint64_t spu_private_voice_owner(unsigned slot) {
+    return slot<SPU_PRIVATE_VOICES?private_owners[slot]:0;
+}
+int spu_private_voice_play_owned(uint64_t owner,unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode) {
+    return owner?private_voice_play(owner,slot,bank,regs,mode):0;
+}
+int spu_private_voice_stop_owned(uint64_t owner,uint32_t mask) {
+    if(!private_mask_valid(owner,mask))return 0;
+    for(unsigned slot=0;slot<SPU_PRIVATE_VOICES;++slot)
+        if((mask&(1u<<slot)) && private_owners[slot]!=owner)return 0;
+    private_voice_stop(owner,mask);return 1;
+}
+int spu_private_voice_volume_owned(uint64_t owner,unsigned slot,uint16_t left,uint16_t right) {
+    return owner?private_voice_volume(owner,slot,left,right):0;
 }
 uint32_t spu_private_voice_active(void) {
     uint32_t mask=0;
@@ -1126,6 +1171,7 @@ void spu_init(void) {
     memset(spu_regs, 0, sizeof(spu_regs));
     memset(voices, 0, sizeof(voices));
     memset(private_regs,0,sizeof private_regs);memset(private_modes,0,sizeof private_modes);
+    memset(private_owners,0,sizeof private_owners);
     private_enabled=0;
     memset(s_events, 0, sizeof(s_events));
     transfer_addr = 0;
@@ -1839,10 +1885,10 @@ const uint8_t* spu_get_ram(void) {
     return spu_ram;
 }
 
-void spu_get_voice_state(int idx, SpuVoiceState* out) {
+static void spu_get_mix_voice_state(int idx, SpuVoiceState* out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
-    if (idx < 0 || idx >= SPU_VOICE_COUNT) return;
+    if (idx < 0 || idx >= SPU_MIX_VOICES) return;
     SpuVoice *v = &voices[idx];
     out->active      = v->active;
     out->vol_ctrl_l  = voice_reg(idx, 0);
@@ -1861,6 +1907,25 @@ void spu_get_voice_state(int idx, SpuVoiceState* out) {
     out->adsr_phase  = v->adsr_phase;
     out->vol_cur_l   = chan_volume(voice_reg(idx, 0), &sweep_voice_env[idx][0]);
     out->vol_cur_r   = chan_volume(voice_reg(idx, 1), &sweep_voice_env[idx][1]);
+    out->sample_bank = v->sample_bank;
+    out->pending_bank = v->pending_bank;
+    if (idx >= SPU_VOICE_COUNT) out->mode = private_modes[idx-SPU_VOICE_COUNT];
+    else {
+        unsigned shift = (unsigned)idx & 15u;
+        unsigned hi = (unsigned)idx >= 16u ? 1u : 0u;
+        out->mode = (uint8_t)(((spu_regs[reg_index(0x1F801D94u)+hi] >> shift) & 1u) |
+            (((spu_regs[reg_index(0x1F801D98u)+hi] >> shift) & 1u) << 1));
+    }
+}
+
+void spu_get_voice_state(int idx, SpuVoiceState* out) {
+    spu_get_mix_voice_state(idx >= 0 && idx < SPU_VOICE_COUNT ? idx : -1,out);
+}
+
+int spu_get_private_voice_state(unsigned slot, SpuVoiceState* out) {
+    if (!out) return 0;
+    if (slot >= SPU_PRIVATE_VOICES) {memset(out,0,sizeof *out);return 0;}
+    spu_get_mix_voice_state(SPU_VOICE_COUNT+(int)slot,out);return 1;
 }
 
 /* Debug peek into SPU RAM (spu_ram TCP command). Returns bytes copied. */
@@ -2004,7 +2069,7 @@ static int spu_r_voice(PstR *r, int idx) {
 #define SPU_SNAPSHOT_TAIL_BYTES \
     (20u + 1u + 2u + 4u + 4u + 1u + 4u + 4u + 4u + 4u + 4u + 2u * (2u + 4u))
 #define SPU_SNAPSHOT_BASE_BYTES ((SPU_REG_COUNT*2u)+(SPU_VOICE_COUNT*SPU_VOICE_WIRE_BYTES)+SPU_SNAPSHOT_TAIL_BYTES)
-#define SPU_PRIVATE_WIRE_BYTES (SPU_PRIVATE_VOICES*(16u+1u+SPU_VOICE_WIRE_BYTES))
+#define SPU_PRIVATE_WIRE_BYTES (SPU_PRIVATE_VOICES*(16u+1u+8u+SPU_VOICE_WIRE_BYTES))
 
 /* + 4: guest-clock phase (cycles since the SPU's last whole sample). States
  * written before the guest-clocked SPU lack it and still load (phase 0). */
@@ -2048,7 +2113,9 @@ void spu_snapshot_write(uint8_t *p) {
     }
     if(private_enabled)for(unsigned slot=0;slot<SPU_PRIVATE_VOICES;++slot) {
         for(unsigned r=0;r<8;++r)pst_w_u16(&w,private_regs[slot][r]);
-        pst_w_u8(&w,private_modes[slot]);spu_w_voice(&w,SPU_VOICE_COUNT+(int)slot);
+        pst_w_u8(&w,private_modes[slot]);
+        pst_w_u32(&w,(uint32_t)private_owners[slot]);pst_w_u32(&w,(uint32_t)(private_owners[slot]>>32));
+        spu_w_voice(&w,SPU_VOICE_COUNT+(int)slot);
     }
     pst_w_u32(&w, (uint32_t)(psx_get_cycle_count() - s_clock));
 }
@@ -2060,6 +2127,7 @@ int spu_snapshot_read(const uint8_t *p, uint32_t len) {
     if(!private_enabled) {
         memset(voices+SPU_VOICE_COUNT,0,sizeof(SpuVoice)*SPU_PRIVATE_VOICES);
         memset(private_regs,0,sizeof private_regs);memset(private_modes,0,sizeof private_modes);
+        memset(private_owners,0,sizeof private_owners);
         memset(sweep_voice_env+SPU_VOICE_COUNT,0,sizeof(SweepEnv)*2u*SPU_PRIVATE_VOICES);
     }
     pst_r_init(&r, p, len);
@@ -2085,8 +2153,11 @@ int spu_snapshot_read(const uint8_t *p, uint32_t len) {
     }
     if(private_enabled)for(unsigned slot=0;slot<SPU_PRIVATE_VOICES;++slot) {
         for(unsigned reg=0;reg<8;++reg)if(!pst_r_u16(&r,&private_regs[slot][reg]))return 0;
+        uint32_t owner_lo,owner_hi;
         if(!pst_r_u8(&r,&private_modes[slot]) || private_modes[slot]>3u ||
+           !pst_r_u32(&r,&owner_lo) || !pst_r_u32(&r,&owner_hi) ||
            !spu_r_voice(&r,SPU_VOICE_COUNT+(int)slot))return 0;
+        private_owners[slot]=owner_lo|((uint64_t)owner_hi<<32);
     }
     uint32_t phase = 0;
     if (len == spu_snapshot_bytes() && !pst_r_u32(&r, &phase)) return 0;

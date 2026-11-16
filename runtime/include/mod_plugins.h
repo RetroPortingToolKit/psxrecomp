@@ -329,6 +329,14 @@ int psx_mod_spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t re
 void psx_mod_spu_private_voice_stop(uint32_t mask);
 int psx_mod_spu_private_voice_volume(unsigned slot,uint16_t left,uint16_t right);
 uint32_t psx_mod_spu_private_voice_active(void);
+/* Stable caller-owned reservations; see spu.h for the all-or-none lifetime
+ * contract. Owner0 is invalid here and remains the unreserved legacy route. */
+int psx_mod_spu_private_voice_claim(uint64_t owner,uint32_t mask);
+int psx_mod_spu_private_voice_release(uint64_t owner,uint32_t mask);
+uint64_t psx_mod_spu_private_voice_owner(unsigned slot);
+int psx_mod_spu_private_voice_play_owned(uint64_t owner,unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode);
+int psx_mod_spu_private_voice_stop_owned(uint64_t owner,uint32_t mask);
+int psx_mod_spu_private_voice_volume_owned(uint64_t owner,unsigned slot,uint16_t left,uint16_t right);
 /* PsyQ LoadImage completed synchronously: texture-cache flush, GP0 A0h
  * rectangle copy of w*h 16-bit pixels from guest RAM (provenance attributed
  * per word), then GP1(04h) DMA direction CPU->GP0 for uploads the library
