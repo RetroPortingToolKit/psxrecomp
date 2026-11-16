@@ -83,7 +83,10 @@ def main():
         out = work / 'generated'
         run([a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', ROOT], verbose=False)
         sources = sorted(out.glob('*_full*.c'))
-        text = '\n'.join(x.read_text(encoding='utf-8') for x in sources)
+        emitted = [x.read_text(encoding='utf-8') for x in sources]
+        if not emitted or any('psx-pgxp-dataflow-v2' not in x[:2048] for x in emitted):
+            raise RuntimeError('actual CLI generation lacks the precision-lifetimes v2 marker')
+        text = '\n'.join(emitted)
         dead_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_(?:DEAD|ELIDED)_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
         elided_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_ELIDED_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
         if words[21] not in elided_words or words[1] in elided_words or words[4] in elided_words:
