@@ -16,6 +16,8 @@
 #include "pgxp_hooks.h"
 #include "psx_memory.h"
 #include "psx_icache.h"
+#include "psx_bios_image.h"
+#include "psx_cycles.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -33,6 +35,24 @@ int gte_geometry_correction_lookup(uint32_t p, int32_t *x, int32_t *y) {
 }
 int gte_geometry_correction_lookup_probe(uint32_t p, int32_t *x, int32_t *y) {
     (void)p; (void)x; (void)y; return 0;
+}
+
+/* No BIOS backend/overlay is installed in this RAM-store fixture. Match the
+ * maintained memory harness's typed unavailable-image contract, never a
+ * function stub standing in for data. Real memory/PGXP/DMA remain linked. */
+static const PsxKernelBody no_kernel_bodies[1]={{0,0,0}};
+const PsxKernelBody *psx_bios_kernel_bodies=no_kernel_bodies;
+uint32_t psx_bios_kernel_body_count;
+const PsxKernelPatchRange *psx_bios_kernel_patch_ranges;
+uint32_t psx_bios_kernel_patch_range_count;
+PsxBiosImageInfo psx_bios_image;
+uint32_t psx_hr_gpu_hold_depth;
+static unsigned active_overlay_checks,device_service_requests;
+void overlay_loader_active_write_check(uint32_t physical,uint32_t size) {
+    (void)physical;(void)size;++active_overlay_checks;
+}
+void psx_devices_service_to_now_cause(unsigned request) {
+    (void)request;++device_service_requests;psx_devices_service_to_now();
 }
 
 static int failures;
@@ -148,6 +168,8 @@ int main(void) {
     check(!precise(0x1f8003fcu)&&!precise(0x1f800000u),"IsC wrap owns both scratch words");
     psx_write_word(0xfffe0130u,0);
 #endif
+    check(active_overlay_checks==0,"ordinary fixture writes never mutate an active overlay");
+    check(device_service_requests==0,"ordinary fixture writes never request a device step");
     if (failures) {
         fprintf(stderr, "pgxp_untracked_store_test: %d FAILURES\n", failures);
         return 1;
