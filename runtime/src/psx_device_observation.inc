@@ -100,3 +100,21 @@ static unsigned observation_mmio_mask(uint32_t addr, int write) {
         return OBS_BIT(OBS_CD) | OBS_BIT(OBS_DMA) | OBS_BIT(OBS_SPU);
     return 0;
 }
+
+/* The entry barrier has already recomputed the schedule. Plain register
+ * reads do not invalidate it; retaining that result avoids an otherwise
+ * unconditional slow block edge after every such observation. Keep reads
+ * with device side effects conservative (I_STAT ticks SIO; CD/SPU/FIFOs can
+ * consume or publish state), as well as every write. */
+static int observation_read_keeps_deadline(uint32_t addr) {
+    if (addr >= 0x1F801000u && addr <= 0x1F80103Fu) return 1;
+    if (addr >= 0x1F801060u && addr <= 0x1F801063u) return 1;
+    if (addr >= 0x1F801074u && addr <= 0x1F801077u) return 1;
+    if (addr >= 0x1F801080u && addr <= 0x1F8010FFu) return 1;
+#ifdef PSX_ENABLE_BLOCK_CYCLES
+    /* MODE reads clear only TARGET/OVERFLOW flags, not IRQ enable/request
+     * or counter state. Untimed diagnostic reads can advance the counter. */
+    if (addr >= 0x1F801100u && addr <= 0x1F80112Fu) return 1;
+#endif
+    return 0;
+}
