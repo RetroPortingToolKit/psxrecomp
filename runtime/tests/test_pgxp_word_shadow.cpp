@@ -443,6 +443,50 @@ int main() {
     psx_pgxp_store(&machine,0xAC250000u,Other,7);CHECK(pgxp_native_word_exact(Other,7));
     CHECK(!pgxp_native_scalar_gpr(&machine,0,0,0));
     CHECK(!pgxp_native_scalar_gpr(&machine,34,0,0));
+    // Actual native packet regression: a high-half store cannot turn unknown
+    // low RAM bits into a validated whole word. Retain the same stale-half
+    // state as the maintained SH, then compare both cold and tracked outputs.
+    pgxp_invalidate_all();
+    constexpr uint32_t HalfReference=Other+64,HalfNative=Other+68;
+    PGXPNativeWord half_source{};
+    CHECK(pgxp_native_capture_half(Address,0x4567,0,&half_source));
+    machine.gpr[5]=0x4567;psx_pgxp_load(&machine,0x94250000u,Address,0x4567);
+    psx_pgxp_store(&machine,0xA4250000u,HalfReference+2,0x4567);
+    CHECK(pgxp_native_publish_half(HalfNative+2,&half_source,0,0));
+    CHECK(!capture(HalfReference,0x45670007u).valid);
+    CHECK(!capture(HalfNative,0x45670007u).valid);
+    auto expected_half=capture(HalfReference,0x45670000u);
+    auto actual_half=capture(HalfNative,0x45670000u);actual_half.address=expected_half.address;
+    check_attributes(expected_half,actual_half);
+    seed(Address,Packed,(8<<16)+24576);
+    seed(HalfReference,Packed,(8<<16)+16384);seed(HalfNative,Packed,(8<<16)+16384);
+    CHECK(pgxp_tag_word_source(HalfReference,Packed,917));CHECK(pgxp_tag_word_source(HalfNative,Packed,918));
+    CHECK(pgxp_native_capture_half(Address,8,0,&half_source));
+    machine.gpr[5]=8;psx_pgxp_load(&machine,0x94250000u,Address,8);
+    psx_pgxp_store(&machine,0xA4250000u,HalfReference,8);
+    CHECK(pgxp_native_publish_half(HalfNative,&half_source,0,0));
+    expected_half=capture(HalfReference,Packed);actual_half=capture(HalfNative,Packed);actual_half.address=expected_half.address;
+    check_attributes(expected_half,actual_half);
+    CHECK(actual_half.flags==PGXP_F_VXY&&actual_half.x16==(8<<16)+24576&&actual_half.y16==(12<<16)+32768);
+    CHECK(pgxp_load_source(HalfNative,Packed)==0);
+    half_source.word.value=7;half_source.word.flags=0;
+    machine.gpr[5]=7;CHECK(pgxp_native_scalar_gpr(&machine,5,7.75,1));
+    psx_pgxp_store(&machine,0xA4250000u,HalfReference,7);
+    CHECK(pgxp_native_publish_half(HalfNative,&half_source,7.75,1));
+    expected_half=capture(HalfReference,0x000C0007u);actual_half=capture(HalfNative,0x000C0007u);actual_half.address=expected_half.address;
+    check_attributes(expected_half,actual_half);CHECK(actual_half.x16==(7<<16)+49152);
+    const auto before_partial=capture(HalfNative,0x000C0007u);
+    pgxp_checkpoint_begin();CHECK(pgxp_native_publish_half(HalfNative+2,&half_source,7.75,1));pgxp_checkpoint_rollback();
+    check_attributes(before_partial,capture(HalfNative,0x000C0007u));
+    pgxp_suppress_begin();CHECK(pgxp_native_publish_half(HalfNative,&half_source,0,0));pgxp_suppress_end();
+    check_attributes(before_partial,capture(HalfNative,0x000C0007u));
+    CHECK(!pgxp_native_publish_half(HalfNative+1,&half_source,0,0));
+    CHECK(!pgxp_native_publish_half(0x1F801814u,&half_source,0,0));
+    pgxp_set_enabled(0);CHECK(pgxp_set_source_tracking(1));
+    CHECK(pgxp_native_capture_half(Address,7,0,&half_source));
+    CHECK(pgxp_tag_word_source(HalfNative,Packed,919));
+    CHECK(pgxp_native_publish_half(HalfNative,&half_source,0,0));
+    CHECK(pgxp_load_source(HalfNative,0x000C0007u)==0);
     gpu_bytes = 0; // pages retained on the host are not guest allocations
     CHECK(!pgxp_capture_word_shadow(Arena, Packed, &refused));
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");

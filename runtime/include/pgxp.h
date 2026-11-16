@@ -406,6 +406,12 @@ int pgxp_native_capture_half(uint32_t address, uint16_t value, int sign_extend,
                              PGXPNativeWord *out);
 int pgxp_native_publish_words(const uint32_t *destinations,
                               const PGXPNativeWord *words, uint32_t count);
+/* One logical SH after the maintained memory write. Preserve the unwritten
+ * half exactly, including stale bits; never validate it against live RAM.
+ * The receipt describes the source expression; an optional full scalar is
+ * materialized with the same rounding window as an ordinary hooked SH. */
+int pgxp_native_publish_half(uint32_t address, const PGXPNativeWord *word,
+                             double scalar, int tracked_scalar);
 /* The caller has already materialized the GPR word. r0 is refused. */
 int pgxp_native_import_gpr(uint32_t reg, const PGXPNativeWord *word);
 /* The caller has already written the corresponding SXY register word. */

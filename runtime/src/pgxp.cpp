@@ -852,6 +852,43 @@ extern "C" void psx_pgxp_load(struct CPUState *cpu, uint32_t instr,
     }
 }
 
+/* Shared logical partial-word publication. In particular, never read or
+ * validate the unconsumed destination half: an SH into a generation-stale
+ * word knows only its written half, even if live RAM contains other bits. */
+static void publish_half_shadow(PGXPValue *dst, uint32_t addr, uint32_t value,
+                                const PGXPValue *src, bool tracked_scalar, double scalar) {
+    int hi_half = (addr >> 1) & 1;
+    uint32_t half = value & 0xFFFFu;
+    if (dst->gen != s_gen) pv_reset(dst, half << (hi_half ? 16 : 0));
+    /* Patch the stored half into the tracked word; the other half's
+     * validity (if any) survives untouched. Depth never survives a
+     * half-write — the vertex it described no longer exists whole. */
+    if (hi_half) dst->value = (dst->value & 0x0000FFFFu) | (half << 16);
+    else         dst->value = (dst->value & 0xFFFF0000u) | half;
+    dst->flags &= (uint16_t)~((hi_half ? (PGXP_F_VY | PGXP_F_DY) : (PGXP_F_VX | PGXP_F_DX)) |
+                              PGXP_F_VZ | PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
+    dst->z = 0;
+    source_set(dst, 0);
+    int ok = 0, derived = 0;
+    int32_t v16 = 0;
+    /* Hooks pass either the full register or just the stored half (the
+     * interpreters), so the scalar is matched on the stored half. */
+    if (s_cpu_mode && tracked_scalar)
+        v16 = scalar_to_half(scalar, (int16_t)half, &ok, &derived);
+    if (ok) {
+        /* A scalar (e.g. a midpoint computed by MVMVA + DIV) becomes a
+         * coordinate half here. */
+        if (hi_half) { dst->y16 = v16; dst->flags |= (uint16_t)(PGXP_F_VY | (derived ? PGXP_F_DY : 0)); }
+        else         { dst->x16 = v16; dst->flags |= (uint16_t)(PGXP_F_VX | (derived ? PGXP_F_DX : 0)); }
+    } else if (src && src->gen == s_gen && !(src->flags & PGXP_F_UNCLAMPED) &&
+               (src->flags & PGXP_F_VX) &&
+               ((src->value ^ value) & 0xFFFFu) == 0) {
+        const uint16_t d = (src->flags & PGXP_F_DX) ? (hi_half ? PGXP_F_DY : PGXP_F_DX) : 0;
+        if (hi_half) { dst->y16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VY | d); }
+        else         { dst->x16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VX | d); }
+    }
+}
+
 extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
                                uint32_t addr, uint32_t value) {
     (void)cpu;
@@ -898,37 +935,10 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
         return;
     }
     case 0x29: {                               /* SH                          */
-        int hi_half = (addr >> 1) & 1;
-        uint32_t half = value & 0xFFFFu;
-        if (dst->gen != s_gen) pv_reset(dst, half << (hi_half ? 16 : 0));
-        /* Patch the stored half into the tracked word; the other half's
-         * validity (if any) survives untouched. Depth never survives a
-         * half-write — the vertex it described no longer exists whole. */
-        if (hi_half) dst->value = (dst->value & 0x0000FFFFu) | (half << 16);
-        else         dst->value = (dst->value & 0xFFFF0000u) | half;
-        dst->flags &= (uint16_t)~((hi_half ? (PGXP_F_VY | PGXP_F_DY) : (PGXP_F_VX | PGXP_F_DX)) |
-                                  PGXP_F_VZ | PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
-        dst->z = 0;
-        source_set(dst, 0);
-        int ok = 0, derived = 0;
-        int32_t v16 = 0;
-        /* Hooks pass either the full register or just the stored half (the
-         * interpreters), so the scalar is matched on the stored half. */
-        if (s_cpu_mode && rt != 0 && s_gpr_s[rt].gen == s_gen &&
-            (s_gpr_s[rt].value & 0xFFFFu) == half)
-            v16 = scalar_to_half(s_gpr_s[rt].v, (int16_t)half, &ok, &derived);
-        if (ok) {
-            /* A scalar (e.g. a midpoint computed by MVMVA + DIV) becomes a
-             * coordinate half here. */
-            if (hi_half) { dst->y16 = v16; dst->flags |= (uint16_t)(PGXP_F_VY | (derived ? PGXP_F_DY : 0)); }
-            else         { dst->x16 = v16; dst->flags |= (uint16_t)(PGXP_F_VX | (derived ? PGXP_F_DX : 0)); }
-        } else if (src && src->gen == s_gen && !(src->flags & PGXP_F_UNCLAMPED) &&
-                   (src->flags & PGXP_F_VX) &&
-                   ((src->value ^ value) & 0xFFFFu) == 0) {
-            const uint16_t d = (src->flags & PGXP_F_DX) ? (hi_half ? PGXP_F_DY : PGXP_F_DX) : 0;
-            if (hi_half) { dst->y16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VY | d); }
-            else         { dst->x16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VX | d); }
-        }
+        const uint32_t half = value & 0xFFFFu;
+        const bool scalar = rt != 0 && s_gpr_s[rt].gen == s_gen &&
+                            (s_gpr_s[rt].value & 0xFFFFu) == half;
+        publish_half_shadow(dst, addr, value, src, scalar, scalar ? s_gpr_s[rt].v : 0.0);
         note_store(0x29, rt, src, addr, half, dst);
         return;
     }
@@ -1159,6 +1169,23 @@ extern "C" int pgxp_native_publish_words(const uint32_t *destinations,
                    destinations[i], words[i].word.value, destination);
     }
     s_hook_stats.native_words_published += count;
+    return 1;
+}
+
+extern "C" int pgxp_native_publish_half(uint32_t address, const PGXPNativeWord *word,
+                                         double scalar, int tracked_scalar) {
+    uint32_t canonical;
+    if ((address & 1u) || !packet_shadow_address(address & ~3u, &canonical) ||
+        !native_word_valid(word) || (tracked_scalar && !std::isfinite(scalar))) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();
+    PGXPValue *destination = pgxp_ptr_w(address);
+    if (!destination) return 1;
+    PGXPValue source = value_from_word_shadow(&word->word);
+    if (!word->word.valid) { source.value = word->word.value; source.gen = s_gen; }
+    publish_half_shadow(destination, address, word->word.value, &source, tracked_scalar != 0, scalar);
+    note_store(0x29, 0xFFu, &source, address, word->word.value & 65535u, destination);
+    ++s_hook_stats.native_words_published;
     return 1;
 }
 
