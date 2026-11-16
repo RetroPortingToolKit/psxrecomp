@@ -19,7 +19,9 @@ int g_psx_call_bail;
 #endif
 uint64_t g_psx_bail_resolved, g_psx_bail_flattened, g_psx_bail_first;
 uint64_t g_dispatch_static_hits;
-#if !defined(PSX_TEST_PGXP_REGIONS)
+#if defined(PSX_TEST_PGXP_REGIONS)
+extern uint32_t g_debug_current_func_addr; /* supplied by the shared PGXP fixture */
+#else
 uint32_t g_debug_current_func_addr;
 #endif
 int g_psx_mod_guest_functions = 1;
