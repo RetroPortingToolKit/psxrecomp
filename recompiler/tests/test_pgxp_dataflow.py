@@ -123,15 +123,18 @@ def main():
                len(re.findall(r'PGXP_FLOW_DEAD_ALU\(', text)),
                len(re.findall(r'PGXP_(?:PLAIN_)?ALU\(', text))), flush=True)
         if a.operations:
-            function = re.search(r'\bvoid func_80010300\(CPUState\* cpu\)\s*\{', text)
-            if not function:
-                raise RuntimeError('actual emitted nongeometry function definition missing')
             for address in ('80010300','80010500'):
-                function = re.search(r'\bvoid func_'+address+r'\(CPUState\* cpu\)\s*\{', text)
-                if not function:
-                    raise RuntimeError('actual emitted nongeometry function definition missing: '+address)
-                start = text.index('psx-pgxp-integer-operation-v2', function.end())
-                end = text.index('} else\n#endif', start)
+                # An overlapping function can be an entry wrapper AFTER its
+                # shared alias body. Inspect the actual executing block, never
+                # the next unrelated operation following that public wrapper.
+                entries = list(re.finditer(r'(?m)^block_'+address+r':\s*\n', text))
+                if len(entries)!=1:
+                    raise RuntimeError('actual nongeometry block entry is not unique: '+address)
+                entry = entries[0].end()
+                boundary = re.search(r'(?m)^(?:block_[0-9A-Fa-f]{8}:|(?:static )?void (?:func_|psx_alias_body_))', text[entry:])
+                stop = entry+boundary.start() if boundary else len(text)
+                start = text.index('psx-pgxp-integer-operation-v2', entry, stop)
+                end = text.index('} else\n#endif', start, stop)
                 if re.search(r'\bPGXP_(?:ALU|LOAD|STORE|COP2|MULDIV|FLOW_|PLAIN_)', text[start:end]):
                     raise RuntimeError('actual nongeometry operation retained an instruction hook')
                 if 'psx_pgxp_operation_begin' not in text[start:end] or 'psx_pgxp_operation_end' not in text[start:end]:
