@@ -54,7 +54,7 @@ static void *s_wtrace_trans,*s_wtrace_boot,*s_wtrace;
 static int s_wtrace_trans_range_count,s_wtrace_boot_range_count,s_wtrace_range_count;
 static struct {uint32_t lo,hi;} s_wtrace_ranges[2];
 static void event(unsigned e){assert(n<32);events[n++]=e;}
-uint32_t psx_ram_live_bytes(void){return 0x200000;}
+uint32_t g_psx_ram_size=0x200000u;
 static int psx_fp_write_eligible(uint32_t p,uint32_t size){return p<size;}
 static void psx_fp_note_quiet(int *p){(void)p;event(10);}
 static int is_card_critical_addr(uint32_t p){return p==0x100;}
