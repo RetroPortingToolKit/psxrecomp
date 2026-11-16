@@ -11,10 +11,17 @@ typedef void (*PsxRecompFunc)(CPUState *);
 typedef struct { uint32_t addr; PsxRecompFunc func; } DispatchEntry;
 static void unused_body(CPUState *cpu) { (void)cpu; abort(); }
 static const DispatchEntry dispatch_table[] = {{0xffffffffu, unused_body}};
-int g_psx_dispatch_depth, g_psx_call_bail;
+int g_psx_dispatch_depth;
+#if defined(PSX_TEST_PGXP_REGIONS)
+extern int g_psx_call_bail;
+#else
+int g_psx_call_bail;
+#endif
 uint64_t g_psx_bail_resolved, g_psx_bail_flattened, g_psx_bail_first;
 uint64_t g_dispatch_static_hits;
+#if !defined(PSX_TEST_PGXP_REGIONS)
 uint32_t g_debug_current_func_addr;
+#endif
 int g_psx_mod_guest_functions = 1;
 static int tier, mode, graph_calls, native_calls, fallback_calls, trace_calls;
 static int boundary_redirect, escape;
@@ -45,7 +52,11 @@ static int (*g_psx_func_override_hook)(CPUState *, uint32_t) = override;
 static int psx_game_address_in_text(uint32_t addr) { (void)addr; return 1; }
 static int dirty_ram_is_dirty(uint32_t phys) { (void)phys; return 1; }
 static int dirty_ram_text_native_ok(uint32_t phys) {
+#if defined(PSX_TEST_PGXP_REGIONS)
+    assert(phys>=0x10000u && phys<0x10a00u);
+#else
     assert(phys >= 0x30000u && phys <= 0x5afffu);
+#endif
     ++legacy_classifications;
     return legacy_safe;
 }
@@ -57,8 +68,15 @@ static PsxRecompFunc psx_bios_hit_body(CPUState *cpu, uint32_t a, uint32_t p, Ps
 void psx_unknown_dispatch(CPUState *cpu, uint32_t a, uint32_t p) {
     (void)cpu; (void)a; (void)p; abort();
 }
+#if defined(PSX_TEST_PGXP_REGIONS)
+extern void fixture_regions_dispatch(CPUState*,uint32_t,int);
+static int regions_selected;
+#endif
 static void graph(CPUState *cpu, uint32_t addr) {
     ++graph_calls;
+#if defined(PSX_TEST_PGXP_REGIONS)
+    fixture_regions_dispatch(cpu,addr,regions_selected);return;
+#endif
     if (mode == 1 && cpu->gpr[4]-- != 0) { /* guest recursion stays in one owner */
         cpu->gpr[29] -= 16; cpu->pc = addr; return;
     }
@@ -117,6 +135,18 @@ static void reset(CPUState *cpu) {
     g_psx_dispatch_depth = g_psx_call_bail = boundary_redirect = escape = 0;
     game_started = legacy_safe = 1; legacy_classifications = 0;
 }
+#if defined(PSX_TEST_PGXP_REGIONS)
+void fixture_regions_owner(CPUState *cpu,uint32_t target,uint32_t stop,int selected) {
+    /* Use the unchanged emitted owner, including entry hooks and CPS return
+     * boundaries; only its backend is this fixture's actual compiled image. */
+    tier=mode=graph_calls=native_calls=fallback_calls=trace_calls=0;
+    hook_count=0;regions_selected=selected;g_psx_dispatch_depth=0;
+    game_started=legacy_safe=1;boundary_redirect=escape=0;
+    psx_dispatch_impl(cpu,target,stop);
+    assert(!g_psx_dispatch_depth);
+}
+unsigned fixture_regions_owner_calls(void) {return (unsigned)graph_calls;}
+#else
 int main(void) {
     CPUState cpu;
     const char *expected[] = {"GHSO", "G", "GH", "GHS", "GHSO"};
@@ -182,3 +212,5 @@ int main(void) {
     puts("emitted owner handled-entry zero legacy checks, unchanged failed/pre-start fallback, hooks, continuations, recursion, thread, stop and IRQ checks passed");
     return 0;
 }
+
+#endif

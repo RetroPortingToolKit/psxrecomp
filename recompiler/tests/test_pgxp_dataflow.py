@@ -80,6 +80,19 @@ def program():
     return base, words
 
 
+def add_region_program(base,words):
+    words+= [0]*(448-len(words))
+    main=[0x27bdfff0,0xafbf000c,0x3c088000,0x25087000,0x2a09000a,
+          0x11200003,0,0x08000000|(((base+448*4+40)>>2)&0x3ffffff),0,
+          0x35080080,0x0c004200,0, # JAL80010800
+          0x3c0a8000,0x354a8000,0x254affff,0xac8a0000,0x8fbf000c,0,
+          0x03e00008,0x27bd0010]
+    words+=main
+    words += [0]*(512-len(words));words += [0x3c028000,0x34421234,0x03e00008,0]
+    words += [0]*(576-len(words));words += [0x2694ffff,0x3c088000,0x25087000,0x1e80fffc,0,0x03e00008,0]
+    return base,words
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--recompiler', required=True)
@@ -87,6 +100,10 @@ def main():
     ap.add_argument('--cxx', required=True)
     ap.add_argument('--work-dir', type=Path,
                     help='Retain generated sources, objects and executable for a focused diagnosis')
+    ap.add_argument('--regions', action='store_true', help='actual private CFG/owner/clock/opaque-entry products')
+    ap.add_argument('--runtime-root', type=Path, default=ROOT, help='verified production headers/project root for test-only fixture worktree')
+    ap.add_argument('--dispatch', type=Path, help='already verified actual normal BIOS dispatch for owner extraction')
+    ap.add_argument('--opt', choices=('0','2'), default='2')
     ap.add_argument('--operations', action='store_true', help='qualify guarded whole integer operations and write ownership')
     a = ap.parse_args()
     with (nullcontext(str(a.work_dir)) if a.work_dir else
@@ -95,13 +112,25 @@ def main():
         if a.work_dir:
             work.mkdir(parents=True, exist_ok=False)
         base, words = program()
+        if a.regions:
+            if a.operations or not a.dispatch: ap.error("--regions requires --dispatch and OPERATIONS remains OFF")
+            base,words=add_region_program(base,words)
         header = bytearray(2048); header[:8] = b'PS-X EXE'
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
             struct.pack_into('<I', header, offset, value)
         exe = work / 'flow.psx'; exe.write_bytes(header + struct.pack('<%dI' % len(words), *words))
-        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n', encoding='utf-8')
+        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n'+('0x80010700\n0x80010800\n0x80010900\n' if a.regions else ''), encoding='utf-8')
         out = work / 'generated'
-        run([a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', ROOT], verbose=False)
+        generate=[a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', a.runtime_root]
+        if a.regions:
+            config=work/'game.toml'
+            config.write_text('[game]\nname="Precision Regions"\nid="TEST-00000"\nexe="flow.psx"\n'
+                'entry_pc="0x80010000"\nload_address="0x80010000"\nstack_base="0x801FFFF0"\n'
+                +'text_size="0x%X"\n'%(len(words)*4)+
+                '[recompiler]\nseeds="seeds.txt"\nout_dir="generated"\nmod_function_entry_funcs=["0x80010700","0x80010800","0x80010900"]\n'
+                'mod_instruction_sites=["0x80010804"]\n',encoding='utf-8')
+            generate+=['--ws-config',config]
+        run(generate, verbose=False)
         sources = sorted(out.glob('*_full*.c'))
         emitted = [x.read_text(encoding='utf-8') for x in sources]
         if not emitted or any('psx-pgxp-dataflow-v2' not in x[:2048] for x in emitted):
@@ -144,9 +173,35 @@ def main():
                     text[start:end].count('psx_store_cycle_barrier()')!=3):
                     raise RuntimeError('actual mixed operation lost a maintained store/barrier')
             print('Actual nongeometry load/ALU/store operations: zero instruction PGXP hooks; all widths/barriers and canonical fallback retained', flush=True)
-        common = ['-O2', '-ffunction-sections', '-fdata-sections', '-DPSX_PGXP=1',
+        if a.regions:
+            from test_static_dispatch_owner import function
+            dispatch=a.dispatch.read_text(encoding='utf-8')
+            owner=(function(dispatch,'psx_dispatch_chain_hooks') if 'PSX_NATIVE_TAIL_OWNER_V1' in dispatch else '')+function(dispatch,'psx_dispatch_check_return_boundary')+function(dispatch,'psx_dispatch_impl')
+            owner,changed=re.subn(r'int lo = 0, hi = \d+ - 1;','int lo = 0, hi = 1 - 1;',owner)
+            assert changed==1
+            (work/'owner.inc').write_text(owner,encoding='utf-8')
+            (work/'psx_observation_config.h').write_text('#pragma once\n#define PSX_OBSERVATION_WAIT_SITE(pc) 0\n',encoding='utf-8')
+            def body(address):
+                start=text.index('void func_'+address+'(CPUState* cpu)\n{')
+                stop=text.find('\nvoid func_',start+10)
+                return text[start:stop if stop>=0 else len(text)]
+            main_body=body('80010700')
+            charge=re.search(r'psx_native_span_charge\((\d+)u\)',main_body)
+            assert charge and 'precision_block_80010700:' in main_body and 'psx_block_edge_materialize' in main_body
+            assert 'psx_precision_block_edge_materialize' not in text
+            (work/'region_case.h').write_text('#define REGION_FIRST_CHARGE '+charge[1]+'u\n'
+                '#define REGION_CONT_PC 0x80010730u\n#define REGION_INTERIOR_PC 0x80010724u\n',encoding='utf-8')
+            for line in main_body.splitlines():
+                if 'precision-demand: native integer definition' in line:
+                    assert 'PGXP_' not in line
+            print('Actual emitted private/canonical CFG owner entry, CPS and materializing-edge source guards PASS',flush=True)
+        common = ['-O'+a.opt, '-ffunction-sections', '-fdata-sections', '-DPSX_PGXP=1',
                   '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_DIRECT_GUEST_MEMORY=1', '-DPSX_NO_DEBUG_TOOLS=1', '-Werror',
-                  '-I', str(ROOT/'runtime/include'), '-I', str(out)]
+                  '-I', str(a.runtime_root/'runtime/include'), '-I', str(out)]
+        if a.regions:
+            common += ['-DPSX_TEST_PGXP_REGIONS=1','-DPSX_ENABLE_BLOCK_CYCLES=1','-DPSX_OBSERVATION_TIME=1',
+                       '-DPSX_NATIVE_STATIC_CALLS=1','-DPSX_NATIVE_TAIL_CHAINS=0','-DPSX_HAS_GAME_DISPATCH',
+                       '-fno-unwind-tables','-fno-asynchronous-unwind-tables','-I',str(work)]
         objects = []
         for selected, name in ((0, 'reference'), (1, 'candidate')):
             c = work / (name+'.c')
@@ -155,7 +210,7 @@ def main():
                               else 'flow_'+name+'_'+symbol) for symbol in sorted(names))
             c.write_text(aliases+text, encoding='utf-8')
             obj = work / (name+'.o')
-            run([a.cc, *common, '-DPSX_PGXP_DATAFLOW='+str(selected), '-DPSX_PGXP_OPERATIONS='+str(int(a.operations and selected)), '-c', c, '-o', obj])
+            run([a.cc, *common, '-DPSX_PGXP_DATAFLOW='+str(0 if a.regions else selected), '-DPSX_PGXP_DEMAND_REGIONS='+str(int(a.regions and selected)), '-DPSX_PGXP_OPERATIONS='+str(int(a.operations and selected)), '-c', c, '-o', obj])
             objects.append(obj)
         for compiler, source, name in (
             (a.cc, ROOT/'runtime/src/psx_ram_geometry.c', 'ram'),
@@ -163,11 +218,15 @@ def main():
             (a.cxx, ROOT/'runtime/tests/pgxp_test_mod_memory.cpp', 'mod-memory'),
             (a.cxx, ROOT/'runtime/tests/pgxp_dataflow_fixture.cpp', 'fixture')):
             obj = work/(name+'.o')
-            run([compiler, *common, '-DPSX_PGXP_DATAFLOW=1', '-DPSX_PGXP_OPERATIONS='+str(int(a.operations)), '-c', source, '-o', obj]); objects.append(obj)
+            run([compiler, *common, '-DPSX_PGXP_DATAFLOW='+str(0 if a.regions else 1), '-DPSX_PGXP_OPERATIONS='+str(int(a.operations)), '-c', source, '-o', obj]); objects.append(obj)
+        if a.regions:
+            obj=work/'actual-owner.o'
+            run([a.cc,*common,'-c',ROOT/'recompiler/tests/test_static_dispatch_owner.c','-o',obj])
+            objects.append(obj)
         defined, undefined = nm_symbols(objects)
         provided = library_symbols(a.cc)
         stubs = {s for s in undefined-defined-provided if not s.startswith('__')}
-        if any('pgxp_operation' in s or 'pgxp_write_owned' in s or s=='psx_hr_bus_callbacks' for s in stubs):
+        if any('pgxp_operation' in s or 'pgxp_write_owned' in s or s=='psx_hr_bus_callbacks' or 'pgxp_region_' in s or 'block_edge_materialize' in s or s in ('psx_observation_sample','psx_observation_edge','psx_slice_block_impl','psx_advance_cycles_slow','fixture_regions_owner','fixture_regions_dispatch') for s in stubs):
             raise RuntimeError('candidate precision implementation is missing; cannot substitute a linker seam')
         result_exe = work/('products.exe' if os.name == 'nt' else 'products')
         for _ in range(20):
