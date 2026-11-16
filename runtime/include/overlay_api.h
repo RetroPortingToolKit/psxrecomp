@@ -130,8 +130,9 @@
  * v34: frozen, activation-only immediate selectors on the v33 layout.
  * v35: append native replacement forwarding to v34; old X6 v31 and
  *      experimental v32 caches remain incompatible.
- * v36: host canonical bus identities and shared callback-width counters. */
-#define PSX_OVERLAY_ABI_VERSION 36
+ * v36: host canonical bus identities and shared callback-width counters.
+ * v37: live host memory view and native DLL direct-access admission. */
+#define PSX_OVERLAY_ABI_VERSION 37
 
 /* Process-lifetime overlay candidate capacity.  Every accepted manifest F
  * record consumes one slot, even when another DLL carries an identical
@@ -228,6 +229,7 @@
 /* Named so consumers that only forward the table (overlay_loader.h,
  * psx_bios_module.h) can declare `struct OverlayCallbacks` without pulling
  * this header in. Layout unchanged. */
+struct PSXDirectMemoryView;
 typedef struct OverlayCallbacks {
     /* Core dispatch: routes call_by_address() and out-of-overlay jal */
     void (*dispatch_call)(CPUState *cpu, uint32_t addr, uint32_t ra);
@@ -410,6 +412,7 @@ typedef struct OverlayCallbacks {
     void (*bus_write_half)(uint32_t,uint16_t);
     void (*bus_write_byte)(uint32_t,uint8_t);
     uint64_t (*bus_callback_widths)[3];
+    const struct PSXDirectMemoryView *direct_memory; /* ABI v37, live guards */
 } OverlayCallbacks;
 
 #ifdef __cplusplus

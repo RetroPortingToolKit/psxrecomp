@@ -23,11 +23,13 @@ function(psxrecomp_direct_guest_memory target)
     file(CONFIGURE OUTPUT "${_directory}/selected.c" CONTENT
         "const unsigned psx_build_direct_guest_memory_model = ${_native}u;\n" @ONLY)
     psxrecomp_add_implementation(${target}
-        NAME direct-guest-memory CONTRACT native-data-pages-${_native}-v1
+        NAME direct-guest-memory CONTRACT native-data-pages-${_native}-v2
         HLE_SOURCES "${_directory}/selected.c" LLE_SOURCES "${_directory}/selected.c"
         CONTRACT_FILES "${PSXRECOMP_ROOT}/runtime/include/psx_direct_memory.h"
                        "${PSXRECOMP_ROOT}/runtime/include/psx_native_span.h"
                        "${PSXRECOMP_ROOT}/runtime/include/cpu_state.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/overlay_api.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/overlay_dispatch_preamble.c.inc"
                        "${PSXRECOMP_ROOT}/runtime/src/memory.c"
                        "${PSXRECOMP_ROOT}/runtime/src/card_data_writes.c"
                        "${PSXRECOMP_ROOT}/runtime/src/parity_trace.c"

@@ -80,6 +80,8 @@ set(PSXRECOMP_CODEGEN_HASH_SRCS
     # silently. overlay_api.h pulls cpu_state.h and its cycle-helper headers; the
     # .inc is the shim every shard links against; ws_cull_edge.h is the edge-cull
     # math the .inc includes.
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_direct_memory.h
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_native_span.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/overlay_api.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/cpu_state.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_block_edge.h

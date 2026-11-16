@@ -30,6 +30,7 @@ static void overlay_cpu_charge(uint32_t cycles) {
 #include "lockstep.h"
 #include "overlay_posix.h"
 #include "psx_memory.h"
+#include "psx_direct_memory.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2537,6 +2538,7 @@ static void init_callbacks(void) {
     /* Address of the header inline → out-of-line copy in this TU (host side). */
     s_callbacks.cpu_charge         = overlay_cpu_charge;
     s_callbacks.gte_execute          = gte_execute;
+    s_callbacks.direct_memory=psx_direct_memory_host_view();
     s_callbacks.bus_read_word=psx_read_word;
     s_callbacks.bus_read_half=psx_read_half;
     s_callbacks.bus_read_byte=psx_read_byte;

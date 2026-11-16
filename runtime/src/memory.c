@@ -2745,3 +2745,54 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     }
     unmapped_fatal(addr, phys, "WRITE");
 }
+
+/* Overlay ABI v37: pointers remain live across observer registration, restore,
+ * RAM geometry and private-bus scopes. Module format is not an observer. */
+const PSXDirectMemoryView *psx_direct_memory_host_view(void) {
+    static const PSXDirectMemoryView view={
+        sizeof(PSXDirectMemoryView),
+#if defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS
+        1,
+#else
+        0,
+#endif
+#if defined(PSX_DIRECT_GUEST_MEMORY) && PSX_DIRECT_GUEST_MEMORY
+        1,
+#else
+        0,
+#endif
+#if defined(PSX_DIRECT_GUEST_MEMORY) && PSX_DIRECT_GUEST_MEMORY && defined(PSX_NO_DEBUG_TOOLS)
+        1,
+#else
+        0,
+#endif
+        &g_psx_ram,
+        &g_psx_scratchpad,
+        &g_psx_ram_mask,
+        &g_psx_text_write_lo,
+        &g_psx_text_write_hi,
+        &g_psx_memory_sr_ptr,
+        &g_parity_trace_armed,
+        &g_card_data_write_armed,
+        &g_host_store_depth,
+        &g_dma_exec_depth,
+        &g_psx_render_pass_active,
+        &g_ls_mode,
+        &g_ls_replay_active,
+        &g_ds_recording,
+        &g_ram_read_watch_active,
+        &g_guest_store_count,
+        &g_psx_track_last_store,
+        &g_guest_last_store_addr,
+        &g_guest_last_store_val,
+        &g_psx_direct_memory_stats,
+        g_psx_overlay_watch_bitmap,g_dirty_ram_exec_page_bitmap,
+        &g_overlay_flush_pending_cycles,
+#if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
+        NULL
+#else
+        &g_psx_memory_width_stats
+#endif
+    };
+    return &view;
+}

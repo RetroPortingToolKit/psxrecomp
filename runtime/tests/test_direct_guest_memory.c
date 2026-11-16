@@ -115,7 +115,7 @@ static void check_memory_widths(CPUState *cpu) {
     cpu->read_word=read_word;cpu->read_half=read_half;cpu->read_byte=read_byte;
     cpu->write_word=write_word;cpu->write_half=write_half;cpu->write_byte=write_byte;
     const unsigned reads_before=custom_reads,writes_before=custom_writes;
-    for(unsigned n=1;n<=2;++n){const uint32_t a=addresses[n];
+    for(unsigned n=0;n<=2;++n){const uint32_t a=addresses[n];
         CHECK(psx_cyc_load_word(cpu,a,2,0)==0xFEDCBA98u);
         CHECK(psx_cyc_load_half(cpu,a,2,0)==0xBA98u);
         CHECK(psx_cyc_load_byte(cpu,a,2,0)==0x98u);
@@ -127,7 +127,7 @@ static void check_memory_widths(CPUState *cpu) {
     psx_bus_store_word(cpu,addresses[0],0x10203040u);
     psx_bus_store_half(cpu,addresses[0],0x5060u);
     psx_bus_store_byte(cpu,addresses[0],0x70u);
-    CHECK(custom_reads==reads_before+6u&&custom_writes==writes_before+9u);
+    CHECK(custom_reads==reads_before+9u&&custom_writes==writes_before+12u);
     CHECK(psx_peek_word_untraced(addresses[0])==old_word);
     CHECK(!memcmp(&before,&g_psx_memory_width_stats,sizeof before));
 #if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
@@ -136,8 +136,8 @@ static void check_memory_widths(CPUState *cpu) {
     const unsigned counted=1;
 #endif
     for(unsigned width=0;width<3;++width){
-        CHECK(psx_hr_bus_callbacks[0][width]==2u*counted);
-        CHECK(psx_hr_bus_callbacks[1][width]==3u*counted);
+        CHECK(psx_hr_bus_callbacks[0][width]==3u*counted);
+        CHECK(psx_hr_bus_callbacks[1][width]==4u*counted);
     }
     /* A forwarding callback does BOTH real dispatch and canonical-helper
      * work. Keep those distinct rather than claiming disjoint access totals. */
@@ -145,8 +145,8 @@ static void check_memory_widths(CPUState *cpu) {
     CHECK(psx_cyc_load_word(cpu,addresses[1],2,0)==0x789ABCDEu);
     PSX_STORE_WORD(cpu,addresses[0],0xA1B2C3D4u);
     CHECK(psx_peek_word_untraced(addresses[0])==0xA1B2C3D4u);
-    CHECK(psx_hr_bus_callbacks[0][PSX_MEM_U32]==3u*counted);
-    CHECK(psx_hr_bus_callbacks[1][PSX_MEM_U32]==4u*counted);
+    CHECK(psx_hr_bus_callbacks[0][PSX_MEM_U32]==4u*counted);
+    CHECK(psx_hr_bus_callbacks[1][PSX_MEM_U32]==5u*counted);
     CHECK(g_psx_memory_width_stats.helper_access[0][PSX_MEM_SCRATCH][PSX_MEM_U32]==before.helper_access[0][PSX_MEM_SCRATCH][PSX_MEM_U32]+counted);
     CHECK(g_psx_memory_width_stats.helper_access[1][PSX_MEM_RAM][PSX_MEM_U32]==before.helper_access[1][PSX_MEM_RAM][PSX_MEM_U32]+counted);
     cpu->read_word=psx_read_word;cpu->read_half=psx_read_half;cpu->read_byte=psx_read_byte;
@@ -181,11 +181,14 @@ int main(void) {
     CHECK(psx_cyc_load_byte(&cpu,0x9F800046u,2,0)==0x70u);
     CHECK(helper_reads() == n + (PSX_DIRECT_GUEST_MEMORY ? 0u : 3u));
     CHECK(g_guest_store_count==6u);
-    // New scratch eligibility cannot bypass a caller-supplied bus reader.
+    // Neither quiet RAM nor scratch may bypass a caller-supplied bus reader.
     cpu.read_word=read_word; cpu.read_half=read_half; cpu.read_byte=read_byte;
     CHECK(psx_cyc_load_word(&cpu,0x1F800040u,2,0)==0xFEDCBA98u);
     CHECK(psx_cyc_load_half(&cpu,0xBF800044u,2,0)==0xBA98u);
     CHECK(psx_cyc_load_byte(&cpu,0x9F800046u,2,0)==0x98u && custom_reads==3);
+    CHECK(psx_cyc_load_word(&cpu,0x80120000u,2,0)==0xFEDCBA98u);
+    CHECK(psx_cyc_load_half(&cpu,0xA0320000u,2,0)==0xBA98u);
+    CHECK(psx_cyc_load_byte(&cpu,0x00120000u,2,0)==0x98u && custom_reads==6);
     cpu.read_word=psx_read_word; cpu.read_half=psx_read_half; cpu.read_byte=psx_read_byte;
 
 
