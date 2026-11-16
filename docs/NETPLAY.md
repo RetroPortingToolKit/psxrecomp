@@ -99,6 +99,12 @@ remains useful for debugging and for hosts that prefer fixed lag.
   progress; a remote input tip that advances is progress, so a slow peer is
   waited for. A peer silent for `PSX_NET_LIVENESS_MS` (default 1500) counts as
   gone.
+- No pad input in the first 64 ticks. Each peer feeds an idle pad into the
+  session for the first 64 sim ticks, about one second, while the BIOS boots
+  and nothing reads a pad. A misprediction that early made the engine load a
+  tip snapshot the other peer had already dropped; the peers then reloaded
+  different snapshots and never agreed again. With idle pads nothing is
+  mispredicted before interval snapshots exist.
 
 ---
 
