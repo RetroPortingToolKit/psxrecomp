@@ -24,7 +24,7 @@ void overlay_watch_clear_range(uint32_t phys,uint32_t len);
 uint32_t overlay_watch_pagegen_sum(uint32_t phys,uint32_t len);
 
 #define CHECK(c) do { if (!(c)) { fprintf(stderr,"line %d: %s\n",__LINE__,#c); exit(1); } } while (0)
-#if PSX_DIRECT_GUEST_MEMORY && defined(PSX_NO_DEBUG_TOOLS)
+#if PSX_DIRECT_GUEST_MEMORY
 #define FAST 1
 #else
 #define FAST 0
@@ -32,6 +32,26 @@ uint32_t overlay_watch_pagegen_sum(uint32_t phys,uint32_t len);
 
 static unsigned custom_reads, custom_writes, flushes;
 static uint32_t custom_address, custom_value;
+static struct {
+    uint32_t phys, old_value, new_value;
+    uint8_t width;
+    uint64_t stores;
+} trace_last;
+
+/* Called from the existing trace-counting seam, including canonical fallbacks.
+ * Reading the backing bytes here proves observation occurs before mutation. */
+void fixture_note_trace(uint32_t phys, uint32_t old_value, uint32_t new_value,
+                        uint8_t width) {
+    const uint8_t *p = phys < PSX_MAIN_RAM_WINDOW_BYTES
+        ? memory_get_ram_ptr() + phys
+        : memory_get_scratchpad_ptr() + (phys - 0x1F800000u);
+    uint32_t observed = 0;
+    for (unsigned i = 0; i < width; ++i) observed |= (uint32_t)p[i] << (8u * i);
+    CHECK(observed == old_value);
+    trace_last.phys=phys; trace_last.old_value=old_value;
+    trace_last.new_value=new_value; trace_last.width=width;
+    trace_last.stores=g_guest_store_count;
+}
 static unsigned helper_reads(void) {
     PSXDirectMemoryStats *s=&g_psx_direct_memory_stats;
     return (unsigned)(s->load_helper_ram+s->load_helper_scratch+s->load_helper_mmio+s->load_helper_other);
@@ -57,6 +77,49 @@ static void require_helper(CPUState *cpu, uint32_t addr) {
     unsigned n = helper_writes();
     PSX_STORE_WORD(cpu, addr, 0xAABBCCDDu);
     CHECK(helper_writes() == n + 1);
+}
+
+static void check_store_trace(CPUState *cpu) {
+    static const uint32_t addresses[]={0xA0220800u,0xBF800200u};
+    static const uint32_t physical[]={0x00020800u,0x1F800200u};
+    for(unsigned region=0;region<2;++region) {
+        uint8_t *p=region ? memory_get_scratchpad_ptr()+0x200u
+                          : memory_get_ram_ptr()+0x20800u;
+        const unsigned calls=g_trace_write_calls;
+        const uint64_t stores=g_guest_store_count;
+        p[0]=0x12u;p[1]=0x34u;p[2]=0x56u;p[3]=0x78u;
+        PSX_STORE_WORD(cpu,addresses[region],0x90ABCDEFu);
+#ifndef PSX_NO_DEBUG_TOOLS
+        CHECK(g_trace_write_calls==calls+1u);
+        CHECK(trace_last.phys==physical[region] && trace_last.width==4u);
+        CHECK(trace_last.old_value==0x78563412u && trace_last.new_value==0x90ABCDEFu);
+        CHECK(trace_last.stores==stores+1u);
+#endif
+        PSX_STORE_HALF(cpu,addresses[region],0x1357u);
+#ifndef PSX_NO_DEBUG_TOOLS
+        CHECK(g_trace_write_calls==calls+2u);
+        CHECK(trace_last.phys==physical[region] && trace_last.width==2u);
+        CHECK(trace_last.old_value==0xCDEFu && trace_last.new_value==0x1357u);
+        CHECK(trace_last.stores==stores+2u);
+#endif
+        PSX_STORE_BYTE(cpu,addresses[region],0x24u);
+#ifndef PSX_NO_DEBUG_TOOLS
+        CHECK(g_trace_write_calls==calls+3u);
+        CHECK(trace_last.phys==physical[region] && trace_last.width==1u);
+        CHECK(trace_last.old_value==0x57u && trace_last.new_value==0x24u);
+        CHECK(trace_last.stores==stores+3u);
+#else
+        CHECK(g_trace_write_calls==calls);
+#endif
+        CHECK(p[0]==0x24u && p[1]==0x13u && p[2]==0xABu && p[3]==0x90u);
+    }
+    /* The DLL descriptor keeps its old no-debug requirement; no new exported
+     * hook or callback ABI is needed to accelerate host stores. */
+#if PSX_DIRECT_GUEST_MEMORY && defined(PSX_NO_DEBUG_TOOLS)
+    CHECK(psx_direct_memory_host_view()->direct_stores==1);
+#else
+    CHECK(psx_direct_memory_host_view()->direct_stores==0);
+#endif
 }
 
 
@@ -181,6 +244,7 @@ int main(void) {
     CHECK(psx_cyc_load_byte(&cpu,0x9F800046u,2,0)==0x70u);
     CHECK(helper_reads() == n + (PSX_DIRECT_GUEST_MEMORY ? 0u : 3u));
     CHECK(g_guest_store_count==6u);
+    check_store_trace(&cpu);
     // Neither quiet RAM nor scratch may bypass a caller-supplied bus reader.
     cpu.read_word=read_word; cpu.read_half=read_half; cpu.read_byte=read_byte;
     CHECK(psx_cyc_load_word(&cpu,0x1F800040u,2,0)==0xFEDCBA98u);
