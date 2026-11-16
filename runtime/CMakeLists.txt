@@ -424,6 +424,15 @@ if(BUILD_TESTING)
                 --cc "${CMAKE_C_COMPILER}")
             set_tests_properties(dma_mdec_jobs_test PROPERTIES RUN_SERIAL TRUE)
         endif()
+        # msvcrt (MSYS2 MINGW64) rejects the fopen exclusive-create flag "x".
+        # The driver builds test_file_create_new.c at O0/O2 against
+        # psx_file_create_new.h and fails when a runtime or recompiler source
+        # opens a stream with that flag.
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            add_test(NAME file_create_new_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_file_create_new.py"
+                --cc "${CMAKE_C_COMPILER}")
+        endif()
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
             add_test(NAME resolved_pad_guard_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_resolved_pad_guard.py"
