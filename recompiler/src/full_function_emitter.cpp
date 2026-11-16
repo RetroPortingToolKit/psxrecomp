@@ -2322,7 +2322,6 @@ void FullFunctionEmitter::emit_dispatch(
     out += "        /* Always-on call ring: every iteration counts as a separate\n";
     out += "         * call (initial entry + each tail-call re-dispatch). a0..a3\n";
     out += "         * reflect the args being passed for THIS iteration. */\n";
-    out += "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS\n";
     out += tail_entry_hooks;
     out += fmt::format("        int lo = 0, hi = {} - 1;\n", total_entries);
     out += "#ifdef PSX_HAS_GAME_DISPATCH\n";
