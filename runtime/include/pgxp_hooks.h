@@ -96,8 +96,13 @@ extern uint32_t psx_pgxp_plain_values[32];
         psx_pgxp_plain_mask |= UINT32_C(1) << (dst); \
     } \
 } while (0)
+/* A later same-slot ALU definition is guaranteed before every observer, so
+ * the earlier dead lifetime has neither a hook nor a deferred write record.
+ * The final write still ends old/equal-word lineage through the full engine. */
+#define PGXP_FLOW_ELIDED_ALU(dst, instr, res, s1, s2) ((void)0)
 #else
 #define PGXP_FLOW_DEAD_ALU(dst, instr, res, s1, s2) PGXP_ALU(instr, res, s1, s2)
+#define PGXP_FLOW_ELIDED_ALU(dst, instr, res, s1, s2) PGXP_ALU(instr, res, s1, s2)
 #endif
 
 /* Forwarder table for overlay DLLs (OverlayCallbacks.pgxp). Appended-last

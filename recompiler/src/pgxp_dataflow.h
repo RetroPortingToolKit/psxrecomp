@@ -132,4 +132,30 @@ inline std::set<uint32_t> pgxp_dead_alu_flow(const std::vector<PgxpFlowBlock>& b
     return dead;
 }
 
+// A dead shadow write needs no tombstone of its own when a later ordinary ALU
+// definition of the same slot will end that lifetime before any observation.
+// Keep the final definition, memory/GTE/HI-LO/control operations, delay clones
+// and explicit hooks conservative. This is local lifetime ownership after the
+// function-CFG demand proof above, not an assumption that integer code cannot
+// carry coordinates. A finite chain always ends at a retained destructive write.
+inline std::set<uint32_t> pgxp_elided_alu_flow(
+        const std::vector<PgxpFlowBlock>& blocks, const std::set<uint32_t>& dead) {
+    std::set<uint32_t> elided;
+    for (const auto& b : blocks) {
+        uint64_t overwritten = 0;
+        for (auto i = b.instructions.rbegin(); i != b.instructions.rend(); ++i) {
+            const auto effect = pgxp_flow_effect(i->word);
+            if (i->opaque || !effect.pure_alu || effect.barrier) {
+                overwritten = 0;
+                continue;
+            }
+            if (i->removable && dead.count(i->address) &&
+                    (overwritten & effect.defines))
+                elided.insert(i->address);
+            overwritten |= effect.defines;
+        }
+    }
+    return elided;
+}
+
 } // namespace PSXRecomp

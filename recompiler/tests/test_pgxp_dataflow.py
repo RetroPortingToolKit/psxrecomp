@@ -78,7 +78,10 @@ def main():
         run([a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', ROOT], verbose=False)
         sources = sorted(out.glob('*_full*.c'))
         text = '\n'.join(x.read_text(encoding='utf-8') for x in sources)
-        dead_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_DEAD_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
+        dead_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_(?:DEAD|ELIDED)_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
+        elided_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_ELIDED_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
+        if words[21] not in elided_words or words[1] in elided_words or words[4] in elided_words:
+            raise RuntimeError('actual lifetime elision crossed an observation or kept an overwritten record')
         if not {words[1], words[4], words[21]} <= dead_words:
             raise RuntimeError('actual CFG emitter failed to remove cross-block control/dead-copy hooks')
         for word in words[7:15] + [words[18], words[28]]:
@@ -86,8 +89,9 @@ def main():
                 raise RuntimeError('actual emitter removed live coordinate arithmetic 0x%08X' % word)
         if words[64] in dead_words:
             raise RuntimeError('actual emitter lost a conditional external caller boundary')
-        print('Actual emitted precision hooks: %d dead-ALU markers, %d retained ALU hooks' %
-              (len(re.findall(r'PGXP_FLOW_DEAD_ALU\(', text)),
+        print('Actual emitted precision hooks: %d elided lifetimes, %d deferred dead writes, %d retained ALU hooks' %
+              (len(re.findall(r'PGXP_FLOW_ELIDED_ALU\(', text)),
+               len(re.findall(r'PGXP_FLOW_DEAD_ALU\(', text)),
                len(re.findall(r'PGXP_(?:PLAIN_)?ALU\(', text))), flush=True)
         common = ['-O2', '-ffunction-sections', '-fdata-sections', '-DPSX_PGXP=1',
                   '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_NO_DEBUG_TOOLS=1',

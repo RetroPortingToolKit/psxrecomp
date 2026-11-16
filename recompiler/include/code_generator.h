@@ -404,6 +404,7 @@ private:
     std::map<uint32_t, ControlFlowGraph> last_cfgs_;
     std::set<uint32_t> extra_labels_;    // Mid-block addresses that need inline labels (jump table targets)
     std::set<uint32_t> precision_dead_alu_; // CFG-proven unused shadow results
+    std::set<uint32_t> precision_elided_alu_; // lifetime ends before any observation
     const AnnotationTable* annotations_ = nullptr;
 
     // Forward declarations for every psx_alias_body_XXXXXXXX() emitted by
