@@ -1550,6 +1550,22 @@ if(BUILD_TESTING)
     target_link_libraries(overlay_capture_retry_test PRIVATE ${PSX_SDL_LIBRARIES})
     add_test(NAME overlay_capture_retry_test COMMAND overlay_capture_retry_test)
 
+    # The queue of outgoing snapshots (a 2 MiB RAM copy each) stops at its cap,
+    # also when the store cannot be written, and the store holds the same files
+    # with the cap as without it. Unbounded, a cold start grew by many GB.
+    add_executable(overlay_capture_queue_bound_test
+        tests/test_overlay_capture_queue_bound.cpp
+        src/overlay_capture.c
+        src/host_span_ring.c
+        src/psx_ram_geometry.c)
+    target_include_directories(overlay_capture_queue_bound_test PRIVATE
+        include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(overlay_capture_queue_bound_test PRIVATE
+        SDL_MAIN_HANDLED PSX_OVERLAY_CAPTURE_TEST=1
+        $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(overlay_capture_queue_bound_test PRIVATE ${PSX_SDL_LIBRARIES})
+    add_test(NAME overlay_capture_queue_bound_test COMMAND overlay_capture_queue_bound_test)
+
     # PC evidence stays inside the dirty-page run: nothing recorded in the
     # trailing delay-slot guard word (bead beads-eio.3.190).
     add_executable(overlay_capture_guard_word_test

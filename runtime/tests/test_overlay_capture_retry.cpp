@@ -4,6 +4,7 @@
 
 #include "psx_sdl.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
@@ -72,24 +73,36 @@ void set_dirty_page(uint32_t phys) {
     g_dirty_pages[page >> 5] |= 1u << (page & 31u);
 }
 
-bool wait_for_failed_write() {
-    for (int i = 0; i < 200; ++i) {
+/* The snapshot is written on a worker thread, and the test polls for its
+ * result. The poll used to stop after 200 tries of 5 ms, about one second. On
+ * a loaded host at lowered priority the worker had not finished by then, and
+ * the test failed with nothing wrong in the code under test. The wait now
+ * ends when the state is there, as before, or after a ceiling far above any
+ * honest run. A run that reaches the ceiling still fails. */
+constexpr std::chrono::seconds kWaitCeiling(120);
+
+template <typename Ready>
+bool wait_until(Ready ready) {
+    const auto deadline = std::chrono::steady_clock::now() + kWaitCeiling;
+    for (;;) {
         overlay_autocapture_tick();
-        if (overlay_capture_test_write_state() == 0 &&
-            overlay_capture_test_write_attempts() >= 1u)
-            return true;
+        if (ready()) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
         SDL_Delay(5);
     }
-    return false;
+}
+
+bool wait_for_failed_write() {
+    return wait_until([] {
+        return overlay_capture_test_write_state() == 0 &&
+               overlay_capture_test_write_attempts() >= 1u;
+    });
 }
 
 bool wait_for_provider_pending() {
-    for (int i = 0; i < 200; ++i) {
-        overlay_autocapture_tick();
-        if (overlay_capture_test_provider_pending()) return true;
-        SDL_Delay(5);
-    }
-    return false;
+    return wait_until([] {
+        return overlay_capture_test_provider_pending() != 0;
+    });
 }
 
 std::string read_all(const std::filesystem::path &path) {
