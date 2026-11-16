@@ -130,6 +130,11 @@ static void guest_store(uint32_t addr, uint32_t val, uint32_t width) {
 
 uint8_t *memory_get_ram_ptr(void) { return s_ram; }
 uint32_t memory_get_ram_bytes(void) { return s_ram_live; }
+/* The restore must tell the kernel bless tracker that RAM was rewritten. */
+static uint32_t s_bless_phys = 0xFFFFFFFFu, s_bless_len, s_bless_calls;
+void psx_kernel_bless_note_range(uint32_t phys, uint32_t len) {
+    s_bless_phys = phys; s_bless_len = len; s_bless_calls++;
+}
 uint8_t *memory_get_scratchpad_ptr(void) { return s_spad; }
 uint32_t dma_snapshot_bytes(void) { return sizeof s_dma_regs; }
 void dma_snapshot_write(uint8_t *p) { memcpy(p, s_dma_regs, sizeof s_dma_regs); }
@@ -490,6 +495,8 @@ static void test_pass(void) {
           memcmp(tt0, tt1, sizeof tt0) == 0 && memcmp(ti0, ti1, sizeof ti0) == 0 &&
           memcmp(tf0, tf1, sizeof tf0) == 0, "timers exactly as before");
     CHECK(memcmp(ram0, s_ram + 0x10000, sizeof ram0) == 0, "RAM restored");
+    CHECK(s_bless_calls > 0 && s_bless_phys == 0u && s_bless_len == RAM_2MB,
+          "kernel bless tracker told the restore rewrote all of RAM");
     CHECK(memcmp(spad0, s_spad, sizeof spad0) == 0, "scratchpad restored");
     CHECK(cpu.gpr[8] == 0x55u, "CPU registers restored");
     CHECK(!g_psx_render_pass_active, "time is live again");
@@ -629,6 +636,8 @@ static void test_ram_8mb(void) {
     CHECK(st1.passes == st0.passes + 1, "8 MiB: one more pass");
     CHECK(memcmp(ram0, s_ram, RAM_8MB) == 0,
           "8 MiB: all of RAM restored, above 2 MiB too");
+    CHECK(s_bless_phys == 0u && s_bless_len == RAM_8MB,
+          "8 MiB: kernel bless tracker told about all 8 MiB");
     CHECK(cpu.gpr[9] == 0u, "8 MiB: CPU registers restored");
 
     /* The next session without the mod (retail again): stores fold into the

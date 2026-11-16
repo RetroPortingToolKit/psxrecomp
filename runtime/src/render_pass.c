@@ -700,6 +700,9 @@ static void checkpoint_restore(CPUState *cpu) {
     i_stat = s_ck.i_stat;
     i_mask = s_ck.i_mask;
     memcpy(memory_get_ram_ptr(), s_ram_copy, s_ck.ram_bytes);
+    /* The restore rewrites RAM, kernel included: verified kernel bodies
+     * must be checked again, as after a savestate load. */
+    psx_kernel_bless_note_range(0, s_ck.ram_bytes);
     memcpy(memory_get_scratchpad_ptr(), s_ck.spad, RP_SPAD_SIZE);
     memcpy(g_psx_icache_tv, s_ck.icache, sizeof s_ck.icache);
     *cpu = s_ck.cpu;
