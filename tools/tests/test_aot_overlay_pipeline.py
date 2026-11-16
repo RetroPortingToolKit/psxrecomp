@@ -45,6 +45,87 @@ class PgxpReleaseNamespaceTests(unittest.TestCase):
             self.assertEqual(result['flavor'], 2)
 
 
+    def test_release_default_root_reaches_external_ws_config(self):
+        # Exercise the real release CLI -> build -> compiler-root forwarding.
+        # Native tools and disc extraction are mocked; all bytes are invented.
+        for local in ('external', 'direct-custom', 'vendored-custom'):
+            with self.subTest(local=local), tempfile.TemporaryDirectory() as directory:
+                from types import SimpleNamespace
+                root = Path(directory)
+                framework = root / 'framework'
+                (framework / 'bios').mkdir(parents=True)
+                (framework / 'bios/SCPH1001.toml').write_text('framework profile')
+                project = root / 'external-config'
+                project.mkdir()
+                if local != 'external':
+                    profile_root = project if local == 'direct-custom' else project / 'custom-engine'
+                    (profile_root / 'bios').mkdir(parents=True)
+                    (profile_root / 'bios/SCPH1001.toml').write_text('custom local profile')
+                config = project / 'game.toml'
+                cue = root / 'invented.cue'
+                cue.write_text('invented')
+                game_text = ('[game]\nid="TEST"\ndisc=' + json.dumps(str(cue)) +
+                             '\n[runtime]\noverlay_cache=true\n')
+                config.write_text(game_text)
+                packaged = root / 'build/game.toml'
+                packaged.parent.mkdir()
+                packaged.write_text(game_text)
+                profile_path = project / 'profile.json'
+                profile_path.write_text(json.dumps(dict(schema='psxrecomp AOT methods v1',
+                    game_id='TEST', disc_hashes=dict(sha256='invented'))))
+                inventory = dict(game_id='TEST', profile_sha256='profile',
+                    original_disc_sha256='disc', required_images=[],
+                    jobs=[dict(input='invented.json', name='image')])
+                commands = []
+                def compile_fixture(command, **kwargs):
+                    commands.append(command)
+                    Path(command[command.index('--out-dir') + 1]).mkdir(parents=True)
+                argv = ['aot_overlay_pipeline', 'release', '--profile', str(profile_path),
+                    '--game-toml', str(config), '--runtime-config', str(packaged),
+                    '--recompiler', str(root / 'emitter'), '--work-dir', str(root / 'work'),
+                    '--stage', str(root / 'stage'), '--workers', '1']
+                with mock.patch.object(pipeline, 'FRAMEWORK', framework), \
+                     mock.patch.object(sys, 'argv', argv), \
+                     mock.patch.object(pipeline, 'Disc'), \
+                     mock.patch.object(pipeline, 'check_disc'), \
+                     mock.patch.object(pipeline, 'extract', return_value=inventory), \
+                     mock.patch.object(pipeline, 'audit', return_value={'published_pairs': 0}), \
+                     mock.patch.object(pipeline, 'stage'), \
+                     mock.patch.object(pipeline.subprocess, 'run', side_effect=compile_fixture), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(pipeline.run(), 0)
+                command = commands[0]
+                chosen = framework if local == 'external' else project
+                self.assertEqual(Path(command[command.index('--project-root') + 1]), chosen)
+                self.assertEqual(Path(command[command.index('--game-toml') + 1]), packaged)
+                # Follow the actual external --ws-config spawn as far as its
+                # native boundary, returning an intentional mocked tool error.
+                args = SimpleNamespace(recompiler=str(root / 'emitter'),
+                    game_toml=str(packaged), project_root=str(chosen), cps=True)
+                with mock.patch.object(pipeline.compiler.subprocess, 'run',
+                        return_value=SimpleNamespace(returncode=1, stderr='mock stop', stdout='')) as spawn:
+                    pipeline.compiler.generate_interior_fragment_static(
+                        0x80010000, bytes(8), 0x80010000, 8, 0x10000, args, guard_bytes=0)
+                child = spawn.call_args.args[0]
+                self.assertEqual(Path(child[child.index('--ws-config') + 1]), packaged)
+                self.assertEqual(Path(child[child.index('--project-root') + 1]), chosen)
+
+    def test_explicit_build_api_root_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            commands = []
+            def compile_fixture(command, **kwargs):
+                commands.append(command)
+                Path(command[command.index('--out-dir') + 1]).mkdir(parents=True)
+            with mock.patch.object(pipeline.subprocess, 'run', side_effect=compile_fixture):
+                pipeline.build(dict(jobs=[dict(input='invented.json', name='image')]),
+                    root / 'game.toml', root / 'emitter', root / 'work', 'gcc', 1,
+                    project_root=root / 'explicit-custom-root', flavor=2)
+            command = commands[0]
+            self.assertEqual(Path(command[command.index('--project-root') + 1]),
+                             root / 'explicit-custom-root')
+
+
 class FakeDisc:
     def __init__(self, files):
         self.data = files
