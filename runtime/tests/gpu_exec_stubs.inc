@@ -243,6 +243,8 @@ int32_t ws_ui_anchor_for_bounds(int32_t x, int32_t width,
 void gpu_vram_dirty_mark_all(void) {}
 void gpu_vram_dirty_mark_row_impl(uint32_t y) { (void)y; }
 void psx_irq_raise(uint32_t bit, uint32_t detail) { (void)bit; (void)detail; }
+/* GPUSTAT bit 31 reads the field position; these fixtures stay at field start. */
+uint32_t interrupts_get_cycles_since_vblank(void) { return 0; }
 void event_ring_record_aux(uint16_t kind, uint8_t detail, uint32_t aux) {
     (void)kind; (void)detail; (void)aux;
 }
