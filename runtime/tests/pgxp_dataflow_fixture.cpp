@@ -78,6 +78,11 @@ void flow_reference_func_80010800(CPUState*);void flow_candidate_func_80010800(C
 void flow_reference_func_80010900(CPUState*);void flow_candidate_func_80010900(CPUState*);
 void fixture_regions_owner(CPUState*,uint32_t,uint32_t,int);
 unsigned fixture_regions_owner_calls(void);
+int psx_game_text_native_ok(uint32_t address) {
+    const uint32_t physical=address&0x1fffffffu,base=REGION_CODE_BASE&0x1fffffffu;
+    return address<0xc0000000u && !(address&3u) && physical>=base &&
+        physical<base+REGION_CODE_BYTES && !std::memcmp(ram+base,region_code,REGION_CODE_BYTES);
+}
 int g_psx_call_bail,g_psx_precise_slice,g_psx_guest_time_frozen;
 uint64_t psx_next_cycle_sample=UINT64_MAX;
 uint32_t i_stat,i_mask;
@@ -156,6 +161,9 @@ static bool equal(const PGXPWordShadow&a,const PGXPWordShadow&b) {
 static void run(Product& result,bool native,unsigned variant) {
     auto& cpu=result.cpu;live_cpu=&cpu;history_count=0;g_host_store_depth=0;
     std::memset(&cpu,0,sizeof cpu);std::memset(ram,0,sizeof ram);
+#if defined(PSX_TEST_PGXP_REGIONS)
+    std::memcpy(ram+(REGION_CODE_BASE&0x1fffffffu),region_code,REGION_CODE_BYTES);
+#endif
     cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;cpu.read_byte=psx_read_byte;
     cpu.write_word=psx_write_word;cpu.write_half=psx_write_half;cpu.write_byte=psx_write_byte;
     for(unsigned r=1;r<32;++r)cpu.gpr[r]=0x53100000u+0x10203u*r;
@@ -241,6 +249,11 @@ static RegionProduct region_reference,region_candidate;
 static void run_region(RegionProduct& out,bool selected,unsigned mode) {
     std::memset(&out,0,sizeof out);auto& cpu=out.cpu;region_cpu=live_cpu=&cpu;
     std::memset(ram,0,sizeof ram);history_count=0;
+    std::memcpy(ram+(REGION_CODE_BASE&0x1fffffffu),region_code,REGION_CODE_BYTES);
+    if(!psx_game_text_native_ok(0x80010800u)||psx_game_text_native_ok(0x80009000u))std::abort();
+    ram[0x10000]^=1;
+    if(psx_game_text_native_ok(0x80010800u))std::abort();
+    ram[0x10000]^=1;
     cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;cpu.read_byte=psx_read_byte;
     cpu.write_word=psx_write_word;cpu.write_half=psx_write_half;cpu.write_byte=psx_write_byte;
     cpu.gpr[4]=0x80006000u;cpu.gpr[16]=0;cpu.gpr[20]=2;

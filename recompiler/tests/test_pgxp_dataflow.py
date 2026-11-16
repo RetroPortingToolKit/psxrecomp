@@ -190,7 +190,9 @@ def main():
             assert charge and 'precision_block_80010700:' in main_body and 'psx_block_edge_materialize' in main_body
             assert 'psx_precision_block_edge_materialize' not in text
             (work/'region_case.h').write_text('#define REGION_FIRST_CHARGE '+charge[1]+'u\n'
-                '#define REGION_CONT_PC 0x80010730u\n#define REGION_INTERIOR_PC 0x80010724u\n',encoding='utf-8')
+                '#define REGION_CONT_PC 0x80010730u\n#define REGION_INTERIOR_PC 0x80010724u\n'
+                '#define REGION_CODE_BASE 0x80010000u\n#define REGION_CODE_BYTES '+str(len(words)*4)+'u\n'
+                'static const unsigned char region_code[]={'+','.join(str(x) for x in struct.pack('<%dI'%len(words),*words))+'};\n',encoding='utf-8')
             for line in main_body.splitlines():
                 if 'precision-demand: native integer definition' in line:
                     assert 'PGXP_' not in line
@@ -223,10 +225,19 @@ def main():
             obj=work/'actual-owner.o'
             run([a.cc,*common,'-c',ROOT/'recompiler/tests/test_static_dispatch_owner.c','-o',obj])
             objects.append(obj)
+            # The timing-enabled product uses the exact maintained GTE read.
+            # An unrelated aborting linker seam cannot stand in for this path.
+            clock=(a.runtime_root/'runtime/src/psx_cycles.c').read_text(encoding='utf-8')
+            start=clock.index('void psx_gte_read(CPUState* cpu, uint32_t rt) {')
+            end=clock.index('\n}',start)+2
+            source=work/'actual-gte-read.c'
+            source.write_text('#include "cpu_state.h"\n#include "psx_cycles.h"\n'+clock[start:end]+'\n',encoding='utf-8')
+            obj=work/'actual-gte-read.o'
+            run([a.cc,*common,'-c',source,'-o',obj]);objects.append(obj)
         defined, undefined = nm_symbols(objects)
         provided = library_symbols(a.cc)
         stubs = {s for s in undefined-defined-provided if not s.startswith('__')}
-        if any('pgxp_operation' in s or 'pgxp_write_owned' in s or s=='psx_hr_bus_callbacks' or 'pgxp_region_' in s or 'block_edge_materialize' in s or s in ('psx_observation_sample','psx_observation_edge','psx_slice_block_impl','psx_advance_cycles_slow','fixture_regions_owner','fixture_regions_dispatch') for s in stubs):
+        if any('pgxp_operation' in s or 'pgxp_write_owned' in s or s=='psx_hr_bus_callbacks' or 'pgxp_region_' in s or 'block_edge_materialize' in s or s in ('psx_observation_sample','psx_observation_edge','psx_slice_block_impl','psx_advance_cycles_slow','fixture_regions_owner','fixture_regions_dispatch','psx_gte_read','psx_game_text_native_ok') for s in stubs):
             raise RuntimeError('candidate precision implementation is missing; cannot substitute a linker seam')
         result_exe = work/('products.exe' if os.name == 'nt' else 'products')
         for _ in range(20):

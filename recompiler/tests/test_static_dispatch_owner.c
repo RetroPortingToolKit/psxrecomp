@@ -126,8 +126,14 @@ void psx_check_interrupts_at(CPUState *cpu, uint32_t pc) {
 }
 #endif
 void psx_check_interrupts(CPUState *cpu) { (void)cpu; }
+#if defined(PSX_TEST_PGXP_REGIONS)
+/* Ordinary outer returns retain the actual quiet/due policy. */
+#include "psx_cycles.h"
+#include "psx_block_edge.h"
+#else
 #undef PSX_BLOCK_EDGE
 #define PSX_BLOCK_EDGE(cpu, pc) psx_check_interrupts_at((cpu), (pc))
+#endif
 
 #include "owner.inc"
 
