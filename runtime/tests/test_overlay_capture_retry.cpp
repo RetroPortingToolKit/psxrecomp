@@ -16,6 +16,7 @@
 extern "C" int overlay_capture_test_write_state(void);
 extern "C" unsigned overlay_capture_test_write_attempts(void);
 extern "C" int overlay_capture_test_provider_pending(void);
+extern "C" const char *overlay_capture_test_copy_file(const char *src, const char *dst);
 
 extern "C" {
 uint32_t g_dirty_ram_exec_pc_bitmap[DIRTY_RAM_EXEC_BITMAP_WORDS]{};
@@ -225,9 +226,27 @@ int main() {
         return fail("dispatch_entry_segments does not name each entry's segments "
                     "(or kept a cleared epoch's segment)", root);
 
+    /* A failed history copy names the call and its error code. */
+    const std::string missing = (root / "missing-snapshot.json").string();
+    const std::string tmp = (root / "history.tmp").string();
+    const std::string open_failure = overlay_capture_test_copy_file(missing.c_str(), tmp.c_str());
+    if (open_failure.find("open the snapshot to copy it: errno 2 (") != 0)
+        return fail("a missing snapshot does not name the open and errno 2", root);
+    const std::string snapshot = (root / "snapshot.json").string();
+    std::ofstream(snapshot, std::ios::binary) << "{}";
+    const std::string no_dir = (root / "no-such-dir" / "history.tmp").string();
+    const std::string create_failure =
+        overlay_capture_test_copy_file(snapshot.c_str(), no_dir.c_str());
+    if (create_failure.find("create the history temp file: errno 2 (") != 0)
+        return fail("a missing history folder does not name the create and errno 2", root);
+    if (std::string(overlay_capture_test_copy_file(snapshot.c_str(), tmp.c_str())) != "" ||
+        read_all(tmp) != "{}")
+        return fail("a good history copy reports a failure or loses bytes", root);
+
     overlay_capture_wait_pending();
     std::filesystem::remove_all(root, ignored);
     SDL_Quit();
-    std::puts("PASS: periodic capture and provider failures retain additive epochs");
+    std::puts("PASS: periodic capture and provider failures retain additive epochs; "
+              "copy failures name the call and errno");
     return 0;
 }
