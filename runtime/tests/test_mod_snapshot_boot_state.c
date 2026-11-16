@@ -71,17 +71,17 @@ int main(void) {
     CPUState cpu={0};
     uint8_t *legacy=NULL;
     size_t legacy_len=0;
-    /* Exercise vanilla v9 raw/compressed and both handoff phases first. */
+    /* Exercise no-provider raw/compressed snapshots and both handoff phases. */
     assert(!boot_state_handoff_tests());
     cpu.pc=0x80050044;
     assert(boot_state_save_buffer_raw(&cpu,123,0x801b0000,&legacy,&legacy_len));
-    assert(legacy[4]==9);
+    assert(test_u32(legacy + 4)==BOOT_STATE_VERSION_WITHOUT_HOST);
     assert(psx_mod_register_snapshot_guard("test.guard",NULL,1,guard_validate));
     for(unsigned enabled=0;enabled<2;++enabled) {
         guard_active=enabled;
         assert(boot_state_load_buffer(legacy,legacy_len,123,0x801b0000,&cpu));
     }
-    /* Import an actual old-format host section and its layout cookie, without
+    /* Import a guard-format host section and its layout cookie, without
      * retaining the constant provider in new saves. Corrupt imports stay atomic. */
     uint8_t *old=malloc(legacy_len+55);assert(old);memcpy(old,legacy,legacy_len);
     uint8_t *section=old+legacy_len,*payload=section+16;
@@ -89,7 +89,7 @@ int main(void) {
     u32(payload,0x504e534du);u32(payload+4,1);u32(payload+8,1);
     u32(payload+16,1);u32(payload+20,10);u32(payload+24,1);
     memcpy(payload+28,"test.guard",10);payload[38]=1;
-    u32(old+4,10);u32(old+28,test_u32(old+28)+1);
+    u32(old+4,BOOT_STATE_VERSION);u32(old+28,test_u32(old+28)+1);
     uint32_t guard_cookie=2166136261u;const char *id="test.guard";
     do {guard_cookie=(guard_cookie^(uint8_t)*id)*16777619u;}while(*id++);
     for(unsigned i=0;i<4;++i)guard_cookie=(guard_cookie^(uint8_t)(1u>>(8*i)))*16777619u;
@@ -121,7 +121,7 @@ int main(void) {
         a_value=42; b_value=71;
         assert(compressed ? boot_state_save_buffer(&cpu,123,0x801b0000,&saved,&len)
                           : boot_state_save_buffer_raw(&cpu,123,0x801b0000,&saved,&len));
-        assert(saved[4]==10);
+        assert(test_u32(saved + 4)==BOOT_STATE_VERSION);
         count=test_u32(saved+28);
         host=test_find_section(saved,len,BS_SEC_MOD_HOST,&host_offset,&host_framed);
         assert(host && host_offset+host_framed==len);
@@ -195,7 +195,7 @@ int main(void) {
     size_t capacity=0, captured_len=0;
     cpu.pc=0x80050044; ram[0x100]=0xab; a_value=42; b_value=71;
     assert(boot_state_capture_raw(&cpu,123,0x801b0000,&captured,&capacity,&captured_len));
-    assert(captured && captured_len && capacity>=captured_len && captured[4]==10);
+    assert(captured && captured_len && capacity>=captured_len && test_u32(captured + 4)==BOOT_STATE_VERSION);
     const size_t first_len=captured_len, first_capacity=capacity;
     uint8_t *first=captured, *copy=malloc(first_len); assert(copy);
     memcpy(copy,captured,first_len);

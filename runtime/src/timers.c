@@ -45,7 +45,15 @@ typedef struct {
     uint32_t mode;
     uint16_t target;
     int      irq_line; /* toggle mode state */
+    int      irq_done; /* one-shot latch; mode writes rearm it */
+    uint8_t  reset_wait; /* Timer 2 sysclk post-target zero cycles remaining */
 } Timer;
+
+/* Snapshot mode words carry internal state above the guest's 13 mode bits.
+ * Keep it in the existing wire, render-pass and deterministic-digest paths. */
+#define SNAP_IRQ_DONE       (1u << 16)
+#define SNAP_RESET_SHIFT    17
+#define SNAP_RESET_MASK     (3u << SNAP_RESET_SHIFT)
 
 static Timer timers[3];
 static uint32_t timer_frac[3];
@@ -81,7 +89,9 @@ void timers_get_snapshot(uint16_t counter[3], uint32_t mode[3],
                          uint32_t frac[3]) {
     for (int i = 0; i < 3; i++) {
         counter[i]  = timers[i].counter;
-        mode[i]     = timers[i].mode;
+        mode[i]     = timers[i].mode |
+                      (timers[i].irq_done ? SNAP_IRQ_DONE : 0u) |
+                      ((uint32_t)timers[i].reset_wait << SNAP_RESET_SHIFT);
         target[i]   = timers[i].target;
         irq_line[i] = timers[i].irq_line;
         frac[i]     = timer_frac[i];
@@ -93,7 +103,9 @@ void timers_set_snapshot(const uint16_t counter[3], const uint32_t mode[3],
                          const uint32_t frac[3]) {
     for (int i = 0; i < 3; i++) {
         timers[i].counter  = counter[i];
-        timers[i].mode     = mode[i];
+        timers[i].mode     = mode[i] & 0x1FFFu;
+        timers[i].irq_done = (mode[i] & SNAP_IRQ_DONE) != 0;
+        timers[i].reset_wait = (uint8_t)((mode[i] & SNAP_RESET_MASK) >> SNAP_RESET_SHIFT);
         timers[i].target   = target[i];
         timers[i].irq_line = irq_line[i];
         timer_frac[i]      = frac[i];
@@ -111,10 +123,19 @@ static int timer_uses_sysclk(int t) {
     }
 }
 
+static int timer_stopped(int t) {
+    uint32_t mode = timers[t].mode;
+    unsigned sync = (mode & MODE_SYNC_MASK) >> 1;
+    return t == 2 && (mode & MODE_SYNC_EN) && (sync == 0 || sync == 3);
+}
+
 /* Fire IRQ for a timer — sets I_STAT bit. No CPU exception delivery here;
  * the recompiled BIOS checks (i_stat & i_mask) on its own schedule. */
 static void timer_fire_irq(int t) {
     Timer* tm = &timers[t];
+
+    if (!(tm->mode & MODE_IRQ_REPEAT) && tm->irq_done) return;
+    tm->irq_done = 1;
 
     g_timer_irq_fired[t]++;
 
@@ -133,36 +154,20 @@ static void timer_fire_irq(int t) {
         tm->mode |= MODE_IRQ_REQUEST;
     }
 
-    if (!(tm->mode & MODE_IRQ_REPEAT)) {
-        tm->mode &= ~(MODE_IRQ_TARGET | MODE_IRQ_OVERFLOW);
-    }
     /* DEQUEUE: timer IRQ event fired (aux = timer counter at fire). */
     event_ring_record_aux(EV_DEQ, (uint8_t)(SRC_TIMER0 + t), tm->counter);
-}
-
-/* Tick a single timer by one count. Returns nothing; updates flags/IRQ. */
-static void timer_tick_one(int t) {
-    Timer* tm = &timers[t];
-    uint16_t old = tm->counter;
-    tm->counter++;
-
-    if (tm->counter == tm->target) {
-        tm->mode |= MODE_TARGET_FLAG;
-        if (tm->mode & MODE_IRQ_TARGET)
-            timer_fire_irq(t);
-        if (tm->mode & MODE_RESET_TARGET)
-            tm->counter = 0;
-    }
-    if (old == 0xFFFF) {
-        tm->mode |= MODE_OVERFLOW_FLAG;
-        if (tm->mode & MODE_IRQ_OVERFLOW)
-            timer_fire_irq(t);
-    }
 }
 
 static void timer_advance_counts(int t, uint32_t ticks) {
     Timer* tm = &timers[t];
     while (ticks > 0) {
+        if (tm->reset_wait) {
+            uint32_t step = ticks < tm->reset_wait ? ticks : tm->reset_wait;
+            tm->counter = 0;
+            tm->reset_wait = (uint8_t)(tm->reset_wait - step);
+            ticks -= step;
+            continue;
+        }
         uint32_t target_dist = ((uint32_t)tm->target - (uint32_t)tm->counter) & 0xFFFFu;
         uint32_t overflow_dist = 0x10000u - (uint32_t)tm->counter;
         if (target_dist == 0) target_dist = 0x10000u;
@@ -180,8 +185,16 @@ static void timer_advance_counts(int t, uint32_t ticks) {
             tm->mode |= MODE_TARGET_FLAG;
             if (tm->mode & MODE_IRQ_TARGET)
                 timer_fire_irq(t);
-            if (tm->mode & MODE_RESET_TARGET)
-                tm->counter = 0;
+            if (tm->mode & MODE_RESET_TARGET) {
+                /* Timer 2 full sysclk: expose target for this cycle, then
+                 * hold zero for two cycles (period target + 2). Other clock
+                 * sources retain their cadence; their dwell is unqualified.
+                 * Preserve the existing target-zero wrap behavior. */
+                if (t == 2 && timer_uses_sysclk(t) && tm->target != 0)
+                    tm->reset_wait = 2;
+                else
+                    tm->counter = 0;
+            }
         }
         if (old + step > 0xFFFFu || step == overflow_dist) {
             tm->mode |= MODE_OVERFLOW_FLAG;
@@ -204,6 +217,7 @@ void timers_advance(uint32_t cycles) {
     if (cycles == 0) return;
 
     for (int t = 0; t < 3; t++) {
+        if (timer_stopped(t)) continue;
         int src = (timers[t].mode >> 8) & 3;
         if (t == 2 && (src == 2 || src == 3)) {
             timer_advance_divided(t, cycles, 8);
@@ -242,19 +256,24 @@ uint32_t timers_cycles_to_irq(uint32_t i_mask) {
     for (int t = 0; t < 3; t++) {
         if (!(i_mask & (1u << timer_irq[t]))) continue;   /* IRQ masked: not deliverable */
         const Timer* tm = &timers[t];
+        if (timer_stopped(t) || (!(tm->mode & MODE_IRQ_REPEAT) && tm->irq_done))
+            continue;
         int want_target   = (tm->mode & MODE_IRQ_TARGET)   != 0;
         int want_overflow = (tm->mode & MODE_IRQ_OVERFLOW) != 0;
         if (!want_target && !want_overflow) continue;     /* IRQ not armed in mode */
 
         uint32_t ticks = 0xFFFFFFFFu;
-        if (want_target) {
-            uint32_t d = ((uint32_t)tm->target - (uint32_t)tm->counter) & 0xFFFFu;
-            if (d == 0) d = 0x10000u;                     /* matches timer_advance_counts */
-            if (d < ticks) ticks = d;
-        }
+        uint32_t target_dist = ((uint32_t)tm->target - (uint32_t)tm->counter) & 0xFFFFu;
+        if (target_dist == 0) target_dist = 0x10000u;
+        if (want_target)
+            ticks = tm->reset_wait ? tm->reset_wait + tm->target : target_dist;
         if (want_overflow) {
             uint32_t d = 0x10000u - (uint32_t)tm->counter; /* fires on 0xFFFF->0 wrap */
-            if (d < ticks) ticks = d;
+            /* A target reset before the wrap prevents overflow, including
+             * while the post-target dwell is pending. */
+            if (!((tm->mode & MODE_RESET_TARGET) &&
+                  (tm->reset_wait || target_dist < d)) && d < ticks)
+                ticks = d;
         }
         if (ticks == 0xFFFFFFFFu) continue;
 
@@ -281,9 +300,9 @@ uint32_t timers_read(uint32_t addr) {
 #ifndef PSX_ENABLE_BLOCK_CYCLES
             /* Advance counter by a small amount to simulate continuous
              * counting between bulk timers_tick calls. */
-            int inc = 8;
+            int inc = timer_stopped(timer) ? 0 : 8;
             if (timer == 2 && (timers[timer].mode & MODE_CLK_SRC1))
-                inc = 1; /* sysclk/8 mode */
+                inc = timer_stopped(timer) ? 0 : 1; /* sysclk/8 mode */
             uint16_t old = timers[timer].counter;
             timers[timer].counter += inc;
             if (timers[timer].target != 0 &&
@@ -317,11 +336,14 @@ void timers_write(uint32_t addr, uint32_t value) {
     switch (reg) {
         case 0x00:
             timers[timer].counter = value & 0xFFFF;
+            timers[timer].reset_wait = 0;
             break;
         case 0x04:
             timers[timer].mode = (value & 0x03FF) | MODE_IRQ_REQUEST;
             timers[timer].counter = 0;
             timers[timer].irq_line = 0;
+            timers[timer].irq_done = 0;
+            timers[timer].reset_wait = 0;
             timer_frac[timer] = 0;
             /* ENQUEUE: timer (re)armed via mode write (aux = current target). */
             event_ring_record_aux(EV_ENQ, (uint8_t)(SRC_TIMER0 + timer),
@@ -339,10 +361,11 @@ void timers_tick(int cycles) {
     /* Timer 1 in HBlank mode: one frame of the live standard's scanlines */
     if (!timer_uses_sysclk(1)) {
         for (uint32_t h = 0; h < g_psx_lines_per_frame; h++)
-            timer_tick_one(1);
+            timer_advance_counts(1, 1);
     }
 
     for (int t = 0; t < 3; t++) {
+        if (timer_stopped(t)) continue;
         int ticks;
         if (timer_uses_sysclk(t)) {
             ticks = cycles;
@@ -351,7 +374,6 @@ void timers_tick(int cycles) {
         } else {
             continue;
         }
-        for (int c = 0; c < ticks; c++)
-            timer_tick_one(t);
+        if (ticks > 0) timer_advance_counts(t, (uint32_t)ticks);
     }
 }
