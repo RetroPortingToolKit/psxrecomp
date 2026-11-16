@@ -455,9 +455,8 @@ supersampling         = 2      # REQUIRED for geometry_correction to be visible
 
 Both default **false** (the faithful floor). They are independent — a title may
 want stable geometry without changing texture mapping. Settable per-game in
-`game.toml`. (Until 2026-10-24 also per-player in `settings.toml` and a
-launcher row; since then the player's switch is the PGXP Precision mod, see
-S1 below.)
+`game.toml`, and per player in `settings.toml` on the launcher's PGXP page
+(S2 below; between S1 and S2 the player's switch was a built-in mod).
 
 `geometry_correction` needs an internal scale of 2x or more (720p and up at
 240 lines; the title's `internal_resolution`/`supersampling`, or the Internal
@@ -782,7 +781,7 @@ is the line intended for review and eventual merge.
 
 | setting | default | player-reachable? | verdict |
 |---|---|---|---|
-| `perspective_texturing` | false | **yes** — the PGXP Precision mod (was a Display row until S1) | ships |
+| `perspective_texturing` | false | **yes** — the PGXP page (a player setting again since S2) | ships |
 | `geometry_correction` | false | **no** — `game.toml` only (`settings.toml` until S1) | known broken, hidden |
 
 `geometry_correction` is deliberately still *compiled in*. It was not excised,
@@ -1108,10 +1107,10 @@ neighbours sit at their exact y, 0.7 px apart at Helter Skelter's crest, and
 the skipped row is now a visible gap. `tri_mixed` could not see it: every
 drawn vertex was precise, and the missing face draws no triangle at all.
 
-**The fix: NCLIP takes the sign PGXP draws.** A third PGXP option,
-`culling`, belongs to the `psx.enhancement.pgxp` package and is off in the
-builtin. A title's override turns it on, and the player can switch it off on
-the Mods page. While geometry correction is armed, `gte_nclip` computes the
+**The fix: NCLIP takes the sign PGXP draws.** A third PGXP option, precise
+culling, is off by default. The player switches it on the launcher's PGXP page
+(`settings.toml [video] pgxp_culling`, since S2), and a title mod can request
+it. While geometry correction is armed, `gte_nclip` computes the
 exact determinant of the three SXY register shadows
 (`pgxp_gte_nclip_precise`). It uses them only when all three are live,
 describe the current register words, and pass the same truncation agreement
@@ -1344,7 +1343,26 @@ order and requires the in-between frame at phase 1 to equal the real one,
 with each feature (depth, colour) alone and together; each changes the real
 image there.
 
-## S1 — Enhancement settings become built-in mods (2026-10-24, beads-eio.3.398)
+## S2 — The enhancement mods become player settings again
+
+S1 is reversed: settings are not mods. Internal resolution, the CRT filter,
+image filtering, enhanced audio, post-processing, PGXP and rewind are player
+settings in `settings.toml` again, drawn by the launcher's player-settings
+provider (`recompiler/src/player_settings.h`, docs/PLAYER_SETTINGS.md):
+Internal resolution (1x..32x, 4x when none is saved), the CRT filter and Image
+filtering sections and the Automatic resolution section on the Display page;
+vertex correction, perspective textures, CPU propagation and precise culling
+on the PGXP page; Enhanced audio and the Rewind section on the General page.
+The seven built-in packages and their plugins are gone. A saved selection of
+one of them is ignored with one log line. The title's `[video]` / `[audio]`
+keys stay its baseline, and each session start still resolves the player's
+choices over it after mod activation (`host_enhancements.h`,
+`pgxp_session.h`). A title mod can still request PGXP (`pgxp_mod_request`) or
+an internal resolution (`psx_mod_set_internal_resolution`). The built-in mods
+that remain are CD speed, fast loading, 8 MB RAM, HD textures, the bezel and
+the debug server.
+
+## S1 — Enhancement settings become built-in mods (2026-10-24, beads-eio.3.398; reversed by S2)
 
 The launcher's Settings page keeps PC/system controls only (window size,
 fullscreen, renderer, VSync, audio volume, hotkeys, BIOS, multitap; recomp-ui
@@ -1384,8 +1402,8 @@ launcher shows its VSync row overridden.
 height and resolves to an integer scale over the title's reference height
 (`[video] resolution_reference_lines`, 240 by default): 3x, 5x (1200 lines,
 area-resolved to 1080), 6x, 9x, 12x, 18x. It was a Settings row until S1
-(2026-10-24); it is now the built-in Internal Resolution mod over the title's
-`internal_resolution`. It is presentation-only, so it also applies in netplay
+(2026-10-24), a built-in mod until S2, and is now a player setting again
+over the title's `internal_resolution`. It is presentation-only, so it also applies in netplay
 (each peer its own). Keys and precedence: `docs/config_schema.md`.
 
 **Why the old ceiling was 4.** The software renderer keeps a CPU mirror of

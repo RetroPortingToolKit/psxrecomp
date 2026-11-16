@@ -211,7 +211,7 @@ class ModCatalogStagingTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix='psx_relmods_')
         self.build = os.path.join(self.tmp, 'build')
         self.stage = os.path.join(self.tmp, 'stage')
-        self.ids = ['psx.enhancement.cd-speed', 'psx.enhancement.pgxp',
+        self.ids = ['psx.enhancement.cd-speed', 'psx.enhancement.hd-textures',
                     'tomba2.enhancement.widescreen']
         for i in self.ids:
             touch(os.path.join(self.build, 'mods', 'bundled', i, 'manifest.toml'),
@@ -237,11 +237,11 @@ class ModCatalogStagingTest(unittest.TestCase):
 
     def test_a_package_the_build_declared_but_did_not_stage_fails(self):
         shutil.rmtree(os.path.join(self.build, 'mods', 'bundled',
-                                   'psx.enhancement.pgxp'))
+                                   'psx.enhancement.hd-textures'))
         with self.assertRaises(rs.StageError) as cm:
             rs.stage_mods(self.build, self.stage,
                           runtime_target='psx-runtime', log=self.log)
-        self.assertIn('psx.enhancement.pgxp', str(cm.exception))
+        self.assertIn('psx.enhancement.hd-textures', str(cm.exception))
 
     def test_developer_state_never_ships(self):
         touch(os.path.join(self.build, 'mods', 'state.toml'), 'enabled = []\n')

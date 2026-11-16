@@ -2,54 +2,38 @@
 #define PSXRECOMP_HOST_ENHANCEMENTS_H
 
 /*
- * The framework's built-in host enhancement mods:
+ * The player's host enhancement settings (settings.toml, player_settings.h,
+ * the launcher's Display and General pages):
  *
- *   psx.enhancement.crt-filter       CRT Filter: screen model, scanlines and
- *                                    their strength
- *   psx.enhancement.image-filtering  Image Filtering: smoothing (the linear vs
- *                                    nearest present scale, [video]
- *                                    antialiasing), texture filtering and FMV
- *                                    filtering
- *   psx.enhancement.enhanced-audio   Enhanced Audio: the high-quality SPU mix
- *                                    ([audio] spu_hq)
- *   psx.feature.rewind               Rewind: the local rewind ring, its buffer
- *                                    depth and capture interval
- *   psx.enhancement.internal-resolution
- *                                    Internal Resolution: fixed 1x..32x or height
- *                                    ([video] internal_resolution), Auto
- *                                    (dynamic resolution) included
+ *   Internal resolution  [video] internal_resolution: Game default or a fixed
+ *                        1x..32x; 4x when nothing is saved. Automatic
+ *                        resolution, its floor and supersample are the
+ *                        [video] dynamic_resolution* and supersample keys.
+ *   CRT filter           [video] crt_filter, scanlines, scanline_strength
+ *   Image filtering      [video] antialiasing (smooth scaling),
+ *                        texture_filtering, fmv_filter and dithering
+ *   Post-processing      [video] antialiasing_mode, bloom, post_shader
+ *   Enhanced audio       [audio] spu_hq
+ *   Rewind               [video] rewind, rewind_depth, rewind_interval
  *
- * These used to be player settings (settings.toml, the launcher's Display and
- * Audio cards, the in-game menu). The title's game.toml [video] / [audio] keys
- * stay its BASELINE: each enabled option replaces its part, and an option
- * left at "Game default" keeps the baseline value. Internal Resolution starts
- * enabled at fixed 4x; disabling it selects native resolution with dynamic
- * resolution off. The other mods leave the baseline unchanged when disabled
- * (docs/MOD_PACKAGES.md "Built-in host enhancements").
+ * These are player settings, not mods. The title's game.toml [video] /
+ * [audio] keys stay its BASELINE: each saved setting replaces its part, and a
+ * setting the player never saved keeps the baseline value, except Internal
+ * resolution, which uses 4x until the player saves another choice.
  *
- * Lifecycle, the psx.enhancement.pgxp lesson (pgxp_session.h):
+ * Lifecycle:
  *
- *   reset_mod_owned_presentation()  -> psx_host_enh_reset()
- *   mod_runtime_activate_plugins()  -> each enabled mod RECORDS its request
+ *   settings load (startup, launcher write-back)
+ *                                   -> psx_host_enh_player_clear() and one
+ *                                      psx_host_enh_player_set() per saved key
+ *   reset_mod_owned_presentation()  -> psx_host_enh_reset(): this session's
+ *                                      requests start from the player's
  *   renderer setup (session_reboot) -> main.cpp resolves the baseline and the
  *                                      requests (psx_host_enh_resolve) and
  *                                      applies the result
  *
- * Activation only records: it runs before the renderer setup, which applies
- * the baseline and would otherwise undo whatever activation had applied.
- *
- * All six are host-only (their [[plugin]] declares netplay = "host_only"):
- * they change what this machine shows, plays or keeps, never guest execution,
- * so they stay each player's own in netplay and never enter the plan
- * fingerprint (docs/MOD_PACKAGES.md "Host-only plugins").
- *
- * Live option changes (the in-game menu's psx_mod_set_option_live): the CRT
- * Filter and Image Filtering plugins update their request and call the
- * applier main.cpp registered, which resolves again and pushes the result to
- * the renderer. The Internal Resolution plugin calls its own applier, which
- * can refuse (the backend cannot change scale live here, or a netplay match
- * holds the scale): the change then applies at the next start. Main thread
- * only, like the rest of the mod runtime.
+ * They change what this machine shows, plays or keeps, never guest
+ * execution, so each player keeps their own in netplay.
  */
 
 #include "internal_resolution.h"
@@ -61,7 +45,8 @@ extern "C" {
 /* An option at "Game default": keep the title's baseline value. */
 #define PSX_HOST_ENH_DEFAULT (-1)
 
-/* What the four mods can change, in the title's [video] / [audio] terms. */
+/* What these player settings can change, in the title's [video] / [audio]
+ * terms. */
 typedef struct PsxHostLook {
     int screen_kind;            /* 0 raw, 1 crt, 2 composite, 3 trinitron */
     int scanlines;              /* 0/1 */
@@ -79,22 +64,23 @@ typedef struct PsxHostPostLook {
     const char* shader;        /* post-effect preset path, empty for none */
 } PsxHostPostLook;
 
-/* This session's requests: zero-initialized (reset) means no mod enabled. */
+/* This session's requests: zero-initialized means the title's baseline. */
 typedef struct PsxHostEnhRequests {
-    int crt;                    /* CRT Filter enabled */
+    int crt;                    /* a CRT filter setting is saved */
     int crt_screen_kind;        /* PSX_HOST_ENH_DEFAULT or 1..3 */
     int crt_scanlines;          /* PSX_HOST_ENH_DEFAULT, 0 or 1 */
     int crt_strength_pct;       /* 1..100; applies while crt_scanlines is 1 */
-    int image;                  /* Image Filtering enabled */
+    int image;                  /* an image filtering setting is saved */
     int image_smoothing;        /* PSX_HOST_ENH_DEFAULT, 0 sharp or 1 smooth */
     int image_texture_filter;   /* PSX_HOST_ENH_DEFAULT or PSX_TEXTURE_FILTER_* */
     int image_fmv_filter;       /* PSX_HOST_ENH_DEFAULT or VIDEO_FMV_FILTER_* */
     int image_dithering;        /* PSX_HOST_ENH_DEFAULT or 0..2 */
-    int audio;                  /* Enhanced Audio enabled */
-    int rewind;                 /* Rewind enabled */
+    int audio;                  /* 0 baseline, 1 on, 2 off */
+    int rewind;                 /* Rewind on */
     int rewind_depth;           /* 50 / 100 / 150 / 200 */
     int rewind_interval;        /* 1 / 4 / 8 / 12 / 15 */
-    int resolution;             /* Internal Resolution enabled */
+    int resolution;             /* Internal resolution applies (always, from
+                                 * the player's settings) */
     int resolution_value;       /* PSX_IR_UNSET (Game default) or a PSX_IR_*
                                  * value (internal_resolution.h), Auto included;
                                  * not PSX_HOST_ENH_DEFAULT, which is
@@ -102,7 +88,7 @@ typedef struct PsxHostEnhRequests {
     int resolution_min;         /* PSX_IR_UNSET keeps the title's floor */
     int resolution_supersample; /* 0 keeps the title's factor, else milli */
     int resolution_dynamic;     /* 0 follows resolution, 1 off, 2 on */
-    int post;
+    int post;                   /* a post-processing setting is saved */
     int post_antialiasing;      /* PSX_HOST_ENH_DEFAULT or 0..2 */
     int post_bloom;             /* Game default, off or on */
     int post_bloom_pct;         /* 1..200 */
@@ -125,7 +111,7 @@ typedef struct PsxHostResolution {
 #define PSX_HOST_ENH_REWIND_INTERVAL_DEFAULT 15
 #define PSX_HOST_ENH_RESOLUTION_DEFAULT PSX_IR_SCALE(4)
 
-/* The effective look: the baseline, with every part an enabled mod names
+/* The effective look: the baseline, with every part a saved setting names
  * replaced. Pure. */
 static inline PsxHostLook psx_host_enh_resolve(const PsxHostLook* baseline,
                                                const PsxHostEnhRequests* req) {
@@ -150,7 +136,7 @@ static inline PsxHostLook psx_host_enh_resolve(const PsxHostLook* baseline,
         if (req->image_dithering != PSX_HOST_ENH_DEFAULT)
             out.dithering = req->image_dithering;
     }
-    if (req->audio) out.spu_hq = 1;
+    if (req->audio) out.spu_hq = req->audio == 1;
     return out;
 }
 
@@ -169,12 +155,12 @@ static inline PsxHostPostLook psx_host_enh_resolve_post(
     return out;
 }
 
-/* Native when disabled; Game default preserves the title baseline. Auto
+/* Native when not requested; Game default preserves the title baseline. Auto
  * enables dynamic resolution, with an explicit dynamic choice taking priority. */
 static inline PsxHostResolution psx_host_enh_resolve_resolution(
         const PsxHostResolution* baseline, const PsxHostEnhRequests* req) {
-    /* Off is the native reference; an explicitly saved Game default still
-     * opts into the title baseline. Fresh enabled profiles select fixed 4x. */
+    /* No request is the native reference; a saved Game default opts into the
+     * title baseline. Fresh profiles select fixed 4x. */
     PsxHostResolution out = {PSX_IR_NATIVE, 0, baseline->dynamic_resolution_min, 1000};
     if (req->resolution) {
         out = *baseline;
@@ -192,7 +178,7 @@ static inline PsxHostResolution psx_host_enh_resolve_resolution(
     return out;
 }
 
-/* An explicit mod factor also scales native/fixed/legacy targets. Title
+/* An explicit player factor also scales native/fixed/legacy targets. Title
  * defaults retain their historical fixed-scale behavior. */
 static inline int psx_host_enh_render_scale(int value, int ref_lines,
         int display_px_h, int s_max, int ss_milli, int max_display_lines,
@@ -208,43 +194,21 @@ static inline int psx_host_enh_render_scale(int value, int ref_lines,
                                             s_max, ss_milli, max_display_lines);
 }
 
-/* Session start, before plugin activation: forget every request. */
+/* Session start: this session's requests become the player's settings. */
 void psx_host_enh_reset(void);
 
-/* Activation (and live option changes) of the built-in plugins. Arguments use
- * the encodings above; out-of-range values are clamped to the option default
- * by the parsers below before they get here. */
-void psx_host_enh_request_crt(int screen_kind, int scanlines, int strength_pct);
-void psx_host_enh_request_image(int smoothing, int texture_filter, int fmv_filter);
-void psx_host_enh_request_image_dithering(int mode);
-void psx_host_enh_request_audio(void);
-void psx_host_enh_request_rewind(int depth, int interval);
-void psx_host_enh_request_resolution(int value);
-void psx_host_enh_request_resolution_options(int minimum, int supersample_milli, int dynamic);
-void psx_host_enh_request_post(int aa, int bloom, int strength, int shader_mode,
-                               const char* shader);
+/* The player's settings, kept across sessions. clear() is a fresh profile
+ * (Internal resolution 4x, nothing else); set() records one validated
+ * settings.toml value by its "section.key" id and returns 0 for an id that is
+ * not one of these settings. Neither touches the running session. */
+void psx_host_enh_player_clear(void);
+int  psx_host_enh_player_set(const char* id, const char* value);
 
 /* A copy of this session's requests. */
 void psx_host_enh_requests(PsxHostEnhRequests* out);
 
-/* main.cpp's live re-application (resolve + push to the renderer). Returns
- * psx_host_enh_apply_live()'s answer: 1 when a registered applier ran (the
- * change is visible now), 0 when none is registered yet (renderer setup has
- * not run; it will resolve the request itself). */
-typedef void (*PsxHostEnhApplier)(void);
-void psx_host_enh_set_live_applier(PsxHostEnhApplier fn);
-int  psx_host_enh_apply_live(void);
-
-/* The Internal Resolution plugin's live re-application. The applier returns 1
- * when the new scale took effect now, 0 when it waits for the next start
- * (no live-capable backend, or a netplay match). No applier registered: 0. */
-typedef int (*PsxHostEnhResolutionApplier)(void);
-void psx_host_enh_set_resolution_applier(PsxHostEnhResolutionApplier fn);
-int  psx_host_enh_apply_resolution_live(void);
-
-/* Manifest option text -> encoding. Unknown text gives the option's default
- * (Game default, or the documented number), never an error: a value the
- * catalog accepted is always one of these. */
+/* Setting text -> encoding. Unknown text gives the option's default
+ * (Game default, or the documented number), never an error. */
 int psx_host_enh_parse_screen_kind(const char* text);   /* default crt composite trinitron */
 int psx_host_enh_parse_tristate(const char* text);      /* default on off */
 int psx_host_enh_parse_strength(const char* text);      /* "1".."100" */

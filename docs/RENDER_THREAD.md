@@ -252,8 +252,8 @@ on the present thread), queue high water.
 
 ## Dynamic resolution (`[video] dynamic_resolution`)
 
-Opt-in: a player chooses Auto in the built-in Internal Resolution mod
-(`psx.enhancement.internal-resolution`), and a title ships `dynamic_resolution =
+Opt-in: a player turns it on in the Display page's Automatic resolution
+section (`settings.toml [video] dynamic_resolution`), and a title ships `dynamic_resolution =
 true` (or `internal_resolution = "auto"`) with its `dynamic_resolution_min`
 floor in `game.toml`; `PSX_DYNRES=0/1`, `PSX_DYNRES_MIN` for one run. The level
 steps between the configured internal resolution (the ceiling, e.g. Match

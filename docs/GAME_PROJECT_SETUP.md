@@ -271,11 +271,13 @@ is zero-init.
 - `PGXP` — build the title's one runtime as the PGXP hook flavor
   (`-DPSX_PGXP=1`, overlay cache flavor `_f2`, no `_pgxp` suffix). The generated
   C already carries the hook sites, so `generated/` does not change. PGXP stays
-  off at runtime until `psx.enhancement.pgxp` or the `[video]` keys arm it; with
+  off at runtime until the player's PGXP settings, a title mod or the `[video]`
+  keys arm it; with
   it off the guest runs exactly as in the base flavor. Savestates of the two
-  flavors are not interchangeable. A title that ships PGXP on by default does so
-  through a default-on override of `psx.enhancement.pgxp` plus
-  `[video] pgxp_mod_only = true`. See `ENHANCEMENTS.md` G1.11/G1.12.
+  flavors are not interchangeable. A title that ships PGXP on by default sets
+  the `[video]` keys, or ships a default-on mod whose activation requests it
+  (`pgxp_mod_request`) plus `[video] pgxp_mod_only = true`. See
+  `ENHANCEMENTS.md` G1.11/G1.12.
 
 Minimal opt-in example:
 

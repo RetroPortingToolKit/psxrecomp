@@ -103,14 +103,6 @@ and it shares an output directory with the real runtime.
 
 ### Declining a framework builtin (`EXCLUDE_BUILTIN_MODS`)
 
-Internal Resolution (`psx.enhancement.internal-resolution`) is required shared
-UI. It is included even when an older title sets `PSX_BUILTIN_MOD_ALLOWLIST`.
-Excluding it or providing a title-local package with that id fails configure:
-remove the stale exclusion/package and use the shared mod's saved option or
-its disabled state instead. This keeps fresh-profile 4x and the complete
-1x..32x selector consistent for current titles and newly scaffolded games.
-Player-installed packages and saved selections are not removed by staging.
-
 Every package under the framework's `mods/builtin/packages` targets
 `game_id = "*"`, so by default every title ships all of them. A title that does
 not want one — because it ships its own replacement, or because the feature is
@@ -651,8 +643,7 @@ defensive, for the state listed here.
 | Bezel artwork | `psx_mod_set_bezel_artwork` | none (see below) | every session |
 | Frame-interpolation blend mode | `psx_mod_set_frame_interpolation_blend` | default | every session |
 | Native VBlank pacing and its rate | `psx_mod_set_native_vblank_rate` | off, 0 | every session |
-| PGXP request (`psx.enhancement.pgxp`) | the builtin `psx.pgxp` activation (`pgxp_mod_request`) | none | every session |
-| Host enhancement requests (CRT Filter, Image Filtering, Enhanced Audio, Rewind, Internal Resolution) | the builtin activations (`psx_host_enh_request_*`) | none | every session |
+| PGXP request | a title mod's activation (`pgxp_mod_request`) | none | every session |
 | Frame period, if native VBlank pacing was on | `psx_mod_set_native_vblank_rate` | first-session value | later sessions |
 | Frame interpolation and its rate | `psx_mod_set_frame_interpolation` | first-session value | later sessions |
 | Vsync forced off | `psx_mod_set_frame_interpolation`, `psx_mod_set_native_vblank_rate` | first-session value | later sessions |
@@ -668,8 +659,9 @@ soft-returns, behaves exactly as without the reset. The RAM request matters on
 a rematch because `memory_init()` latches the requested geometry again at every
 boot, including the rematch's.
 
-The PGXP request is how the builtin `psx.enhancement.pgxp` package arms
-geometry and texture correction, and its CPU-mode and precise-culling options.
+The PGXP request is how a title mod arms geometry and texture correction,
+CPU mode and precise culling. The player's own PGXP choices are player
+settings (docs/PLAYER_SETTINGS.md), not a mod.
 Its activation records the request. The renderer setup runs after activation,
 and its session arming (`psx_pgxp_session_arm`,
 `runtime/include/pgxp_session.h`) takes the request: it reads it, clears it,
@@ -678,9 +670,8 @@ from activation directly does not work: the renderer setup applies the
 `[video]` baseline afterwards and would switch them back off. A netplay session
 clears the plan, default-on packages included, so it gets the `[video]` keys
 alone, and nothing at all with `[video] pgxp_mod_only`. A title that ships
-PGXP on by default overrides the builtin at the same id and version, with
-`default_enabled = true` and, if it wants it, the `culling` option's default set
-to `"true"` (ENHANCEMENTS.md G1.11/G1.12).
+PGXP on by default sets the `[video]` keys, or ships a default-on mod whose
+activation makes the request (ENHANCEMENTS.md G1.11/G1.12).
 
 Bezel artwork has two parts. The reset clears the artwork path, so the next
 session start loads nothing unless its own activation selects artwork again.
@@ -910,7 +901,7 @@ Trusted graphics plugins can call `psx_mod_set_internal_resolution(lines)` to
 request a rendering height for their session. Values from 120 through 8192 use
 the existing integer-scale resolver and backend allocation limits; zero clears
 the request. `PSX_INTERNAL_RESOLUTION` takes precedence. It wins over the
-built-in Internal Resolution mod's choice and the title's baseline, which stay
+player's Internal resolution setting and the title's baseline, which stay
 unchanged, and every new session clears the request before its mod plan
 activates, including rematches and sessions without that mod.
 
@@ -1171,100 +1162,20 @@ unscoped states are not automatically assigned a non-stock selection: they do
 not record which variant created them. Config rules and the emitted switch: docs/config_schema.md "Mod
 immediates".
 
-### Built-in host enhancements
+### Former built-in host enhancements
 
-Six framework packages replace what used to be Settings rows (owner decision,
-beads-eio.3.398; the rule is recomp-ui's docs/SETTINGS_STANDARD.md: anything
-that changes the game's picture, sound or play is a mod). Each targets
-`game_id = "*"`, keeps save states shared, and declares its plugin
-`netplay = "host_only"` (below). Internal Resolution is enabled at fixed 4x on
-fresh profiles; the other five are default-off. Each
-changes only what this machine shows, plays or keeps, so it is the player's own
-in every netplay mode and never part of the plan fingerprint.
-
-| Package (feature) | Plugin | Options (default) |
-|---|---|---|
-| `psx.enhancement.crt-filter` (CRT Filter) | `psx.crt-filter` | `screen_model`: default / raw / crt / composite / trinitron (default); `scanlines`: default / on / off (default); `scanline_strength`: 1..100 (50) |
-| `psx.enhancement.image-filtering` (Image Filtering) | `psx.image-filtering` | `smoothing`: default / smooth / sharp (default); `texture_filtering`: default / nearest / bilinear / xbr (default); `fmv_filtering`: default / nearest / bilinear / sharp / bicubic (default); `dithering`: default / off / native / fine (default, OpenGL only) |
-| `psx.enhancement.enhanced-audio` (Enhanced Audio) | `psx.enhanced-audio` | none: enabled = the high-quality SPU mix |
-| `psx.feature.rewind` (Rewind) | `psx.rewind` | `buffer`: 50 / 100 / 150 / 200 (50); `interval`: 1 / 4 / 8 / 12 / 15 (15) |
-| `psx.enhancement.internal-resolution` (Internal Resolution) | `psx.internal-resolution` | `resolution`: 1x..32x (4x); retained choices default / native / 720p / 1080p / 1440p / 4k / 5k / 8k / display / auto |
-
-**The title's keys stay its baseline.** `[video] crt_filter`, `scanlines`,
-`scanline_strength`, `antialiasing` (the linear present scale; Smoothing is
-not the `antialiasing_mode` FXAA pass), `texture_filtering`, `fmv_filter` and
-`[audio] spu_hq`, and `[video] internal_resolution` (or the legacy
-`supersampling` factor) with `dynamic_resolution`, are what the title ships.
-With a mod on, each option replaces its part, and an option at `default`
-("Game default" in the launcher) keeps the baseline value. Disabled Internal
-Resolution selects native 1x and turns dynamic resolution off; the other
-mods leave their title baseline unchanged when disabled. Saved feature and
-option choices win over manifest defaults, including explicit Off, Game
-default and the previous height presets; no profile migration is needed.
-Scanline strength applies to the player's own scanlines
-(Scanlines = On); Game default keeps the title's scanlines and their strength.
-Enhanced Audio turns the high-quality mix on; with it off the title's `spu_hq`
-stands. Internal Resolution's 1x..32x choices request an exact integer factor,
-independent of title reference height and the legacy supersample multiplier.
-The renderer still clamps to hardware texture limits and its bounded memory
-budget; selecting 32x does not guarantee an admitted 32x surface or a frame
-rate. No memory-budget increase is implied. Auto is Match display with dynamic
-resolution
-(floor: the title's `dynamic_resolution_min`); a fixed choice turns dynamic
-resolution off. PGXP Precision needs 2x or more (720p and up at 240 lines) to
-be visible. A title mod's `psx_mod_set_internal_resolution` request still wins
-over the Internal Resolution mod, and `PSX_INTERNAL_RESOLUTION` over both
-(docs/config_schema.md "Internal resolution").
-
-**Activation only records.** Each plugin's activation records a request
-(`psx_host_enh_request_*`, `runtime/include/host_enhancements.h`); the
-renderer setup at the session start resolves the requests over the baseline
-after activation (`session_host_look` and `session_internal_resolution` in
-main.cpp) and arms the rewind ring when the machine is configured. Applying at activation would be undone by the
-renderer setup, which is why the PGXP request works the same way. The env
-overrides (`PSX_TEXTURE_FILTER`, `PSX_SCANLINES`, `PSX_AUDIO_SHADOW`,
-`PSX_REWIND`, `PSX_INTERNAL_RESOLUTION`, `PSX_SUPERSAMPLE`, ...) still win for
-a validation run, and the debug TCP commands (`scanline`, `texture_filter`,
-`post_aa`, `dynres`, `video_set`) change the session's effective values.
-
-**Live changes.** CRT Filter, Image Filtering and Internal Resolution register
-option-changed callbacks: an in-game menu option change
-(`psx_mod_set_option_live`) records the new request and re-applies it at once.
-Internal Resolution changes the scale through the same live path as the debug
-server's `video_set` (`gl_renderer_set_internal_scale_live`); when the backend
-cannot change its scale on a running game, or during a netplay match (the
-scale is held), the callback refuses and the saved choice applies at the next
-start. Enhanced Audio and Rewind, and switching any feature on or off, apply at
-the next start. Because these features are host-only, the in-game menu accepts
-their option changes during a netplay match too (`mh_mod_set` asks
-`psx_mod_option_live_host_only`); every other feature stays fixed for the
-match.
-
-**Rewind** keeps `psx_mod_set_rewind_blocked` and the netplay suppression
-(rewind never runs in a match). Its hotkey stays a player setting
-(`[hotkeys] rewind_pad`). A build configured with `-DPSX_REWIND=OFF` does not
-stage `psx.feature.rewind`: `runtime.cmake` declines it like an
-`EXCLUDE_BUILTIN_MODS` entry, so it is absent and recorded as excluded for the
-release packager.
-
-The Internal Resolution mod also owns `minimum` (Game default, Native,
-720p, 1080p, 1440p or Match display), `dynamic_resolution` (follow the
-resolution choice, on or off), and `supersample` (a decimal factor from 1.0
-through 4.0, or `default`). Explicit dynamic resolution can run below a fixed
-ceiling; Auto remains Match display with dynamic resolution enabled.
-
-Post Processing (`psx.enhancement.post-processing`, plugin
-`psx.post-processing`) provides OpenGL FXAA/FXAA HQ, bloom with strength,
-and a custom `.pfx` preset resource. Each effect can keep the title baseline.
-Its file picker appears for Custom preset; referenced GLSL files resolve
-beside that preset. These choices stay local in netplay.
-
-Before the launcher opens, legacy `settings.toml` picture/audio/rewind choices
-seed the replacement mods only where the feature has no explicit selection.
-Existing mod choices, including disabled features, always win. Migration saves
-normal `mods/state.toml` and leaves the original settings file untouched; the
-normal Settings writer drops obsolete keys later. Sample rate, graphics
-presets and failed frame interpolation are never imported.
+Internal resolution, the CRT filter, image filtering, enhanced audio,
+post-processing, PGXP and rewind are player settings, not mods
+(docs/PLAYER_SETTINGS.md, docs/config_schema.md "The game's look"). The
+framework ships no package for them. A `mods.toml` that still selects
+`psx.enhancement.internal-resolution`, `psx.enhancement.crt-filter`,
+`psx.enhancement.image-filtering`, `psx.enhancement.enhanced-audio`,
+`psx.enhancement.post-processing`, `psx.enhancement.pgxp` or
+`psx.feature.rewind` does not fail: the runtime ignores the selection and logs
+one line per package, for example
+`psxrecomp: mod selection ignored: psx.feature.rewind is a player setting now (Settings), not a mod`.
+The built-in mods that remain are CD speed, fast loading, 8 MB RAM, HD
+textures, the bezel and the debug server.
 
 A bounded decimal `[[option]]` uses `type = "decimal"`, integer `min`/`max`
 bounds and a string `default`. A `default = "default"` also permits that
@@ -1280,8 +1191,8 @@ Format 11 adds a fourth plugin class beside `local_view`, `input` and
 format_version = 11
 
 [[plugin]]
-feature = "crt-filter"
-id = "psx.crt-filter"
+feature = "screen-tint"
+id = "example.screen-tint"
 netplay = "host_only"
 ```
 
@@ -1294,7 +1205,7 @@ such a feature is host-only (`ModFeature::host_only`). Then:
 
 - **The plan fingerprint leaves it out.** `canonical_resolution` skips
   host-only features, their options, local files and plugins, and a package made of
-  nothing else. Two players who differ only in, say, the CRT Filter resolve
+  nothing else. Two players who differ only in, say, a screen tint resolve
   the same fingerprint, so isolated save states, the derived-disc cache and
   netplay plan checks are unaffected by it.
 - **It is the player's own in every netplay mode.** A vanilla match keeps it
