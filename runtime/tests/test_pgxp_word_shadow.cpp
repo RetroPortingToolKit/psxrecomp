@@ -387,6 +387,26 @@ int main() {
     CHECK(half_receipt.word.value==uint16_t(Packed));
     CHECK(half_receipt.word.flags==PGXP_F_VXY&&half_receipt.word.x16==before_exact_query.x16&&half_receipt.word.y16==0);
     CHECK(half_receipt.source==0);
+    // LH ends the GPR full scalar. MTC2 keeps its packed half receipt, not
+    // a newly fabricated full scalar, including a same-integer later MFC2.
+    CHECK(pgxp_native_scalar_data(9,8,99.75,1));
+    CHECK(pgxp_native_import_data(9,&half_receipt));
+    CHECK(pgxp_debug_shadow(2,9,&live,&value,&flags,&sx,&sy,&sz));
+    CHECK(live&&value==8&&flags==PGXP_F_VXY&&sx==before_exact_query.x16&&sy==0&&sz==0);
+    double typed_scalar=0;
+    CHECK(!pgxp_native_gte_scalar(9,8,&typed_scalar));
+    machine.gpr[5]=8;psx_pgxp_cop2(&machine,0x48054800u,8,0); // MFC2 a1,IR1
+    psx_pgxp_store(&machine,0xAC250000u,Other,8);
+    CHECK(capture(Other,8).x16==before_exact_query.x16);
+    CHECK(pgxp_native_scalar_data(9,8,99.75,1));
+    pgxp_suppress_begin();CHECK(pgxp_native_import_data(9,&half_receipt));pgxp_suppress_end();
+    CHECK(pgxp_native_gte_scalar(9,8,&typed_scalar)&&typed_scalar==99.75);
+    CHECK(pgxp_native_import_data(9,&half_receipt));
+    CHECK(!pgxp_native_import_data(12,&half_receipt));
+    CHECK(!pgxp_native_import_data(32,&half_receipt));
+    CHECK(pgxp_native_import_data(6,&control_word));machine.gte_data[6]=Packed;
+    psx_pgxp_cop2(&machine,0xE8060000u,Packed,Other);
+    CHECK(pgxp_load_source(Other,Packed)==819);
     const uint32_t half_destination=Other;
     CHECK(pgxp_native_publish_words(&half_destination,&half_receipt,1));
     const auto native_half=capture(Other,uint16_t(Packed));

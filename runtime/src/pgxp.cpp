@@ -1289,6 +1289,18 @@ extern "C" int pgxp_native_scalar_gpr(CPUState *cpu, uint32_t reg, double precis
     return 1;
 }
 
+extern "C" int pgxp_native_import_data(uint32_t reg, const PGXPNativeWord *word) {
+    if (reg >= 32u || (reg >= 12u && reg <= 15u) || !native_word_valid(word)) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();
+    PGXPValue restored = value_from_word_shadow(&word->word);
+    if (!word->word.valid) { restored.value = word->word.value; restored.gen = s_gen; }
+    s_gte[reg] = restored;
+    source_set(&s_gte[reg], word->source);
+    sc_kill(&s_gte_s[reg]);
+    return 1;
+}
+
 extern "C" int pgxp_native_gpr_scalar(uint32_t reg, uint32_t expected, double *precise) {
     if (!precise || reg == 0u || reg >= 34u || !g_pgxp_active || !s_cpu_mode) return 0;
     flush_plain_writes();

@@ -430,6 +430,10 @@ void pgxp_native_exact_gpr(struct CPUState *cpu, uint32_t gpr_mask);
  * vertex halves. Its receipt uses the current generation, clears whole-source
  * lineage when parents differ, and carries the computed half values. */
 int pgxp_native_import_control(uint32_t reg, const PGXPNativeWord *word);
+/* One ordinary MTC2 input whose source is a typed word/half receipt rather
+ * than a full scalar register. Preserve packed halves and source; end a prior
+ * data-register scalar. SXY/FIFO writes use import_sxy instead. */
+int pgxp_native_import_data(uint32_t reg, const PGXPNativeWord *word);
 /* Publish a full scalar result owned by a native operation. reg32/33 name
  * HI/LO; other slots are GPRs. The CPU value is already materialized. tracked
  * is an explicit input-provenance result, never inferred from equal integers.
