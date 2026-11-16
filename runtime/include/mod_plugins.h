@@ -69,6 +69,10 @@ extern uint32_t g_psx_mod_guest_functions;
 int psx_mod_register_instruction_plugin(const char* id, uint32_t address,
                                          uint32_t expected, PSXModFunctionEntryCallback callback);
 void psx_mod_instruction(struct CPUState* cpu, uint32_t address, uint32_t instruction);
+/* Native whole operations must preserve required instruction observations as
+ * well as mutations. This reports any active instruction/address adapter; a
+ * caller that skips the original instruction can conservatively refuse it. */
+int psx_mod_instruction_range_has_hook(uint32_t begin, uint32_t end);
 extern uint32_t g_psx_mod_instruction_hooks;
 /* Redirect one audited load/store's effective address without changing its
  * base register, destination, data, branch state or timing. Registration and
