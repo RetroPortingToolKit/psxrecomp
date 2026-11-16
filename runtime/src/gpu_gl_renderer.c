@@ -655,7 +655,8 @@ static int      s_pass_active = 0;
 /* The open transaction is a netplay local view (gl_renderer_local_view_*):
  * its draws reach only the presenter surface, never the authoritative CPU
  * VRAM, and end(keep) keeps the rect's presented colour. */
-static int      s_pass_local = 0;
+static int      s_pass_local = 0; /* Boolean: canonical color may be kept. */
+static int      s_pass_kind = 0;  /* Active stereo/own-view/local-pair transaction. */
 static uint64_t s_local_commits = 0;
 /* Textures/framebuffers allocated by stereo and own-view transactions. */
 static uint32_t s_pass_allocs = 0;
@@ -8214,6 +8215,7 @@ backed_up:
     s_pj_cpu.n = 0;
     s_pass_active = 1;
     s_pass_local = local;
+    s_pass_kind = kind;
     return 1;
 }
 
@@ -8253,6 +8255,7 @@ static void transaction_restore_ex(int keep_color) {
     s_last_dw = s_pb_last_dw; s_last_dh = s_pb_last_dh;
     s_pass_active = 0;
     s_pass_local = 0;
+    s_pass_kind = 0;
     s_pb_valid = !keep_color;
     if (keep_color) {
         /* The rect now differs from the backup and from the last present. */
@@ -8458,7 +8461,7 @@ int gl_renderer_stereo_end(uint32_t eye, int keep) {
     /* Capture the SAME native-wide image the ordinary compositor presents.
      * The transaction already journals/restores its wide band. Do not flatten
      * a real wider private view back into its canonical VRAM rectangle. */
-    if(s_pass_local==3 && g_wide_w>s_pass_w) {
+    if(s_pass_kind==3 && g_wide_w>s_pass_w) {
         const GLuint wide=pass_wide_fbo_for(s_pass_x);
         if(wide){
             /* Same canonical-centre rule as ordinary wide presentation, but
