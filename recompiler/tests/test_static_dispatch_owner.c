@@ -120,9 +120,11 @@ static int dirty_ram_dispatch(CPUState *cpu, uint32_t addr, uint32_t stop) {
 void psx_rfe_escape_check(CPUState *cpu) {
     (void)cpu; if (escape) longjmp(escape_jmp, 1);
 }
+#if !defined(PSX_TEST_PGXP_REGIONS)
 void psx_check_interrupts_at(CPUState *cpu, uint32_t pc) {
     (void)pc; if (boundary_redirect) cpu->pc = 0x80030000u;
 }
+#endif
 void psx_check_interrupts(CPUState *cpu) { (void)cpu; }
 #undef PSX_BLOCK_EDGE
 #define PSX_BLOCK_EDGE(cpu, pc) psx_check_interrupts_at((cpu), (pc))
