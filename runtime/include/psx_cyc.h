@@ -35,6 +35,7 @@
 #include "cpu_state.h"   /* CPUState (guard-safe: cpu_state.h includes us last) */
 #include "psx_cycles.h"  /* inline psx_advance_cycles */
 #include "psx_memory.h"
+#include "headroom_counters.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -298,6 +299,7 @@ static inline uint32_t psx_cyc_load_word(CPUState* cpu, uint32_t addr,
             psx_cyc_charge(fudge + 5u);
             cpu->ld_which_t = (uint8_t)rt;
         }
+        PSX_HR_RUNTIME_FAST_LOAD(2);
         uint32_t value;
         memcpy(&value, g_psx_ram + (phys & g_psx_ram_mask), sizeof(value));
         return value;
@@ -328,6 +330,7 @@ static inline uint16_t psx_cyc_load_half(CPUState* cpu, uint32_t addr,
             psx_cyc_charge(fudge + 5u);
             cpu->ld_which_t = (uint8_t)rt;
         }
+        PSX_HR_RUNTIME_FAST_LOAD(1);
         uint16_t value;
         memcpy(&value, g_psx_ram + (phys & g_psx_ram_mask), sizeof(value));
         return value;
@@ -357,5 +360,7 @@ extern uint32_t psx_cyc_lwc2_read(CPUState* cpu, uint32_t addr);
 #ifdef __cplusplus
 }
 #endif
+
+#include "psx_block_edge.h"
 
 #endif /* PSX_CYC_H */

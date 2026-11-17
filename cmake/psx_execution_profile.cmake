@@ -128,6 +128,10 @@ function(_psx_execution_compile_source target source output)
     get_filename_component(_ext "${_absolute}" LAST_EXT)
     set(_wrapper "${CMAKE_CURRENT_BINARY_DIR}/psx_execution/${target}/sources/${_path_hash}${_ext}")
     file(CONFIGURE OUTPUT "${_wrapper}" CONTENT "#include \"@_absolute@\"\n" @ONLY)
+    # Separate build-input manifests identify the original logical unit rather
+    # than an include wrapper whose filename/body contains workstation paths.
+    set_source_files_properties("${_wrapper}" PROPERTIES
+        PSX_BUILD_MANIFEST_ORIGINAL_SOURCE "${_absolute}")
     foreach(_property LANGUAGE COMPILE_DEFINITIONS COMPILE_OPTIONS COMPILE_FLAGS
                       INCLUDE_DIRECTORIES OBJECT_DEPENDS SKIP_PRECOMPILE_HEADERS
                       SKIP_UNITY_BUILD_INCLUSION)

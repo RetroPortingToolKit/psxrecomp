@@ -469,10 +469,29 @@ if [[ "${#forbidden[@]}" -gt 0 ]]; then
   printf '  %s\n' "${forbidden[@]}" >&2
   exit 1
 fi
-# BIOS *profiles* (SCPH1001.toml inside overlay_toolchain/bios) are text the
-# toolchain needs; only image files are forbidden.
-bad_bios="$(find "${STAGE}" -type f \( \( -iname 'SCPH*' -a ! -iname '*.toml' \) -o -iname '*.bin' \) \
-    ! -path "${STAGE}/bios/openbios.bin" 2>/dev/null || true)"
+# BIOS profiles are toolchain inputs. Hash-bound, declared disc-user overlay
+# patches are mod assets; reuse the maintained title policy to admit only those.
+bad_bios="$("${PY}" - "${SCRIPT_DIR}/package_title_release.py" "${STAGE}" <<'PY_BIOS'
+from pathlib import Path
+import importlib.util
+import sys
+spec = importlib.util.spec_from_file_location("psx_title_payload_policy", sys.argv[1])
+policy = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = policy
+spec.loader.exec_module(policy)
+stage = Path(sys.argv[2])
+allowed = policy.declared_overlay_assets(stage)
+for path in sorted(stage.rglob("*")):
+    if not path.is_file():
+        continue
+    retail_name = path.name.lower().startswith("scph") and path.suffix.lower() != ".toml"
+    undeclared_bin = (path.suffix.lower() == ".bin" and
+                      path.relative_to(stage).as_posix().lower() != "bios/openbios.bin" and
+                      path.resolve() not in allowed)
+    if retail_name or undeclared_bin:
+        print(path)
+PY_BIOS
+)"
 if [[ -n "${bad_bios}" ]]; then
   echo "error: BIOS image(s) other than the bundled OpenBIOS in the stage:" >&2
   printf '%s\n' "${bad_bios}" | sed 's/^/  /' >&2

@@ -41,9 +41,30 @@ int psx_ws_prim_is_tagged(void){return 0;}
 void gpu_depth24_upload_span_reset(void){}
 /* Netplay unsplit view and forward-pass opt-in: off in these fixtures. */
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
+int gpu_ws_display_width(void){return 320;}
 int render_pass_netplay_enabled(void){return 0;}
-void frame_interpolation_schedule_reset(FrameInterpolationSchedule *p){memset(p,0,sizeof(*p));}
-void frame_flip_tracker_reset(FrameFlipTracker *p){memset(p,0,sizeof(*p));p->period=1;}
+/* Hidden tests explicitly select swap interval zero and have no frontend
+ * cadence owner. Shared by display-history tests which include this fixture. */
+int psx_present_vsync_owns_cadence(void){return 0;}
+/* No frontend overlays, queued screenshots or guest debug-gate state here.
+ * These are the same typed inactive frontend providers used by the existing
+ * display-history fixture (which includes this file). The real renderer,
+ * phase images, selection, swap and ownership code remain linked below. */
+int host_osd_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}
+int host_osd_volume_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
+int psx_rewind_overlay_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
+int psx_host_menu_overlay_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
+int host_osd_needs_present(void){return 0;}
+void host_osd_present_done(void){}
+float psx_rewind_slide(void){return 0;}
+int present_shot_take(char *out,int n){(void)out;(void)n;return 0;}
+void present_shot_done(int ok){(void)ok;}
+void latency_ring_mark(LatencyStage stage){(void)stage;}
+void psx_video_telemetry_compose(int r,int s,int sw,int sh,int dw,int dh,int vw,int vh){
+    (void)r;(void)s;(void)sw;(void)sh;(void)dw;(void)dh;(void)vw;(void)vh;
+}
+void psx_video_telemetry_present(int result){(void)result;}
+void psx_ws_dbg_gate_frame_snapshot(void){}
 static int checks,failures;
 static void check(int ok,const char *label){checks++;if(!ok){fprintf(stderr,"FAIL %s\n",label);failures++;}}
 static void verify(const char *label){
@@ -409,54 +430,7 @@ static void verify_wide_overlay_order(void) {
  }
  free(wide);
 }
-/* Render-pass capture of an anchored wide frame (frame interpolation). The
- * camera view translates world draws by its shift, so the mirror drew the whole
- * wide surface and the canonical frame is NOT its centre. A capture taken on the
- * fast centre path must equal one taken with the fast path off; copying the
- * unshifted canonical frame over the centre shows stale margins beside a
- * displaced centre, alternating with the game's own frames (flicker). */
-static int capture_wide_pass(GLuint tex,int fast){
- PassGen g;memset(&g,0,sizeof g);
- g.source_path=GL_PRES_WIDE;g.x=0;g.y=0;g.w=320;g.h=240;
- flush_flat_batch();flush_tex_batch();
- s_wide_fast=fast;pass_capture_into(tex,&g);s_wide_fast=1;
- return glGetError()==GL_NO_ERROR;
-}
-static void verify_anchored_pass_capture(int scale,int shift){
- const int W=426*scale,H=240*scale;const size_t n=(size_t)W*H*4;
- uint8_t *fast=malloc(n),*full=malloc(n),*again=malloc(n);
- if(!fast||!full||!again){check(0,"anchored pass capture allocation");free(fast);free(full);free(again);return;}
- GLuint tex[2];glGenTextures(2,tex);
- for(int i=0;i<2;i++){
-  glBindTexture(GL_TEXTURE_2D,tex[i]);
-  glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,W,H,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
- }
- /* Full mirror first: a capture that copied the canonical frame into the live
-  * wide surface would also corrupt every later read of it. */
- check(capture_wide_pass(tex[1],0),"anchored pass capture, full mirror");
- check(capture_wide_pass(tex[0],1),"anchored pass capture, fast centre path");
- glPixelStorei(GL_PACK_ALIGNMENT,1);
- glBindTexture(GL_TEXTURE_2D,tex[0]);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,fast);
- glBindTexture(GL_TEXTURE_2D,tex[1]);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,full);
- size_t diff=0;for(size_t i=0;i<n;i++)diff+=fast[i]!=full[i];
- if(diff)fprintf(stderr,"anchored pass capture shift %d: %zu bytes differ\n",shift,diff);
- check(diff==0,"anchored pass capture keeps the mirrored centre");
- check(capture_wide_pass(tex[1],0),"anchored pass capture, full mirror again");
- glBindTexture(GL_TEXTURE_2D,tex[1]);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,again);
- glBindTexture(GL_TEXTURE_2D,0);glPixelStorei(GL_PACK_ALIGNMENT,4);
- diff=0;for(size_t i=0;i<n;i++)diff+=again[i]!=full[i];
- check(diff==0,"anchored pass capture leaves the live wide surface unchanged");
- /* The anchored world marker is in the capture where the view put it. */
- int at_view=0,at_canonical=0;
- for(int y=0;y<H;y++){
-  const uint8_t *v=fast+((size_t)y*W+(size_t)(213+shift)*scale)*4;
-  const uint8_t *c=fast+((size_t)y*W+(size_t)213*scale)*4;
-  at_view+=v[1]>200&&v[0]<64&&v[2]<64;at_canonical+=c[1]>200&&c[0]<64&&c[2]<64;
- }
- check(at_view>0,"anchored marker captured at the view position");
- if(shift)check(at_canonical==0,"no canonical-position marker in the anchored capture");
- glDeleteTextures(2,tex);free(fast);free(full);free(again);
-}
+
 static void verify_presentation_capture(void) {
  const int w=7*s_out_scale,h=3*s_out_scale,stride=w+3;
  uint32_t *out=malloc((size_t)stride*h*4);
@@ -488,6 +462,124 @@ static void verify_presentation_capture(void) {
  glPixelStorei(PSXGL_PACK_ROW_LENGTH,0);glPixelStorei(GL_PACK_ALIGNMENT,4);
  s_cpu_auth_dual=0;free(out);
 }
+static void verify_view_transactions_and_geometry_export(void) {
+ static uint16_t gpu_before[1024*512],gpu_after[1024*512];
+ glb_set_draw_area(0,0,1023,511);glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+ gl_renderer_sync_cpu();memcpy(oracle,image,sizeof image);
+ /* The preceding authority fixture intentionally leaves GPU colour different
+  * from CPU words. Preserve each authoritative surface against its own baseline. */
+ check(gl_renderer_fbo_peek(0,0,1024,512,gpu_before),"native raster before view transactions");
+ gl_renderer_set_interpolation(1,144,144,60,1);
+ gl_renderer_set_interpolation_source(1);
+ check(!gl_renderer_interpolation_owns_cadence(),"retired controls cannot acquire native cadence");
+ check(!gl_renderer_pass_begin(0,0,32,32,1,2,0) && !s_pass_active,
+       "retired temporal replay cannot open a transaction");
+ s_pass_verify=1;
+ check(!gl_renderer_stereo_begin(0,0,INT32_MAX,1,0) && !s_pass_active,
+       "invalid view bounds refuse before scaled allocation");
+ for(unsigned eye=0;eye<2;++eye) {
+  int opened=gl_renderer_stereo_begin(0,0,32,32,eye!=0);
+  check(opened,"stereo transaction still opens independently of temporal replay");
+  if(!opened)continue;
+  glb_draw_flat_rect(2,3,6,5,eye?0x03e0:0x001f);
+  glb_vram_write(100,100,0x7fff); /* unscissored write: journal and restore */
+  check(gl_renderer_stereo_end(eye,1),"stereo retains its independent eye image");
+  check(gl_renderer_pass_verify_vram(),"stereo restores GPU and CPU VRAM exactly");
+  check(!memcmp(image,oracle,sizeof image),"stereo leaves canonical CPU pixels intact");
+ }
+ check(s_stereo_pair[1-s_stereo_current].mask==3,"both view images survive temporal retirement");
+ check(gl_renderer_fbo_peek(0,0,1024,512,gpu_after),"canonical image after stereo");
+ check(!memcmp(gpu_before,gpu_after,sizeof gpu_before),"stereo restores the complete canonical raster");
+
+ PsxPresentationMaterial material={0};PsxPresentationTriangle triangle={0};
+ material.semi=-1;material.clip[2]=1023;material.clip[3]=511;
+ triangle.vertices[0].x=10;triangle.vertices[0].y=10;
+ triangle.vertices[1].x=30;triangle.vertices[1].y=10;
+ triangle.vertices[2].x=10;triangle.vertices[2].y=30;
+ for(unsigned i=0;i<3;++i) {
+  triangle.vertices[i].reciprocal_z=1;
+  triangle.vertices[i].color[0]=triangle.vertices[i].color[3]=1;
+ }
+ check(psx_presentation_gpu_render(&triangle,1,&material,1),"private geometry raster at internal scale");
+ const char *path="geometry-export-test.png";
+ int exported=psx_presentation_gpu_write_png(path,10,10,9,7);
+ check(exported,"write internal-resolution geometry PNG");
+ if(exported) {
+  unsigned char header[24];FILE *file=fopen(path,"rb");
+  const int read=file && fread(header,1,sizeof header,file)==sizeof header;
+  if(file)fclose(file);
+  check(read,"read geometry PNG dimensions");
+  if(read) {
+   const uint32_t w=(uint32_t)header[16]<<24|(uint32_t)header[17]<<16|(uint32_t)header[18]<<8|header[19];
+   const uint32_t h=(uint32_t)header[20]<<24|(uint32_t)header[21]<<16|(uint32_t)header[22]<<8|header[23];
+   check(w==9u*(unsigned)s_out_scale && h==7u*(unsigned)s_out_scale,
+         "PNG preserves every internal-resolution pixel");
+  }
+  check(!remove(path),"remove task-owned PNG after validation");
+ }
+ check(!memcmp(image,oracle,sizeof image),"private geometry/export cannot change native CPU VRAM");
+ check(gl_renderer_fbo_peek(0,0,1024,512,gpu_after),"native raster after geometry export");
+ check(!memcmp(gpu_before,gpu_after,sizeof gpu_before),"private geometry/export cannot change native raster");
+ check(glGetError()==GL_NO_ERROR,"view transactions and geometry export GL error");
+}
+static void coop_wide_held_pixels(void) {
+ uint8_t *pixels=malloc((size_t)s_hold_tw*s_hold_th*4);check(pixels!=NULL,"wide pair drawable allocation");if(!pixels)return;
+ p_glBindBuffer(0x88EB,0);glPixelStorei(GL_PACK_ALIGNMENT,1);glPixelStorei(PSXGL_PACK_ROW_LENGTH,0);
+ glBindTexture(GL_TEXTURE_2D,s_hold_tex);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+ for(int eye=0;eye<2;++eye){
+  int start=eye?s_hold_tw/2:0,pane=s_hold_tw/2;
+  for(int edge=0;edge<2;++edge){
+   size_t at=((size_t)(s_hold_th/2)*s_hold_tw+start+(edge?pane-4:4))*4;
+   check(pixels[at+(eye?2:0)]>200,"actual composed pane retains world at both physical margins");
+  }
+  int green=0,x=start+pane*77/426;
+  for(int y=0;y<s_hold_th;++y){size_t at=((size_t)y*s_hold_tw+x)*4;
+   if(pixels[at+1]>200 && pixels[at]<20 && pixels[at+2]<20)++green;}
+  check(green>=s_hold_th/5,"actual composed pane retains its own visible HUD meter");
+ }
+ free(pixels);
+}
+
+static void verify_wide_coop_hud(void) {
+ const int S=s_hr_scale;const size_t n=(size_t)426*512*S*S;
+ uint32_t *wide_before=malloc(n*4),*wide_after=malloc(n*4);
+ uint16_t *native_before=malloc(320*240*2),*native_after=malloc(320*240*2);
+ check(wide_before && wide_after && native_before && native_after,"wide pair snapshot allocations");
+ if(!wide_before || !wide_after || !native_before || !native_after)goto cleanup;
+ SDL_SetWindowSize(s_win,1280,360);gl_renderer_set_display_aspect(16,9);
+ gl_renderer_local_pair_set_presentation(1);
+ check(gl_renderer_local_pair_presentation_active(),"per-view adaptive layout query follows active local pair");
+ glb_set_draw_area(0,0,319,239);glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+ glb_wide_configure(426,53);glb_wide_set_target(0);glb_wide_set_view(1,0,0,0);
+ glb_fill_rect(0,0,320,240,0x0421);glb_wide_clear(0,0,512,0x0421);
+ int ow=0,oh=0;check(glb_wide_dump_full(wide_before,n,&ow,&oh,0)>0,"wide pair baseline sidecar");
+ check(gl_renderer_fbo_peek(0,0,320,240,native_before),"wide pair baseline native raster");
+ gl_renderer_stereo_stage_reset();
+ for(int eye=0;eye<2;++eye){
+  check(gl_renderer_local_pair_begin(0,0,320,240,eye!=0),"wide own-view transaction begins");
+  glb_draw_flat_rect(-106,0,532,240,eye?0x7c00:0x001f);
+  glb_draw_flat_rect(20,16,8,60,0x03e0); /* original per-view HUD packet position */
+  check(gl_renderer_stereo_end(eye,1),"complete wide world and HUD image retained");
+ }
+ StereoPair *staged=&s_stereo_pair[1-s_stereo_current];
+ check(staged->image_w==426 && staged->tw[0]==426*S && staged->tw[1]==426*S,"wide pair keeps real expanded image extent");
+ const uint64_t lease=gl_renderer_stereo_stage_park();check(lease!=0,"expanded images can be parked");
+ gl_renderer_stereo_stage_reset();int32_t views[2][3]={{0}};
+ check(gl_renderer_stereo_parked_publish(lease,81,psx_cycle_count,views),"parked wide images publish exactly once");
+ check(!gl_renderer_stereo_parked_publish(lease,82,psx_cycle_count,views),"wide lease consumed once");
+ check(gl_renderer_fbo_peek(0,0,320,240,native_after) && !memcmp(native_before,native_after,320*240*2),"wide pair restores native raster including HUD region");
+ check(glb_wide_dump_full(wide_after,n,&ow,&oh,0)>0 && !memcmp(wide_before,wide_after,n*4),"wide pair restores entire canonical sidecar");
+ check(gl_renderer_present_wide_fbo(0,0,240,0),"native-wide presentation accepts a complete local pair");
+ check(s_last_present_path==GL_PRES_STEREO,"native-wide presentation selects the fresh private pair before flat duplication");
+ GlPresEvent e;check(gl_renderer_pres_get(gl_renderer_pres_total()-1,&e) && e.lx==0 && e.ly==0 && e.lw==1280 && e.lh==360,"adaptive wide pair fills actual32:9 drawable without4:3 pillars");
+ coop_wide_held_pixels();
+ gl_renderer_stereo_reset();check(!gl_renderer_local_pair_presentation_active(),"session reset releases adaptive pair layout");
+ glb_wide_set_view(0,0,0,0);glb_wide_disable_target();glb_wide_configure(0,0);glb_set_draw_area(0,0,1023,511);
+ gl_renderer_set_display_aspect(4,3);
+cleanup:
+ free(wide_before);free(wide_after);free(native_before);free(native_after);
+}
+
 int main(int argc,char **argv){
  int scale=argc>1?atoi(argv[1]):1;
  if(SDL_Init(SDL_INIT_VIDEO)!=0)return 2;
@@ -497,6 +589,11 @@ int main(int argc,char **argv){
  glb_init(image);glb_set_scale(scale);gl_renderer_set_swap_interval(0);
  if(!gl_renderer_init_context(win))return 2;
  printf("driver=%s renderer=%s scale=%d\n",glGetString(GL_VERSION),glGetString(GL_RENDERER),scale);
+ if(getenv("PSX_STOCK_PAIR_ONLY")){
+  verify_stereo_transactions();verify_wide_coop_hud();
+  printf("checks=%d failures=%d\n",checks,failures);
+  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
+ }
  glb_set_draw_area(0,0,1023,511);glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);glb_set_color_modulation(128,128,128,1);
  verify("initial upload");
  /* Adaptive backdrop reflection must retain every edge texel at both native
@@ -629,7 +726,6 @@ int main(int argc,char **argv){
   check(wide_pixels[(20*scale)*(426*scale)+213*scale]==0xfff80000u,"centered dialogue marker");
   check(wide_pixels[(60*scale)*(426*scale)]==0xff0000f8u,"anchored left edge");
   check(wide_pixels[(60*scale)*(426*scale)+425*scale]==0xff0000f8u,"anchored right edge");
-  verify_anchored_pass_capture(scale,shift);
  }
  glb_wide_set_view(0,0,0,0);
  check(wide_dx()==53,"disabled view preserves original origin");
@@ -660,6 +756,7 @@ int main(int argc,char **argv){
  check(glb_vram_read(102,302)==0x7c00,"dual software authority samples ordinary VRAM");
  test_title_profile_active=test_title_profile_banks=0;
  gl_renderer_set_cpu_auth_dual(0);
+ verify_view_transactions_and_geometry_export();
  printf("checks=%d failures=%d\n",checks,failures);
  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
 }
