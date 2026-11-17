@@ -168,3 +168,8 @@ for _, kind in SITES + [("", "config_unreadable"), ("", "setup_program")]:
     assert f"`{kind}`" in DOC, f"docs/RUN_REPORT_START.md must list the kind {kind}"
 
 print("start refusal wiring: ok")
+
+# A lock-file error cannot turn exclusive shared-card access into an unchecked start.
+lock_error=MAIN[MAIN.index('const int lock_result=psx_program_set_lock_acquire'):][:700]
+assert 'if (lock_result < 0)' in lock_error
+assert 'return refuse_start("program_set_lock"' in lock_error

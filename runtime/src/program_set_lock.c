@@ -40,8 +40,19 @@ int psx_program_set_lock_acquire(const char *saves_dir)
     return GetLastError() == ERROR_SHARING_VIOLATION ? 0 : -1;
 #else
     if (s_lock >= 0) return 1;
-    s_lock = open(path, O_CREAT | O_RDWR, 0644);
+    int flags = O_CREAT | O_RDWR;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    s_lock = open(path, flags, 0644);
     if (s_lock < 0) return -1;
+    /* A menu relaunch uses execv: the new process must acquire its own lock,
+     * not inherit an untracked descriptor that makes it lock itself out. */
+    if (fcntl(s_lock, F_SETFD, FD_CLOEXEC) == -1) {
+        close(s_lock);
+        s_lock = -1;
+        return -1;
+    }
     if (flock(s_lock, LOCK_EX | LOCK_NB) == 0) return 1;
     {
         const int held = (errno == EWOULDBLOCK);
