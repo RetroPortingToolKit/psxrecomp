@@ -2421,7 +2421,13 @@ extern "C" int psx_debug_window_size(int w, int h) {
      * changing it, including HUD framebuffer readbacks on the render thread. */
     const bool held = rt_held() != 0;
     rt_acquire("window_size");
+#if defined(PSX_SDL3)
     const bool resized = SDL_SetWindowSize(sdl_window, w, h);
+#else
+    /* SDL2 exposes no resize result. Preserve its previous success reply. */
+    SDL_SetWindowSize(sdl_window, w, h);
+    const bool resized = true;
+#endif
     if (!held) rt_release();
     return resized ? 1 : 0;
 }
