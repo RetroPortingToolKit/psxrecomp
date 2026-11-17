@@ -19,7 +19,7 @@ def main() -> int:
     required_range_fragments = (
         "uint32_t exec_pc",
         "(void)exec_pc;",
-        "memcmp(ram + phys, text_ref_image + (phys - text_ref_lo), len)",
+        "memcmp(ram + phys, text_ref_image + (phys - g_psx_text_write_lo), len)",
         "if (!any)",
     )
     for fragment in required_range_fragments:

@@ -178,6 +178,8 @@ void cdrom_advance(uint32_t cycles);
 /* Cycle-budgeted precise event slicing: guest CPU cycles until a DELIVERABLE
  * CD-ROM IRQ (bit2 unmasked in i_mask). UINT32_MAX if none. */
 uint32_t cdrom_cycles_to_irq(uint32_t i_mask);
+/* Mask-blind drive/audio/lid mutation deadline, relative to its service clock. */
+uint32_t cdrom_cycles_to_internal_event(void);
 
 /* Legacy frame-paced entry point for interpreter/oracle builds. */
 void cdrom_tick(void);

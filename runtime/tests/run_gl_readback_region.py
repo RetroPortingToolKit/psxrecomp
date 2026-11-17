@@ -38,8 +38,11 @@ def main():
         if not (compiler / name).is_file():
             parser.error(f"--compiler-bin must contain {name}: {compiler}")
     sdl = pathlib.Path(args.sdl_root).resolve()
-    if not (sdl / "sdl3-src/include").is_dir():
-        parser.error(f"--sdl-root must contain the sdl3-src/include directory: {sdl}")
+    sdl_include = sdl / "sdl3-src/include"
+    if not sdl_include.is_dir() and (sdl / "include/SDL3").is_dir():
+        sdl_include = sdl / "include"
+    if not sdl_include.is_dir():
+        parser.error(f"--sdl-root needs sdl3-src/include or installed include/SDL3: {sdl}")
     sdl_library = pathlib.Path(args.sdl_library).resolve() if args.sdl_library else sdl / "sdl3-build/libSDL3.a"
     if not sdl_library.is_file():
         parser.error(f"SDL3 library does not exist: {sdl_library}")
@@ -52,7 +55,7 @@ def main():
     if args.gl_source:
         shutil.copyfile(args.gl_source, dest / "gpu_gl_renderer.c")
     includes = ["-I", str(dest), "-I", str(framework / "runtime/include"),
-                "-I", str(framework / "runtime/src"), "-I", str(sdl / "sdl3-src/include")]
+                "-I", str(framework / "runtime/src"), "-I", str(sdl_include)]
     receipt = []
 
     def run(command):

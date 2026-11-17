@@ -1,5 +1,5 @@
 /* host_sampler.c - always-on host CPU sampler for the emulation thread
- * (debug-tools builds; TCP host_profile, tools/host_profile.py).
+ * (including Release builds; TCP host_profile, tools/host_profile.py).
  *
  * A background thread samples the emulation thread's instruction pointer
  * every millisecond into a ring, tagged with the guest frame and whether a
@@ -12,8 +12,7 @@
  * Windows: SuspendThread / GetThreadContext / ResumeThread from a sampler
  * thread. POSIX: the process CPU-time timer (SIGPROF) delivered to the
  * emulation thread, which reads its own interrupted PC from the ucontext.
- * Other hosts, and builds without debug tools, report the sampler as
- * unsupported. */
+ * Other hosts report the sampler as unsupported. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE 1   /* REG_RIP, dladdr */
 #endif
@@ -24,25 +23,29 @@
 
 extern int g_psx_render_pass_active;
 extern uint64_t s_frame_count;
+extern volatile uint32_t g_psx_last_fn_entry;
+extern int psx_get_in_exception(void);
 
 static HostSample s_ring[HOST_SAMPLER_CAP];
 static volatile uint64_t s_seq;
 static uintptr_t s_image_base;
 static int s_supported;
 
-#ifndef PSX_NO_DEBUG_TOOLS
+#if !defined(PSX_DISABLE_HOST_SAMPLER) || !PSX_DISABLE_HOST_SAMPLER
 static void record(uintptr_t pc) {
     const uint64_t n = s_seq;
     HostSample *e = &s_ring[n % HOST_SAMPLER_CAP];
     e->rva = (pc >= s_image_base) ? (uint64_t)(pc - s_image_base) : 0;
     e->frame = (uint32_t)s_frame_count;
     e->in_pass = g_psx_render_pass_active ? 1u : 0u;
+    e->guest_pc = g_psx_last_fn_entry;
+    e->flags = psx_get_in_exception() ? HOST_SAMPLE_EXCEPTION : 0u;
     s_seq = n + 1;
 }
 #endif
 
-#if defined(PSX_NO_DEBUG_TOOLS)
-/* Production builds carry no sampler: it reports unsupported. */
+#if defined(PSX_DISABLE_HOST_SAMPLER) && PSX_DISABLE_HOST_SAMPLER
+/* Build-only overhead control. Normal Release/debug builds always retain history. */
 void host_sampler_start(void) {}
 
 #elif defined(_WIN32)
@@ -98,7 +101,7 @@ void host_sampler_start(void) {
                          FALSE, 0))
         return;
     HANDLE t = CreateThread(NULL, 0, sampler_main, NULL, 0, NULL);
-    if (!t) return;
+    if (!t) { CloseHandle(s_target); s_target = NULL; return; }
     SetThreadPriority(t, THREAD_PRIORITY_TIME_CRITICAL);
     CloseHandle(t);
     s_supported = 1;

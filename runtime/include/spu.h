@@ -63,6 +63,9 @@ typedef struct SpuVoiceState {
     uint8_t  adsr_phase;    /* 0=attack 1=decay 2=sustain 3=release */
     int16_t  vol_cur_l;     /* live effective L volume (sweep-aware, full int16) */
     int16_t  vol_cur_r;     /* live effective R volume (sweep-aware, full int16) */
+    uint32_t sample_bank;   /* bank used by this decoder, 0 = hardware RAM */
+    uint32_t pending_bank;  /* next hardware KEYON binding, not current data */
+    uint8_t  mode;          /* bit0 noise, bit1 reverb */
 } SpuVoiceState;
 
 typedef struct SpuGlobalState {
@@ -92,6 +95,10 @@ typedef struct SpuGlobalState {
 } SpuGlobalState;
 
 void spu_get_voice_state(int voice, SpuVoiceState* out);
+/* Read-only private slot snapshot. Event voice number is 24 + slot. Invalid
+ * slots/null outputs return 0; a valid inactive slot still returns 1. Neither
+ * accessor advances the sample clock or enables private voices. */
+int spu_get_private_voice_state(unsigned slot, SpuVoiceState* out);
 void spu_get_global_state(SpuGlobalState* out);
 /* SPUCNT (0x1F801DAA) alone. The sample-event scheduler gates on one ctrl bit
  * per device-service call; building the full SpuGlobalState there (register
@@ -168,6 +175,21 @@ int spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t regs[8],un
 void spu_private_voice_stop(uint32_t mask);
 int spu_private_voice_volume(unsigned slot,uint16_t left,uint16_t right);
 uint32_t spu_private_voice_active(void);
+
+/* Stable nonzero caller tags reserve slots independently of sample-bank IDs.
+ * Claims/releases are all-or-none; active unreserved voices cannot be claimed,
+ * and active reservations cannot be released. Legacy mutations address only
+ * unreserved slots. Tags are deterministic title/plugin identities, never host
+ * pointers or allocation counters; this is a cooperative ownership contract.
+ * Reservations survive inactive notes and current-build snapshots, and reset
+ * with the SPU. Owned stop retains the ordinary Release/no-event-if-inactive
+ * semantics; callers may set volume zero first when their guest requires it. */
+int spu_private_voice_claim(uint64_t owner,uint32_t mask);
+int spu_private_voice_release(uint64_t owner,uint32_t mask);
+uint64_t spu_private_voice_owner(unsigned slot);
+int spu_private_voice_play_owned(uint64_t owner,unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode);
+int spu_private_voice_stop_owned(uint64_t owner,uint32_t mask);
+int spu_private_voice_volume_owned(uint64_t owner,unsigned slot,uint16_t left,uint16_t right);
 
 /* ---- Verified-enhancement shadow tap (consumed by spu_shadow.c) ---------
  *
