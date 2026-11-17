@@ -88,10 +88,6 @@ void debug_server_history_init(void);
 void debug_server_history_frame(void);
 void debug_server_init(int port);
 
-/* Runtime host teardown, on the polling thread before TCP quit exits. This
- * joins runtime workers before CRT/static destruction; optional for tools. */
-void debug_server_set_shutdown_callback(void (*shutdown)(void));
-
 /* The launcher mod requests the listener before session startup. Release
  * defaults off; PSX_DEBUG_SERVER=0/1 explicitly overrides the mod/build default.
  * Reset the mod request before activating each new session's plugins. */
