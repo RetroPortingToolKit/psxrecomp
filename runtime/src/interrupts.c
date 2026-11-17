@@ -759,6 +759,8 @@ void psx_irq_arm_compiled_resume_pc(uint32_t pc)
  * of psx_check_interrupts) where the thread can be re-saved cleanly. */
 int psx_defer_switch_pending = 0;
 #define s_defer_switch_pending psx_defer_switch_pending
+/* A thread switch taken in an exception handler waits for a site-0 poll. */
+int psx_deferred_switch_is_pending(void) { return s_defer_switch_pending; }
 static uint32_t s_defer_switch_target  = 0;  /* TCB PCB[0] should name after the switch */
 static uint32_t s_defer_switch_from    = 0;  /* the interrupted thread to re-save cleanly */
 
