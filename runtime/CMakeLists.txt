@@ -1678,11 +1678,23 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         target_compile_options(exit_critical_section_test PRIVATE -O3 -flto -ffunction-sections)
         target_link_options(exit_critical_section_test PRIVATE -flto -Wl,--gc-sections)
         add_test(NAME exit_critical_section_test COMMAND exit_critical_section_test)
+        add_executable(critical_tcb_state_test tests/test_critical_tcb_state.c)
+        target_include_directories(critical_tcb_state_test PRIVATE include)
+        target_compile_definitions(critical_tcb_state_test PRIVATE PSX_NO_DEBUG_TOOLS=1)
+        target_compile_options(critical_tcb_state_test PRIVATE
+            -O3 -flto=1 -fwhole-program -ffunction-sections -fdata-sections)
+        target_link_options(critical_tcb_state_test PRIVATE -flto=1 -Wl,--gc-sections)
+        add_test(NAME critical_tcb_state_test COMMAND critical_tcb_state_test)
     else()
         add_test(NAME exit_critical_section_test
             COMMAND "${CMAKE_COMMAND}" -E echo
                 "SKIP: real-handler LTO fixture is verified only on Windows x64 MinGW GCC 16.1.0; current compiler is ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
         set_tests_properties(exit_critical_section_test PROPERTIES
+            SKIP_REGULAR_EXPRESSION "^SKIP:")
+        add_test(NAME critical_tcb_state_test
+            COMMAND "${CMAKE_COMMAND}" -E echo
+                "SKIP: real-handler LTO fixture is verified only on Windows x64 MinGW GCC 16.1.0; current compiler is ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
+        set_tests_properties(critical_tcb_state_test PROPERTIES
             SKIP_REGULAR_EXPRESSION "^SKIP:")
     endif()
 
