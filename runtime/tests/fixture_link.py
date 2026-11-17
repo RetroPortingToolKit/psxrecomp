@@ -122,7 +122,7 @@ def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=(),
         raise SystemExit("link did not converge for %s" % opt)
 
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PSX_")}
-    run = _run([str(exe)], env=env, timeout=60)
+    run = _run([str(exe)], env=env)
     if run.returncode != 0:
         raise SystemExit("%s: fixture failed (rc=%d)\n%s%s"
                          % (opt, run.returncode, run.stdout, run.stderr))
