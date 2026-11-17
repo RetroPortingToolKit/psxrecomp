@@ -633,6 +633,14 @@ typedef struct {
 } StaticMatchCache;
 
 static StaticMatchCache s_static_match_cache[STATIC_MATCH_CACHE_CAP];
+/* Union of every [lo_min, hi_max) ever stored in the cache (it only
+ * widens, so it stays a superset after evictions). A PC outside it cannot be
+ * spanned by any entry: psx_overlay_resident_crc_at() answers without the
+ * 16,384-entry scan. CMR2 runs its self-modified boot-EXE renderer through the
+ * dirty interpreter and paid that scan on every external entry (39 of 60 host
+ * stack samples in a race, 0.55x). Same answer, O(1). */
+static uint32_t s_static_span_lo = 0xFFFFFFFFu, s_static_span_hi = 0u;
+static uint64_t s_resident_crc_scans = 0;   /* full-cache scans (tests) */
 static uint8_t s_static_match_victim[STATIC_MATCH_CACHE_SETS];
 
 /* Main-RAM offset of a variant code range, through the one geometry contract
@@ -739,6 +747,8 @@ int psx_overlay_static_code_matches(const uint32_t *lo_len_pairs,
         entry->matches = matches;
         entry->lo_min = lo_min;
         entry->hi_max = hi_max;
+        if (lo_min < s_static_span_lo) s_static_span_lo = lo_min;
+        if (hi_max > s_static_span_hi) s_static_span_hi = hi_max;
     }
     return matches;
 }
@@ -769,6 +779,11 @@ uint32_t psx_overlay_resident_crc_at(uint32_t phys, int *valid) {
         if (valid) *valid = 0;
         return s_last_crc;
     }
+    if (phys < s_static_span_lo || phys >= s_static_span_hi) {  /* no cached variant can span it */
+        if (valid) *valid = 0;
+        return s_last_crc;
+    }
+    s_resident_crc_scans++;
     for (uint32_t i = 0; i < STATIC_MATCH_CACHE_CAP; i++) {
         const StaticMatchCache *e = &s_static_match_cache[i];
         if (!e->ranges || phys < e->lo_min || phys >= e->hi_max)
@@ -790,6 +805,8 @@ uint32_t psx_overlay_resident_crc_at(uint32_t phys, int *valid) {
     if (valid) *valid = 0;
     return stale ? stale : s_last_crc;
 }
+
+uint64_t overlay_loader_resident_crc_scans(void) { return s_resident_crc_scans; }
 
 void overlay_loader_static_match_stats(uint64_t *rehashes,
                                        uint64_t *crc_misses,
