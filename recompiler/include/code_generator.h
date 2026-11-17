@@ -73,6 +73,8 @@ struct CodeGenConfig {
     std::set<uint32_t> mod_instruction_sites;
     // [recompiler.geometry_control_frames]: entry -> exact title contract guard.
     std::map<uint32_t,std::string> geometry_control_frames;
+    // Explicit consumer closure: canonical scratch EA operations are not precision observers.
+    std::set<uint32_t> geometry_scratch_frames;
     // [[mod_immediate.sites]]: guarded instructions whose immediate a trusted mod
     // selects at run time; emitted as a selector switch over every variant.
     std::vector<PSXRecompV4::ModImmediateSite> mod_immediate_sites;
@@ -408,10 +410,11 @@ private:
     std::set<uint32_t> precision_region_opaque_;
     std::set<uint32_t> precision_geometry_dead_;
     bool precision_geometry_control_ = false;
+    bool precision_geometry_scratch_ = false;
     std::string precision_geometry_guard_;
     std::string precision_region_owner_;
     std::string region_materializer(const PgxpRegionState&) const;
-    std::string region_flush();
+    std::string region_flush(bool preserve_integer_facts = false);
     void prepare_precision_regions(const ControlFlowGraph&);
     std::string native_tail_caller_;
     bool native_tail_signature_ = true; // alias bodies have an extra entry argument

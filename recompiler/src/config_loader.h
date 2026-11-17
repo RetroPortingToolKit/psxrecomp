@@ -1551,6 +1551,8 @@ struct GameConfig {
     // A title-certified precision contract, not a generic register heuristic.
     // Keys are function entries; values are linked C guard identifiers.
     std::map<uint32_t,std::string> geometry_control_frames;
+    // Explicit consumer closure: canonical scratch EA operations are not precision observers.
+    std::set<uint32_t> geometry_scratch_frames;
 };
 
 // Effective clip_edge_width: explicit value, else screen_w_imms[0], else 320.

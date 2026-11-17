@@ -213,15 +213,18 @@ std::string CodeGenerator::region_materializer(const PgxpRegionState& state) con
     return name;
 }
 
-std::string CodeGenerator::region_flush() {
+std::string CodeGenerator::region_flush(bool preserve_integer_facts) {
     bool any=false;for(unsigned r=1;r<32;++r)any|=precision_region_state_[r].known;
     const auto out=any ? config_.indent+region_materializer(precision_region_state_)+"(cpu);\n" : "";
-    precision_region_state_={};return out;
+    if(preserve_integer_facts)pgxp_region_publish_facts(precision_region_state_);
+    else precision_region_state_={};
+    return out;
 }
 void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
     std::vector<PgxpFlowBlock> blocks,geometry_blocks;
     std::set<uint32_t> roots{cfg.function_start};
-    precision_geometry_dead_.clear();precision_geometry_control_=false;
+    precision_geometry_dead_.clear();precision_geometry_control_=false;precision_geometry_scratch_=false;
+    std::set<uint32_t> load_delay_opaque;
     precision_geometry_guard_.clear();
     const auto contract=config_.geometry_control_frames.find(cfg.function_start);
     precision_region_opaque_.clear();
@@ -251,6 +254,7 @@ void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
             if(op>=0x20&&op<=0x26&&rt)if(auto next=exe_.read_word(a+4u)) {
                 if(pgxp_flow_effect(*next).uses&(UINT64_C(1)<<rt)) {
                     opaque=true;precision_region_opaque_.insert(a+4u);
+                    load_delay_opaque.insert(a);load_delay_opaque.insert(a+4u);
                 }
             }
             if(opaque)precision_region_opaque_.insert(a);
@@ -259,10 +263,12 @@ void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
         auto geometry=f;
         for(auto& i:geometry.instructions) {
             // Timing/GTE helpers are not arbitrary metadata consumers. Exact
-            // mod/selector sites remain opaque unless the title contract owns
-            // them; this first frame-chain implementation excludes such sites.
+            // selectors remain opaque. A scratch-frame declaration certifies
+            // the exact handled adapters' SP/RA roles; emission still publishes
+            // every pending geometry receipt before invoking those adapters.
             i.opaque=extra_labels_.count(i.address)||
-                !mod_instruction_call(i.address,i.word).empty()||
+                (!config_.geometry_scratch_frames.count(cfg.function_start) &&
+                 !mod_instruction_call(i.address,i.word).empty())||
                 find_mod_immediate_site(i.address,i.word)||
                 !draw_distance_clamp_prefix(i.address,i.word).empty();
         }
@@ -285,11 +291,25 @@ void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
             if(complete) {
                 precision_geometry_dead_=sites;precision_geometry_control_=true;
                 precision_geometry_guard_=contract->second;
+                precision_geometry_scratch_=config_.geometry_scratch_frames.count(cfg.function_start)!=0;
             }
         }
     }
+    if(precision_geometry_scratch_) {
+        // Runtime guard certifies this exact canonical-bus/handled-adapter
+        // closure. Helpers are classified by real operands below, not by the
+        // presence of a psx_/gte_ name. Load-delay and explicit hooks stay full.
+        blocks=geometry_blocks;precision_region_opaque_=load_delay_opaque;
+        for(auto& b:blocks)for(auto& i:b.instructions) {
+            // The certified adapter may consume geometry metadata: publish
+            // before it even though its declared CPU-register effects are zero.
+            i.opaque=i.opaque||load_delay_opaque.count(i.address)||
+                !mod_instruction_call(i.address,i.word).empty();
+            if(i.opaque)precision_region_opaque_.insert(i.address);
+        }
+    }
     for(auto& b:blocks)for(auto& i:b.instructions)if(precision_region_opaque_.count(i.address))i.opaque=true;
-    precision_region_plan_=pgxp_region_plan(blocks,roots,precision_geometry_dead_);
+    precision_region_plan_=pgxp_region_plan(blocks,roots,precision_geometry_dead_,precision_geometry_scratch_);
 }
 
 std::string CodeGenerator::emit_interrupt_check(uint32_t resume_pc,
@@ -1160,7 +1180,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr,
             const auto effect=pgxp_flow_effect(instr);
             std::string prefix;
             if(effect.pure_alu)precision_region_state_[effect.destination]={};
-            else prefix=region_flush();
+            else prefix=region_flush(precision_geometry_scratch_);
             const bool saved=precision_operation_body_;precision_operation_body_=true;
             const auto integer=translate_instruction_core(addr,instr);
             precision_operation_body_=saved;
@@ -1168,10 +1188,11 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr,
         }
         const auto before=precision_region_state_;
         const auto hook_at=body.find("PGXP_ALU(");
-        const bool candidate=ordinary && !precision_region_opaque_.count(addr) &&
-            hook_at!=std::string::npos && body.find("PGXP_ALU(",hook_at+1u)==std::string::npos;
+        const bool candidate=!precision_region_opaque_.count(addr) &&
+            ((ordinary && hook_at!=std::string::npos && body.find("PGXP_ALU(",hook_at+1u)==std::string::npos) ||
+             (precision_geometry_scratch_ && (instr>>26)==0x24u && pgxp_region_scratch_memory(instr,before)));
         unsigned destination=0;PgxpRegionValue value;
-        if(candidate && pgxp_region_definition(instr,before,destination,value)) {
+        if(candidate && pgxp_region_definition(instr,before,destination,value,precision_geometry_scratch_)) {
             const bool saved=precision_operation_body_;precision_operation_body_=true;
             const auto integer=translate_instruction_core(addr,instr);
             precision_operation_body_=saved;
@@ -1179,8 +1200,25 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr,
             return integer+" /* precision-demand: native integer definition */";
         }
         const auto effect=pgxp_flow_effect(instr);
-        if(!ordinary || effect.defines || effect.uses || effect.barrier || (instr>>26)>=0x10u)
-            return region_flush()+hook+body;
+        if(precision_geometry_scratch_ && !precision_region_opaque_.count(addr)) {
+            auto next=before;uint32_t publish=0;
+            if(pgxp_region_operand_boundary(instr,next,&publish)) {
+                auto consumed=before;bool any=false;
+                for(unsigned r=1;r<32;++r) {
+                    if(!(publish&(1u<<r)))consumed[r]={};
+                    any|=consumed[r].known;
+                }
+                precision_region_state_=next;
+                return (any?config_.indent+region_materializer(consumed)+"(cpu);\n":"")+
+                    hook+body+" /* precision-demand: operand-only scratch/GTE boundary */";
+            }
+        }
+        if(!ordinary || effect.defines || effect.uses || effect.barrier || (instr>>26)>=0x10u) {
+            const bool explicit_cpu=precision_geometry_scratch_ && pgxp_region_explicit_cpu_effect(instr);
+            const auto out=region_flush(explicit_cpu);
+            if(explicit_cpu)pgxp_region_canonical_effect(instr,precision_region_state_);
+            return out+hook+body;
+        }
         return hook+body;
     }
     bool dead_shadow = false;

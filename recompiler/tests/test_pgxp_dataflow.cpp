@@ -34,8 +34,51 @@ static void geometry_control_demand() {
     auto unbalanced=blocks;unbalanced[2].instructions.back().word=0x27bd0014;
     CHECK(!pgxp_control_frame(unbalanced,0x1000).valid);
 }
+static void scratch_operand_demand() {
+    PgxpRegionState state{};unsigned dst=0;PgxpRegionValue value;
+    CHECK(pgxp_region_definition(0x3c0e1f80u,state,dst,value,true));state[dst]=value;
+    // A real frame save publishes pending receipts but cannot change t6's
+    // proven native integer. This fact is separate from pending precision.
+    pgxp_region_publish_facts(state);CHECK(!state[14].known&&state[14].constant);
+    CHECK(pgxp_region_step({0x1000,0x91c202b4u},state,true)); // LBU v0,2B4(t6)
+    CHECK(state[2].bounded&&state[2].maximum==255&&!state[2].flags[1]);
+    CHECK(pgxp_region_step({0x1004,0x00021080u},state,true)); // SLL v0,2
+    CHECK(state[2].maximum==1020);
+    CHECK(pgxp_region_step({0x1008,0x004e1021u},state,true)); // ADDU v0,t6
+    CHECK(state[2].minimum==0x1f800000u&&state[2].maximum==0x1f8003fcu);
+    CHECK(state[2].flags[0]==0&&state[2].flags[1]==3);
+    uint32_t publish=~0u;
+    CHECK(pgxp_region_operand_boundary(0xc8460000u,state,&publish)&&!publish); // LWC2 gte6,(v0)
+    CHECK(state[2].known); // EA is not a precision operand
+    CHECK(!pgxp_region_scratch_memory(0xc8460004u,state)); // full word crosses scratch end
+    CHECK(pgxp_region_operand_boundary(0xadC20000u,state,&publish)&&(publish&(1u<<2))); // SW v0,(t6)
+    CHECK(!state[2].known&&state[14].constant);
+    // Crossing scratch end, partial merges and MMIO are full boundaries.
+    CHECK(!pgxp_region_operand_boundary(0x89c20001u,state));
+    state[14].value=0x1f810000u;CHECK(!pgxp_region_scratch_memory(0x91c20000u,state));
+    // A loaded canonical source must first consume an old deferred alias.
+    state={};state[14].known=true;state[14].constant=true;state[14].value=0x1f800000u;
+    state[3].known=true;state[3].incoming_add=true;state[3].source=2;state[3].addend=1;
+    CHECK(pgxp_region_operand_boundary(0x8dc20000u,state,&publish)&&(publish&(1u<<3)));
+    CHECK(!state[2].known&&!state[3].known);
+    // A loop's unvisited backedge is not an unknown value. The dominating
+    // LUI survives a quiet backedge; a real overwrite/opaque entry ends it.
+    const std::vector<PgxpFlowBlock> loop={
+        {0x1000,{{0x1000,0x3c0e1f80u}},{0x1010}},
+        {0x1010,{{0x1010,0x91c202b4u},{0x1014,0x00021080u},{0x1018,0x004e1021u},
+                   {0x101c,0xc8460000u}},{0x1010,0x1020}},
+        {0x1020,{}, {},true}};
+    const auto plan=pgxp_region_plan(loop,{0x1000},{},true);
+    CHECK(plan.entry.at(0x1010)[14].constant&&plan.definitions>=4);
+    auto clobbered=loop;clobbered[1].instructions.insert(clobbered[1].instructions.begin(),{0x100c,0x01a07021u});
+    CHECK(!pgxp_region_plan(clobbered,{0x1000},{},true).entry.at(0x1020)[14].constant);
+    auto opaque=loop;opaque[1].instructions.insert(opaque[1].instructions.begin(),{0x100c,0x0c000800u,true});
+    CHECK(!pgxp_region_plan(opaque,{0x1000},{},true).entry.at(0x1020)[14].constant);
+    const auto canonical=pgxp_region_plan(loop,{0x1000},{},false);
+    CHECK(!canonical.entry.at(0x1020)[2].known);
+}
 int main() {
-    geometry_control_demand();
+    geometry_control_demand();scratch_operand_demand();
     // GTE -> split halves -> arithmetic -> repack -> memory: every precision
     // dependency remains, including an in-place destination/source alias.
     PgxpFlowBlock geometry{0,{{0,0x48087000},{4,r(0,8,9,3,16)},

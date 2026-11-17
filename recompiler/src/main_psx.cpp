@@ -225,6 +225,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
     std::vector<PSXRecompV4::WidescreenMaskedRejectSite> ws_cull_masked_reject;
     std::set<uint32_t>    hot_funcs;            // [recompiler] hot_funcs
     std::map<uint32_t,std::string> geometry_control_frames;
+    std::set<uint32_t> geometry_scratch_frames;
     std::set<uint32_t>    load_charge_batch_funcs; // [recompiler] load_charge_batch*
     std::map<uint32_t, std::array<uint32_t, 4>> vsync_query_hle_funcs;
     std::set<uint32_t>    ws_cull_bias, ws_cull_range, ws_cull_a1; // [widescreen.cull]
@@ -295,6 +296,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
         mod_instruction_sites.insert(cfg.mod_instruction_sites.begin(), cfg.mod_instruction_sites.end());
         mod_immediate_sites = cfg.mod_immediate_sites;
         geometry_control_frames = cfg.geometry_control_frames;
+        geometry_scratch_frames = cfg.geometry_scratch_frames;
         hot_funcs.insert(cfg.hot_funcs.begin(), cfg.hot_funcs.end());
         if (cfg.load_charge_batch) {
             load_charge_batch_funcs.insert(cfg.load_charge_batch_funcs.begin(),
@@ -411,6 +413,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
     // sites (same TOML) — std::set insert dedupes.
     if (!ws_config_path.empty()) {
         const auto wscfg = PSXRecompV4::load_game_config(ws_config_path);
+        geometry_scratch_frames.insert(wscfg.geometry_scratch_frames.begin(),wscfg.geometry_scratch_frames.end());
         for(const auto& [entry,guard]:wscfg.geometry_control_frames) {
             const auto at=geometry_control_frames.find(entry);
             if(at!=geometry_control_frames.end() && at->second!=guard)
@@ -1556,6 +1559,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
     codegen_config.data_shard_funcs = ds_funcs;
     codegen_config.mod_function_entry_funcs = mod_entry_funcs;
     codegen_config.geometry_control_frames = geometry_control_frames;
+    codegen_config.geometry_scratch_frames = geometry_scratch_frames;
     codegen_config.ws_cull_masked_reject_sites = ws_cull_masked_reject;
     codegen_config.mod_instruction_sites = mod_instruction_sites;
     codegen_config.mod_immediate_sites = mod_immediate_sites;

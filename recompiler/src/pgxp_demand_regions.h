@@ -13,6 +13,9 @@ namespace PSXRecomp {
  * unsupported uses stay canonical. Integers execute as ordinary native C. */
 struct PgxpRegionValue {
     bool known = false, constant = false;
+    // Native bounded indices/addresses need no run-time shadow arithmetic.
+    bool bounded = false;
+    uint32_t minimum = 0, maximum = 0;
     uint32_t value = 0;
     // One affine definition from the still-canonical incoming receipt. A later
     // dependent definition materializes first; never collapse intermediate
@@ -22,9 +25,11 @@ struct PgxpRegionValue {
     int16_t addend = 0;
     uint8_t flags[2] = {0,0};
     bool operator==(const PgxpRegionValue& b) const {
-        return known==b.known && (!known || (constant==b.constant &&
+        return known==b.known && constant==b.constant && bounded==b.bounded &&
+            (!constant || value==b.value) &&
+            (!bounded || (minimum==b.minimum && maximum==b.maximum)) &&
             incoming_add==b.incoming_add && (!incoming_add || (source==b.source && addend==b.addend)) &&
-            (!constant || value==b.value) && flags[0]==b.flags[0] && flags[1]==b.flags[1]));
+            flags[0]==b.flags[0] && flags[1]==b.flags[1];
     }
     bool operator!=(const PgxpRegionValue& b) const { return !(*this==b); }
 };
@@ -167,22 +172,88 @@ inline PgxpGeometryDemand pgxp_geometry_demand(const std::vector<PgxpFlowBlock>&
     for(const auto& b:blocks)transfer(b,&result.dead);
     return result;
 }
+/* These are static EA proofs, not run-time admission. Only the consumer's
+ * certified canonical-bus/observer closure may retain receipts across them.
+ * Unknown RAM/MMIO/custom operations keep the original whole-state boundary. */
+inline bool pgxp_region_range(const PgxpRegionValue& value,uint32_t& lo,uint32_t& hi) {
+    if(value.incoming_add)return false;
+    if(value.constant){lo=hi=value.value;return true;}
+    if(!value.bounded)return false;
+    lo=value.minimum;hi=value.maximum;return true;
+}
+inline bool pgxp_region_scratch_memory(uint32_t w,const PgxpRegionState& state) {
+    const unsigned op=w>>26,rs=(w>>21)&31u;
+    unsigned width=0;
+    switch(op) {
+    case 0x20:case 0x24:case 0x28:width=1;break;
+    case 0x21:case 0x25:case 0x29:width=2;break;
+    case 0x23:case 0x2b:case 0x32:case 0x3a:width=4;break;
+    default:return false; // partial merges and unsupported access stay full
+    }
+    uint32_t lo,hi;if(!rs || !pgxp_region_range(state[rs],lo,hi))return false;
+    const int64_t first=(int64_t)lo+(int16_t)w,last=(int64_t)hi+(int16_t)w;
+    if(first<0 || last>0xbfffffffu || first>last)return false;
+    // A range must stay in one alias, not wrap through a RAM/device mapping.
+    if((uint64_t(first)>>29)!=(uint64_t(last)>>29))return false;
+    const uint32_t pfirst=(uint32_t)first&0x1fffffffu,plast=(uint32_t)last&0x1fffffffu;
+    return pfirst>=0x1f800000u && plast<=0x1f800400u-width;
+}
+inline bool pgxp_region_operand_boundary(uint32_t w,PgxpRegionState& state,
+                                        uint32_t* publish=nullptr) {
+    const auto effect=pgxp_flow_effect(w);const unsigned op=w>>26;
+    // GTE operations read their own state. MTC2/CTC2 demand only rt; MFC2/CFC2
+    // overwrite only rt. Their actual full hooks/commands remain unchanged.
+    if(!pgxp_region_scratch_memory(w,state) && !(op==0x12u&&!effect.barrier))return false;
+    uint32_t mask=(uint32_t)effect.uses;
+    // Publishing or overwriting an affine source must consume every pending
+    // affine destination first, with the existing snapshot-before-publish API.
+    bool affine=false;
+    for(unsigned r=1;r<32;++r)if(state[r].incoming_add &&
+            ((mask&(1u<<r)) || ((mask|(uint32_t)effect.defines)&(1u<<state[r].source))))affine=true;
+    if(affine)for(unsigned r=1;r<32;++r)if(state[r].incoming_add)mask|=1u<<r;
+    if(publish)*publish=mask;
+    for(unsigned r=1;r<32;++r)if((mask|(uint32_t)effect.defines)&(1u<<r))state[r]={};
+    return true;
+}
 inline bool pgxp_region_scalar_from_half(const PgxpRegionValue& a, unsigned mode) {
     return !a.constant || (a.flags[mode]==3 &&
         (a.value==(uint32_t)(int32_t)(int16_t)a.value || a.value==(a.value&65535u)));
 }
 inline bool pgxp_region_definition(uint32_t w, const PgxpRegionState& in,
-                                    unsigned& dst, PgxpRegionValue& result) {
+                                    unsigned& dst, PgxpRegionValue& result, bool scratch=false) {
     const unsigned op=w>>26,rs=(w>>21)&31u,rt=(w>>16)&31u,fn=w&63u;
     dst=op ? rt : (w>>11)&31u;
     if(!dst)return false;
     result={}; result.known=true;
     const auto& a=in[rs];
     const auto& b=in[rt];
+    if(scratch && op==0x24u && pgxp_region_scratch_memory(w,in)) {
+        // LBU always resets the GPR, never consumes/validates a word receipt.
+        result.bounded=true;result.minimum=0;result.maximum=255;return true;
+    }
     if(op==15) { result.constant=true;result.value=w<<16;result.flags[0]=result.flags[1]=3;return true; }
     if(op==10 || op==11 || (!op&&(fn==42||fn==43)))return true;
     // A truly plain incoming value has neither component nor scalar precision.
-    const auto plain=[](const PgxpRegionValue& x){return x.known&&!x.incoming_add&&!x.flags[0]&&!x.flags[1];};
+    const auto plain=[](const PgxpRegionValue& x){return (x.known||x.constant||x.bounded)&&!x.incoming_add&&!x.flags[0]&&!x.flags[1];};
+    if(scratch && !op && fn==0u && ((w>>6)&31u)<16u && plain(b) && b.bounded) {
+        const unsigned shift=(w>>6)&31u;
+        if(b.maximum<=(65535u>>shift)) {
+            result.bounded=true;result.minimum=b.minimum<<shift;result.maximum=b.maximum<<shift;
+            return true; // canonical shift !=16 has no tracked halves/scalar
+        }
+    }
+    if(scratch && !op && fn==0x21u) {
+        const PgxpRegionValue* base=nullptr;const PgxpRegionValue* index=nullptr;
+        if(a.constant && !(a.value&65535u) && b.bounded && plain(b)){base=&a;index=&b;}
+        else if(b.constant && !(b.value&65535u) && a.bounded && plain(a)){base=&b;index=&a;}
+        if(base && index->maximum<=65535u && base->value<=UINT32_MAX-index->maximum) {
+            result.bounded=true;result.minimum=base->value+index->minimum;
+            result.maximum=base->value+index->maximum;
+            // Independent nonnegative low-half addition to exact LUI halves.
+            // CPU0 ADDU resets; CPU1 has exact halves, with no source/depth.
+            result.flags[1]=base->flags[1]==3u?3u:0u;return true;
+        }
+    }
     if((op==8||op==9) && (int16_t)w!=0 && (rs==0 || plain(a))) {
         if(rs==0) { result.constant=true;result.value=(uint32_t)(int32_t)(int16_t)w; }
         else if(a.constant) { result.constant=true;result.value=a.value+(int16_t)w; }
@@ -221,21 +292,44 @@ inline bool pgxp_region_definition(uint32_t w, const PgxpRegionState& in,
     }
     return false;
 }
+/* Publication ends pending work, not proven native integer facts. They are
+ * retained only across operations whose CPU-register effects are explicit in
+ * this certified closure; genuine opaque CPU mutation still clears everything. */
+inline void pgxp_region_publish_facts(PgxpRegionState& state) {
+    for(auto& value:state) {
+        if(value.constant || value.bounded){value.known=false;value.incoming_add=false;}
+        else value={};
+    }
+}
+inline bool pgxp_region_explicit_cpu_effect(uint32_t w) {
+    const auto e=pgxp_flow_effect(w);const unsigned op=w>>26;
+    return e.pure_alu || (op>=0x20u&&op<=0x2eu) || op==0x32u || op==0x3au ||
+        (op==0x12u&&!e.barrier);
+}
+inline void pgxp_region_canonical_effect(uint32_t w,PgxpRegionState& state) {
+    pgxp_region_publish_facts(state);
+    const auto e=pgxp_flow_effect(w);
+    for(unsigned r=1;r<32;++r)if(e.defines&(UINT64_C(1)<<r))state[r]={};
+}
 /* Return true only when the original hook can disappear. Every other precision
  * operation/observer first consumes a complete receipt and resets the analysis
  * to opaque; it may mutate any CPU/precision state synchronously. */
-inline bool pgxp_region_step(const PgxpFlowInstruction& i, PgxpRegionState& state) {
+inline bool pgxp_region_step(const PgxpFlowInstruction& i, PgxpRegionState& state, bool scratch=false) {
     const auto e=pgxp_flow_effect(i.word);
     unsigned dst=0;PgxpRegionValue value;
-    if(!i.opaque && e.pure_alu && pgxp_region_definition(i.word,state,dst,value)) {
+    if(!i.opaque && (e.pure_alu || (scratch&&(i.word>>26)==0x24u)) &&
+            pgxp_region_definition(i.word,state,dst,value,scratch)) {
         state[dst]=value;return true;
     }
+    if(scratch && !i.opaque && pgxp_region_operand_boundary(i.word,state))return false;
     if(!i.opaque && !e.uses && !e.defines && !e.barrier && (i.word>>26)<0x10u)return false;
-    state={};return false;
+    if(scratch && pgxp_region_explicit_cpu_effect(i.word))pgxp_region_canonical_effect(i.word,state);
+    else state={};
+    return false;
 }
 inline PgxpRegionPlan pgxp_region_plan(const std::vector<PgxpFlowBlock>& blocks,
                                         const std::set<uint32_t>& roots,
-                                         const std::set<uint32_t>& discarded = {}) {
+                                         const std::set<uint32_t>& discarded = {}, bool scratch=false) {
     PgxpRegionPlan plan;plan.roots=roots;
     std::map<uint32_t,PgxpRegionState> outgoing;
     std::map<uint32_t,std::vector<uint32_t>> predecessors;
@@ -244,12 +338,13 @@ inline PgxpRegionPlan pgxp_region_plan(const std::vector<PgxpFlowBlock>& blocks,
         if(discarded.count(i.address)) {
             const auto effect=pgxp_flow_effect(i.word);
             if(effect.pure_alu)state[effect.destination]={};
+            else if(scratch)pgxp_region_publish_facts(state);
             else state={}; // real memory observer still sees other live receipts
             return false;
         }
-        return pgxp_region_step(i,state);
+        return pgxp_region_step(i,state,scratch);
     };
-    bool changed=true;size_t rounds=0;
+    bool changed=true;size_t rounds=0;std::set<uint32_t> visited;
     while(changed) {
         if(++rounds>blocks.size()*128u+1u)return {}; // finite lattice proof failed: canonical only
         changed=false;
@@ -258,11 +353,14 @@ inline PgxpRegionPlan pgxp_region_plan(const std::vector<PgxpFlowBlock>& blocks,
             if(!roots.count(b.address) && !predecessors[b.address].empty()) {
                 bool first=true;
                 for(auto pred:predecessors[b.address]) {
+                    if(scratch && !visited.count(pred))continue;
                     const auto& s=outgoing[pred];
                     if(first){input=s;first=false;}
                     else for(unsigned r=1;r<32;++r)if(input[r]!=s[r])input[r]={};
                 }
+                if(scratch && first)continue;
             }
+            if(scratch && visited.insert(b.address).second)changed=true;
             // An affine input refers to the OLD canonical source receipt.
             // Publish it on every CFG edge before any partial normalization can
             // overwrite that source while carrying the dependent destination.
