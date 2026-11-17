@@ -22259,7 +22259,8 @@ session_reboot:
          * it mounts that disc. A recorded input replay restores its baseline
          * from the mounted disc's file, so it sees only that disc. */
         std::vector<int> state_discs;
-        for (int i = 1; i <= (int)roster.size(); ++i) state_discs.push_back(i);
+        if (!g_program_discs.empty()) state_discs=g_program_discs;
+        else for (int i = 1; i <= (int)roster.size(); ++i) state_discs.push_back(i);
         savestate_set_disc_roster(state_discs.data(), (int)state_discs.size());
         savestate_set_cross_disc(std::getenv("PSX_DIAGNOSTIC_REPLAY") == nullptr);
     }
