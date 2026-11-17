@@ -239,6 +239,7 @@ int psx_peek_word(uint32_t addr, uint32_t *out) {
 }
 void memory_clear_low_boot_scratch(void) {
     memset(ram, 0, 0x10u);
+    psx_kernel_bless_note_range(0u, 0x10u);   /* raw write: see the rule there */
 }
 
 /* ---- Dirty-page tracking for install-at-runtime code (CLAUDE.md Rule 18) ----
@@ -340,6 +341,16 @@ static uint64_t kbless_native_hits   = 0;
 static uint64_t kbless_verifies      = 0;
 static uint64_t kbless_mismatches    = 0;
 static uint64_t kbless_invalidations = 0;
+/* PSX_KERNEL_BLESS_PARANOID=1 (diagnostic): re-compare the body at every
+ * dispatch instead of trusting the row. A row that says CLEAN over bytes
+ * that differ means a RAM write reached the window without telling the
+ * table; that count must stay 0. It costs one body compare per kernel
+ * dispatch, so it is never a default. */
+static int      kbless_paranoid = 0;
+static uint64_t kbless_paranoid_checks         = 0;
+static uint64_t kbless_paranoid_bytes          = 0;
+static uint64_t kbless_paranoid_stale_clean    = 0;
+static uint64_t kbless_paranoid_stale_mismatch = 0;
 
 static int kbless_on(void) {
     if (kbless_enabled < 0) {
@@ -361,6 +372,13 @@ static int kbless_on(void) {
         {
             const char* pe = getenv("PSX_KERNEL_PATCH_RANGES");
             if (pe && pe[0] == '0') s_kb_pr_n = 0;
+        }
+        {
+            const char* pe = getenv("PSX_KERNEL_BLESS_PARANOID");
+            kbless_paranoid = (pe && pe[0] == '1') ? 1 : 0;
+            if (kbless_paranoid)
+                fprintf(stderr, "psxrecomp: kernel-bless paranoid mode ON "
+                        "(diagnostic: every kernel dispatch re-compares its body)\n");
         }
         if (s_kb_span == 0) kbless_enabled = 0;   /* BIOS with no bless window */
         /* The emitted constants must agree with each other and the ROM
@@ -420,9 +438,28 @@ int psx_kernel_bless_dispatchable(uint32_t phys) {
     int i = kbless_find(phys);
     if (i < 0) return 0;
     uint8_t st = kbless_state[i];
+    const PsxKernelBody* b = &psx_bios_kernel_bodies[i];
+    if (kbless_paranoid && st != KBLESS_UNKNOWN) {
+        uint64_t skips = 0;   /* keep the verifier's own counter untouched */
+        int differs = psx_kernel_patch_cmp(s_kb_pr, s_kb_pr_n, ram, bios_rom,
+                                           s_kb_lo, s_kb_rom_off,
+                                           b->body_lo, b->body_hi, &skips) != 0;
+        kbless_paranoid_checks++;
+        kbless_paranoid_bytes += b->body_hi - b->body_lo;
+        if (st == KBLESS_CLEAN && differs) {
+            /* The defect this mode exists to find. Fail safe: interpret. */
+            if (kbless_paranoid_stale_clean++ < 16u)
+                fprintf(stderr, "KBLESS PARANOID: key %08X body [%08X,%08X) is "
+                        "marked clean but differs from the ROM\n",
+                        phys, b->body_lo, b->body_hi);
+            kbless_state[i] = KBLESS_MISMATCH;
+            kbless_mismatches++;
+            return 0;
+        }
+        if (st == KBLESS_MISMATCH && !differs) kbless_paranoid_stale_mismatch++;
+    }
     if (st == KBLESS_CLEAN)    { kbless_native_hits++; return 1; }
     if (st == KBLESS_MISMATCH) return 0;
-    const PsxKernelBody* b = &psx_bios_kernel_bodies[i];
     kbless_verifies++;
     if (psx_kernel_patch_cmp(s_kb_pr, s_kb_pr_n, ram, bios_rom,
                              s_kb_lo, s_kb_rom_off,
@@ -460,8 +497,16 @@ static void kbless_note_write(uint32_t phys) {
     }
 }
 
-/* Range write (DMA / EXE load / savestate restore) overlapping the window:
- * bulk, rare events — reset every entry rather than per-byte scanning. */
+/* Range write (savestate restore, or any other store into guest RAM that
+ * does not go through psx_write_word/half/byte) overlapping the window:
+ * bulk, rare events — reset every entry rather than per-byte scanning.
+ *
+ * The rule: the row state follows RAM *writes*. A store through
+ * psx_write_word/half/byte reports itself (kbless_note_write). Every other
+ * writer of guest RAM calls this, next to the write.
+ * tests/test_raw_ram_writers.py lists those writers and fails on a new one
+ * that does not. Marking a range executable is not a write and resets
+ * nothing: see dirty_ram_mark_executable_range. */
 void psx_kernel_bless_note_range(uint32_t phys, uint32_t len) {
     if (kbless_enabled <= 0) return;   /* also pre-init: nothing verified yet */
     if (len == 0) return;
@@ -499,6 +544,35 @@ void psx_kernel_bless_stats(uint64_t out[8]) {
     out[7] = kbless_patch_skips;
 }
 
+/* Paranoid mode for the run report: [0] on, [1] dispatches re-compared,
+ * [2] bytes compared, [3] rows marked clean over bytes that differ (must be
+ * 0), [4] rows marked mismatched over bytes that match (a lost speed-up,
+ * not an error). */
+void psx_kernel_bless_paranoid_stats(uint64_t out[5]) {
+    out[0] = (uint64_t)kbless_paranoid;
+    out[1] = kbless_paranoid_checks;
+    out[2] = kbless_paranoid_bytes;
+    out[3] = kbless_paranoid_stale_clean;
+    out[4] = kbless_paranoid_stale_mismatch;
+}
+
+/* Does the active image's bless table fit kbless_state? kbless_on() turns
+ * bless off for the whole run when it does not. This reports that decision
+ * for the run report; it reads the selected backend's constants and changes
+ * no state. */
+int psx_kernel_bless_table_fits(uint32_t *entries, uint32_t *capacity) {
+    if (entries) *entries = psx_bios_kernel_body_count;
+    if (capacity) *capacity = KBLESS_MAX_ENTRIES;
+    return psx_bios_kernel_body_count <= KBLESS_MAX_ENTRIES;
+}
+
+/* Bless latch for the run report: -1 not decided yet (no kernel-window
+ * dispatch so far), 0 off (PSX_KERNEL_BLESS=0 or an image with no bless
+ * window), 1 on. Reads only. */
+int psx_kernel_bless_state(void) {
+    return kbless_enabled;
+}
+
 void psx_kernel_bless_resync_after_restore(void) {
     /* kbless_state is host-only. CLEAN/MISMATCH are sticky across guest
      * stores only via kbless_note_write; savestate RAM memcpy never hits
@@ -518,6 +592,7 @@ void psx_kernel_bless_reset_for_boot(void) {
     s_kb_rom_off = 0;
     s_kb_pr = NULL;
     s_kb_pr_n = 0;
+    kbless_paranoid = 0;
     memset(kbless_state, KBLESS_UNKNOWN, sizeof(kbless_state));
 }
 
@@ -870,9 +945,16 @@ uint32_t dirty_ram_text_diverged_bitmap_word(uint32_t word_index) {
     return text_diverged_bitmap[word_index];
 }
 
+/* Marks pages as holding code that must be re-checked before a native
+ * dispatch. It writes no guest RAM, so it leaves the kernel-bless rows
+ * alone. It used to reset all of them, and the generated BIOS dispatch
+ * calls this on every RAM-alias dispatch of a continuation key (the
+ * exception handler's 0xD00/0xE10/0xE28): each such dispatch threw away
+ * every verified row, about a million re-verifies in a two-minute start.
+ * Callers that do write RAM go through psx_write_*, which
+ * invalidates the rows the write touches. */
 void dirty_ram_mark_executable_range(uint32_t phys, uint32_t len) {
     if (len == 0 || phys >= RAM_LIVE) return;
-    psx_kernel_bless_note_range(phys, len);
     uint32_t end = phys + len - 1u;
     if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
 
