@@ -1209,6 +1209,10 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_link_libraries(host_keymap_test PRIVATE ${PSX_SDL_LIBRARIES})
     add_test(NAME host_keymap_test COMMAND host_keymap_test)
 
+    add_executable(host_osd_wrap_test tests/test_host_osd_wrap.c)
+    target_include_directories(host_osd_wrap_test PRIVATE include)
+    add_test(NAME host_osd_wrap_test COMMAND host_osd_wrap_test)
+
     add_executable(host_osd_diagnostics_test
         tests/test_host_osd_diagnostics.c src/host_osd.c)
     target_include_directories(host_osd_diagnostics_test PRIVATE

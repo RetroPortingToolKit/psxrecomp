@@ -16,7 +16,8 @@ extern "C" {
  * when OSD is gated off.
  */
 
-/* Top-left text toast. duration_ms <= 0 uses 2000. */
+/* Top-left text toast. duration_ms <= 0 uses 2000. A message longer than a
+ * line breaks into at most three lines (host_osd_wrap.h). */
 void host_osd_push(const char *msg, int duration_ms);
 
 /* Persistent top-left status text. Passing NULL/empty clears it. */
