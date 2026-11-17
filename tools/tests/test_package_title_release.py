@@ -4,7 +4,7 @@
 Pins the release contract every title now shares: --channel is required with
 no default, owned CMake flags cannot be overridden by a title, artifact names
 follow the channel, forbidden content fails the payload gates, diagnostics
-defaults follow the channel, and a finished ZIP is re-verified by extraction.
+recording/display defaults remain independent, and a finished ZIP is re-verified by extraction.
 """
 import contextlib
 import hashlib
@@ -34,11 +34,11 @@ game_id = "SLUS-00000"
 
 [[feature]]
 id = "recording"
-default_enabled = {on}
+default_enabled = {recording}
 
 [[feature]]
 id = "osd"
-default_enabled = {on}
+default_enabled = {osd}
 
 [[plugin]]
 feature = "recording"
@@ -102,12 +102,12 @@ def write_stage(stage, channel, version='v1.2.3', exe='Fixture.exe'):
     package = stage / 'mods/bundled/fixture.diagnostics/1.0.0'
     package.mkdir(parents=True)
     (package / 'manifest.toml').write_text(
-        DIAG.format(on='true' if channel == 'playtest' else 'false'))
+        DIAG.format(recording='true', osd='false'))
     files = {p.relative_to(stage).as_posix(): ptr.sha256(p)
              for p in sorted(stage.rglob('*')) if p.is_file()}
     manifest = dict(channel=channel, version=version, product='FixtureRecomp', executable=exe,
                     mod_packages=['fixture.diagnostics'],
-                    playtest_diagnostics_default_enabled=channel == 'playtest', files=files)
+                    playtest_diagnostics_default_enabled=True, files=files)
     (stage / 'RELEASE_MANIFEST.json').write_text(json.dumps(manifest))
 
 
@@ -529,16 +529,33 @@ class DiagnosticsTests(unittest.TestCase):
         ctx.config, ctx.channel = self.fixture.config(), channel
         return ctx
 
-    def test_defaults_follow_channel(self):
-        for staged, channel, ok in (('public', 'public', True), ('playtest', 'playtest', True),
-                                    ('playtest', 'public', False), ('public', 'playtest', False)):
-            stage = Path(self.tmp.name) / ('%s-%s' % (staged, channel))
-            write_stage(stage, staged)
-            if ok:
-                ptr.check_diagnostics(self.ctx(channel), stage)
-            else:
-                with self.assertRaisesRegex(ptr.PackagingError, 'default_enabled'):
+    def test_recording_and_display_defaults_are_independent_of_channel(self):
+        for staged in ptr.CHANNELS:
+            for channel in ptr.CHANNELS:
+                with self.subTest(staged=staged, channel=channel):
+                    stage = Path(self.tmp.name) / ('%s-%s' % (staged, channel))
+                    write_stage(stage, staged)
                     ptr.check_diagnostics(self.ctx(channel), stage)
+                    self.assertEqual(ptr.check_diagnostics_dir(SimpleNamespace(
+                        bundled=stage / 'mods/bundled', channel=channel)), 0)
+
+    def test_disabled_recording_or_enabled_display_is_rejected_by_both_gates(self):
+        for channel in ptr.CHANNELS:
+            for recording, osd in (('false', 'false'), ('true', 'true')):
+                with self.subTest(channel=channel, recording=recording, osd=osd):
+                    stage = Path(self.tmp.name) / ('%s-%s-%s' % (channel, recording, osd))
+                    write_stage(stage, channel)
+                    manifest = stage / 'mods/bundled/fixture.diagnostics/1.0.0/manifest.toml'
+                    manifest.write_text(DIAG.format(recording=recording, osd=osd))
+                    with self.assertRaisesRegex(ptr.PackagingError, 'default_enabled'):
+                        ptr.check_diagnostics(self.ctx(channel), stage)
+                    with self.assertRaisesRegex(ptr.PackagingError, 'default_enabled'):
+                        ptr.check_diagnostics_dir(SimpleNamespace(
+                            bundled=stage / 'mods/bundled', channel=channel))
+                    refresh_manifest(stage)
+                    with self.assertRaisesRegex(ptr.PackagingError, 'default_enabled'):
+                        ptr.verify_payload(stage, None, self.fixture.config(),
+                                           channel, 'windows', 'v1.2.3')
 
     def test_undeclared_diagnostics_package_fails(self):
         (self.fixture.root / 'release.toml').write_text(

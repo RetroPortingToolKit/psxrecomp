@@ -216,7 +216,7 @@ static void check_wav_samples(const char *path, uint32_t rate,
     }
 }
 
-static void check_short_wavs(const char *base_path, int production) {
+static void check_short_wavs(const char *base_path, int history_disabled) {
     char path[512];
     for (int tap = 0; tap < AUDIO_TAP_COUNT; tap++) {
         uint32_t frames = 0;
@@ -224,9 +224,9 @@ static void check_short_wavs(const char *base_path, int production) {
         snprintf(path, sizeof(path), "%s_tap%d.wav", base_path, tap);
         remove(path);
         int64_t wrote = audio_trace_dump_wav(tap, path, 0, frames);
-        if (production) {
-            if (wrote != -1) fail("production short wav should be unavailable");
-            if (file_exists(path)) fail("production short wav created file");
+        if (history_disabled) {
+            if (wrote != -1) fail("history_disabled short wav should be unavailable");
+            if (file_exists(path)) fail("history_disabled short wav created file");
         } else {
             if (wrote != (int64_t)frames) fail("debug short wav frame count");
             check_wav_samples(path, audio_trace_tap_rate(tap), expected, frames);
@@ -237,7 +237,7 @@ static void check_short_wavs(const char *base_path, int production) {
 int main(int argc, char **argv) {
     if (argc != 3) fail("usage");
     const char *path = argv[1];
-    int production = strcmp(argv[2], "production") == 0;
+    int history_disabled = strcmp(argv[2], "history-disabled") == 0;
 
     audio_trace_init();
     audio_trace_set_tap_rate(AUDIO_TAP_SPU_OUT, 48000);
@@ -250,7 +250,7 @@ int main(int argc, char **argv) {
     push_events();
     check_events();
     print_events("events");
-    check_short_wavs(path, production);
+    check_short_wavs(path, history_disabled);
     push_wrap_tail();
 
     AudioTraceStats st;
@@ -263,9 +263,9 @@ int main(int argc, char **argv) {
 
     int64_t wrote = audio_trace_dump_wav(AUDIO_TAP_SPU_OUT, path,
                                          (int64_t)PCM_RING_FRAMES, 4);
-    if (production) {
-        if (wrote != -1) fail("production wav should be unavailable");
-        if (file_exists(path)) fail("production wav created file");
+    if (history_disabled) {
+        if (wrote != -1) fail("history_disabled wav should be unavailable");
+        if (file_exists(path)) fail("history_disabled wav created file");
     } else {
         int16_t wrapped[] = {
             1000, -2000, 1001, -2001, 1002, -2002, 1003, -2003,
@@ -313,7 +313,7 @@ def normalize_cc(cc: str) -> str:
     return cc
 
 
-def build(cc: str, work: pathlib.Path, production: bool) -> pathlib.Path:
+def build(cc: str, work: pathlib.Path, production: bool, history_disabled: bool = False) -> pathlib.Path:
     source = work / "audio_trace_guard_driver.c"
     source.write_text(DRIVER_C, encoding="utf-8")
     exe = work / ("audio_trace_prod.exe" if production else "audio_trace_debug.exe")
@@ -327,6 +327,8 @@ def build(cc: str, work: pathlib.Path, production: bool) -> pathlib.Path:
     ]
     if production:
         cmd.append("-DPSX_NO_DEBUG_TOOLS=1")
+    if history_disabled:
+        cmd.append("-DPSX_DISABLE_AUDIO_PCM_HISTORY=1")
     cmd.extend([
         str(source),
         str(ROOT / "runtime" / "src" / "audio_trace.c"),
@@ -359,10 +361,12 @@ def main() -> int:
         prod = build(cc, work, True)
         debug_out = run(debug, work / "debug.wav", "debug")
         prod_out = run(prod, work / "prod.wav", "production")
-    if debug_out != prod_out:
+        disabled = build(cc, work, True, True)
+        disabled_out = run(disabled, work / "disabled.wav", "history-disabled")
+    if debug_out != prod_out or prod_out != disabled_out:
         raise AssertionError(f"stats/event output changed:\n{debug_out}\n{prod_out}")
     print(debug_out)
-    print("PASS: audio trace PCM history is debug-tool only; stats/events match")
+    print("PASS: Release/debug PCM history, rate headers and wrap slices match; overhead control retains stats/events")
     return 0
 
 

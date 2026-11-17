@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "dma.h"
+#include "headroom_counters.h"
 
 void     dma_init(void);
 void     dma_write(uint32_t addr, uint32_t val);
@@ -40,9 +41,12 @@ int      g_psx_guest_time_frozen;
 uint32_t g_psx_cyc_batch;
 uint32_t g_psx_cyc_batch_limit;
 
+uint32_t psx_hr_gpu_hold_depth;
+static unsigned s_services_in_hold;
 static uint64_t s_serviced_to;
 void psx_devices_service_to_now(void) {
     if (psx_in_device_service) return;
+    if (psx_hr_gpu_hold_depth) ++s_services_in_hold;
     psx_in_device_service = 1;
     const uint64_t now = psx_cycle_count;
     dma_advance((uint32_t)(now - s_serviced_to));
@@ -54,6 +58,9 @@ void psx_devices_service_to_now(void) {
 void psx_advance_cycles_slow(uint32_t cycles) {
     psx_cycle_count += cycles;
     psx_devices_service_to_now();
+}
+void psx_devices_service_to_now_cause(unsigned request) {
+    (void)request;psx_devices_service_to_now();
 }
 
 /* ---- memory ------------------------------------------------------------- */
@@ -159,6 +166,10 @@ int main(void) {
     const uint64_t before = 1000u;
     const int active = kick(0);
     CHECK(!active, "walk still active after the kicking store");
+    CHECK(psx_hr_gpu_hold_depth==0, "GPU hold context leaked after the kick");
+#if !defined(PSX_DISABLE_HEADROOM_COUNTERS) || !PSX_DISABLE_HEADROOM_COUNTERS
+    CHECK(s_services_in_hold>0, "GPU drain was outside its attribution context");
+#endif
     CHECK(psx_cycle_count > before, "guest time did not advance during the kick");
     psx_write_word(NODE_B, 0u);                     /* the guest's packet copy */
     finish_walk();

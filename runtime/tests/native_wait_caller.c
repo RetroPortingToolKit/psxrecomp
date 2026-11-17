@@ -13,6 +13,8 @@ int g_psx_precise_slice=0, g_psx_load_delay=1;
 volatile int g_ds_recording=0;
 static uint32_t backing[0x200000/4];
 uint8_t *g_psx_ram=(uint8_t*)backing;
+uint64_t psx_hr_runtime_fast_loads[3];
+uint64_t psx_hr_bus_callbacks[2][3];
 uint32_t g_psx_ram_mask=0x1FFFFFu;
 int psx_load_delay_enabled(void) { return 1; }
 int psx_slice_block_impl(CPUState *c,uint32_t p,uint32_t n,int e) {
@@ -26,6 +28,7 @@ uint32_t psx_cyc_load_word_slow(CPUState *c,uint32_t a,uint32_t r,uint32_t m) {
 #define counter (*(uint32_t*)(g_psx_ram+(WAIT_COUNTER & 0x1FFFFFu)))
 static uint32_t callbacks[3], callback_n;
 static uint32_t deliveries;
+static uint64_t word_writes;
 static uint32_t rd(uint32_t addr) {
     if (addr==WAIT_COUNTER) return counter;
     if (addr>=0x801FFE00u && addr<0x80200000u) return ram[(addr-0x801FFE00u)/4];
@@ -33,9 +36,14 @@ static uint32_t rd(uint32_t addr) {
 }
 static void wr(uint32_t addr, uint32_t value) {
     if (!(addr>=0x801FFE00u && addr<0x80200000u)) abort();
+    ++word_writes;
     ram[(addr-0x801FFE00u)/4]=value;
     guest_store(addr,value);
 }
+/* The generated store wrapper compares callback identities. Supply the actual
+ * typed canonical entry with this fixture's bounded RAM/store effects, rather
+ * than an untyped or silent link stub. Host idle-skip writes stay separate. */
+void psx_write_word(uint32_t addr, uint32_t value) { wr(addr,value); }
 static void host_wr(uint32_t addr,uint32_t value) {
     if (!(addr>=0x801FFE00u && addr<0x80200000u)) abort();
     ram[(addr-0x801FFE00u)/4]=value;
@@ -62,6 +70,7 @@ static Result actual_run(int ext,uint32_t initial,uint32_t target,uint32_t budge
     cpu.ld_which_t=0x20;cpu.read_fudge=0x20;
     cpu.read_word=rd;cpu.write_word=wr;
     memset(ram,0xA5,128*4);memset(callbacks,0,sizeof callbacks);
+    memset(psx_hr_bus_callbacks,0,sizeof psx_hr_bus_callbacks);word_writes=0;
     counter=initial;callback_n=0;deliveries=0;
     psx_cycles_reset_for_boot();psx_cycles_resync_after_restore(&cpu);psx_icache_reset();
     psx_guest_cycle_scale_set(scale);
@@ -85,6 +94,12 @@ static Result actual_run(int ext,uint32_t initial,uint32_t target,uint32_t budge
     if (ext && g_psx_track_last_store) {
         fprintf(stderr,"store tracking leaked outside audited wait\n");abort();
     }
+    for (unsigned access=0;access<2;access++) for (unsigned width=0;width<3;width++) {
+        const uint64_t expected=(access==1 && width==2) ? word_writes : 0;
+        if (psx_hr_bus_callbacks[access][width]!=expected) {
+            fprintf(stderr,"custom callback width count mismatch %u/%u\n",access,width);abort();
+        }
+    }
     Result r;memset(&r,0,sizeof r);memcpy(r.regs,cpu.gpr,sizeof r.regs);memcpy(r.stack,ram,sizeof r.stack);
     memcpy(r.calls,callbacks,sizeof callbacks);r.call_n=callback_n;r.pc=cpu.pc;
     r.hi=cpu.hi;r.lo=cpu.lo;r.scale_fraction=g_psx_gcs_frac;
@@ -93,6 +108,11 @@ static Result actual_run(int ext,uint32_t initial,uint32_t target,uint32_t budge
     r.vblanks=deliveries;r.cycles=psx_get_cycle_count();r.skips=g_idle_skip_count;return r;
 }
 int main(void) {
+    /* A canonical store has real RAM effects but is not a custom dispatch. */
+    CPUState canonical={0};canonical.write_word=psx_write_word;
+    memset(psx_hr_bus_callbacks,0,sizeof psx_hr_bus_callbacks);
+    PSX_STORE_WORD(&canonical,0x801FFE00u,0x76543210u);
+    if (ram[0]!=0x76543210u || psx_hr_bus_callbacks[1][2]!=0 || word_writes!=1) return 1;
     unsigned cases=0, accelerated=0;
     for (int batch=0;batch<=1;batch++) for (uint32_t scale=1;scale<=2;scale++) {
         const uint32_t events[]={1,127,4096,200003,400007};
