@@ -46,19 +46,28 @@ void fntrace_set_game_range(uint32_t lo, uint32_t hi) {
 }
 
 int fntrace_is_game_started(void) { return s_game_started; }
-void fntrace_restore_game_started(int started) { s_game_started = started != 0; }
+void (*g_fntrace_game_load_hook)(void) = 0;
+
+void fntrace_restore_game_started(int started) {
+    if (started && !s_game_started && g_fntrace_game_load_hook) g_fntrace_game_load_hook();
+    s_game_started = started != 0;
+}
 
 /* Centralised game-start transition.  Idempotent — safe to call from both
  * the dispatcher (fntrace_record) and the generated entry-point function.
  * Performs the complete handoff side effects: dirty-image baseline clear,
  * low-boot scratch clear, CD speed switch, and boot-state capture. */
+void (*g_fntrace_game_entry_hook)(void) = 0;
+
 void fntrace_mark_game_started(CPUState* cpu) {
     if (s_game_started) return;
     s_game_started = 1;
+    if (g_fntrace_game_entry_hook) g_fntrace_game_entry_hook();
     extern void dirty_ram_clear_image_baseline(void);
     extern void memory_clear_low_boot_scratch(void);
     dirty_ram_clear_image_baseline();
     memory_clear_low_boot_scratch();
+    if (g_fntrace_game_load_hook) g_fntrace_game_load_hook();
     cdrom_notify_game_started();
     boot_state_trigger_capture(cpu);
 }

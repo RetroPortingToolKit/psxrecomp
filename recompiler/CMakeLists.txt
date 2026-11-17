@@ -1659,6 +1659,13 @@ endforeach()
 include(${CMAKE_CURRENT_SOURCE_DIR}/../runtime/check_test_registration.cmake)
 psxrecomp_check_all_tests_registered()
 
+if(BUILD_TESTING AND Python3_Interpreter_FOUND)
+    foreach(_t IN ITEMS interp_report_wiring bios_phase_report_wiring)
+        add_test(NAME ${_t}_test COMMAND ${Python3_EXECUTABLE} -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_${_t}.py")
+    endforeach()
+endif()
+
 # ---- output-name collision guard (must stay LAST) ---------------------------
 # Fails configure if any two targets here would write the same file on a
 # case-insensitive filesystem. See the module header for the shipped-bug story.
