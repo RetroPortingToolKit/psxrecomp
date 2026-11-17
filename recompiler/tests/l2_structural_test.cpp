@@ -260,7 +260,7 @@ static const Form kForms[] = {
 
     // SW $a0, 0($v1)
     { I_TYPE(0x2B, V1, A0, 0), "sw_a0_0_v1",
-      must_contain_in_order({"psx_store_cycle_barrier()", "write_word"}) },
+      must_contain_in_order({"psx_store_cycle_barrier()", "PSX_STORE_WORD"}) },
 
     // LB $v0, 0($v1)
     { I_TYPE(0x20, V1, V0, 0), "lb_v0_0_v1",
@@ -280,23 +280,23 @@ static const Form kForms[] = {
 
     // SB $a0, 0($v1)
     { I_TYPE(0x28, V1, A0, 0), "sb_a0_0_v1",
-      must_contain_in_order({"psx_store_cycle_barrier()", "write_byte"}) },
+      must_contain_in_order({"psx_store_cycle_barrier()", "PSX_STORE_BYTE"}) },
 
     // SH $a0, 0($v1)
     { I_TYPE(0x29, V1, A0, 0), "sh_a0_0_v1",
-      must_contain_in_order({"psx_store_cycle_barrier()", "write_half"}) },
+      must_contain_in_order({"psx_store_cycle_barrier()", "PSX_STORE_HALF"}) },
 
     // SWL/SWR are read-modify-write stores.  Publishing after the raw read is
     // too late because the read itself may be MMIO and host-visible.
     { I_TYPE(0x2A, V1, A0, 1), "swl_a0_1_v1",
-      must_contain_in_order({"psx_store_cycle_barrier()", "read_word", "write_word"}) },
+      must_contain_in_order({"psx_store_cycle_barrier()", "read_word", "PSX_STORE_WORD"}) },
     { I_TYPE(0x2E, V1, A0, 2), "swr_a0_2_v1",
-      must_contain_in_order({"psx_store_cycle_barrier()", "read_word", "write_word"}) },
+      must_contain_in_order({"psx_store_cycle_barrier()", "read_word", "PSX_STORE_WORD"}) },
 
     // SWC2 must include the GTE stall in the published timestamp, then expose
     // that timestamp before the memory and precision-shadow side effects.
     { I_TYPE(0x3A, V1, A0, 0), "swc2_a0_0_v1",
-      must_contain_in_order({"psx_gte_stall", "psx_store_cycle_barrier()", "write_word",
+      must_contain_in_order({"psx_gte_stall", "psx_store_cycle_barrier()", "PSX_STORE_WORD",
                              "gte_precision_store_word"}) },
 
     // === COP0 ===

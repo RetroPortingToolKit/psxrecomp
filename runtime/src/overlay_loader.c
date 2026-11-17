@@ -15,10 +15,22 @@
 /* Out-of-line copy of the header-inline CPU charge for the overlay callback
  * table: overlay DLLs publish their accumulated CPU charge here, into the
  * same function native code charges (no scaling at this boundary). */
-static void overlay_cpu_charge(uint32_t cycles) { psx_cpu_charge(cycles); }
+static void overlay_cpu_charge(uint32_t cycles) {
+    psx_cpu_charge(cycles);
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    /* DLLs keep the eager device policy: their IRQ callbacks can return before
+     * the host block edge when no source is latched yet. A charge must raise
+     * any due device edge first, including the completion a guest is polling.
+     * The maintained observer retains replay/freeze/reentrancy exclusions. */
+    if (!psx_in_device_service &&
+        (psx_next_service_cycle == 0u || psx_cycle_count >= psx_next_service_cycle))
+        psx_devices_observe();
+#endif
+}
 #include "lockstep.h"
 #include "overlay_posix.h"
 #include "psx_memory.h"
+#include "psx_direct_memory.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -459,6 +471,36 @@ static int cand_selected_for_diff(const Candidate *c) {
  * guest clocks. */
 static int s_load_freeze = 0;
 
+/* Bit0 seals dispatch/load policy; increments of2 own an in-flight prepare.
+ * The CAS prevents a concurrent prepare from passing a check then mapping a
+ * DLL after startup sealing succeeds. No mapped module is unloaded here. */
+#ifdef _WIN32
+static volatile LONG s_session_gate;
+static int session_gate_read(void) { return (int)InterlockedCompareExchange(&s_session_gate, 0, 0); }
+static int session_gate_cas(int old, int next) { return InterlockedCompareExchange(&s_session_gate, next, old) == old; }
+#else
+static int s_session_gate;
+static int session_gate_read(void) { return __atomic_load_n(&s_session_gate, __ATOMIC_SEQ_CST); }
+static int session_gate_cas(int old, int next) { return __atomic_compare_exchange_n(&s_session_gate, &old, next, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
+#endif
+static int s_session_dispatch_seen;
+static unsigned s_session_dispatch_depth;
+int overlay_loader_session_interpreted_sealed(void) { return session_gate_read() & 1; }
+int overlay_loader_session_can_seal_interpreted(void) {
+    return !s_session_dispatch_seen && !s_session_dispatch_depth && session_gate_read() == 0;
+}
+int overlay_loader_session_set_interpreted(int sealed) {
+    if (sealed) {
+        if (overlay_loader_session_interpreted_sealed()) return 1;
+        return overlay_loader_session_can_seal_interpreted() && session_gate_cas(0, 1);
+    }
+    if (s_session_dispatch_depth) return 0;
+    if (session_gate_read() == 0) return 1;
+    if (!session_gate_cas(1, 0)) return 0;
+    s_session_dispatch_seen = 0;
+    return 1;
+}
+
 void overlay_loader_set_load_freeze(int freeze)
 {
     s_load_freeze = freeze ? 1 : 0;
@@ -467,7 +509,7 @@ int overlay_loader_load_frozen(void) { return s_load_freeze; }
 
 static int overlay_loads_allowed(void)
 {
-    if (s_load_freeze)
+    if (s_load_freeze || overlay_loader_session_interpreted_sealed())
         return 0;
     {
         extern int psx_netplay_is_resimulating(void);
@@ -2402,24 +2444,36 @@ static int overlay_irq_suppressed_now(void) {
     return 0;
 }
 
+/* A legacy DLL wrapper can return before the native host edge. Account that
+ * actual out-of-line edge here; the delivered path is counted by the host
+ * edge itself. Previously these early-return DLL edges were absent in M0. */
+static void overlay_note_skipped_edge(void) {
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    if (!g_psx_guest_time_frozen && !g_ls_replay_active) {
+        psx_observation_block_edges++;
+        psx_observation_slow_edges++;
+    }
+#endif
+}
+
 static void overlay_ci_wrapper(CPUState *cpu) {
     /* Legacy blanket deferral inside a nested call unit (A/B knob only; default
      * is to deliver — see g_call_unit_depth / overlay_unit_defer.h). */
     if (overlay_unit_irq_must_defer(g_call_unit_depth, overlay_unit_irq_defer_enabled())) {
-        s_ci_skip_unit++;
+        s_ci_skip_unit++; overlay_note_skipped_edge();
         return;
     }
-    if (overlay_irq_suppressed_now()) { s_ci_skip_supp++; return; }
+    if (overlay_irq_suppressed_now()) { s_ci_skip_supp++; overlay_note_skipped_edge(); return; }
     /* psx_advance_cycles() has already raised every device edge due at this
      * block. Avoid entering the full scheduler/diagnostic path when COP0 could
      * not take the IRQ anyway. FMV polling loops can execute this edge millions
      * of times while an INTC bit is pending but IEc is deliberately clear. */
-    if ((i_stat & i_mask) == 0) { s_ci_skip_none++; return; }
+    if ((i_stat & i_mask) == 0) { s_ci_skip_none++; overlay_note_skipped_edge(); return; }
     if ((cpu->cop0[12] & ((1u << 10) | 1u)) != ((1u << 10) | 1u)) {
-        s_ci_skip_sr++;
+        s_ci_skip_sr++; overlay_note_skipped_edge();
         return;
     }
-    if (!psx_interrupt_delivery_needed(cpu)) { s_ci_skip_deliv++; return; }
+    if (!psx_interrupt_delivery_needed(cpu)) { s_ci_skip_deliv++; overlay_note_skipped_edge(); return; }
     s_ci_enter++;
     if (s_irq_defer_cdrom && (i_stat & (1u << IRQ_CDROM))) {
         uint32_t saved_cd = i_stat & (1u << IRQ_CDROM);
@@ -2453,16 +2507,16 @@ static void overlay_ci_at_wrapper(CPUState *cpu, uint32_t resume_pc) {
      * is to deliver — see g_call_unit_depth / overlay_unit_defer.h). A thread
      * switch landing here is deferred by psx_check_interrupts, not by skipping. */
     if (overlay_unit_irq_must_defer(g_call_unit_depth, overlay_unit_irq_defer_enabled())) {
-        s_ci_skip_unit++;
+        s_ci_skip_unit++; overlay_note_skipped_edge();
         return;
     }
-    if (overlay_irq_suppressed_now()) { s_ci_skip_supp++; return; }
-    if ((i_stat & i_mask) == 0) { s_ci_skip_none++; return; }
+    if (overlay_irq_suppressed_now()) { s_ci_skip_supp++; overlay_note_skipped_edge(); return; }
+    if ((i_stat & i_mask) == 0) { s_ci_skip_none++; overlay_note_skipped_edge(); return; }
     if ((cpu->cop0[12] & ((1u << 10) | 1u)) != ((1u << 10) | 1u)) {
-        s_ci_skip_sr++;
+        s_ci_skip_sr++; overlay_note_skipped_edge();
         return;
     }
-    if (!psx_interrupt_delivery_needed(cpu)) { s_ci_skip_deliv++; return; }
+    if (!psx_interrupt_delivery_needed(cpu)) { s_ci_skip_deliv++; overlay_note_skipped_edge(); return; }
     s_ci_enter++;
     extern int g_idle_note_suppress;
     int suppress_idle_note = overlay_idle_note_is_internal_or_return(cpu, resume_pc);
@@ -2477,6 +2531,59 @@ static void overlay_ci_at_wrapper(CPUState *cpu, uint32_t resume_pc) {
     }
     psx_check_interrupts_at(cpu, resume_pc);
     if (suppress_idle_note) g_idle_note_suppress--;
+}
+
+/* A true observation publishes the DLL's raw work exactly once, then uses
+ * the qualified native handler. Unlike the mandatory store/MMIO/exit charge
+ * callback above, this lets the handler arm the resume PC before catch-up. */
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+static void overlay_observation_edge(CPUState *cpu, uint32_t pc, int wait,
+                                     uint32_t charge) {
+    psx_cpu_charge(charge);
+    psx_observation_edge(cpu, pc, wait);
+}
+static void overlay_observation_fallback(CPUState *cpu, uint32_t pc, uint32_t charge) {
+    /* An unproved host-local batch must be published even when this DLL has
+     * no raw charge. Preserve the mandatory eager-due charge policy before
+     * the legacy IRQ wrapper's no-latched-source return. */
+    psx_cyc_batch_flush();
+    overlay_cpu_charge(charge);
+    overlay_ci_at_wrapper(cpu, pc);
+}
+#endif
+
+static const PSXObservationView *overlay_observation_view(void) {
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    static const uint32_t waits[] = { PSX_OBSERVATION_WAIT_SITE_VALUES };
+    static PSXObservationView view = {
+        .bytes = sizeof(PSXObservationView), .model = 1u,
+        .clock = &psx_cycle_count, .deadline = &psx_next_service_cycle,
+        .sample = &psx_next_cycle_sample,
+        .scale_recip = &g_psx_gcs_recip_q16, .scale_frac = &g_psx_gcs_frac,
+        .batch = &g_psx_cyc_batch, .local_acc = &g_psx_cyc_local_acc,
+        .device_service = &psx_in_device_service,
+        .conservative = &g_event_step_conservative,
+        .frozen = &g_psx_guest_time_frozen, .replay = &g_ls_replay_active,
+        .defer_switch = &psx_defer_switch_pending,
+        .save_pending = &g_psx_savestate_pending,
+        .suppress_record = &g_ls_suppress_record,
+        .wait_active = &psx_observation_wait_active,
+        .irq_status = &i_stat, .irq_mask = &i_mask,
+        .shadow = &s_in_shadow, .suppress_irq = &s_suppress_irq,
+        .cd_only = &s_irq_suppress_cdrom_only, .defer_cd = &s_irq_defer_cdrom,
+        .irq_budget = &s_irq_budget_cycles, .irq_ratelimit = &s_irq_ratelimit,
+        .flush_owner = &g_overlay_flush_pending_cycles,
+        .wait_sites = waits, .wait_site_count = PSX_OBSERVATION_WAIT_SITE_COUNT,
+        .block_edges = &psx_observation_block_edges,
+        .edge = overlay_observation_edge, .fallback = overlay_observation_fallback
+    };
+    /* This environment option is resolved once per process, not mutable
+     * execution state. All live suppression controls above stay by reference. */
+    view.legacy_unit_defer = overlay_unit_irq_defer_enabled();
+    return &view;
+#else
+    return NULL;
+#endif
 }
 
 static int overlay_irq_budget_blocks_now(void) {
@@ -2526,6 +2633,19 @@ static void init_callbacks(void) {
     /* Address of the header inline → out-of-line copy in this TU (host side). */
     s_callbacks.cpu_charge         = overlay_cpu_charge;
     s_callbacks.gte_execute          = gte_execute;
+    s_callbacks.direct_memory=psx_direct_memory_host_view();
+    s_callbacks.observation_time=overlay_observation_view();
+    s_callbacks.bus_read_word=psx_read_word;
+    s_callbacks.bus_read_half=psx_read_half;
+    s_callbacks.bus_read_byte=psx_read_byte;
+    s_callbacks.bus_write_word=psx_write_word;
+    s_callbacks.bus_write_half=psx_write_half;
+    s_callbacks.bus_write_byte=psx_write_byte;
+#if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
+    s_callbacks.bus_callback_widths=NULL;
+#else
+    s_callbacks.bus_callback_widths=psx_hr_bus_callbacks;
+#endif
     s_callbacks.psx_syscall          = psx_syscall;
     s_callbacks.psx_native_bad_entry = psx_native_bad_entry;
     s_callbacks.psx_unknown_dispatch = psx_unknown_dispatch;
@@ -3026,6 +3146,8 @@ const OverlayCallbacks *overlay_loader_callbacks(void) {
 
 void overlay_loader_init(const char *cache_dir, const char *game_id,
                          uint32_t config_hash) {
+    if (overlay_loader_session_interpreted_sealed() || s_session_dispatch_depth) return;
+    s_session_dispatch_seen = 0;
     {
         const char *perf = getenv("PSX_RUNTIME_PERF_DIAG");
         s_native_hot_enabled = perf && perf[0] && perf[0] != '0';
@@ -3447,7 +3569,7 @@ static int published_path_valid(const char *dll_path, char *canon,
     return 1;
 }
 
-OverlayPreparedImage *overlay_loader_prepare_published(const char *dll_path) {
+static OverlayPreparedImage *overlay_prepare_published_impl(const char *dll_path) {
     char canon[768];
     if (!published_path_valid(dll_path, canon, sizeof(canon))) return NULL;
     OverlayPreparedImage *image =
@@ -3485,6 +3607,17 @@ OverlayPreparedImage *overlay_loader_prepare_published(const char *dll_path) {
         free(image);
         return NULL;
     }
+    return image;
+}
+
+OverlayPreparedImage *overlay_loader_prepare_published(const char *dll_path) {
+    int gate;
+    do {
+        gate = session_gate_read();
+        if (gate & 1) return NULL;
+    } while (!session_gate_cas(gate, gate + 2));
+    OverlayPreparedImage *image = overlay_prepare_published_impl(dll_path);
+    do { gate = session_gate_read(); } while (!session_gate_cas(gate, gate - 2));
     return image;
 }
 
@@ -3906,6 +4039,8 @@ static int overlay_find_by_range(uint32_t seg, uint32_t phys) {
 static int overlay_loader_dispatch_seg(CPUState *cpu, uint32_t addr);
 
 int overlay_loader_dispatch(CPUState *cpu, uint32_t addr) {
+    s_session_dispatch_seen = 1;
+    if (overlay_loader_session_interpreted_sealed()) return 0;
     /* Overlay dispatch is a no-op when the overlay loader is inactive
      * (overlay_cache=false): there are no candidates to match, so this must
      * return 0 (dispatch to interp). This guard is also a HARD SAFETY:
@@ -3919,7 +4054,9 @@ int overlay_loader_dispatch(CPUState *cpu, uint32_t addr) {
      * overlay-off + CPS game hit this and wedged at boot before any game code ran
      * (found via Ape Escape, the only overlay-off title). Fail closed here. */
     if (!s_active) return 0;
+    s_session_dispatch_depth++;
     int ran = overlay_loader_dispatch_seg(cpu, addr);
+    s_session_dispatch_depth--;
     /* KUSEG/KSEG1 dispatches, split by outcome (docs/SEGMENT_AWARE_CODE.md
      * §5.7): run by a shard compiled for their segment, or left to the
      * interpreter (none is cached or valid yet). The interpreted ones are

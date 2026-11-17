@@ -11,12 +11,16 @@
 #include "ps1_exe_parser.h"
 #include "function_analysis.h"
 #include "control_flow.h"
+#include "../src/pgxp_operation_flow.h"
+#include "../src/pgxp_demand_regions.h"
 #include "../src/annotations.hpp"
 #include "../src/config_loader.h"
 
 namespace PSXRecompV4 { class BiosAddressModel; }
 
 namespace PSXRecomp {
+
+class PgxpPlainSpan;
 
 // CPU state structure (registers + memory access)
 struct CPUState {
@@ -67,6 +71,10 @@ struct CodeGenConfig {
     // Only explicitly listed guest functions call the runtime dispatcher.
     std::set<uint32_t> mod_function_entry_funcs;
     std::set<uint32_t> mod_instruction_sites;
+    // [recompiler.geometry_control_frames]: entry -> exact title contract guard.
+    std::map<uint32_t,std::string> geometry_control_frames;
+    // Explicit consumer closure: canonical scratch EA operations are not precision observers.
+    std::set<uint32_t> geometry_scratch_frames;
     // [[mod_immediate.sites]]: guarded instructions whose immediate a trusted mod
     // selects at run time; emitted as a selector switch over every variant.
     std::vector<PSXRecompV4::ModImmediateSite> mod_immediate_sites;
@@ -395,12 +403,32 @@ public:
 private:
     const PS1Executable& exe_;
     CodeGenConfig config_;
+    bool precision_region_body_ = false;
+    PgxpRegionPlan precision_region_plan_;
+    PgxpRegionState precision_region_state_{};
+    mutable std::map<std::string,std::string> precision_region_materializers_;
+    std::set<uint32_t> precision_region_opaque_;
+    std::set<uint32_t> precision_geometry_dead_;
+    bool precision_geometry_control_ = false;
+    bool precision_geometry_scratch_ = false;
+    std::string precision_geometry_guard_;
+    std::string precision_region_owner_;
+    std::string region_materializer(const PgxpRegionState&) const;
+    std::string region_flush(bool preserve_integer_facts = false);
+    void prepare_precision_regions(const ControlFlowGraph&);
+    std::string native_tail_caller_;
+    bool native_tail_signature_ = true; // alias bodies have an extra entry argument
     uint32_t code_seg_;  // set from the image in the constructor; see set_code_segment()
     std::set<uint32_t> known_functions_;  // Addresses of functions in this compilation unit
     std::string last_ranges_manifest_;
     std::vector<Function> last_functions_;
     std::map<uint32_t, ControlFlowGraph> last_cfgs_;
     std::set<uint32_t> extra_labels_;    // Mid-block addresses that need inline labels (jump table targets)
+    std::set<uint32_t> precision_dead_alu_; // CFG-proven unused shadow results
+    std::set<uint32_t> precision_elided_alu_; // lifetime ends before any observation
+    bool precision_operation_reentry_ = false, precision_operation_body_ = false;
+    std::string precision_operation_receipt_;
+    std::map<uint32_t, PgxpOperationSummary> precision_operation_summaries_;
     const AnnotationTable* annotations_ = nullptr;
 
     // Forward declarations for every psx_alias_body_XXXXXXXX() emitted by
@@ -495,7 +523,9 @@ private:
     int detect_cull_bltz_sites(const ControlFlowGraph& cfg);
 
     // Instruction translation
-    std::string translate_instruction(uint32_t addr, uint32_t instr);
+    void prepare_precision_dataflow(const ControlFlowGraph& cfg);
+    std::string translate_instruction(uint32_t addr, uint32_t instr,
+                                      PgxpPlainSpan* precision_span = nullptr);
     std::string translate_instruction_core(uint32_t addr, uint32_t instr,
         const std::string& memory_addr = "", uint32_t original_instruction = 0);
     // The [[draw_distance.clamp]] statement for (addr, instr), or "".

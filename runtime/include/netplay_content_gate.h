@@ -24,6 +24,10 @@ static int np_content_init(NpContentGate *g, const char *hex, uint32_t occupied,
     g->occupied=occupied|(1u<<local);g->matched=1u<<local;
     return 1;
 }
+static int np_content_observer_init(NpContentGate *g,const char *hex,uint32_t occupied){
+    if(!np_content_init(g,hex,occupied,0))return 0;
+    g->local=9;g->occupied=occupied;g->matched=0;return 1;
+}
 static void np_content_note(NpContentGate *g, unsigned slot, unsigned flags,
                             uint32_t a, uint32_t b, uint32_t seen) {
     unsigned chunk=flags&3u; uint32_t bit;

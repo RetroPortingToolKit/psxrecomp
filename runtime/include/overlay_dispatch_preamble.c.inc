@@ -1,9 +1,23 @@
 #include "overlay_api.h"
+#include "psx_native_span.h"
 #include "ws_cull_edge.h"   /* psx_ws_cull_bgez / psx_ws_clip_edge_x math */
 
 /* ---- Overlay dispatch shim (inserted by compile_overlays.py) ----------- */
 static OverlayCallbacks g_cbs;
 static uint32_t s_pending_cycles;
+uint32_t *g_psx_overlay_pending_cycles_p=&s_pending_cycles;
+const PSXDirectMemoryView *g_psx_overlay_memory_view;
+const PSXObservationView *g_psx_overlay_observation_view;
+uint32_t (*g_psx_overlay_psx_read_word)(uint32_t);
+uint16_t (*g_psx_overlay_psx_read_half)(uint32_t);
+uint8_t (*g_psx_overlay_psx_read_byte)(uint32_t);
+void (*g_psx_overlay_psx_write_word)(uint32_t,uint32_t);
+void (*g_psx_overlay_psx_write_half)(uint32_t,uint16_t);
+void (*g_psx_overlay_psx_write_byte)(uint32_t,uint8_t);
+
+PSX_OVERLAY_EXPORT void psx_overlay_note_bus_callback(unsigned store,uint32_t width) {
+    psx_headroom_bus_width(g_cbs.bus_callback_widths,store,width);
+}
 
 PSX_OVERLAY_EXPORT void overlay_flush_cycles(void) {
     uint32_t cycles = s_pending_cycles;
@@ -32,6 +46,19 @@ PSX_OVERLAY_EXPORT int overlay_abi(void) {
 
 PSX_OVERLAY_EXPORT void overlay_init(const OverlayCallbacks *cbs) {
     g_cbs = *cbs;
+    g_psx_overlay_memory_view=g_cbs.direct_memory &&
+        g_cbs.direct_memory->bytes==sizeof(PSXDirectMemoryView)?g_cbs.direct_memory:NULL;
+    g_psx_overlay_observation_view = g_cbs.observation_time &&
+        g_cbs.observation_time->bytes == sizeof(PSXObservationView) &&
+        g_cbs.observation_time->model == 1u && g_cbs.observation_time->edge &&
+        g_cbs.observation_time->fallback
+            ? g_cbs.observation_time : NULL;
+    g_psx_overlay_psx_read_word=g_cbs.bus_read_word;
+    g_psx_overlay_psx_read_half=g_cbs.bus_read_half;
+    g_psx_overlay_psx_read_byte=g_cbs.bus_read_byte;
+    g_psx_overlay_psx_write_word=g_cbs.bus_write_word;
+    g_psx_overlay_psx_write_half=g_cbs.bus_write_half;
+    g_psx_overlay_psx_write_byte=g_cbs.bus_write_byte;
     if (g_cbs.call_bail_flag) g_psx_call_bail_p    = g_cbs.call_bail_flag;
     if (g_cbs.bail_first)     g_psx_bail_first_p   = g_cbs.bail_first;
     if (g_cbs.bail_resolved)  g_psx_bail_resolved_p = g_cbs.bail_resolved;
@@ -110,20 +137,32 @@ int psx_game_text_native_ok(uint32_t addr) {
  * the SAME timeline as the interp/BIOS (a local copy would diverge). NULL-guarded so a
  * v9 DLL stays safe on a host that predates a given callback. */
 uint32_t psx_cyc_load_word(CPUState *cpu, uint32_t addr, uint32_t rt, uint32_t reg_mask) {
+    if(psx_direct_native_enabled())return psx_native_span_word(cpu,addr,rt,reg_mask);
     overlay_flush_cycles();
-    return g_cbs.cyc_load_word ? g_cbs.cyc_load_word(cpu, addr, rt, reg_mask) : cpu->read_word(addr);
+    if(g_cbs.cyc_load_word)return g_cbs.cyc_load_word(cpu,addr,rt,reg_mask);
+    PSX_HR_CUSTOM_BUS_CALLBACK(cpu->read_word,psx_read_word,0u,4u);
+    return cpu->read_word(addr);
 }
 uint16_t psx_cyc_load_half(CPUState *cpu, uint32_t addr, uint32_t rt, uint32_t reg_mask) {
+    if(psx_direct_native_enabled())return psx_native_span_half(cpu,addr,rt,reg_mask);
     overlay_flush_cycles();
-    return g_cbs.cyc_load_half ? g_cbs.cyc_load_half(cpu, addr, rt, reg_mask) : cpu->read_half(addr);
+    if(g_cbs.cyc_load_half)return g_cbs.cyc_load_half(cpu,addr,rt,reg_mask);
+    PSX_HR_CUSTOM_BUS_CALLBACK(cpu->read_half,psx_read_half,0u,2u);
+    return cpu->read_half(addr);
 }
 uint8_t psx_cyc_load_byte(CPUState *cpu, uint32_t addr, uint32_t rt, uint32_t reg_mask) {
+    if(psx_direct_native_enabled())return psx_native_span_byte(cpu,addr,rt,reg_mask);
     overlay_flush_cycles();
-    return g_cbs.cyc_load_byte ? g_cbs.cyc_load_byte(cpu, addr, rt, reg_mask) : cpu->read_byte(addr);
+    if(g_cbs.cyc_load_byte)return g_cbs.cyc_load_byte(cpu,addr,rt,reg_mask);
+    PSX_HR_CUSTOM_BUS_CALLBACK(cpu->read_byte,psx_read_byte,0u,1u);
+    return cpu->read_byte(addr);
 }
 uint32_t psx_cyc_lwc2_read(CPUState *cpu, uint32_t addr) {
+    if(psx_direct_native_enabled())return psx_native_span_lwc2(cpu,addr);
     overlay_flush_cycles();
-    return g_cbs.cyc_lwc2_read ? g_cbs.cyc_lwc2_read(cpu, addr) : cpu->read_word(addr);
+    if(g_cbs.cyc_lwc2_read)return g_cbs.cyc_lwc2_read(cpu,addr);
+    PSX_HR_CUSTOM_BUS_CALLBACK(cpu->read_word,psx_read_word,0u,4u);
+    return cpu->read_word(addr);
 }
 void psx_icache_fetch(CPUState *cpu, uint32_t addr) {
     overlay_flush_cycles();

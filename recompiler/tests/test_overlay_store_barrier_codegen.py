@@ -111,20 +111,20 @@ def main():
     if flush_definition < 0 or first_barrier < 0 or flush_definition > first_barrier:
         failures.append("DLL post-pass did not inject overlay_flush_cycles before generated code")
     for writer in ("write_byte", "write_half", "write_word"):
-        if f"psx_store_cycle_barrier(); cpu->{writer}(" not in source:
+        if f"psx_store_cycle_barrier(); PSX_STORE_{writer[6:].upper()}(cpu," not in source:
             failures.append(f"generated {writer} has no preceding cycle barrier")
 
     for helper in ("psx_swl", "psx_swr"):
         body = function_body(source, helper)
         if not ordered(body, "psx_store_cycle_barrier();", "cpu->read_word(",
-                       "cpu->write_word("):
+                       "PSX_STORE_WORD(cpu,"):
             failures.append(
                 f"{helper} does not publish cycles before its read-modify-write")
 
     # The SWC2-specific precision shadow must remain after the real write, with
     # the GTE completion stall and cycle publication ahead of both.
     if not ordered(source, "psx_gte_stall(cpu);", "psx_store_cycle_barrier();",
-                   "cpu->write_word(", "gte_precision_store_word("):
+                   "PSX_STORE_WORD(cpu,", "gte_precision_store_word("):
         failures.append("SWC2 stall/barrier/write/precision ordering is wrong")
 
     if failures:

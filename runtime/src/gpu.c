@@ -3394,6 +3394,37 @@ static int32_t ws_ui_y(int32_t y, int32_t ay, double s) {
     if (s >= 1.0) return y;
     return ay + (int32_t)lround((double)(y - ay) * s);
 }
+static int32_t ws_shared_ui_delta(void);
+int gpu_ws_copy_presented_ui(uint32_t source,const uint32_t *words,uint32_t count,
+    int32_t x[4],int32_t y[4],unsigned vertices,int rectangle) {
+    if(!words || !x || !y || vertices<3 || vertices>4 || !ws_auto_ui_squash || !ws_active())return 0;
+    const WsUiPrepassItem *it=NULL;
+    for(uint32_t i=0;i<ws_ui_prepass_count;++i)
+        if(ws_ui_prepass[i].src_addr==GPU_RAM_KEY(source)) {it=&ws_ui_prepass[i];break;}
+    if(!it || !ws_prepass_packet_matches(&it->packet_guard,words,count))return 0;
+    int32_t lo_x=x[0],hi_x=x[0],lo_y=y[0],hi_y=y[0];
+    for(unsigned i=1;i<vertices;++i) {
+        if(x[i]<lo_x)lo_x=x[i];
+        if(x[i]>hi_x)hi_x=x[i];
+        if(y[i]<lo_y)lo_y=y[i];
+        if(y[i]>hi_y)hi_y=y[i];
+    }
+    const int32_t X=ws_disp_x(),W=ws_disp_w(),H=ws_disp_h();
+    if((lo_x<=X && hi_x>=X+W && lo_y<=0 && hi_y>=H) || (hi_x-lo_x>W/2 && hi_y-lo_y>H/4))return 0;
+    const double s=ws_auto_ui_size();
+    const int delta=ws_shared_ui_delta();
+    if(rectangle && s>=1) {
+        const int32_t left=ws_scale_about(lo_x,it->group.anchor)+delta;
+        const int32_t width=(int32_t)ws_scale_len(hi_x-lo_x);
+        for(unsigned i=0;i<vertices;++i)x[i]=left+(x[i]==hi_x?width:0);
+    } else {
+        for(unsigned i=0;i<vertices;++i) {
+            x[i]=ws_ui_x(x[i],it->group.anchor,s)+delta;
+            y[i]=ws_ui_y(y[i],it->anchor_y,s);
+        }
+    }
+    return 1;
+}
 
 static int ws_shared_ui_packet(void) {
     uint32_t op = gp0_cmd_buf[0] >> 24;
@@ -5078,39 +5109,6 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         gl_renderer_note_wide_triangle_recovery(s_native_wide_projection_correction &&
             ws_native_wide_active() &&
             psx_gpu_triangle_oversize(raw_x,raw_y,0,1,2));
-    }
-    if (gr_backend() == GR_BACKEND_OPENGL &&
-        gl_renderer_frame_generation() != gte_fg_source_enabled())
-        gte_fg_source_set(gl_renderer_frame_generation());   /* from the next projection */
-    if (gr_backend() == GR_BACKEND_OPENGL && gte_fg_source_enabled()) {
-        /* Frame generation re-projects vertices from their camera-space source. */
-        uint32_t id[3] = { 0, 0, 0 };
-        int32_t pc[9] = { 0 }, hd[3] = { 0, 0, 0 };
-        const int ix[3] = { i0, i1, i2 };
-        GteFgSrc c[3][2];
-        int nc[3];
-        for (int k = 0; k < 3; k++) nc[k] = gte_fg_source_lookup(gp0_cmd_buf[ix[k]], c[k]);
-        /* Two points on one pixel: the one projected by the same function as
-         * a vertex with one source, else the one nearest its depth. */
-        for (int k = 0; k < 3; k++) {
-            int pick = nc[k] == 1 ? 0 : -1;
-            if (nc[k] == 2) {
-                for (int m = 0; m < 3 && pick < 0; m++)
-                    if (m != k && nc[m] == 1)
-                        for (int q = 0; q < 2; q++)
-                            if (c[k][q].ra == c[m][0].ra) { pick = q; break; }
-                if (pick < 0)
-                    for (int m = 0; m < 3 && pick < 0; m++)
-                        if (m != k && nc[m] == 1) {
-                            const int32_t z = c[m][0].p[2];
-                            pick = abs(c[k][0].p[2] - z) <= abs(c[k][1].p[2] - z) ? 0 : 1;
-                        }
-            }
-            if (pick < 0) continue;
-            id[k] = c[k][pick].id; hd[k] = c[k][pick].h;
-            for (int q = 0; q < 3; q++) pc[3 * k + q] = c[k][pick].p[q];
-        }
-        gl_renderer_fg_source(id, pc, hd, vx, vy);
     }
     gr_set_perspective_triangle(0, 0.0f, 0.0f, 0.0f);
     /* PGXP depth (G1.14) only reaches the renderer while a PGXP renderer
@@ -7007,111 +7005,7 @@ static int ws_ui_attached(const WsUiPrepassItem *a, const WsUiPrepassItem *b) {
     return gap <= WS_UI_GROUP_STACK_GAP;
 }
 
-void gpu_ws_prepass_linked_list(uint32_t start_addr) {
-    ws_ui_prepass_count = 0;
-    ws_ui_prepass_nodes_reset();
-    ws_ui_prepass_rank = 0xFFFFu;
-    ws_auto_ui_dense = 0;
-    ws_ui_reject.opcode = ws_ui_reject.not_axis = ws_ui_reject.degenerate =
-        ws_ui_reject.too_big = ws_ui_reject.cap = ws_ui_reject.rank =
-        ws_ui_reject.stale = ws_ui_reject.backing = ws_ui_reject.enclosed = 0;
-    ws_ui_rankdrop_count = 0;
-    if (!ws_auto_ui_squash || !ws_active()) return;
-
-    uint32_t addr = psx_mod_gpu_dma_resolve_address(start_addr);
-    uint32_t safety = 0;
-    uint16_t rank = 0xFFFFu;
-    uint16_t max_rank = 0xFFFFu;
-    const uint32_t max_nodes = 0x40000u;
-    int area_left = (int)draw_area_left, area_right = (int)draw_area_right;
-    int32_t offset_x = draw_offset_x;
-    GpuDisplayInfo di;
-    gpu_get_display_info(&di);
-
-    for (;;) {
-        if (safety++ > max_nodes) {
-            ws_ui_prepass_count = 0;
-            ws_ui_prepass_nodes_reset();
-            return;
-        }
-        uint32_t header = psx_read_word(addr);
-        uint32_t num_words = (header >> 24) & 0xFFu;
-        if (ws_ui_prepass_node_count >= WS_UI_PREPASS_NODE_MAX) {
-            ws_ui_reject.cap++;
-            ws_ui_prepass_count = 0;
-            ws_ui_prepass_nodes_reset();
-            return;
-        }
-        uint32_t payload[255];
-        uint32_t first_addr = psx_mod_gpu_dma_resolve_address(addr + 4u);
-        for (uint32_t i = 0; i < num_words; i++) {
-            payload[i] = psx_read_word(psx_mod_gpu_dma_resolve_address(
-                first_addr + i * 4u));
-        }
-        WsUiPrepassNode *node =
-            &ws_ui_prepass_nodes[ws_ui_prepass_node_count++];
-        ws_ui_prepass_gen++;
-        node->addr = GPU_RAM_KEY(addr);
-        node->header = header;
-        node->payload_guard =
-            ws_prepass_packet_guard(payload, num_words);
-        if (num_words == 0) {
-            rank = rank == 0xFFFFu ? 0u : (uint16_t)(rank + 1u);
-        } else {
-            uint32_t word_addr =
-                psx_mod_gpu_dma_resolve_address(addr + 4u);
-            uint32_t offset = 0;
-            while (offset < num_words) {
-                uint32_t first = psx_read_word(
-                    psx_mod_gpu_dma_resolve_address(
-                        word_addr + offset * 4u));
-                uint8_t op = (uint8_t)(first >> 24);
-                int count = gp0_command_word_count(op);
-                if (count <= 0 || offset + (uint32_t)count > num_words)
-                    break;
-                /* CPU->VRAM data follows its 3-word header and is not a command
-                 * stream. Such transfers are not UI draws; stop this node. */
-                if (op >= 0xA0u && op <= 0xBFu) break;
-                /* Select the frontmost populated drawing layer, including
-                 * full-screen fades and non-rectangular world primitives.
-                 * Choosing only among UI-shaped candidates promotes a deeper
-                 * wall quad to HUD when the real front layer has no widgets. */
-                if (op >= 0x20u && op <= 0x7Fu && rank != 0xFFFFu &&
-                    (max_rank == 0xFFFFu || rank > max_rank))
-                    max_rank = rank;
-                uint32_t words[12] = {0};
-                for (int i = 0; i < count && i < 12; i++) {
-                    words[i] = psx_read_word(
-                        psx_mod_gpu_dma_resolve_address(
-                            word_addr + (offset + (uint32_t)i) * 4u));
-                }
-                /* Group within the buffer being DRAWN, which can differ from
-                 * GP1's currently displayed front buffer. Full-width draw
-                 * areas identify even a back buffer not displayed yet;
-                 * scissored draws can reuse the learned framebuffer bases. */
-                int32_t target_x = (int32_t)di.display_x;
-                if (area_right - area_left + 1 == (int)di.width ||
-                    ws_is_fb_base((uint32_t)area_left)) {
-                    target_x = area_left;
-                } else {
-                    const int known = ws_fb_base_holding(area_left, (int)di.width);
-                    if (known >= 0) target_x = known;
-                }
-                ws_ui_prepass_add(words, (uint32_t)count,
-                    psx_mod_gpu_dma_resolve_address(
-                        word_addr + offset * 4u), rank,
-                    area_right - area_left + 1 >= (int)di.width, offset_x, target_x);
-                if (op == 0xE3u) area_left = (int)(words[0] & 0x3FFu);
-                if (op == 0xE4u) area_right = (int)(words[0] & 0x3FFu);
-                if (op == 0xE5u) offset_x = sign_extend(words[0] & 0x7FFu, 11);
-                offset += (uint32_t)count;
-            }
-        }
-
-        uint32_t next = header & 0xFFFFFFu;
-        if (next == 0xFFFFFFu) break;
-        addr = psx_mod_gpu_dma_resolve_address(next);
-    }
+static void ws_ui_prepass_finalize(uint16_t max_rank) {
     if (ws_ui_prepass_count == 0) {
         ws_ui_prepass_count = 0;
         return;
@@ -7298,6 +7192,198 @@ void gpu_ws_prepass_linked_list(uint32_t start_addr) {
             }
         }
     }
+}
+
+/* Native submission owns a frozen packet copy, so classification needs no
+ * second guest-memory walk or stale-memory validation. Keep the original
+ * walker/prepass below for the reference and diagnostic paths. */
+static struct {
+    GpuDisplayInfo display;
+    int enabled, area_left, area_right;
+    int32_t offset_x;
+    uint16_t rank, max_rank;
+} ws_native_list;
+
+void gpu_ws_native_list_begin(void) {
+    ws_ui_prepass_count = 0;
+    ws_ui_prepass_nodes_reset();
+    ws_ui_prepass_rank = 0xFFFFu;
+    ws_auto_ui_dense = 0;
+    memset(&ws_ui_reject, 0, sizeof ws_ui_reject);
+    ws_ui_rankdrop_count = 0;
+    ws_native_list.enabled = ws_auto_ui_squash && ws_active();
+    ws_native_list.rank = ws_native_list.max_rank = 0xFFFFu;
+    ws_native_list.area_left = (int)draw_area_left;
+    ws_native_list.area_right = (int)draw_area_right;
+    ws_native_list.offset_x = draw_offset_x;
+    gpu_get_display_info(&ws_native_list.display);
+}
+
+void gpu_ws_native_list_node(uint32_t addr, uint32_t header,
+                             const uint32_t *payload) {
+    if (!ws_native_list.enabled) return;
+    const uint32_t num_words = header >> 24;
+    if (ws_ui_prepass_node_count >= WS_UI_PREPASS_NODE_MAX) {
+        ws_ui_reject.cap++;
+        ws_ui_prepass_count = 0;
+        ws_ui_prepass_nodes_reset();
+        ws_native_list.enabled = 0;
+        return;
+    }
+    /* Count the same admission cap, without retaining per-node guards or
+     * building the sorted address index used to revalidate a live DMA walk. */
+    ws_ui_prepass_node_count++;
+    if (num_words == 0) {
+        ws_native_list.rank = ws_native_list.rank == 0xFFFFu ? 0u
+            : (uint16_t)(ws_native_list.rank + 1u);
+        return;
+    }
+    for (uint32_t offset = 0; offset < num_words;) {
+        const uint8_t op = (uint8_t)(payload[offset] >> 24);
+        const int count = gp0_command_word_count(op);
+        if (count <= 0 || offset + (uint32_t)count > num_words ||
+            (op >= 0xA0u && op <= 0xBFu)) break;
+        if (op >= 0x20u && op <= 0x7Fu && ws_native_list.rank != 0xFFFFu &&
+            (ws_native_list.max_rank == 0xFFFFu ||
+             ws_native_list.rank > ws_native_list.max_rank))
+            ws_native_list.max_rank = ws_native_list.rank;
+        int32_t target_x = (int32_t)ws_native_list.display.display_x;
+        if (ws_native_list.area_right - ws_native_list.area_left + 1 ==
+                (int)ws_native_list.display.width ||
+            ws_is_fb_base((uint32_t)ws_native_list.area_left)) {
+            target_x = ws_native_list.area_left;
+        } else {
+            const int known = ws_fb_base_holding(ws_native_list.area_left,
+                                    (int)ws_native_list.display.width);
+            if (known >= 0) target_x = known;
+        }
+        uint32_t words[12] = {0};
+        for (int i = 0; i < count && i < 12; ++i)
+            words[i] = payload[offset + (uint32_t)i];
+        ws_ui_prepass_add(words, (uint32_t)count,
+            psx_mod_gpu_dma_resolve_address(addr + 4u + offset * 4u),
+            ws_native_list.rank,
+            ws_native_list.area_right - ws_native_list.area_left + 1 >=
+                (int)ws_native_list.display.width,
+            ws_native_list.offset_x, target_x);
+        if (op == 0xE3u) ws_native_list.area_left = (int)(words[0] & 0x3FFu);
+        if (op == 0xE4u) ws_native_list.area_right = (int)(words[0] & 0x3FFu);
+        if (op == 0xE5u)
+            ws_native_list.offset_x = sign_extend(words[0] & 0x7FFu, 11);
+        offset += (uint32_t)count;
+    }
+}
+
+void gpu_ws_native_list_end(void) {
+    ws_ui_prepass_finalize(ws_native_list.max_rank);
+}
+
+void gpu_ws_prepass_linked_list(uint32_t start_addr) {
+    ws_ui_prepass_count = 0;
+    ws_ui_prepass_nodes_reset();
+    ws_ui_prepass_rank = 0xFFFFu;
+    ws_auto_ui_dense = 0;
+    ws_ui_reject.opcode = ws_ui_reject.not_axis = ws_ui_reject.degenerate =
+        ws_ui_reject.too_big = ws_ui_reject.cap = ws_ui_reject.rank =
+        ws_ui_reject.stale = ws_ui_reject.backing = ws_ui_reject.enclosed = 0;
+    ws_ui_rankdrop_count = 0;
+    if (!ws_auto_ui_squash || !ws_active()) return;
+
+    uint32_t addr = psx_mod_gpu_dma_resolve_address(start_addr);
+    uint32_t safety = 0;
+    uint16_t rank = 0xFFFFu;
+    uint16_t max_rank = 0xFFFFu;
+    const uint32_t max_nodes = 0x40000u;
+    int area_left = (int)draw_area_left, area_right = (int)draw_area_right;
+    int32_t offset_x = draw_offset_x;
+    GpuDisplayInfo di;
+    gpu_get_display_info(&di);
+
+    for (;;) {
+        if (safety++ > max_nodes) {
+            ws_ui_prepass_count = 0;
+            ws_ui_prepass_nodes_reset();
+            return;
+        }
+        uint32_t header = psx_read_word(addr);
+        uint32_t num_words = (header >> 24) & 0xFFu;
+        if (ws_ui_prepass_node_count >= WS_UI_PREPASS_NODE_MAX) {
+            ws_ui_reject.cap++;
+            ws_ui_prepass_count = 0;
+            ws_ui_prepass_nodes_reset();
+            return;
+        }
+        uint32_t payload[255];
+        uint32_t first_addr = psx_mod_gpu_dma_resolve_address(addr + 4u);
+        for (uint32_t i = 0; i < num_words; i++) {
+            payload[i] = psx_read_word(psx_mod_gpu_dma_resolve_address(
+                first_addr + i * 4u));
+        }
+        WsUiPrepassNode *node =
+            &ws_ui_prepass_nodes[ws_ui_prepass_node_count++];
+        ws_ui_prepass_gen++;
+        node->addr = GPU_RAM_KEY(addr);
+        node->header = header;
+        node->payload_guard =
+            ws_prepass_packet_guard(payload, num_words);
+        if (num_words == 0) {
+            rank = rank == 0xFFFFu ? 0u : (uint16_t)(rank + 1u);
+        } else {
+            uint32_t word_addr =
+                psx_mod_gpu_dma_resolve_address(addr + 4u);
+            uint32_t offset = 0;
+            while (offset < num_words) {
+                uint32_t first = psx_read_word(
+                    psx_mod_gpu_dma_resolve_address(
+                        word_addr + offset * 4u));
+                uint8_t op = (uint8_t)(first >> 24);
+                int count = gp0_command_word_count(op);
+                if (count <= 0 || offset + (uint32_t)count > num_words)
+                    break;
+                /* CPU->VRAM data follows its 3-word header and is not a command
+                 * stream. Such transfers are not UI draws; stop this node. */
+                if (op >= 0xA0u && op <= 0xBFu) break;
+                /* Select the frontmost populated drawing layer, including
+                 * full-screen fades and non-rectangular world primitives.
+                 * Choosing only among UI-shaped candidates promotes a deeper
+                 * wall quad to HUD when the real front layer has no widgets. */
+                if (op >= 0x20u && op <= 0x7Fu && rank != 0xFFFFu &&
+                    (max_rank == 0xFFFFu || rank > max_rank))
+                    max_rank = rank;
+                uint32_t words[12] = {0};
+                for (int i = 0; i < count && i < 12; i++) {
+                    words[i] = psx_read_word(
+                        psx_mod_gpu_dma_resolve_address(
+                            word_addr + (offset + (uint32_t)i) * 4u));
+                }
+                /* Group within the buffer being DRAWN, which can differ from
+                 * GP1's currently displayed front buffer. Full-width draw
+                 * areas identify even a back buffer not displayed yet;
+                 * scissored draws can reuse the learned framebuffer bases. */
+                int32_t target_x = (int32_t)di.display_x;
+                if (area_right - area_left + 1 == (int)di.width ||
+                    ws_is_fb_base((uint32_t)area_left)) {
+                    target_x = area_left;
+                } else {
+                    const int known = ws_fb_base_holding(area_left, (int)di.width);
+                    if (known >= 0) target_x = known;
+                }
+                ws_ui_prepass_add(words, (uint32_t)count,
+                    psx_mod_gpu_dma_resolve_address(
+                        word_addr + offset * 4u), rank,
+                    area_right - area_left + 1 >= (int)di.width, offset_x, target_x);
+                if (op == 0xE3u) area_left = (int)(words[0] & 0x3FFu);
+                if (op == 0xE4u) area_right = (int)(words[0] & 0x3FFu);
+                if (op == 0xE5u) offset_x = sign_extend(words[0] & 0x7FFu, 11);
+                offset += (uint32_t)count;
+            }
+        }
+
+        uint32_t next = header & 0xFFFFFFu;
+        if (next == 0xFFFFFFu) break;
+        addr = psx_mod_gpu_dma_resolve_address(next);
+    }
+    ws_ui_prepass_finalize(max_rank);
 }
 
 static int ws_ui_prepass_order_cmp(const void *x, const void *y) {
@@ -7932,6 +8018,12 @@ void gpu_get_draw_area(GpuDrawArea* out) {
     out->offset_x = draw_offset_x;
     out->offset_y = draw_offset_y;
 }
+void gpu_get_drawing_environment(GpuDrawingEnvironment* out) {
+    gpu_get_draw_area(&out->area);
+    out->texture_window=texture_window_value;
+    out->mode=texpage_x | texpage_y<<4 | semi_transparency<<5 | texpage_colors<<7 |
+        dither_enabled<<9 | set_mask_bit<<11 | check_mask_bit<<12 | texture_disable<<15;
+}
 
 uint16_t gpu_vram_peek(int x, int y) {
     if (x < 0 || x >= 1024 || y < 0 || y >= 512) return 0;
@@ -8143,6 +8235,39 @@ void gpu_write_gp0(uint32_t val) {
     int prev_phase = g_exec_phase;
     g_exec_phase = 4;
     gpu_write_gp0_body(val);
+    g_exec_phase = prev_phase;
+}
+
+void gpu_submit_gp0_node(uint32_t addr, uint32_t count,
+                          const uint32_t *words) {
+    extern int g_exec_phase;
+    const int prev_phase = g_exec_phase;
+    g_exec_phase = 4;
+    gpu_set_gp0_linked_list_node(addr, count);
+    for (uint32_t offset = 0; offset < count;) {
+        const uint32_t source = psx_mod_gpu_dma_resolve_address(
+            addr + 4u + offset * 4u);
+        const int n = gp0_state == GP0_IDLE
+            ? gp0_command_word_count((uint8_t)(words[offset] >> 24)) : 0;
+        if (n > 0 && (uint32_t)n <= count - offset &&
+            (uint32_t)n <= sizeof gp0_cmd_buf / sizeof gp0_cmd_buf[0]) {
+            /* Decode a complete packet once; preserve the same command body,
+             * renderer ordering, rings and continuation state as GP0 writes. */
+            memcpy(gp0_cmd_buf, words + offset, (size_t)n * sizeof(uint32_t));
+            gp0_write_count += (uint32_t)n;
+            gp0_cmd_source_addr = source;
+            gp0_next_source_addr = psx_mod_gpu_dma_resolve_address(
+                addr + 4u + (offset + (uint32_t)n - 1u) * 4u);
+            gp0_words_collected = gp0_words_needed = n;
+            gp0_execute_command();
+            offset += (uint32_t)n;
+        } else {
+            /* Streaming pixels, polylines and commands spanning nodes retain
+             * their established parser, consuming the captured bytes only. */
+            gp0_next_source_addr = source;
+            gpu_write_gp0_body(words[offset++]);
+        }
+    }
     g_exec_phase = prev_phase;
 }
 

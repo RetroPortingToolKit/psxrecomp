@@ -15,6 +15,9 @@
 #include "pgxp.h"
 #include "pgxp_hooks.h"
 #include "psx_memory.h"
+#include "psx_icache.h"
+#include "psx_bios_image.h"
+#include "psx_cycles.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -32,6 +35,24 @@ int gte_geometry_correction_lookup(uint32_t p, int32_t *x, int32_t *y) {
 }
 int gte_geometry_correction_lookup_probe(uint32_t p, int32_t *x, int32_t *y) {
     (void)p; (void)x; (void)y; return 0;
+}
+
+/* No BIOS backend/overlay is installed in this RAM-store fixture. Match the
+ * maintained memory harness's typed unavailable-image contract, never a
+ * function stub standing in for data. Real memory/PGXP/DMA remain linked. */
+static const PsxKernelBody no_kernel_bodies[1]={{0,0,0}};
+const PsxKernelBody *psx_bios_kernel_bodies=no_kernel_bodies;
+uint32_t psx_bios_kernel_body_count;
+const PsxKernelPatchRange *psx_bios_kernel_patch_ranges;
+uint32_t psx_bios_kernel_patch_range_count;
+PsxBiosImageInfo psx_bios_image;
+uint32_t psx_hr_gpu_hold_depth;
+static unsigned active_overlay_checks,device_service_requests;
+void overlay_loader_active_write_check(uint32_t physical,uint32_t size) {
+    (void)physical;(void)size;++active_overlay_checks;
+}
+void psx_devices_service_to_now_cause(unsigned request) {
+    (void)request;++device_service_requests;psx_devices_service_to_now();
 }
 
 static int failures;
@@ -58,7 +79,7 @@ static int precise(uint32_t addr) {
 
 int main(void) {
     static const uint32_t addrs[] = { 0x80100000u, 0x1F800100u };
-    static const uint32_t sr = 0;
+    static uint32_t sr = 0;
     psx_ram_apply_size_request();
     memory_set_sr_ptr(&sr);
     pgxp_set_enabled(1);
@@ -71,8 +92,14 @@ int main(void) {
         psx_write_word(a, PACKED);
         produce(a);
         psx_write_word(a, PACKED);
+#if defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS
+        check(!precise(a), "write ownership ends same-value CPU lineage before typed publication");
+        produce(a);
+        check(precise(a), "typed CPU/GTE receipt republishes after the actual write");
+#else
         check(precise(a), i ? "scratchpad: CPU store keeps the hooked shadow"
                             : "RAM: CPU store keeps the hooked shadow");
+#endif
 
         /* The identical word written by DMA is not the projected vertex. */
         g_dma_exec_depth = 1;
@@ -105,6 +132,44 @@ int main(void) {
     g_dma_exec_depth = 0;
     check(!precise(0x80100000u), "DMA store through a mirror drops the shadow");
 
+#if defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS
+    pgxp_set_source_tracking(1);
+    for(unsigned i=0;i<2;++i) {
+        const uint32_t a=addrs[i];PGXPWordShadow old,now;
+        psx_write_word(a,PACKED);produce(a);check(pgxp_tag_word_source(a,PACKED,701),"source tag");
+        check(pgxp_capture_word_shadow(a,PACKED,&old),"capture before typed half write");
+        psx_host_write_half(a+2u,(uint16_t)(PACKED>>16));
+        check(pgxp_capture_word_shadow(a,PACKED,&now),"capture after typed half write");
+        check((now.flags&PGXP_F_VX) && !(now.flags&(PGXP_F_VY|PGXP_F_VZ)) && now.x16==old.x16,
+              "untouched low half survives host high-half write");
+        check(pgxp_load_source(a,PACKED)==0,"partial write ends whole-word lineage");
+        produce(a);check(pgxp_tag_word_source(a,PACKED,702),"source-only setup");
+        pgxp_checkpoint_begin();psx_write_word(a,PACKED);pgxp_checkpoint_rollback();
+        check(precise(a)&&pgxp_load_source(a,PACKED)==702,"write effect participates in checkpoint rollback");
+        pgxp_suppress_begin();psx_write_word(a,PACKED);pgxp_suppress_end();
+        check(precise(a)&&pgxp_load_source(a,PACKED)==702,"suppressed write leaves live metadata untouched");
+        pgxp_invalidate_word(a);check(pgxp_tag_word_source(a,PACKED,703),"source-only receipt");
+        psx_write_byte(a,(uint8_t)PACKED);
+        check(pgxp_load_source(a,PACKED)==0,"same-value byte ends source-only lineage");
+    }
+    // Isolated CPU writes can physically touch the scratchpad too. Preserve
+    // that real bus routing while ending equal-bit precision at every width.
+    for(unsigned width=1;width<=4;width*=2) {
+        sr=0;psx_write_word(0x1f800100u,PACKED);produce(0x1f800100u);
+        psx_write_word(0xfffe0130u,PSX_BIU_DCACHE_ENABLE);sr=0x10000u;
+        if(width==4)psx_write_word(0x80000100u,PACKED);
+        else if(width==2)psx_write_half(0x80000102u,(uint16_t)(PACKED>>16));
+        else psx_write_byte(0x80000103u,(uint8_t)(PACKED>>24));
+        sr=0;check(!precise(0x1f800100u),"IsC scratch write owns same-value metadata");
+    }
+    psx_write_word(0x1f8003fcu,PACKED);produce(0x1f8003fcu);
+    psx_write_word(0x1f800000u,PACKED);produce(0x1f800000u);
+    sr=0x10000u;psx_write_word(0x800003ffu,0x5000a000u);sr=0;
+    check(!precise(0x1f8003fcu)&&!precise(0x1f800000u),"IsC wrap owns both scratch words");
+    psx_write_word(0xfffe0130u,0);
+#endif
+    check(active_overlay_checks==0,"ordinary fixture writes never mutate an active overlay");
+    check(device_service_requests==0,"ordinary fixture writes never request a device step");
     if (failures) {
         fprintf(stderr, "pgxp_untracked_store_test: %d FAILURES\n", failures);
         return 1;
