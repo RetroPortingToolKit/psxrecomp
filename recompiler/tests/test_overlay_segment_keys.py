@@ -354,9 +354,9 @@ def run_compile(recompiler, compiler, captures, out_dir, extra=(), toml=GAME_TOM
     return code, log.getvalue()
 
 
-def leaf_dir(cache_root):
+def leaf_dir(cache_root, recompiler):
     with patch.object(co, "overlay_config_hash", lambda *a: 0):
-        tag = co.cache_tag(str(RUNTIME / "include"), "", str(GAME_TOML), 0)
+        tag = co.cache_tag(str(RUNTIME / "include"), recompiler, str(GAME_TOML), 0)
     return os.path.join(cache_root, GAME_ID, "gcc", co.cache_arch_abi(), tag)
 
 
@@ -384,7 +384,7 @@ def check_compile(recompiler, compiler, data, labels, tmp):
     code, log = run_compile(recompiler, compiler,
                             [capture(data, labels, {KUSEG, KSEG1})], cache)
     check(code == 0 and "built OK : 2" in log, "both views build")
-    leaf = leaf_dir(cache)
+    leaf = leaf_dir(cache, recompiler)
     ext = co.overlay_ext()
     check(not os.path.exists(os.path.join(leaf, stem + ext)),
           "no KSEG0 shard: no entry was dispatched at KSEG0")
@@ -436,7 +436,7 @@ def check_compile(recompiler, compiler, data, labels, tmp):
         out = os.path.join(tmp, "cache-" + name)
         os.makedirs(out)
         code, _log = run_compile(recompiler, compiler, [cap], out)
-        d = leaf_dir(out)
+        d = leaf_dir(out, recompiler)
         with open(os.path.join(d, stem + ".ranges"), encoding="utf-8") as f:
             manifest = f.read()
         with open(os.path.join(d, f"{crc:08X}_patched.c"), encoding="latin-1") as f:
@@ -480,7 +480,7 @@ def check_demands(recompiler, compiler, data, labels, tmp):
         os.makedirs(out)
         code, log = run_compile(recompiler, compiler, [cap], out,
                                 ("--force-interior", f"0x{after:08X}"))
-        d = leaf_dir(out)
+        d = leaf_dir(out, recompiler)
         outs[name] = (code, "built OK : 1" in log, sorted(os.listdir(d)),
                       {n: open(os.path.join(d, n), "rb").read()
                        for n in os.listdir(d)
@@ -494,7 +494,7 @@ def check_demands(recompiler, compiler, data, labels, tmp):
     os.makedirs(out)
     code, log = run_compile(recompiler, compiler, [capture(data, labels, {KUSEG})], out,
                             ("--force-interior", f"0x{run:08X}"))
-    d = leaf_dir(out)
+    d = leaf_dir(out, recompiler)
     check(code == 0 and run in manifest_entries(d) and
           KUSEG | labels["ov_run"] in manifest_entries(os.path.join(d, "seg-kuseg")),
           "a forced KSEG0 interior of a KUSEG-only record is compiled at KSEG0")
@@ -536,7 +536,7 @@ def check_segment_isolation(recompiler, compiler, data, labels, tmp):
     stem = f"{PHYS:08X}_{crc:08X}"
     out = os.path.join(tmp, "prior")
     os.makedirs(out)
-    leaf = leaf_dir(out)
+    leaf = leaf_dir(out, recompiler)
     os.makedirs(leaf)
     # A KSEG0 manifest of these bytes that names an entry no KUSEG or KSEG1
     # capture saw. The prior-manifest reclassification merges only a view's
@@ -556,8 +556,8 @@ def check_segment_isolation(recompiler, compiler, data, labels, tmp):
               f"{sub}: roots are the segment's own entries")
     # Empty-primary reconciliation counts only the view's own segment's
     # fragments as serving its roots.
-    k0_leaf = leaf_dir(os.path.join(tmp, "cache-v2"))     # a KSEG0 shard only
-    both_leaf = leaf_dir(os.path.join(tmp, "cache"))      # KUSEG and KSEG1 shards
+    k0_leaf = leaf_dir(os.path.join(tmp, "cache-v2"), recompiler)     # a KSEG0 shard only
+    both_leaf = leaf_dir(os.path.join(tmp, "cache"), recompiler)      # KUSEG and KSEG1 shards
     abi = co.overlay_abi_tag(str(RUNTIME / "include"), 0)
     for seg, cache, served in ((KUSEG, k0_leaf, False), (KSEG0, k0_leaf, True),
                                (KUSEG, both_leaf, True), (KSEG1, both_leaf, True)):
@@ -592,7 +592,7 @@ def check_config_sites(recompiler, compiler, data, labels, tmp):
                              [capture(data, labels, {KUSEG, KSEG0, KSEG1})], out,
                              toml=toml)
     crc = __import__("binascii").crc32(data) & 0xFFFFFFFF
-    leaf = leaf_dir(out)
+    leaf = leaf_dir(out, recompiler)
     check(code == 0, "the three views build with the hook config")
     for seg, sub in ((KUSEG, "seg-kuseg"), (KSEG0, ""), (KSEG1, "seg-kseg1")):
         with open(os.path.join(leaf, sub, f"{crc:08X}_patched.c"), encoding="latin-1") as f:
@@ -606,10 +606,10 @@ def check_config_sites(recompiler, compiler, data, labels, tmp):
 # ---------------------------------------------------------------------------
 # 5. the loader
 # ---------------------------------------------------------------------------
-def check_loader(compiler, data, labels, cache, tmp):
+def check_loader(recompiler, compiler, data, labels, cache, tmp):
     print("overlay loader")
     harness = pathlib.Path(tmp) / ("harness" + (".exe" if os.name == "nt" else ""))
-    pair.compile_harness(compiler, harness)
+    pair.compile_harness(compiler, harness, codegen_hash=co.codegen_hash(str(RUNTIME / "include"), recompiler))
     # The harness boots the loader for game "PAIR-TEST".
     root = pathlib.Path(tmp) / "hcache"
     shutil.copytree(os.path.join(cache, GAME_ID), root / pair.GAME)
@@ -673,7 +673,7 @@ def main() -> int:
         check_static_fragments(args.recompiler, args.compiler, tmp)
         check_segment_isolation(args.recompiler, args.compiler, data, labels, tmp)
         check_config_sites(args.recompiler, args.compiler, data, labels, tmp)
-        check_loader(args.compiler, data, labels, cache, tmp)
+        check_loader(args.recompiler, args.compiler, data, labels, cache, tmp)
     if FAILURES:
         print(f"FAIL: {len(FAILURES)} check(s)")
         return 1

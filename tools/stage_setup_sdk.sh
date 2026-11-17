@@ -195,6 +195,26 @@ chmod +x "${STAGE}/psxrecomp/recompiler/build/$(basename "${GAME_BIN}")" 2>/dev/
 chmod +x "${STAGE}/psxrecomp/recompiler/build/$(basename "${BIOS_BIN}")" 2>/dev/null || true
 echo "staged emitters from ${GAME_BIN%/*}"
 
+# The codegen hash is build output. Keep framework source trees read-only and
+# stage the header produced beside the exact emitter, including multi-config
+# layouts where the executable lives in a Release/ subdirectory.
+CODEGEN_HASH_HDR=""
+for _hash_root in "${GAME_BIN%/*}" "$(dirname "${GAME_BIN%/*}")"; do
+  _hash_candidate="${_hash_root}/runtime/include/overlay_codegen_hash.h"
+  if [[ -f "${_hash_candidate}" ]]; then
+    CODEGEN_HASH_HDR="${_hash_candidate}"
+    break
+  fi
+done
+if [[ -z "${CODEGEN_HASH_HDR}" ]]; then
+  echo "error: emitter build has no runtime/include/overlay_codegen_hash.h" >&2
+  echo "  rebuild psxrecomp-game from the selected framework source" >&2
+  exit 1
+fi
+mkdir -p "${STAGE}/psxrecomp/runtime/include"
+cp -a "${CODEGEN_HASH_HDR}" "${STAGE}/psxrecomp/runtime/include/overlay_codegen_hash.h"
+echo "staged codegen hash from ${CODEGEN_HASH_HDR}"
+
 cat >"${STAGE}/psxrecomp/retcomm-sdk.json" <<'EOF'
 {
   "cli": "psxrecomp_cli.py",
