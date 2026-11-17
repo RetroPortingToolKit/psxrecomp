@@ -187,9 +187,8 @@ static int8_t pad_type_req[PSX_MAX_PLAYERS] = {
 };
 
 /* Device kind per logical slot: SIO_DEVICE_PAD (0, the default)
- * or SIO_DEVICE_MOUSE. A host preference, like the multitap: sio_init keeps
- * it and the snapshot wire does not carry it, so a slot that stays a pad is
- * byte-identical to a build without the mouse. */
+ * or a native peripheral. sio_init keeps the selected host device; snapshots
+ * restore its guest-visible unread motion, buttons, payload and device kind. */
 static PSX_BSS uint8_t pad_device_kind[PSX_MAX_PLAYERS];
 /* PS1 Mouse (PSX-SPX "Controllers - Mouse"): motion not yet read, per axis
  * (X right-positive, Y down-positive), and the buttons (bit0 left, bit1
@@ -3362,6 +3361,17 @@ static void sio_pad_mode_legacy_defaults(void) {
     }
 }
 
+/* Unread peripheral input is state: a completed mouse poll consumes motion. */
+static int sio_snap_emit_peripherals(PstW *w) {
+    if (!pst_w_bytes(w, pad_device_kind, sizeof(pad_device_kind)) ||
+        !pst_w_bytes(w, mouse_buttons, sizeof(mouse_buttons)) ||
+        !pst_w_bytes(w, guncon_data, sizeof(guncon_data))) return 0;
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s)
+        for (int axis = 0; axis < 2; ++axis)
+            if (!pst_w_i16(w, mouse_motion[s][axis])) return 0;
+    return pst_w_bytes(w, pad_response + 8, sizeof(pad_response) - 8);
+}
+
 static int sio_snap_emit_fsm(PstW *w) {
     return sio_snap_emit_fsm_pace(w) && sio_snap_emit_fsm_meta(w);
 }
@@ -3369,12 +3379,13 @@ static int sio_snap_emit_fsm(PstW *w) {
 static int sio_snap_emit(PstW *w) {
     return sio_snap_emit_regs(w) && sio_snap_emit_pads(w) &&
            sio_snap_emit_mc(w) && sio_snap_emit_fsm(w) && sio_snap_emit_rumble(w) &&
-           sio_snap_emit_jogcon(w) && sio_snap_emit_pad_mode(w);
+           sio_snap_emit_jogcon(w) && sio_snap_emit_pad_mode(w) &&
+           sio_snap_emit_peripherals(w);
 }
 
 /* Cumulative section end offsets in the snapshot wire:
  * out[0]=regs, out[1]=pads, out[2]=memcard, out[3]=fsm_pace (netplay),
- * out[4]=full including fsm metadata, rumble, JogCon and pad-mode state. */
+ * out[4]=full including fsm metadata, rumble, JogCon, pad-mode and peripherals. */
 void sio_snapshot_section_ends(uint32_t out[5]) {
     PstW w;
     pst_w_init(&w, NULL, 0);
@@ -3390,15 +3401,22 @@ void sio_snapshot_section_ends(uint32_t out[5]) {
     (void)sio_snap_emit_rumble(&w);
     (void)sio_snap_emit_jogcon(&w);
     (void)sio_snap_emit_pad_mode(&w);
+    (void)sio_snap_emit_peripherals(&w);
     out[4] = (uint32_t)w.written;
 }
 
+uint32_t sio_snapshot_bytes(void);
+
 static int sio_snap_parse(PstR *r) {
+    const int full_response = (size_t)(r->end - r->p) == sio_snapshot_bytes();
     /* A real state load invalidates input history; restoring a render-only
      * checkpoint must not discard host presses captured by normal polling. */
     if (!g_psx_render_pass_active)
         for(int slot=0;slot<PSX_MAX_PLAYERS;++slot)
             digital_pad_history_reset(&pad_input_history[slot],pad_buttons[slot]);
+    memset(mouse_motion, 0, sizeof(mouse_motion));
+    memset(mouse_buttons, 0, sizeof(mouse_buttons));
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s) guncon_reset(s);
     uint32_t u;
     int32_t i;
     int16_t tr;
@@ -3417,9 +3435,10 @@ static int sio_snap_parse(PstR *r) {
     pad_state = (PadState)u;
     selected_slot = (int)i;
     pad_active_logical = pad_logical_for_port(selected_slot);
-    /* Multitap bulk responses are 34 bytes; snap only stores 8. Abort an
-     * in-flight bulk restore rather than feed a truncated frame. */
-    if (pad_response_len > 8) {
+    /* Older snapshots have only eight response bytes; abort a longer
+     * legacy transfer rather than feed a truncated GunCon/multitap frame. */
+    if (pad_response_len > sizeof(pad_response) ||
+        (!full_response && pad_response_len > 8)) {
         pad_state = PAD_IDLE;
         pad_response_len = 0;
         pad_response_idx = 0;
@@ -3527,6 +3546,17 @@ static int sio_snap_parse(PstR *r) {
         if (pad_analog_device[s] != SIO_PAD_JOGCON)
             pad_analog_device[s] = SIO_PAD_DUALSHOCK;
     }
+    if (r->p == r->end) return 1; /* Pre-peripheral snapshot. */
+    if (!pst_r_bytes(r, pad_device_kind, sizeof(pad_device_kind)) ||
+        !pst_r_bytes(r, mouse_buttons, sizeof(mouse_buttons)) ||
+        !pst_r_bytes(r, guncon_data, sizeof(guncon_data))) return 0;
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
+        if (pad_device_kind[s] != SIO_DEVICE_MOUSE &&
+            pad_device_kind[s] != SIO_DEVICE_GUNCON) pad_device_kind[s] = SIO_DEVICE_PAD;
+        for (int axis = 0; axis < 2; ++axis)
+            if (!pst_r_i16(r, &mouse_motion[s][axis])) return 0;
+    }
+    if (!pst_r_bytes(r, pad_response + 8, sizeof(pad_response) - 8)) return 0;
     if (r->p != r->end) return 0;
     return 1;
 }
@@ -3549,7 +3579,10 @@ void sio_snapshot_write(uint8_t *p) {
  * cannot fail sio_snapshot_read (the parser only reads fixed-width fields, and
  * both accepted lengths end exactly where one of its two layouts ends). */
 int sio_snapshot_validate(const uint8_t *p, uint32_t len) {
-    const uint32_t current = sio_snapshot_bytes();
+    const uint32_t peripheral_bytes = (uint32_t)(sizeof(pad_device_kind) +
+        sizeof(mouse_buttons) + sizeof(guncon_data) + sizeof(mouse_motion) +
+        sizeof(pad_response) - 8);
+    const uint32_t current = sio_snapshot_bytes() - peripheral_bytes;
     const uint32_t rumble_bytes = (uint32_t)(sizeof(pad_rumble_map) +
                                   sizeof(pad_rumble_small) +
                                   sizeof(pad_rumble_large));
@@ -3557,7 +3590,7 @@ int sio_snapshot_validate(const uint8_t *p, uint32_t len) {
                                   sizeof(pad_jogcon_motor_command));
     const uint32_t mode_bytes = (uint32_t)(sizeof(analog_mode_locked) +
                                 sizeof(pad_analog_device));
-    return p && (len == current ||
+    return p && (len == current + peripheral_bytes || len == current ||
                  (len < current && len + mode_bytes == current) ||
                  (len < current && len + mode_bytes + jogcon_bytes == current) ||
                  (len < current &&

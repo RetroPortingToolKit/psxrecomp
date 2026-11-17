@@ -194,11 +194,19 @@ int main(void) {
     }
     EXPECT(1,"port 2 mouse", 0xFF,0x12,0x5A,0xFF,0xF4,0xFE,0x04);
 
-    /* The kind is not in the snapshot wire. */
+    /* Restore actual unread device input after a kind switch and consumption. */
     {
-        const uint32_t with_mouse = sio_snapshot_bytes();
+        sio_mouse_add_motion(1,300,-300); sio_set_mouse_buttons(1,1,0);
+        uint32_t n = sio_snapshot_bytes();
+        uint8_t *saved = (uint8_t*)malloc(n);
+        check(saved != NULL,"allocate peripheral snapshot");
+        sio_snapshot_write(saved);
         sio_set_port_device(1,SIO_DEVICE_PAD);
-        check(sio_snapshot_bytes() == with_mouse,"snapshot size does not depend on the kind");
+        check(sio_snapshot_read(saved,n),"restore peripheral snapshot");
+        free(saved);
+        check(sio_get_port_device(1) == SIO_DEVICE_MOUSE,"restore peripheral kind");
+        EXPECT(1,"restored unread peripheral payload",0xff,0x12,0x5a,0xff,0xf4,0x7f,0x80);
+        EXPECT(1,"restored motion carry",0xff,0x12,0x5a,0xff,0xf4,0x7f,0x80);
     }
 
     /* Back to a pad: the port answers as a pad again, with no mouse residue. */
