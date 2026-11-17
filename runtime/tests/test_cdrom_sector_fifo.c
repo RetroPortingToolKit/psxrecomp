@@ -438,6 +438,7 @@ uint32_t iso_cdda_sector_count(void* h) {(void)h;return 1000;}
 int iso_cdda_track_is_audio(void* h,int track) {(void)h;(void)track;return 0;}
 uint32_t iso_sector_count(void* h) {(void)h;return 1000;}
 int iso_track_count(void* h) {(void)h;return 1;}
+int iso_track_is_audio(void* h,int track) {(void)h;(void)track;return 0;}
 void event_ring_record_aux(uint16_t k,uint8_t d,uint32_t a) {(void)k;(void)d;(void)a;}
 void event_ring_record(uint16_t k,uint8_t d) {(void)k;(void)d;}
 void savestate_set_disc_scope(int n) {(void)n;}
