@@ -524,7 +524,9 @@ static void fire_vblank_edge(void) {
 
 void interrupts_service_scheduled_events(void) {
     note_sio_progress_cycle();
-    if (in_exception) return;
+    /* Device time continues while the CPU handles an exception, including
+     * with IEc clear: a handler may poll GPUSTAT's field bit. CPU interrupt
+     * delivery stays gated separately by psx_check_interrupts. */
     while (psx_vblank_edge_due(cycles_since_vblank)) {
         if (should_defer_vblank_for_sio()) return;
         fire_vblank_edge();

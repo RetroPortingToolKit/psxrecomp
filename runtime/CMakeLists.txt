@@ -2818,6 +2818,17 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         add_test(NAME data_shard_exec_mark_test COMMAND data_shard_exec_mark_test)
     endif()
 
+    # Device time runs inside an exception handler. The test includes the
+    # owning sources; whole-program optimization drops unrelated machinery.
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        add_executable(vblank_in_exception_test tests/test_vblank_in_exception.c)
+        target_include_directories(vblank_in_exception_test PRIVATE include)
+        target_compile_definitions(vblank_in_exception_test PRIVATE
+            PSX_ENABLE_BLOCK_CYCLES=1 PSX_NO_DEBUG_TOOLS=1)
+        target_compile_options(vblank_in_exception_test PRIVATE -O2 -fwhole-program)
+        add_test(NAME vblank_in_exception_test COMMAND vblank_in_exception_test)
+    endif()
+
     add_executable(psx_video_timing_test
         tests/test_psx_video_timing.c
         src/psx_video_timing.c)
