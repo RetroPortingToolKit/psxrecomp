@@ -2266,6 +2266,12 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_executable(cdrom_getlocl_test tests/test_cdrom_getlocl.c)
     target_include_directories(cdrom_getlocl_test PRIVATE include src)
     add_test(NAME cdrom_getlocl_test COMMAND cdrom_getlocl_test)
+    add_executable(cdrom_getlocl_no_header_test tests/test_cdrom_getlocl_no_header.c)
+    target_include_directories(cdrom_getlocl_no_header_test PRIVATE include src)
+    add_test(NAME cdrom_getlocl_no_header_test COMMAND cdrom_getlocl_no_header_test)
+    add_executable(cdrom_subq_position_test tests/test_cdrom_subq_position.c)
+    target_include_directories(cdrom_subq_position_test PRIVATE include src)
+    add_test(NAME cdrom_subq_position_test COMMAND cdrom_subq_position_test)
 
     add_executable(cdrom_resident_sector_test tests/test_cdrom_resident_sector.c)
     target_include_directories(cdrom_resident_sector_test PRIVATE include src)
