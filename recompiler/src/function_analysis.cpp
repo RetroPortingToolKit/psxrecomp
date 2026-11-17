@@ -2086,9 +2086,11 @@ FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
             if (!wr.visited.count(target)) continue;
             auto evidence = derived_evidence.find(target);
             if (evidence == derived_evidence.end()) break;
+            // A named reference: Apple clang 15 refuses a structured binding in a capture.
+            const auto& host_visited = wr.visited;
             auto source = std::find_if(
                 evidence->second.begin(), evidence->second.end(),
-                [&](const auto& item) { return wr.visited.count(item.first); });
+                [&host_visited](const auto& item) { return host_visited.count(item.first); });
             if (source == evidence->second.end()) break;
             result.absorbed_entries.push_back(
                 {target, host.start_addr, host.end_addr,
