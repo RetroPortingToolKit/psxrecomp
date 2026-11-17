@@ -1,5 +1,6 @@
 #include "../src/pgxp_dataflow.h"
 #include "../src/pgxp_operation_flow.h"
+#include "../src/pgxp_demand_regions.h"
 #include <cstdio>
 #include <cstdlib>
 using namespace PSXRecomp;
@@ -102,5 +103,16 @@ int main() {
     CHECK(summaries.at(0x100).stored&PgxpMemoryRoot); // no-GTE LW/SW is NOT plain
     caller.blocks[0].instructions[1].word=0x0c000080;
     CHECK(pgxp_operation_summaries({caller,callee}).at(0).opaque);
+    // Incoming affine receipts cannot survive a CFG edge that publishes an
+    // equal-bit replacement of their old canonical source. Keep this compiler
+    // analysis check in its normal C++ target, outside runtime no-unwind tests.
+    {
+        const std::vector<PSXRecomp::PgxpFlowBlock> join={
+            {0x1000,{{0x1000,0x24620001u,false}},{0x1010,0x1020}},
+            {0x1010,{{0x1010,0x3c038000u,false}},{0x1030}},
+            {0x1020,{}, {0x1030}}, {0x1030,{}, {}}};
+        const auto plan=PSXRecomp::pgxp_region_plan(join,{0x1000});
+        CHECK(plan.definitions==2 && !plan.entry.at(0x1010)[2].known && !plan.entry.at(0x1030)[2].known);
+    }
     std::puts("PASS: precision CFG joins/loops/GTE arithmetic/aliases/unknown edges/delay/HI-LO/lifetime boundaries");
 }

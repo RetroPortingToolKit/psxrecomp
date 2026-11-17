@@ -706,12 +706,6 @@ int main() {
         CHECK(recipe.incoming_add && recipe.source==3 && recipe.addend==4);
         unknown[3]=recipe;
         CHECK(!PSXRecomp::pgxp_region_definition(0x24630004u,unknown,dst,recipe)); // dependent rounding/carry stays canonical
-        const std::vector<PSXRecomp::PgxpFlowBlock> join={
-            {0x1000,{{0x1000,0x24620001u,false}},{0x1010,0x1020}},
-            {0x1010,{{0x1010,0x3c038000u,false}},{0x1030}},
-            {0x1020,{}, {0x1030}}, {0x1030,{}, {}}};
-        const auto plan=PSXRecomp::pgxp_region_plan(join,{0x1000});
-        CHECK(plan.definitions==2 && !plan.entry.at(0x1010)[2].known && !plan.entry.at(0x1030)[2].known);
         unknown={};
         CHECK(!PSXRecomp::pgxp_region_definition(0x00641821u,unknown,dst,recipe));
         // An exact low scalar can become a fractional DIV/MULT input later.
