@@ -3751,7 +3751,11 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "adaptive_view     = " << (s.adaptive_view ? "true" : "false") << "\n";
     write_extra("video",false);
     write_extra("runtime",true);
-    write_extra("audio",true);
+    if (s.has_volume || has_extra("audio")) {
+        f << "\n[audio]\n";
+        if (s.has_volume) f << "volume = " << std::max(0,std::min(100,s.volume)) << "\n";
+        write_extra("audio",false);
+    }
     if (s.has_hotkey_pad_rewind || s.has_hotkey_pad_save_state_menu ||
         s.has_hotkey_pad_fast_forward || s.has_hotkey_pad_fast_forward_toggle ||
         s.has_fast_forward_speed || s.has_fast_forward_mode) {
@@ -3771,7 +3775,6 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
             f << "fast_forward_toggle_pad = "
               << s.hotkey_pad_fast_forward_toggle << "\n";
     }
-    if (s.has_volume) f << "\n[audio]\nvolume = " << std::max(0, std::min(100, s.volume)) << "\n";
     if (s.has_skip_launcher)
         f << "\n[launcher]\nskip_launcher = " << (s.skip_launcher ? "true" : "false") << "\n";
     if ((s.has_netplay_player_name && !s.netplay_player_name.empty()) ||

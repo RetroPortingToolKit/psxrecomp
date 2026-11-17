@@ -128,8 +128,15 @@ int main() {
     assert(old_snapshot.has_adaptive_view && old_snapshot.adaptive_view);
     assert(old_snapshot.has_parappa_timing_mode && old_snapshot.parappa_timing_extra_early==2 && old_snapshot.parappa_timing_extra_late==3);
     assert(PSXRecompV4::save_user_settings(path,old_snapshot));
+    // Combined #867/#872: volume and buffer settings share one TOML table.
+    old_snapshot.has_volume=true; old_snapshot.volume=37;
+    assert(PSXRecompV4::save_user_settings(path,old_snapshot));
     const auto again=PSXRecompV4::load_user_settings(path);
+    assert(!again.parse_error && again.has_volume && again.volume==37);
     assert(again.extra_player_settings==prefs.extra_player_settings && again.adaptive_view);
+    std::ifstream input(path); std::string text((std::istreambuf_iterator<char>(input)),{});
+    const auto audio_table=text.find("[audio]");
+    assert(audio_table!=std::string::npos && text.find("[audio]",audio_table+1)==std::string::npos);
     puts("PASS:36 actual provider edits -> TOML load -> startup owners; bounds/old snapshot/stub preservation");
     return 0;
 }
