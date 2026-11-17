@@ -2916,6 +2916,17 @@ std::string CodeGenerator::translate_basic_block(
                                       delay_saved_target, reg_name(target_rs));
                 }
 
+                // BLTZAL/BGEZAL test rs before writing $ra, so a branch on $ra
+                // itself must see the old value. Latch the condition before the
+                // link write as well as before the delay slot.
+                if (block.exit_instr.type == ControlFlowType::Branch) {
+                    delay_saved_cond = fmt::format("_bc_{:08X}", addr);
+                    ss << config_.indent
+                       << fmt::format("int {} = ({});  /* branch cond before link and delay slot */\n",
+                                      delay_saved_cond,
+                                      generate_branch_condition(block.exit_instr.instruction, block.exit_instr.address));
+                }
+
                 if (block.exit_instr.type == ControlFlowType::JumpLink) {
                     ss << config_.indent
                        << fmt::format("cpu->gpr[31] = 0x{:08X}u;  /* jal link before delay slot */\n",
@@ -2972,14 +2983,7 @@ std::string CodeGenerator::translate_basic_block(
                             // Normal delay slot - always executes.
                             // In MIPS, the branch condition is evaluated at the branch
                             // instruction (before the delay slot). If the delay slot
-                            // modifies a condition register we must save the result first.
-                            if (block.exit_instr.type == ControlFlowType::Branch) {
-                                std::string cond = generate_branch_condition(block.exit_instr.instruction, block.exit_instr.address);
-                                delay_saved_cond = fmt::format("_bc_{:08X}", addr);
-                                ss << config_.indent
-                                   << fmt::format("int {} = ({});  /* save branch cond before delay slot */\n",
-                                                  delay_saved_cond, cond);
-                            }
+                            // modifies a condition register, the latch above holds the result.
                             ss << config_.indent << "/* delay slot (always executes) */\n";
                             // Delay slot's own fetch + §1+deps+DO_LDS, before its body (skipped if a load).
                             if (cycle_per_insn) emit_pre_icache(delay_slot_addr, config_.indent);
