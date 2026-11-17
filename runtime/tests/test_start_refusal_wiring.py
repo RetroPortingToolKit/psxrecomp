@@ -86,6 +86,7 @@ SITES = [
     ('"BIOS images would desync)\\n"', "netplay_session_bios"),
     ('"psxrecomp: overlay cache init failed: %s\\n"', "overlay_cache"),
     ('"psxrecomp: no disc image selected; exiting.\\n"', "no_disc"),
+    ("if (resolved_disc.empty() && !s_wrong_disc_sentence.empty()) {", "wrong_disc"),
     ('"psxrecomp: cannot clear mods for netplay: %s\\n"', "mods"),
     ('"psxrecomp: cannot launch with selected mods: %s\\n"', "mods"),
     ('"psxrecomp: no BIOS selected; exiting.\\n"', "no_bios"),
