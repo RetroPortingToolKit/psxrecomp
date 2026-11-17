@@ -138,6 +138,13 @@ extern uint8_t  psx_read_byte(uint32_t addr);
 extern void     psx_write_byte(uint32_t addr, uint8_t val);
 
 /* ---- Server state ---- */
+static void (*s_host_shutdown)(void);
+
+void debug_server_set_shutdown_callback(void (*shutdown)(void))
+{
+    s_host_shutdown = shutdown;
+}
+
 static sock_t s_listen  = SOCK_INVALID;
 static sock_t s_client  = SOCK_INVALID;
 static int    s_port    = DEFAULT_DEBUG_PORT;
@@ -14235,7 +14242,12 @@ static void handle_quit(int id, const char *json)
     (void)json;
     send_ok(id);
     psx_crash_trace_set_exit_origin("tcp_quit");
-    debug_server_shutdown();
+    /* Drain compiler/overlay workers before CRT teardown can join their static
+     * services while a loader thread still owns DLL initialization locks. */
+    if (s_host_shutdown)
+        s_host_shutdown();
+    else
+        debug_server_shutdown();
     exit(0);
 }
 
