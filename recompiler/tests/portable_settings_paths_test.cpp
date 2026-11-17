@@ -49,6 +49,8 @@ int main() {
     check(relative_to_folder(fs::path(), game).empty(), "an empty path stays empty");
 
     PSXRecompV4::UserSettings s{};
+    check(!s.has_volume && s.volume == 100, "fresh volume leaves the host default");
+    s.has_volume = true; s.volume = 37;
     s.bios_path = game / "inputs" / "[EU] SCPH5552.BIN"; s.has_bios_path = true;
     s.disc_path = disc; s.has_disc_path = true;
     s.memcard_dir = game / "saves"; s.has_memcard_dir = true;
@@ -67,6 +69,7 @@ int main() {
     check(body.find(outside.generic_string()) != std::string::npos, "outside card stays absolute");
 
     const PSXRecompV4::UserSettings back = PSXRecompV4::load_user_settings(settings);
+    check(back.has_volume && back.volume == 37, "host volume survives the settings round trip");
     check(back.has_disc_path && back.disc_path == fs::path("inputs/disc-1/Game (Europe).chd"),
           "relative disc path reads back unchanged");
     check(back.has_memcard1_path && back.memcard1_path == fs::path("saves/card1.mcd"),
