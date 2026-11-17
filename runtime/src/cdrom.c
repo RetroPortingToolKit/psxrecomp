@@ -2107,14 +2107,11 @@ static int pause_complete_delay_cycles(void) {
     return (int)cycles;
 }
 
-/* Audio-only media cannot satisfy a data read. PSX-SPX ("CDROM - Error
- * Codes"): ReadN/ReadS on an audio CD answer stat|error and error code 40h
- * instead of starting a read. The check depends on the media only, not on
- * the Setmode byte: a title that probes a disc with a data read to tell its
- * own disc from a music CD (Vib-Ribbon does this with ReadS on track 1) must
- * get the same answer whatever mode it wrote last. Mixed-mode game discs have
- * a data track, so they keep their data path. */
+/* ReadN/ReadS reject audio-only media when Setmode.CDDA is disabled.
+ * With bit 0 enabled, audio sectors use the maintained read path; the media
+ * type alone must not override that explicit transfer mode. */
 static int reject_audio_disc_data_read(void) {
+    if (mode_reg & 0x01u) return 0;
     int tracks = iso_handle ? iso_track_count(iso_handle) : 0;
     if (tracks <= 0) return 0;
     for (int track = 1; track <= tracks; ++track)
