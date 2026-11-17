@@ -243,7 +243,7 @@ class ArchiveTests(unittest.TestCase):
                    "--diagnostics-id", DIAG, "--mode", "public", "--allow-hd-textures"]
         self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
         for name, content in (("saves/card1.mcd", "private"),
-                              (MANIFEST, PLAYTEST_TEXT), ("disc/game.cue", "disc")):
+                              (MANIFEST, TEXT.replace("default_enabled = true", "default_enabled = false", 1)), ("disc/game.cue", "disc")):
             with self.subTest(file=name):
                 original = self.files.get(name)
                 self.files[name] = content
