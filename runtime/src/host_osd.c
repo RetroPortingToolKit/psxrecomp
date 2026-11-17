@@ -4,6 +4,7 @@
  * remains available for headless / launcher-less builds. */
 
 #include "host_osd.h"
+#include "host_osd_wrap.h"
 #include "psx_rewind.h"
 #include "psx_savestate_menu.h"
 #include "psx_host_menu.h"
@@ -19,6 +20,8 @@
 #endif
 
 #define OSD_MAX_CHARS  64
+#define OSD_MSG_BYTES 256
+#define OSD_LINE_GAP 2
 #define OSD_PAD_X      2
 #define OSD_PAD_Y      2
 #define OSD_SCALE      2
@@ -126,12 +129,12 @@ static const uint8_t FONT8X8[95][8] = {
     {0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00}, /* ~ */
 };
 
-static char     s_msg[OSD_MAX_CHARS];
+static char     s_msg[OSD_MSG_BYTES];
 static Uint32   s_expire_ms;
 static int      s_active;
 static int      s_img_dirty = 1;
 
-static char     s_status_msg[OSD_MAX_CHARS];
+static char     s_status_msg[OSD_MSG_BYTES];
 static int      s_status_active;
 static int      s_status_dirty = 1;
 static char     s_diagnostic_msg[2][OSD_MAX_CHARS];
@@ -147,7 +150,7 @@ static int      s_vol_dirty = 1;
 static int      s_needs_clear;
 
 #define OSD_IMG_W  ((OSD_PAD_X * 2 + OSD_MAX_CHARS * OSD_GLYPH_W) * OSD_SCALE)
-#define OSD_IMG_H  ((OSD_PAD_Y * 2 + OSD_GLYPH_H * 3) * OSD_SCALE)
+#define OSD_IMG_H ((OSD_PAD_Y * 2 + HOST_OSD_LINES * OSD_GLYPH_H + (HOST_OSD_LINES - 1) * OSD_LINE_GAP) * OSD_SCALE)
 static uint32_t s_img[OSD_IMG_W * OSD_IMG_H];
 static int      s_img_w;
 static int      s_img_h;
@@ -205,7 +208,7 @@ static int vol_visible(void) {
     return 1;
 }
 
-static void rasterize_text(const char *msg) {
+static void rasterize_diagnostic_text(const char *msg) {
     int n = 0, columns = 0, lines = 1;
     for(const char *p=msg;*p && lines<=3;++p) {
         if(*p=='\n') {if(columns>n)n=columns;columns=0;++lines;}
@@ -247,6 +250,53 @@ static void rasterize_text(const char *msg) {
             }
         }
         ++ci;
+    }
+    s_img_dirty = 0;
+}
+
+/* A toast or status line on its own: broken into lines (host_osd_wrap.h). */
+static void rasterize_text(const char *msg) {
+    char lines[HOST_OSD_LINES][HOST_OSD_COLS + 1];
+    const int count = host_osd_wrap(msg, lines, NULL);
+    int n = 0;                              /* the widest line */
+    for (int li = 0; li < count; li++) {
+        const int len = (int)strlen(lines[li]);
+        if (len > n) n = len;
+    }
+    s_img_w = (OSD_PAD_X * 2 + n * OSD_GLYPH_W) * OSD_SCALE;
+    s_img_h = (OSD_PAD_Y * 2 + (count > 0 ? count : 1) * OSD_GLYPH_H +
+               (count > 1 ? count - 1 : 0) * OSD_LINE_GAP) * OSD_SCALE;
+    if (s_img_w < 1) s_img_w = 1;
+    if (s_img_h < 1) s_img_h = 1;
+    if (s_img_w > OSD_IMG_W) s_img_w = OSD_IMG_W;
+    if (s_img_h > OSD_IMG_H) s_img_h = OSD_IMG_H;
+
+    for (int i = 0; i < s_img_w * s_img_h; i++)
+        s_img[i] = 0xFF202020u;
+
+    for (int li = 0; li < count; li++) {
+        const int line_y = OSD_PAD_Y + li * (OSD_GLYPH_H + OSD_LINE_GAP);
+        for (int ci = 0; lines[li][ci]; ci++) {
+            unsigned char ch = (unsigned char)lines[li][ci];
+            if (ch < 32 || ch > 126) ch = '?';
+            const uint8_t *g = FONT8X8[ch - 32];
+            for (int row = 0; row < OSD_GLYPH_H; row++) {
+                uint8_t bits = g[row];
+                for (int col = 0; col < OSD_GLYPH_W; col++) {
+                    if (!(bits & (1u << col))) continue;
+                    int x0 = (OSD_PAD_X + ci * OSD_GLYPH_W + col) * OSD_SCALE;
+                    int y0 = (line_y + row) * OSD_SCALE;
+                    for (int dy = 0; dy < OSD_SCALE; dy++) {
+                        for (int dx = 0; dx < OSD_SCALE; dx++) {
+                            int x = x0 + dx, y = y0 + dy;
+                            if ((unsigned)x < (unsigned)s_img_w &&
+                                (unsigned)y < (unsigned)s_img_h)
+                                s_img[y * s_img_w + x] = 0xFFFFFFFFu;
+                        }
+                    }
+                }
+            }
+        }
     }
     s_img_dirty = 0;
 }
@@ -448,11 +498,13 @@ int host_osd_image(const uint32_t **pixels, int *w, int *h) {
     if(s_img_dirty || s_status_dirty || s_diagnostic_dirty) {
         char text[3*OSD_MAX_CHARS+3];
         const char *main=show_msg?s_msg:(s_status_active?s_status_msg:"");
-        snprintf(text,sizeof text,"%s%s%s%s%s",main,
+        snprintf(text,sizeof text,"%.63s%s%s%s%s",main,
             main[0] && s_diagnostic_msg[0][0]?"\n":"",s_diagnostic_msg[0],
             (main[0] || s_diagnostic_msg[0][0]) && s_diagnostic_msg[1][0]?"\n":"",
             s_diagnostic_msg[1]);
-        rasterize_text(text);s_status_dirty=s_diagnostic_dirty=0;
+        if (s_diagnostic_active) rasterize_diagnostic_text(text);
+        else rasterize_text(main);
+        s_status_dirty=s_diagnostic_dirty=0;
     }
     if (pixels) *pixels = s_img;
     if (w) *w = s_img_w;
