@@ -46,14 +46,15 @@ helper = helper[: helper.index("\n}\n") + 3]
 assert "psx_start_refusal_set(kind, s_player_message_title.c_str()," in helper
 assert "psx_start_refusal_set(kind, title, sentence.c_str());" in helper
 assert 'psx_crash_trace_set_exit_origin("start_refused");' in helper
-assert re.search(r"if \(s_start_interactive && !g_headless\)\s*SDL_ShowSimpleMessageBox\(", helper)
+assert re.search(r"if \(s_start_interactive && !frontend_unattended\(\)\)\s*SDL_ShowSimpleMessageBox\(", helper)
 
 # "A person started it" knows every way of skipping the launcher, the setting
 # in settings.toml too. That setting is read after the command line, so the
 # switch is set twice: without it, then with it.
 interactive = MAIN[MAIN.index("static bool start_is_interactive(bool force_launcher, bool force_no_launcher,"):]
 interactive = interactive[: interactive.index("\n}\n") + 3]
-assert "if (g_headless) return false;" in interactive
+assert "if (frontend_unattended()) return false;" in interactive
+assert "return g_headless || g_hidden_window;" in MAIN, "hidden automated visits must remain unattended"
 assert "if (force_launcher) return true;" in interactive
 assert re.search(
     r'return !force_no_launcher && !std::getenv\("PSX_NO_LAUNCHER"\) &&\s*!skip_launcher_setting;',

@@ -3112,7 +3112,7 @@ static bool s_start_interactive = false;
 
 static bool start_is_interactive(bool force_launcher, bool force_no_launcher,
                                  bool skip_launcher_setting) {
-    if (g_headless) return false;
+    if (frontend_unattended()) return false;
     if (force_launcher) return true;
     return !force_no_launcher && !std::getenv("PSX_NO_LAUNCHER") &&
            !skip_launcher_setting;
@@ -3134,7 +3134,7 @@ static int refuse_start(const char* kind, const char* title,
                               s_player_message_text.c_str());
     } else {
         psx_start_refusal_set(kind, title, sentence.c_str());
-        if (s_start_interactive && !g_headless)
+        if (s_start_interactive && !frontend_unattended())
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, title,
                                      sentence.c_str(), NULL);
     }
