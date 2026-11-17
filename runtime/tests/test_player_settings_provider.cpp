@@ -70,7 +70,7 @@ int main() {
         {"video.dynamic_resolution","true"},{"video.dynamic_resolution_min","2x"},{"video.match_display_max_lines","1080"},
         {"video.supersample_disable_at_lines","2160"},{"video.geometry_correction","true"},
         {"video.perspective_texturing","false"},{"runtime.bios_hle_keep_intro","true"},
-        {"audio.buffer_ms","64"},{"controller.anti_deadzone","2048"},
+        {"audio.buffer_ms","064"},{"controller.anti_deadzone","2048"},
         {"controller.experimental_jogcon_force_feedback_invert","true"},{"controller.select_shortcuts","false"}
     };
     int controls=0;
@@ -103,6 +103,7 @@ int main() {
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"general","audio.buffer_ms","2147483648"));
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.pgxp_tolerance","nan"));
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.match_display_max_lines","1"));
+    // Leading-zero editor input must save as legal TOML and reload as integer64.
     auto prefs=PSXRecompV4::load_user_settings(path);
     assert(!prefs.parse_error && prefs.extra_player_settings.size()==29);
     assert(prefs.has_fast_boot && prefs.fast_boot && prefs.has_bios_hle && prefs.bios_hle);

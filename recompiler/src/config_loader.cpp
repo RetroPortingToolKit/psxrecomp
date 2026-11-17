@@ -3697,7 +3697,15 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
             f << spec.key << " = ";
             if (spec.kind==PlayerSettingKind::Text || spec.kind==PlayerSettingKind::Choice ||
                 spec.kind==PlayerSettingKind::ResolutionFloor) f << std::quoted(item->second);
-            else f << item->second;
+            else if (spec.kind==PlayerSettingKind::Integer)
+                f << static_cast<long long>(std::strtod(item->second.c_str(),nullptr));
+            else if (spec.kind==PlayerSettingKind::Number) {
+                // The validated editor text may contain leading zeros, a leading
+                // plus, or C numeric syntax. Emit a canonical TOML number.
+                std::ostringstream value;
+                value << std::setprecision(17) << std::strtod(item->second.c_str(),nullptr);
+                f << value.str();
+            } else f << item->second;
             f << "\n";
         }
     };
