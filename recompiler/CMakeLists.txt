@@ -1526,6 +1526,7 @@ if(BUILD_TESTING)
                 run_report_cdrom_counters
                 pal_cadence_host_refresh
                 sdl3_main_single_include
+                setup_install_card_path_wiring
                 spu_sample_scheduler_default
                 vk_build_default
                 vk_color_self_barrier
