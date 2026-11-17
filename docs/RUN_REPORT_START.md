@@ -19,6 +19,13 @@ before the game runs has `frame` 0. Three fields say why it ended.
 
 Once the game runs, `start_refused` and `launcher_status` are `null`.
 
+`disc_warning` is `null`, or a nonfatal known-disc missing-SBI sentence. It uses
+the mounted disc's detected serial and basename, not the expected config ID.
+It persists while the game runs, so a later black screen or crash report still
+contains the warning. It is set when the launch mounts the disc and again after a
+successful disc change while the game runs. A loaded SBI removes it; this field does not qualify the
+disc pressing, companion identity or protection/gameplay result.
+
 ## File names
 
 The report names a file by its **base name** only, never by its folder.

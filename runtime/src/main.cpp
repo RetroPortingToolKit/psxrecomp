@@ -3123,7 +3123,19 @@ static bool read_at(std::ifstream& f, uint64_t offset, uint8_t* out, size_t len)
     return f.gcount() == (std::streamsize)len;
 }
 
+/* The missing-SBI warning of the disc in the drive, for the run report and
+ * stderr. Empty when the disc needs no SBI or its SBI was loaded. */
+static void note_mounted_disc_warning(const std::filesystem::path& image,
+                                      const std::string& serial) {
+    const auto warning = PSXRecompV4::missing_sbi_warning(
+        image, serial, cdrom_has_sbi() != 0);
+    psx_disc_warning_set(warning.c_str());
+    if (!warning.empty())
+        std::fprintf(stderr, "psxrecomp: %s\n", warning.c_str());
+}
+
 struct DiscValidation {
+    std::string sbi_warning;   // missing-SBI warning; empty when none applies
     bool opened = false;
     bool has_header = false;
     bool id_matches = false;
@@ -3156,6 +3168,7 @@ static DiscValidation validate_disc_image(const std::filesystem::path& selected_
     const bool outside_wrong = PSXRecompV4::disc_roster_wrong_disc(outside);
     DiscValidation v;
     v.opened     = id.opened;
+    v.sbi_warning = id.sbi_warning;
     v.has_header = id.has_header;
     v.id_matches = expect.empty() ? !outside_wrong : id.serial_matches;
     v.detail     = id.detail;
@@ -3223,6 +3236,8 @@ static bool validate_disc_for_launch(const std::filesystem::path& path,
         launcher_warning("SBI file required", companion.message);
         return false;
     }
+    if (!v.sbi_warning.empty())
+        launcher_warning("Missing SBI", v.sbi_warning);
     return true;
 }
 
@@ -12222,8 +12237,18 @@ namespace {
         const auto resolved = PSXRecompV4::resolve_disc_path(disc_path);
         const auto companion = PSXRecompV4::check_sbi_setup(resolved.data, resolved.mount);
 #if defined(RECOMP_LAUNCHER_HAS_SBI_STATUS)
-        out->sbi_status = !companion.required ? RECOMP_SBI_NA :
-                         companion.ready ? RECOMP_SBI_OK : RECOMP_SBI_MISSING;
+        if (companion.required) {
+            out->sbi_status = companion.ready ? RECOMP_SBI_OK : RECOMP_SBI_MISSING;
+        } else {
+            /* A CHD (or a revision without a data-track rule) never matches the
+             * size/hash rule, so fall back to the LibCrypt serial list: the row
+             * is OK only when the disc mounted with its .sbi loaded, Missing
+             * otherwise (absent, malformed, or the disc did not mount). */
+            const bool listed = !PSXRecompV4::missing_sbi_warning(
+                resolved.mount, id.detected_serial, false).empty();
+            out->sbi_status = !listed ? RECOMP_SBI_NA
+                            : (id.toc_opened && id.sbi_loaded) ? RECOMP_SBI_OK : RECOMP_SBI_MISSING;
+        }
 #endif
         static std::string last_companion_warning;
         if (!companion.ready) {
@@ -12235,6 +12260,8 @@ namespace {
         } else {
             last_companion_warning.clear();
         }
+        if (companion.ready && !id.sbi_warning.empty() && out->verdict == 1)
+            out->verdict = 2; // Warning only: no new pressing/companion gate.
         // Enforce original image policy in the selection badge, including
         // when every mod is disabled. PLAY is guarded again before boot.
         std::string identity_error;
@@ -12265,6 +12292,7 @@ namespace {
                 : !id.detail.empty() ? id.detail.c_str()
                 : ((id.expected_serial_given && !id.serial_matches) || set_wrong_disc)
                     ? "the disc does not carry the expected serial"
+                : !id.sbi_warning.empty() ? id.sbi_warning.c_str()
                 : id.netplay_detail.c_str();
             char row[PSX_START_LAUNCHER_ROW_CAP];
             std::snprintf(row, sizeof(row),
@@ -18638,6 +18666,7 @@ static const PsxRuntimeMenuHost kRuntimeMenuHost = {
 };
 
 int main(int argc, char** argv) {
+    psx_disc_warning_set("");
     g_main_argc = argc;
     g_main_argv = argv;
     /* Reject retired selections before starting a regional child, launcher,
@@ -22088,6 +22117,11 @@ session_reboot:
         char message[64];
         snprintf(message, sizeof message, "Disc %d inserted", disc);
         host_osd_push(message, 2500);
+        /* The warning describes the disc in the drive: read the new disc's
+         * serial, and whether its SBI loaded, as the launch does. */
+        note_mounted_disc_warning(path, PSXRecompV4::identify_disc(
+            path, "", /*expected_crc*/0, /*has_expected_crc*/false,
+            /*compute_crc*/false).detected_serial);
     }, &disc_menu_session);
     psx_runtime_menu_set_host(&kRuntimeMenuHost);
     psx_runtime_menu_init();
@@ -22123,6 +22157,7 @@ session_reboot:
         const auto ident = PSXRecompV4::identify_disc(
             disc_path_str, expected_serial, expected_crc,
             has_crc, /*compute_crc*/false);
+        note_mounted_disc_warning(disc_path_str, ident.detected_serial);
         if (ident.region == "PAL") {
             cdrom_set_disc_scex("SCEE");
             power_on_pal = 1;

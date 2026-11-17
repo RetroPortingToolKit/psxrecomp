@@ -19,6 +19,8 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len);
  * drive and render nothing -- a black screen with no explanation. Callers that
  * passed a real path must check this and report. */
 int cdrom_has_disc(void);
+/* Was an SBI companion loaded into the currently mounted reader? */
+int cdrom_has_sbi(void);
 /* Disc license region for GetID ("SCEE"/"SCEA"/"SCEI"); derived from the
  * mounted disc's boot serial at launch. Defaults to "SCEA" (SCPH1001). */
 void cdrom_set_disc_scex(const char scex[4]);
