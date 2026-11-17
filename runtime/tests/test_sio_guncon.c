@@ -58,6 +58,7 @@ int memcard_write_sector(int card, int sector, const uint8_t *buf) {
 void memcard_flush(int card) { (void)card; }
 
 static unsigned checks;
+static int restore_mid_poll;
 static void check(int okay,const char *message) {
     checks++;
     if(!okay){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
@@ -72,6 +73,16 @@ static void txn(int port,const uint8_t *tx,unsigned count,uint8_t *rx,uint8_t *a
     for (unsigned i=0;i<count;++i) {
         sio_write(0x1F801040,tx[i]); advance(1088);
         rx[i] = (uint8_t)sio_read(0x1F801040);
+        if (restore_mid_poll && i == 4) {
+            uint32_t n=sio_snapshot_bytes();
+            uint8_t *saved=(uint8_t*)malloc(n);
+            check(saved != NULL,"allocate in-flight snapshot");
+            sio_snapshot_write(saved);
+            sio_set_port_device(port,SIO_DEVICE_PAD);
+            check(sio_snapshot_read(saved,n),"restore in-flight GunCon poll");
+            free(saved);
+            restore_mid_poll=0;
+        }
         advance(256);
         ack[i] = (uint8_t)((i_stat >> 7) & 1u);
         sio_write(0x1F80104A,0x1013u|slot); i_stat &= ~0x80u;
@@ -190,12 +201,23 @@ int main(void) {
     }
     EXPECT(1,"port 2 GunCon",                   0xFF,0x63,0x5A,0xFF,0xDF,0xC0,0x00,0x80,0x00);
 
-    /* The kind is not in the snapshot wire. */
+    /* Restore actual unread device input after a kind switch and consumption. */
     {
-        const uint32_t with_gun = sio_snapshot_bytes();
+        sio_set_guncon_state(1,GB(TRIGGER),0x0111,0x0022);
+        uint32_t n = sio_snapshot_bytes();
+        uint8_t *saved = (uint8_t*)malloc(n);
+        check(saved != NULL,"allocate peripheral snapshot");
+        sio_snapshot_write(saved);
         sio_set_port_device(1,SIO_DEVICE_PAD);
-        check(sio_snapshot_bytes() == with_gun,"snapshot size does not depend on the kind");
+        check(sio_snapshot_read(saved,n),"restore peripheral snapshot");
+        free(saved);
+        check(sio_get_port_device(1) == SIO_DEVICE_GUNCON,"restore peripheral kind");
+        EXPECT(1,"restored unread peripheral payload",0xff,0x63,0x5a,0xff,0xdf,0x11,0x01,0x22,0x00);
     }
+
+    sio_set_guncon_state(1,GB(TRIGGER),0x0111,0x0122);
+    restore_mid_poll=1;
+    EXPECT(1,"snapshot restores all nine in-flight bytes",0xff,0x63,0x5a,0xff,0xdf,0x11,0x01,0x22,0x01);
 
     /* A different plug starts idle: nothing carries over a kind change. */
     sio_set_port_device(1,SIO_DEVICE_GUNCON);

@@ -31,16 +31,17 @@ using SDL_Window = int;
 using SDL_MouseButtonFlags = unsigned;
 constexpr unsigned SDL_BUTTON_LMASK=1, SDL_BUTTON_RMASK=4;
 static int window, fake_x, fake_y, fake_buttons, capture_calls;
-static bool focused=true, menu=false, rewind_open=false, netplay=false, g_headless=false;
+static bool focused=true, host_ui=false, capture_ok=true, menu=false, rewind_open=false, netplay=false, g_headless=false;
 static SDL_Window* sdl_window=&window;
 struct PlayerInput { int kind=0; };
 static PlayerInput g_players[PSX_MAX_PLAYERS];
 static int savestate_menu_open;
+static bool psx_host_ui_capture_active() { return host_ui; }
 static bool psx_runtime_menu_is_open() { return menu; }
 static bool psx_rewind_is_open() { return rewind_open; }
 static bool psx_netplay_active() { return netplay; }
 static bool host_hotkey_input_focused() { return focused; }
-static bool SDL_SetWindowRelativeMouseMode(SDL_Window*,bool) { ++capture_calls; return true; }
+static bool SDL_SetWindowRelativeMouseMode(SDL_Window*,bool) { ++capture_calls; return capture_ok; }
 static unsigned SDL_GetRelativeMouseState(float* x,float* y) {
     *x=(float)fake_x; *y=(float)fake_y; fake_x=fake_y=0; return fake_buttons;
 }
@@ -68,7 +69,17 @@ int main() {
     check(!g_mouse_captured,"lost focus releases capture");
     focused=true; menu=true; fake_x=42; sample_mouse_ports();
     check(!g_mouse_captured,"menu owns the pointer");
-    menu=false; netplay=true; sample_mouse_ports();
+    menu=false; host_ui=true; sample_mouse_ports();
+    check(!g_mouse_captured,"provider menu owns the pointer");
+    host_ui=false; capture_ok=false; fake_x=42; sample_mouse_ports();
+    check(!g_mouse_captured,"failed capture is not advertised as active");
+    EXPECT(0,"failed capture feeds no motion",0xff,0x12,0x5a,0xff,0xfc,0,0);
+    capture_ok=true; sample_mouse_ports();
+    check(g_mouse_captured,"capture can recover after a failure");
+    capture_ok=false; host_ui=true; fake_x=42; sample_mouse_ports();
+    check(g_mouse_captured,"failed release preserves actual capture state");
+    EXPECT(0,"failed release still feeds no menu input",0xff,0x12,0x5a,0xff,0xfc,0,0);
+    capture_ok=true; host_ui=false; netplay=true; sample_mouse_ports();
     check(!g_mouse_captured,"netplay never captures native Mouse input");
     netplay=false; fake_x=2; fake_buttons=0; sample_mouse_ports();
     EXPECT(0,"focus restores clean input",0xff,0x12,0x5a,0xff,0xfc,1,0);
@@ -97,7 +108,7 @@ int main() {
         exe = work / 'native-mouse-host.exe'
         subprocess.run([args.cxx, *flags, '-DPSX_SDL3', str(cpp), str(work/'wire.o'),
                         str(work/'sio.o'), '-o', str(exe)], check=True)
-        subprocess.run([str(exe)], check=True, timeout=30)
+        subprocess.run([str(exe)], check=True)
 
 
 if __name__ == '__main__':

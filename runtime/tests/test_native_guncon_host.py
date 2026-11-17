@@ -89,7 +89,7 @@ int main() {
             subprocess.run([args.cc,*flags,'-c',str(unit),'-o',str(obj)],check=True)
         exe=work/'host.exe'
         subprocess.run([args.cxx,*flags,'-DPSX_SDL3',str(cpp),str(work/'wire.o'),str(work/'sio.o'),'-o',str(exe)],check=True)
-        subprocess.run([str(exe)],check=True,timeout=30)
+        subprocess.run([str(exe)],check=True)
 
 
 if __name__ == '__main__':

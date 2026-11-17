@@ -8757,24 +8757,24 @@ static bool mouse_seat_configured(void) {
 static void mouse_set_relative(bool on) {
     if (on == g_mouse_captured || !sdl_window) return;
 #if defined(PSX_SDL3)
-    SDL_SetWindowRelativeMouseMode(sdl_window, on);
+    if (!SDL_SetWindowRelativeMouseMode(sdl_window, on)) return;
 #else
-    SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE);
+    if (SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE) != 0) return;
 #endif
     g_mouse_captured = on;
 }
 
 /* Capture while the player wants it, the window has focus and no host menu
  * is open; release otherwise so the pointer is usable. */
+static bool mouse_capture_requested(void) {
+    return !g_headless && !psx_netplay_active() && mouse_seat_configured() &&
+           g_mouse_capture_wanted && host_hotkey_input_focused() &&
+           !savestate_menu_open && !psx_host_ui_capture_active() &&
+           !psx_runtime_menu_is_open() && !psx_rewind_is_open();
+}
+
 static void mouse_capture_sync(void) {
-    if (g_headless || psx_netplay_active() || !mouse_seat_configured()) {
-        mouse_set_relative(false);
-        return;
-    }
-    const bool menu = savestate_menu_open || psx_runtime_menu_is_open() ||
-                      psx_rewind_is_open();
-    mouse_set_relative(g_mouse_capture_wanted && host_hotkey_input_focused() &&
-                       !menu);
+    mouse_set_relative(mouse_capture_requested());
 }
 
 static void mouse_capture_toggle(void) {
@@ -8807,7 +8807,7 @@ static void sample_mouse_ports(void) {
     fx = (float)ix;
     fy = (float)iy;
 #endif
-    const bool live = g_mouse_captured;
+    const bool live = g_mouse_captured && mouse_capture_requested();
     int dx = 0, dy = 0;
     if (live) {
         const double x = (double)fx * g_mouse_sensitivity + g_mouse_frac[0];
