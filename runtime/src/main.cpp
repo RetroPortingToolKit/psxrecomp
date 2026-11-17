@@ -59,6 +59,8 @@
 extern "C" void psx_overlay_static_get_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *);
 #endif
 extern "C" void psx_event_step_conservative_env_init(void);
+/* Host lifecycle glue; generated guest code does not use this callback. */
+extern "C" void debug_server_set_shutdown_callback(void (*shutdown)(void));
 /* memory.c's last-word-store record for the idle-loop detector. */
 extern "C" int g_psx_track_last_store;
 extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
@@ -20926,6 +20928,7 @@ session_reboot:
         };
         memcard_init_slots(memcard_dir_str.c_str(), slots);
     }
+    debug_server_set_shutdown_callback(shutdown_runtime);
     debug_server_apply_request(debug_port);
     if (!rematch_session) {
         std::atexit(memcard_flush_all);
