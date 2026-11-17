@@ -120,6 +120,11 @@ void psx_scheduler_top_level_resume_clear(void);
  * PSX_HLE_SCHEDULER wins over config. Latched at first query; the mode cannot
  * change mid-run. */
 void psx_hle_scheduler_set_default(int on);
+
+/* Checkpoint resume: the one-level switch-back TCB the scheduler keeps
+ * outside guest memory (its SCHED section). 0 = none. */
+uint32_t psx_scheduler_return_tcb(void);
+void     psx_scheduler_set_return_tcb(uint32_t tcb);
 int  psx_hle_scheduler_enabled(void);
 
 #ifdef __cplusplus

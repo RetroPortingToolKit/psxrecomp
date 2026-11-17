@@ -93,6 +93,17 @@ typedef struct {
  * never allowed) -> normal boot + recapture.
  */
 enum {
+    /* Checkpoint resume sections (debug feature). Written only while
+     * boot_state_resume_sections_enabled(); optional on load, at most one
+     * each. They carry state a load otherwise resets, so a resumed run
+     * matches the uninterrupted one. */
+    BS_SEC_CPU_EXEC   = 0x17, /* 9 u32: 5 reserved zero words, then the
+                                 interpreter's pending load (rt, value,
+                                 age, armed) */
+    BS_SEC_SCHED      = 0x18, /* 4 u32: scheduler switch-back TCB, 3 zero */
+    BS_SEC_MEMCTRL    = 0x1A, /* 18 u32: memory control, RAM_SIZE, CACHE_CTRL */
+    BS_SEC_IRQ_TIMING = 0x1F, /* 64 B: IRQ cooldown, SIO progress and the
+                                 deferred thread switch; layout in boot_state.c */
     BS_SEC_MOD_HOST = 0x16, /* enabled trusted-title host snapshot providers */
     BS_SEC_GAME_START = 0x12, /* u32 LE boolean: BIOS-to-game handoff completed */
     BS_SEC_MODMEM = 0x11,  /* allocated opt-in CPU/GPU enhancement arenas */
@@ -130,6 +141,13 @@ enum {
                               from identical baselines). Optional on load for
                               old blobs (left untouched when absent).          */
 };
+
+/* 1 when saves add the checkpoint resume sections (BS_SEC_CPU_EXEC, SCHED,
+ * MEMCTRL, IRQ_TIMING): PSX_TAS_SAVE_STATE_AT or PSX_TAS_SAVE_STATE_PATH is
+ * set. Always 0 under PSX_NO_DEBUG_TOOLS. With it 0 every save is byte for
+ * byte what it was without the feature. Loads apply the sections whenever
+ * a state has them. */
+int  boot_state_resume_sections_enabled(void);
 
 /* Save a COMPLETE snapshot at game handoff. Returns 1 on success. */
 int  boot_state_save(const CPUState* cpu, uint32_t bios_checksum,

@@ -20,6 +20,7 @@
 #include "psx_cycles.h"
 #include "psx_icache.h"    /* g_psx_icache_tv — fetch-cost tags in BS_SEC_ICACHE */
 #include "psx_memory.h"
+#include "psx_scheduler.h" /* switch-back TCB in BS_SEC_SCHED */
 #include "pst_wire.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -124,6 +125,105 @@ static uint32_t boot_state_layout_cookie(void) {
 #define BS_CPUTIM_BYTES (48u)
 /* Set by a BS_SEC_CPUTIM load; psx_cycles_resync_after_restore consumes it. */
 int g_boot_state_cpu_timing_restored;
+
+/* ---- checkpoint resume sections (debug feature, off by default) ----
+ * A load resets four pieces of state that live outside the other sections:
+ * the interpreter's pending load (psx_cycles_resync_after_restore discards
+ * it), the scheduler's switch-back TCB (never saved), the IRQ cooldown, SIO
+ * progress and deferred thread switch (interrupts_resync_after_restore
+ * resets them) and the memory-control registers (never saved). A replay
+ * that resumes from a checkpoint needs all four to match the run that
+ * never stopped. The sections are written only when the feature is on, so
+ * player states, rewind and netplay are unchanged. */
+#define BS_CPU_EXEC_BYTES   36u
+#define BS_SCHED_BYTES      16u
+#define BS_IRQ_TIMING_BYTES 64u
+#define BS_MEMCTRL_BYTES    (PSX_MEMORY_CONTROL_WORDS * 4u)
+#define BS_RESUME_SECTIONS  4u
+
+int boot_state_resume_sections_enabled(void) {
+#ifdef PSX_NO_DEBUG_TOOLS
+    return 0;
+#else
+    const char *at = getenv("PSX_TAS_SAVE_STATE_AT");
+    const char *path = getenv("PSX_TAS_SAVE_STATE_PATH");
+    return (at && at[0]) || (path && path[0]);
+#endif
+}
+
+static int resume_cpu_exec_parse(const uint8_t *p, uint32_t len, DirtyRamLoadDelay *d) {
+    PstR r;
+    uint32_t v[9];
+    if (len != BS_CPU_EXEC_BYTES) return 0;
+    pst_r_init(&r, p, len);
+    for (unsigned i = 0; i < 9u; i++)
+        if (!pst_r_u32(&r, &v[i])) return 0;
+    /* Words 0-4 are reserved and must be zero. */
+    if (v[0] | v[1] | v[2] | v[3] | v[4]) return 0;
+    /* rt, value, age (0 armed, 1 delay slot ran), armed; age needs armed. */
+    if (v[5] > 31u || v[7] > 1u || v[8] > 1u || (v[7] && !v[8])) return 0;
+    d->rt = v[5];
+    d->val = v[6];
+    d->age = v[7];
+    d->armed = (int)v[8];
+    return 1;
+}
+
+/* tcb is 0 or a TCB in the kernel table named by RAM words 0x110 (base)
+ * and 0x114 (size), entries 0xC0 bytes apart. ram is the state's RAM. */
+static int resume_sched_parse(const uint8_t *p, uint32_t len, const uint8_t *ram,
+                              uint32_t *tcb) {
+    PstR r;
+    uint32_t reserved[3], base = 0, size = 0;
+    if (len != BS_SCHED_BYTES) return 0;
+    pst_r_init(&r, p, len);
+    if (!pst_r_u32(&r, tcb) || !pst_r_u32(&r, &reserved[0]) ||
+        !pst_r_u32(&r, &reserved[1]) || !pst_r_u32(&r, &reserved[2]))
+        return 0;
+    if (reserved[0] | reserved[1] | reserved[2]) return 0;
+    if (!*tcb) return 1;
+    if (!ram) return 0;
+    pst_r_init(&r, ram + 0x110u, 8u);
+    if (!pst_r_u32(&r, &base) || !pst_r_u32(&r, &size)) return 0;
+    return base && size && *tcb - base < size && (*tcb - base) % 0xC0u == 0u;
+}
+
+/* IRQ_TIMING wire, little-endian, 64 bytes:
+ *   u32 reserved[5]          zero
+ *   u32 sio_seq_seen
+ *   u64 sio_progress_cycle
+ *   u64 cooldown_until
+ *   u32 reserved[3]          zero
+ *   u32 defer_from, defer_target, defer_pending (0 or 1)                   */
+static int resume_irq_timing_parse(const uint8_t *p, uint32_t len, PsxIrqResumeTiming *t) {
+    PstR r;
+    uint32_t zero[8];
+    if (len != BS_IRQ_TIMING_BYTES) return 0;
+    pst_r_init(&r, p, len);
+    for (unsigned i = 0; i < 5u; i++)
+        if (!pst_r_u32(&r, &zero[i])) return 0;
+    if (!pst_r_u32(&r, &t->sio_seq_seen) || !pst_r_u64(&r, &t->sio_progress_cycle) ||
+        !pst_r_u64(&r, &t->cooldown_until))
+        return 0;
+    for (unsigned i = 5u; i < 8u; i++)
+        if (!pst_r_u32(&r, &zero[i])) return 0;
+    if (!pst_r_u32(&r, &t->defer_from) || !pst_r_u32(&r, &t->defer_target) ||
+        !pst_r_u32(&r, &t->defer_pending))
+        return 0;
+    for (unsigned i = 0; i < 8u; i++)
+        if (zero[i]) return 0;
+    return t->defer_pending <= 1u;
+}
+
+static int resume_memctrl_parse(const uint8_t *p, uint32_t len,
+                                uint32_t words[PSX_MEMORY_CONTROL_WORDS]) {
+    PstR r;
+    if (len != BS_MEMCTRL_BYTES) return 0;
+    pst_r_init(&r, p, len);
+    for (unsigned i = 0; i < PSX_MEMORY_CONTROL_WORDS; i++)
+        if (!pst_r_u32(&r, &words[i])) return 0;
+    return 1;
+}
 
 /* ---- deferred capture state (armed before first boot, fired at handoff) ---- */
 static char     s_capture_path[512];
@@ -269,7 +369,7 @@ static uint8_t *bs_raw_payload(BsOut *o, uint32_t tag, size_t size) {
 }
 
 static int bs_raw_capture_reserve(BsOut *o, const CPUState *cpu,
-                                  uint32_t host_bytes) {
+                                  uint32_t host_bytes, int resume) {
     extern uint32_t spu_cd_snapshot_bytes(void);
     size_t total = BOOT_STATE_HEADER_WIRE_BYTES;
     uint32_t mod = psx_mod_memory_snapshot_bytes();
@@ -301,6 +401,12 @@ static int bs_raw_capture_reserve(BsOut *o, const CPUState *cpu,
     if (psx_guest_cycle_scale_config() != 1u) {
         if (total > SIZE_MAX - 16u - PSX_GCS_SNAPSHOT_BYTES) return 0;
         total += 16u + PSX_GCS_SNAPSHOT_BYTES;
+    }
+    if (resume) {
+        const size_t bytes = 4u * 16u + BS_CPU_EXEC_BYTES + BS_SCHED_BYTES +
+                             BS_IRQ_TIMING_BYTES + BS_MEMCTRL_BYTES;
+        if (total > SIZE_MAX - bytes) return 0;
+        total += bytes;
     }
     return bs_reserve(o, total);
 }
@@ -466,6 +572,61 @@ static int write_timer_section(BsOut* o) {
 
 /* ============================ SAVE ============================ */
 
+static int write_resume_sections(BsOut *o) {
+    {
+        uint8_t b[BS_CPU_EXEC_BYTES];
+        DirtyRamLoadDelay d;
+        PstW w;
+        dirty_ram_ld_delay_save(&d);
+        pst_w_init(&w, b, sizeof b);
+        for (unsigned i = 0; i < 5u; i++)
+            if (!pst_w_u32(&w, 0u)) return 0;
+        if (!pst_w_u32(&w, d.rt) || !pst_w_u32(&w, d.val) || !pst_w_u32(&w, d.age) ||
+            !pst_w_u32(&w, d.armed ? 1u : 0u) || w.written != sizeof b ||
+            !write_section(o, BS_SEC_CPU_EXEC, b, sizeof b))
+            return 0;
+    }
+    {
+        uint8_t b[BS_SCHED_BYTES];
+        PstW w;
+        pst_w_init(&w, b, sizeof b);
+        if (!pst_w_u32(&w, psx_scheduler_return_tcb()) || !pst_w_u32(&w, 0u) ||
+            !pst_w_u32(&w, 0u) || !pst_w_u32(&w, 0u) || w.written != sizeof b ||
+            !write_section(o, BS_SEC_SCHED, b, sizeof b))
+            return 0;
+    }
+    {
+        uint8_t b[BS_IRQ_TIMING_BYTES];
+        PsxIrqResumeTiming t;
+        PstW w;
+        interrupts_resume_timing_get(&t);
+        pst_w_init(&w, b, sizeof b);
+        for (unsigned i = 0; i < 5u; i++)
+            if (!pst_w_u32(&w, 0u)) return 0;
+        if (!pst_w_u32(&w, t.sio_seq_seen) || !pst_w_u64(&w, t.sio_progress_cycle) ||
+            !pst_w_u64(&w, t.cooldown_until))
+            return 0;
+        for (unsigned i = 0; i < 3u; i++)
+            if (!pst_w_u32(&w, 0u)) return 0;
+        if (!pst_w_u32(&w, t.defer_from) || !pst_w_u32(&w, t.defer_target) ||
+            !pst_w_u32(&w, t.defer_pending ? 1u : 0u) || w.written != sizeof b ||
+            !write_section(o, BS_SEC_IRQ_TIMING, b, sizeof b))
+            return 0;
+    }
+    {
+        uint8_t b[BS_MEMCTRL_BYTES];
+        uint32_t words[PSX_MEMORY_CONTROL_WORDS];
+        PstW w;
+        memory_control_get(words);
+        pst_w_init(&w, b, sizeof b);
+        for (unsigned i = 0; i < PSX_MEMORY_CONTROL_WORDS; i++)
+            if (!pst_w_u32(&w, words[i])) return 0;
+        if (w.written != sizeof b || !write_section(o, BS_SEC_MEMCTRL, b, sizeof b))
+            return 0;
+    }
+    return 1;
+}
+
 /* Classic full VRAM section (offline / zlib / tracking off). */
 static int write_vram_section_full(BsOut *o)
 {
@@ -513,6 +674,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     BootStateHeader h;
     uint8_t *host_state = NULL;
     uint32_t host_bytes = 0;
+    const int resume = boot_state_resume_sections_enabled();
     int ok;
     if (!psx_mod_snapshot_ready()) return 0;
     /* Publish deferred cycle charges before ANY section: IRQ (cycles since
@@ -544,7 +706,8 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
     h.codegen_ver   = BOOT_STATE_IMPLEMENTATION_KEY;
     h.section_count = 18 + (cpu ? 1u : 0u) + (psx_mod_memory_snapshot_bytes() ? 1u : 0u) +
-                      (psx_guest_cycle_scale_config() != 1u ? 1u : 0u);
+                      (psx_guest_cycle_scale_config() != 1u ? 1u : 0u) +
+                      (resume ? BS_RESUME_SECTIONS : 0u);
 
     /* Measure/write/validate the complete host payload before emitting any
      * section. Failed providers cannot leave a usable partial snapshot. */
@@ -557,7 +720,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
 #if PSX_NATIVE_CAPTURE_JOBS
     /* Dynamic lengths are queried only after canonical catch-up. Neither
      * preallocation nor buffer reuse moves the caller's capture point. */
-    if (!o->f && o->no_zlib && !bs_raw_capture_reserve(o, cpu, host_bytes)) {
+    if (!o->f && o->no_zlib && !bs_raw_capture_reserve(o, cpu, host_bytes, resume)) {
         free(host_state);
         return 0;
     }
@@ -707,6 +870,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
         ok = pst_w_u32(&w, g[0]) && pst_w_u32(&w, g[1]) && pst_w_u32(&w, g[2]) &&
              write_section(o, BS_SEC_GCS, gb, sizeof gb);
     }
+    if (ok && resume) ok = write_resume_sections(o);
     if (ok && host_bytes) ok = write_section(o, BS_SEC_MOD_HOST, host_state, host_bytes);
     free(host_state);
     return ok;
@@ -1006,6 +1170,34 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
         psx_guest_cycle_scale_restore(g);
         return 1;
     }
+    case BS_SEC_CPU_EXEC: {
+        DirtyRamLoadDelay d;
+        if (!resume_cpu_exec_parse(p, len, &d)) return 0;
+        dirty_ram_ld_delay_restore_from_state(&d);
+        return 1;
+    }
+    case BS_SEC_SCHED: {
+        /* The TCB was checked against the state's RAM in pass 1. */
+        PstR r;
+        uint32_t tcb;
+        if (len != BS_SCHED_BYTES) return 0;
+        pst_r_init(&r, p, len);
+        if (!pst_r_u32(&r, &tcb)) return 0;
+        psx_scheduler_set_return_tcb(tcb);
+        return 1;
+    }
+    case BS_SEC_IRQ_TIMING: {
+        PsxIrqResumeTiming t;
+        if (!resume_irq_timing_parse(p, len, &t)) return 0;
+        interrupts_resume_timing_set(&t);
+        return 1;
+    }
+    case BS_SEC_MEMCTRL: {
+        uint32_t words[PSX_MEMORY_CONTROL_WORDS];
+        if (!resume_memctrl_parse(p, len, words)) return 0;
+        memory_control_set(words);
+        return 1;
+    }
     case BS_SEC_ICACHE: {
         PstR r;
         if (len != 1024u * 4u) return 0;
@@ -1069,6 +1261,20 @@ static int validate_section(uint32_t tag, const uint8_t* p, uint32_t len) {
     case BS_SEC_GCS:    return len == PSX_GCS_SNAPSHOT_BYTES;
     case BS_SEC_CPUTIM: return len == BS_CPUTIM_BYTES;
     case BS_SEC_SPUCD:  return len >= 4u && (len - 4u) % 4u == 0u;
+    case BS_SEC_CPU_EXEC: {
+        DirtyRamLoadDelay d;
+        return resume_cpu_exec_parse(p, len, &d);
+    }
+    case BS_SEC_IRQ_TIMING: {
+        PsxIrqResumeTiming t;
+        return resume_irq_timing_parse(p, len, &t);
+    }
+    case BS_SEC_MEMCTRL: {
+        uint32_t words[PSX_MEMORY_CONTROL_WORDS];
+        return resume_memctrl_parse(p, len, words);
+    }
+    /* SCHED's TCB is checked against the state's RAM after pass 1. */
+    case BS_SEC_SCHED:  return len == BS_SCHED_BYTES;
     default:            return 1;
     }
 }
@@ -1214,6 +1420,11 @@ static int boot_state_load_buffer_impl(const uint8_t* file, size_t file_len,
     double apply_other_ms = 0.0;
     BsSection* sections = NULL;
     const BsSection* host_section = NULL;
+    const BsSection* ram_section = NULL;
+    const BsSection* sched_section = NULL;
+    const uint32_t once =
+        (1u<<BS_SEC_GAME_START)|(1u<<BS_SEC_CPU_EXEC)|(1u<<BS_SEC_SCHED)|
+        (1u<<BS_SEC_IRQ_TIMING)|(1u<<BS_SEC_MEMCTRL);
     uint32_t n_sections = 0;
 
     if (!psx_mod_snapshot_ready()) return 0;
@@ -1299,10 +1510,17 @@ static int boot_state_load_buffer_impl(const uint8_t* file, size_t file_len,
             host_section = s;
         }
         if (!validate_section(tag, s->p, s->len)) { ok = 0; break; }
-        if (tag == BS_SEC_GAME_START && (seen & (1u << tag))) {
+        if (tag < 32 && (once & (1u << tag)) && (seen & (1u << tag))) {
             ok = 0; break;
         }
+        if (tag == BS_SEC_RAM) ram_section = s;
+        if (tag == BS_SEC_SCHED) sched_section = s;
         if (tag < 32) seen |= (1u << tag);
+    }
+    if (ok && sched_section) {
+        uint32_t tcb;
+        ok = ram_section && resume_sched_parse(sched_section->p, sched_section->len,
+                                               ram_section->p, &tcb);
     }
     if (ok && (seen & required) != required)
         ok = 0;

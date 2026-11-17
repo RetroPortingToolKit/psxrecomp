@@ -1557,6 +1557,16 @@ if(BUILD_TESTING AND Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID STREQUAL 
             --cc ${CMAKE_C_COMPILER})
 endif()
 
+# A checkpoint state's IRQ timing and pending load survive the load resyncs
+# once; a plain load still resets them (production interrupts.c,
+# dirty_ram_interp.c and psx_cycles.c in a fixture_link.py fixture).
+if(BUILD_TESTING AND Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    add_test(NAME resume_sections_resync
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_resume_sections_resync.py"
+            --cc ${CMAKE_C_COMPILER})
+endif()
+
 # GTE deadline ownership includes pending CPU charges from both host sinks.
 if(BUILD_TESTING AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
     foreach(_mode IN ITEMS O0 O2)
