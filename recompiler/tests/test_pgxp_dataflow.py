@@ -82,11 +82,14 @@ def program():
 
 def add_region_program(base,words):
     words+= [0]*(448-len(words))
-    main=[0x27bdfff0,0xafbf000c,0x3c088000,0x25087000,0x2a09000a,
-          0x11200003,0,0x08000000|(((base+448*4+40)>>2)&0x3ffffff),0,
+    # Both paths define s1 from incoming v1. One path then overwrites v1
+    # with an equal-bit LUI before the join: a deferred s1 must retain the OLD
+    # source precision, not read the newly materialized v1 at that join.
+    main=[0x27bdffe8,0xafbf0010,0x3c088000,0x25087000,0x2a09000a,
+          0x11200003,0x24710001,0x08000000|(((base+448*4+40)>>2)&0x3ffffff),0x3c038000,
           0x35080080,0x0c004200,0, # JAL80010800
-          0x3c0a8000,0x354a8000,0x254affff,0xac8a0000,0x8fbf000c,0,
-          0x03e00008,0x27bd0010]
+          0x3c0a8000,0x354a8000,0x254affff,0xac8a0000,0x8fbf0010,0,
+          0x03e00008,0x27bd0018]
     words+=main
     words += [0]*(512-len(words));words += [0x3c028000,0x34421234,0x03e00008,0]
     # Contiguous after the child JR/delay: NOP padding previously let discovery
@@ -197,6 +200,12 @@ def main():
                         raise RuntimeError('passed executing body changed; cannot reuse: '+address)
                 print('REUSE actual passed 38 GTE products + region modes0/1: exact executing body source equality verified',flush=True)
             main_body=body('80010700')
+            private=main_body.split('/* precision-demand-regions:',1)[1]
+            for word in ('27BDFFE8','27BD0018'):
+                assert 'PGXP_ALU(0x'+word+'u' not in private
+                assert re.search(r'0x'+word+r'[^\n]*precision-demand: native integer definition',private)
+                assert 'PGXP_ALU(0x'+word+'u' in main_body.split('/* precision-demand-regions:',1)[0]
+            assert 'psx_pgxp_region_add_immediates' in text
             charge=re.search(r'psx_native_span_charge\((\d+)u\)',main_body)
             assert charge and 'precision_block_80010700:' in main_body and 'psx_block_edge_materialize' in main_body
             assert 'psx_precision_block_edge_materialize' not in text

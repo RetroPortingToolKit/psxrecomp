@@ -105,6 +105,18 @@ uint64_t psx_observation_block_edges,psx_observation_slow_edges;
 static unsigned region_entry[3],region_replacements,region_instruction,region_sample,region_edges;
 static unsigned region_mode,region_sample_receipts;
 static CPUState* region_cpu;
+static PGXPWordShadow region_observed_sp;
+static uint64_t region_observed_sp_source;
+static double region_observed_sp_scalar;
+static int region_observed_sp_precise;
+static void region_sp_receipt(CPUState* cpu) {
+    constexpr uint32_t address=0x80005200u;
+    psx_pgxp_store(cpu,0xac1d0000u,address,cpu->gpr[29]);
+    if(!pgxp_capture_word_shadow(address,cpu->gpr[29],&region_observed_sp))std::abort();
+    region_observed_sp_source=pgxp_load_source(address,cpu->gpr[29]);
+    region_observed_sp_scalar=0;
+    region_observed_sp_precise=pgxp_native_gpr_scalar(29,cpu->gpr[29],&region_observed_sp_scalar);
+}
 extern "C" int psx_mod_function_entry(CPUState* cpu,uint32_t pc) {
     const unsigned entry=pc==0x80010700u?0u:pc==0x80010800u?1u:pc==REGION_LOOP_PC?2u:3u;
     if(entry==3u)std::abort();
@@ -131,10 +143,15 @@ static void region_receipt(CPUState* cpu,unsigned reg,uint32_t flags) {
 extern "C" void psx_observation_sample(void) {
     ++region_sample;
     region_receipt(region_cpu,8,3);region_receipt(region_cpu,9,0);
+    region_sp_receipt(region_cpu);
+    // This callback keeps the integer word but replaces the live scalar. A
+    // later affine receipt must consume this state, not its old entry snapshot.
+    if(!pgxp_native_scalar_gpr(region_cpu,29,double((int32_t)region_cpu->gpr[29])+.75,1))std::abort();
     ++region_sample_receipts;psx_next_cycle_sample=UINT64_MAX;
 }
 extern "C" void psx_observation_edge(CPUState* cpu,uint32_t pc,int) {
     ++region_edges;++psx_observation_slow_edges;
+    region_sp_receipt(cpu);
     if(region_mode==2||region_mode==3) {
         if(pc!=REGION_LOOP_PC||region_entry[2]!=1u) {
             std::fprintf(stderr,"FAIL loop observer pc%08X expected%08X entry%u\n",pc,REGION_LOOP_PC,region_entry[2]);std::abort();
@@ -259,7 +276,9 @@ static void run(Product& result,bool native,unsigned variant) {
 #if defined(PSX_TEST_PGXP_REGIONS)
 struct RegionProduct {CPUState cpu;unsigned char bytes[sizeof ram];uint64_t cycles,alu;
     uint32_t fraction;unsigned entries[3],replacements,instructions,samples,receipts,edges,owners;
-    PGXPWordShadow gprs[32];uint64_t source[32];unsigned writes;WriteHistory history[256];};
+    PGXPWordShadow gprs[32];uint64_t source[32];unsigned writes;WriteHistory history[256];
+    PGXPWordShadow observed_sp;uint64_t observed_sp_source;double observed_sp_scalar,sp_scalar;
+    int observed_sp_precise,sp_precise;};
 static RegionProduct region_reference,region_candidate;
 static void run_region(RegionProduct& out,bool selected,unsigned mode) {
     std::memset(&out,0,sizeof out);auto& cpu=out.cpu;region_cpu=live_cpu=&cpu;
@@ -271,9 +290,19 @@ static void run_region(RegionProduct& out,bool selected,unsigned mode) {
     ram[0x10000]^=1;
     cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;cpu.read_byte=psx_read_byte;
     cpu.write_word=psx_write_word;cpu.write_half=psx_write_half;cpu.write_byte=psx_write_byte;
-    cpu.gpr[4]=0x80006000u;cpu.gpr[16]=0;cpu.gpr[20]=2;
+    cpu.gpr[4]=0x80006000u;cpu.gpr[16]=mode==1?20u:0u;cpu.gpr[20]=2;
     cpu.gpr[29]=0x8001ff00u;cpu.gpr[31]=0x80009000u;
     pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_source_tracking(1);pgxp_invalidate_all();
+    pgxp_gte_push_sxy((int32_t)(int16_t)cpu.gpr[29]*65536+16384,
+        (int32_t)(int16_t)(cpu.gpr[29]>>16)*65536+32768,300,cpu.gpr[29]);
+    pgxp_store_gte_reg(0x80006200u,15);pgxp_tag_word_source(0x80006200u,cpu.gpr[29],919);
+    psx_pgxp_load(&cpu,0x8c1d0000u,0x80006200u,cpu.gpr[29]);
+    if(mode==1)pgxp_native_scalar_gpr(&cpu,29,double((int32_t)cpu.gpr[29])+.25,1);
+    cpu.gpr[3]=0x80000000u;
+    pgxp_gte_push_sxy(16384,(-32768*65536)+32768,300,cpu.gpr[3]);
+    pgxp_store_gte_reg(0x80006204u,15);pgxp_tag_word_source(0x80006204u,cpu.gpr[3],920);
+    psx_pgxp_load(&cpu,0x8c030000u,0x80006204u,cpu.gpr[3]);
+    region_observed_sp={};region_observed_sp_source=0;region_observed_sp_scalar=0;region_observed_sp_precise=0;
     cpu.gpr[8]=1;pgxp_native_scalar_gpr(&cpu,8,1.25,1);
     g_psx_call_bail=g_psx_precise_slice=g_psx_guest_time_frozen=0;
     psx_cycle_count=0;psx_next_service_cycle=psx_next_cycle_sample=UINT64_MAX;
@@ -290,12 +319,15 @@ static void run_region(RegionProduct& out,bool selected,unsigned mode) {
     if(mode==3)flow_candidate_func_80010810(&cpu); // callback escape is observed before outer dispatch consumes its PC
     else if(mode==4) {
         // A public IRQ/interior entry is canonical, and consumes no entry hook.
-        cpu.pc=REGION_INTERIOR_PC;cpu.gpr[29]-=16;psx_write_word(cpu.gpr[29]+12,cpu.gpr[31]);
+        cpu.pc=REGION_INTERIOR_PC;cpu.gpr[29]-=24;psx_write_word(cpu.gpr[29]+16,cpu.gpr[31]);
         if(selected)flow_candidate_func_80010700(&cpu);else flow_reference_func_80010700(&cpu);
     } else fixture_regions_owner(&cpu,mode==2?REGION_LOOP_PC:0x80010700u,0x80009000u,selected);
     pgxp_get_hook_stats(&after);out.alu=after.alu-before.alu;out.cycles=psx_cycle_count;out.fraction=g_psx_gcs_frac;
     std::memcpy(out.entries,region_entry,sizeof region_entry);out.replacements=region_replacements;
     out.instructions=region_instruction;out.samples=region_sample;out.receipts=region_sample_receipts;out.edges=region_edges;
+    out.observed_sp=region_observed_sp;out.observed_sp_source=region_observed_sp_source;
+    out.observed_sp_scalar=region_observed_sp_scalar;out.observed_sp_precise=region_observed_sp_precise;
+    out.sp_precise=pgxp_native_gpr_scalar(29,cpu.gpr[29],&out.sp_scalar);
     out.owners=fixture_regions_owner_calls();std::memcpy(out.bytes,ram,sizeof ram);
     out.writes=history_count;std::memcpy(out.history,history,history_count*sizeof history[0]);
     for(unsigned r=0;r<32;++r) {
@@ -318,6 +350,12 @@ static void region_products() {
            a.replacements!=b.replacements||a.instructions!=b.instructions||a.samples!=b.samples||a.receipts!=b.receipts||a.edges!=b.edges||
            a.writes!=b.writes||std::memcmp(a.history,b.history,a.writes*sizeof history[0]))
             {std::fprintf(stderr,"FAIL emitted owner/clock/hook product mode%u\n",mode);std::abort();}
+        if(!equal(a.observed_sp,b.observed_sp)||a.observed_sp_source!=b.observed_sp_source||
+           a.observed_sp_precise!=b.observed_sp_precise||a.observed_sp_scalar!=b.observed_sp_scalar||
+           a.sp_precise!=b.sp_precise||a.sp_scalar!=b.sp_scalar) {
+            std::fputs("FAIL incoming affine receipt at actual observation/caller boundary\n",stderr);std::abort();
+        }
+        if(mode==1 && (!b.sp_precise||b.sp_scalar!=double((int32_t)b.cpu.gpr[29])+.75))std::abort();
         for(unsigned r=0;r<32;++r)if(!equal(a.gprs[r],b.gprs[r])||a.source[r]!=b.source[r])
             {std::fprintf(stderr,"FAIL emitted receipt mode%u r%u\n",mode,r);std::abort();}
         if(mode==0||mode==1) {

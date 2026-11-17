@@ -62,6 +62,16 @@ void psx_pgxp_store (struct CPUState *cpu, uint32_t instr, uint32_t addr, uint32
 /* Complete compiler-owned GPR receipts at an actual precision/observer boundary. */
 void psx_pgxp_region_materialize(struct CPUState *cpu, uint32_t mask,
     uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1);
+/* Compiler-authored final affine receipts, not an instruction replay stream.
+ * All sources are the incoming canonical registers; snapshot them together
+ * before publishing aliases, and recover the original integer from dst-addend.
+ * Internal native regions only: portable/reference/DLL entries keep full hooks. */
+typedef struct PSXPGXPRegionAdd {
+    uint8_t destination, source;
+    int16_t addend;
+} PSXPGXPRegionAdd;
+void psx_pgxp_region_add_immediates(struct CPUState *cpu,
+    const PSXPGXPRegionAdd *definitions, uint32_t count);
 void psx_pgxp_alu   (struct CPUState *cpu, uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2);
 void psx_pgxp_muldiv(struct CPUState *cpu, uint32_t instr, uint32_t hi, uint32_t lo, uint32_t s1, uint32_t s2);
 void psx_pgxp_cop2  (struct CPUState *cpu, uint32_t instr, uint32_t value, uint32_t addr);

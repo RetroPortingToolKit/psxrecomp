@@ -1716,6 +1716,35 @@ static int alu_scalar(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2,
     return 0;
 }
 
+static void add_immediate_halves(PGXPValue *dst, const PGXPTemp *a,
+        uint32_t result, uint32_t s1, int32_t imm) {
+    if (imm == 0) {                        /* MOVE idiom                  */
+        if (a->gen == s_gen) {
+            pv_copy(dst, a);
+            pv_validate(dst, result);
+        } else pv_reset(dst, result);
+        return;
+    }
+    /* A negative immediate is a subtraction of its magnitude: checking
+     * carry on the sign-extended form would reject nearly every -N. */
+    int neg = imm < 0;
+    uint32_t mag = (uint32_t)(neg ? -imm : imm);
+    if (!s_cpu_mode ||
+        !halves_independent(s1, mag, result, neg) ||
+        (!comp_tracked(a, s1, 0) && !comp_tracked(a, s1, 1))) {
+        pv_reset(dst, result);
+        return;
+    }
+    int32_t dx = (int32_t)(mag & 0xFFFFu) << 16;
+    pv_reset(dst, result);
+    dst->x16 = comp16(a, s1, 0) + (neg ? -dx : dx);
+    dst->y16 = comp16(a, s1, 1);           /* no carry crossed: Y untouched */
+    dst->flags = (uint16_t)(PGXP_F_VXY | derived_bits(a, s1));
+    if (comp_tracked(a, s1, 0) && comp_tracked(a, s1, 1))
+        keep_depth(dst, a, nullptr);
+    return;
+}
+
 static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2);
 
 extern "C" void psx_pgxp_region_materialize(struct CPUState *cpu, uint32_t mask,
@@ -1733,6 +1762,39 @@ extern "C" void psx_pgxp_region_materialize(struct CPUState *cpu, uint32_t mask,
         if (x & bit) { s_gpr[r].x16 = (int32_t)((uint32_t)(uint16_t)value << 16); s_gpr[r].flags |= PGXP_F_VX; }
         if (y & bit) { s_gpr[r].y16 = (int32_t)(value & 0xffff0000u); s_gpr[r].flags |= PGXP_F_VY; }
         sc_kill(&s_gpr_s[r]);
+    }
+}
+
+/* Publish a set of independent incoming-register affine definitions at a real
+ * precision/observer boundary. No register shadow, scalar or source is assumed
+ * absent. Copy sources first because a destination can alias another source.
+ * The compiler refuses dependent deferred chains, so this is a final-value
+ * receipt batch, never a guest instruction stream or a shadow-CPU loop. */
+extern "C" void psx_pgxp_region_add_immediates(CPUState *cpu,
+        const PSXPGXPRegionAdd *definitions, uint32_t count) {
+    if (!g_pgxp_active || !cpu || !definitions || count > 31u) return;
+    flush_plain_writes();
+    struct Incoming { PGXPTemp shadow; PGXPScalar scalar; uint32_t value, result; } incoming[31];
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& d = definitions[i];
+        if (!d.destination || d.destination >= 32u || !d.source || d.source >= 32u || !d.addend) return;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& d = definitions[i];auto& in = incoming[i];
+        gpr_shadow(d.source,&in.shadow);in.scalar=s_gpr_s[d.source];
+        in.result=cpu->gpr[d.destination];in.value=in.result-(uint32_t)(int32_t)d.addend;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& d = definitions[i];const auto& in = incoming[i];
+        int precise=0;double value=0;
+        if (s_cpu_mode) {
+            value=reg_scalar(&in.scalar,&in.shadow,in.value,0,&precise);
+            const int64_t exact=(int64_t)(int32_t)in.value+(int64_t)d.addend;
+            if (exact!=(int64_t)(int32_t)in.result) precise=0;
+        }
+        add_immediate_halves(&s_gpr[d.destination],&in.shadow,in.result,in.value,d.addend);
+        if (precise) sc_set(&s_gpr_s[d.destination],value+(double)d.addend,in.result);
+        else sc_kill(&s_gpr_s[d.destination]);
     }
 }
 
@@ -1880,31 +1942,7 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
         return;
     }
     case 0x08: case 0x09: {                    /* ADDI / ADDIU                */
-        int32_t imm = f_simm(instr);
-        if (imm == 0) {                        /* MOVE idiom                  */
-            if (a->gen == s_gen) {
-                pv_copy(dst, a);
-                pv_validate(dst, result);
-            } else pv_reset(dst, result);
-            return;
-        }
-        /* A negative immediate is a subtraction of its magnitude: checking
-         * carry on the sign-extended form would reject nearly every -N. */
-        int neg = imm < 0;
-        uint32_t mag = (uint32_t)(neg ? -imm : imm);
-        if (!s_cpu_mode ||
-            !halves_independent(s1, mag, result, neg) ||
-            (!comp_tracked(a, s1, 0) && !comp_tracked(a, s1, 1))) {
-            pv_reset(dst, result);
-            return;
-        }
-        int32_t dx = (int32_t)(mag & 0xFFFFu) << 16;
-        pv_reset(dst, result);
-        dst->x16 = comp16(a, s1, 0) + (neg ? -dx : dx);
-        dst->y16 = comp16(a, s1, 1);           /* no carry crossed: Y untouched */
-        dst->flags = (uint16_t)(PGXP_F_VXY | derived_bits(a, s1));
-        if (comp_tracked(a, s1, 0) && comp_tracked(a, s1, 1))
-            keep_depth(dst, a, nullptr);
+        add_immediate_halves(dst, a, result, s1, f_simm(instr));
         return;
     }
     case 0x0C: case 0x0D: case 0x0E: {         /* ANDI / ORI / XORI           */

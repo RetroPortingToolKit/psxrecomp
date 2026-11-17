@@ -191,17 +191,28 @@ std::string CodeGenerator::emit_mid_block_cycle_charge(uint32_t addr,
 
 std::string CodeGenerator::region_materializer(const PgxpRegionState& state) const {
     uint32_t mask=0,x[2]={},y[2]={};
+    std::string adds,add_key;unsigned count=0;
     for(unsigned r=1;r<32;++r)if(state[r].known) {
+        if(state[r].incoming_add) {
+            adds+=fmt::format("{{{}u,{}u,{}}},",r,state[r].source,state[r].addend);
+            add_key+=fmt::format("_a{}_{}_{}{}",r,state[r].source,
+                state[r].addend<0?'n':'p',state[r].addend<0?-int(state[r].addend):int(state[r].addend));
+            ++count;continue;
+        }
         const uint32_t bit=uint32_t(1)<<r;mask|=bit;
         for(unsigned m=0;m<2;++m) { if(state[r].flags[m]&1)x[m]|=bit;if(state[r].flags[m]&2)y[m]|=bit; }
     }
-    const auto key=fmt::format("{}_{}_{}_{}_{}",mask,x[0],y[0],x[1],y[1]);
+    const auto key=fmt::format("{}_{}_{}_{}_{}",mask,x[0],y[0],x[1],y[1])+add_key;
     const auto name=precision_region_owner_+"_receipt_"+key;
-    precision_region_materializers_[name]=fmt::format(
-        "static void {}(CPUState *cpu) {{ psx_pgxp_region_materialize(cpu,0x{:08X}u,0x{:08X}u,0x{:08X}u,0x{:08X}u,0x{:08X}u); }}\n",
-        name,mask,x[0],y[0],x[1],y[1]);
+    std::string body;
+    if(count)body=fmt::format("static const PSXPGXPRegionAdd adds[] = {{{}}}; psx_pgxp_region_add_immediates(cpu,adds,{}u); ",adds,count);
+    // Affine sources must be consumed before a plain/constant receipt can
+    // overwrite one of them. The affine batch snapshots its own aliases first.
+    if(mask || !count)body+=fmt::format("psx_pgxp_region_materialize(cpu,0x{:08X}u,0x{:08X}u,0x{:08X}u,0x{:08X}u,0x{:08X}u);",mask,x[0],y[0],x[1],y[1]);
+    precision_region_materializers_[name]=fmt::format("static void {}(CPUState *cpu) {{ {} }}\n",name,body);
     return name;
 }
+
 std::string CodeGenerator::region_flush() {
     bool any=false;for(unsigned r=1;r<32;++r)any|=precision_region_state_[r].known;
     const auto out=any ? config_.indent+region_materializer(precision_region_state_)+"(cpu);\n" : "";

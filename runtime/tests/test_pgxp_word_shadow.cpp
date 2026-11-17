@@ -30,6 +30,63 @@ static void check_attributes(const PGXPWordShadow& a,const PGXPWordShadow& b) {
     CHECK(a.x16==b.x16 && a.y16==b.y16 && a.z==b.z && a.flags==b.flags);
     CHECK(!(a.flags&PGXP_F_PROJECTION)||!std::memcmp(&a.projection,&b.projection,sizeof a.projection));
 }
+static void affine_address_receipts() {
+    struct Case {uint32_t value;int16_t first;unsigned kind;};
+    const Case cases[]={{0x8001ff00u,-24,0},{0x80010008u,-24,0},
+        {0x8001fff8u,24,0},{0x7ffffff8u,24,1},{0x8001ff00u,-24,1},
+        {0x8001ff00u,-24,2},{0x8001ff00u,-24,3},{0x8001ff00u,-24,4}};
+    struct Result {PGXPWordShadow word;uint64_t source;double scalar;int precise;};
+    for(const auto& c:cases) {
+        Result reference[2]{};
+        for(unsigned selected=0;selected<2;++selected) {
+            CPUState cpu{};cpu.gpr[29]=c.value;pgxp_invalidate_all();
+            const uint32_t receipt_value=c.kind==3?c.value^0x10001u:c.value;
+            pgxp_gte_push_sxy((int32_t)(int16_t)receipt_value*65536+16384,
+                (int32_t)(int16_t)(receipt_value>>16)*65536+32768,300,receipt_value);
+            pgxp_store_gte_reg(Address,15);
+            if(c.kind==2)pgxp_invalidate_word(Address); // source-only, no XY flags
+            CHECK(pgxp_tag_word_source(Address,receipt_value,991));
+            psx_pgxp_load(&cpu,0x8c1d0000u,Address,receipt_value);
+            if(c.kind==1)CHECK(pgxp_native_scalar_gpr(&cpu,29,double((int32_t)c.value)+.25,1));
+            for(unsigned step=0;step<2;++step) {
+                // A real same-word observer replaces the incoming scalar between
+                // halves of the pair; no cached entry receipt may resurrect it.
+                if(step && c.kind==4)CHECK(pgxp_native_scalar_gpr(&cpu,29,double((int32_t)cpu.gpr[29])+.75,1));
+                const int16_t imm=step?(int16_t)-c.first:c.first;
+                const uint32_t before=cpu.gpr[29];cpu.gpr[29]+=uint32_t((int32_t)imm);
+                PGXPHookStats old{},now{};pgxp_get_hook_stats(&old);
+                if(selected) {const PSXPGXPRegionAdd add{29,29,imm};psx_pgxp_region_add_immediates(&cpu,&add,1);}
+                else psx_pgxp_alu(&cpu,0x27bd0000u|(uint16_t)imm,cpu.gpr[29],before,uint32_t((int32_t)imm));
+                pgxp_get_hook_stats(&now);CHECK(now.alu-old.alu==(selected?0u:1u));
+                psx_pgxp_store(&cpu,0xac1d0000u,Other,cpu.gpr[29]);
+                Result got{};got.word=capture(Other,cpu.gpr[29]);got.source=pgxp_load_source(Other,cpu.gpr[29]);
+                got.precise=pgxp_native_gpr_scalar(29,cpu.gpr[29],&got.scalar);
+                if(!selected)reference[step]=got;
+                else {check_attributes(reference[step].word,got.word);CHECK(reference[step].source==got.source);
+                    CHECK(reference[step].precise==got.precise);if(got.precise)CHECK(reference[step].scalar==got.scalar);}
+            }
+        }
+    }
+    // A later destination can alias an earlier incoming source. Snapshot both
+    // before publishing in destination order (r3 before r5).
+    PGXPWordShadow expected[2]{};
+    for(unsigned selected=0;selected<2;++selected) {
+        CPUState cpu{};pgxp_invalidate_all();cpu.gpr[3]=0x000c0020u;cpu.gpr[4]=0x000c0008u;
+        for(unsigned r:{3u,4u}) {
+            seed(Address,cpu.gpr[r],((int32_t)(int16_t)cpu.gpr[r])*65536+16384);
+            psx_pgxp_load(&cpu,0x8c000000u|(r<<16),Address,cpu.gpr[r]);
+        }
+        cpu.gpr[5]=cpu.gpr[3]+24;
+        if(!selected)psx_pgxp_alu(&cpu,0x24650018u,cpu.gpr[5],cpu.gpr[3],24);
+        cpu.gpr[3]=cpu.gpr[4]-24;
+        if(!selected)psx_pgxp_alu(&cpu,0x2483ffe8u,cpu.gpr[3],cpu.gpr[4],uint32_t(-24));
+        if(selected) {const PSXPGXPRegionAdd adds[]={{3,4,-24},{5,3,24}};psx_pgxp_region_add_immediates(&cpu,adds,2);}
+        for(unsigned i=0;i<2;++i) {
+            const unsigned r=i?5u:3u;psx_pgxp_store(&cpu,0xac000000u|(r<<16),Other,cpu.gpr[r]);
+            if(!selected)expected[i]=capture(Other,cpu.gpr[r]);else check_attributes(expected[i],capture(Other,cpu.gpr[r]));
+        }
+    }
+}
 int main() {
     pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_projection_tracking(1);
     seed(Address,Packed,(8<<16)+16384);
@@ -600,6 +657,7 @@ int main() {
     // both CPU modes, including equal-word overwrite of existing source/scalar.
     for(int mode=0;mode<2;++mode) {
         pgxp_set_enabled(1);pgxp_set_cpu_mode(mode);pgxp_set_source_tracking(1);
+        affine_address_receipts();
         PSXRecomp::PgxpRegionState abstract{};
         struct Step {uint32_t word,left,right,value;};
         const Step steps[]={
@@ -641,10 +699,20 @@ int main() {
             if(had_scalar)CHECK(canonical_scalar==actual_scalar);
             abstract[dst]=recipe;
         }
-        // Unknown/source/scalar-bearing input cannot be declared plain merely
-        // because integer address/branch consumers follow it.
+        // Unknown/source/scalar-bearing input is retained as a full incoming
+        // affine receipt, never declared plain from its integer consumers.
         unsigned dst;PSXRecomp::PgxpRegionValue recipe;PSXRecomp::PgxpRegionState unknown{};
-        CHECK(!PSXRecomp::pgxp_region_definition(0x24630004u,unknown,dst,recipe));
+        CHECK(PSXRecomp::pgxp_region_definition(0x24630004u,unknown,dst,recipe));
+        CHECK(recipe.incoming_add && recipe.source==3 && recipe.addend==4);
+        unknown[3]=recipe;
+        CHECK(!PSXRecomp::pgxp_region_definition(0x24630004u,unknown,dst,recipe)); // dependent rounding/carry stays canonical
+        const std::vector<PSXRecomp::PgxpFlowBlock> join={
+            {0x1000,{{0x1000,0x24620001u,false}},{0x1010,0x1020}},
+            {0x1010,{{0x1010,0x3c038000u,false}},{0x1030}},
+            {0x1020,{}, {0x1030}}, {0x1030,{}, {}}};
+        const auto plan=PSXRecomp::pgxp_region_plan(join,{0x1000});
+        CHECK(plan.definitions==2 && !plan.entry.at(0x1010)[2].known && !plan.entry.at(0x1030)[2].known);
+        unknown={};
         CHECK(!PSXRecomp::pgxp_region_definition(0x00641821u,unknown,dst,recipe));
         // An exact low scalar can become a fractional DIV/MULT input later.
         unknown[3].known=unknown[3].constant=true;unknown[3].value=7;
