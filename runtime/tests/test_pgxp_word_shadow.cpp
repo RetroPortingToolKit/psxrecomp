@@ -87,7 +87,54 @@ static void affine_address_receipts() {
         }
     }
 }
+static void geometry_control_demand() {
+    using namespace PSXRecomp;
+    constexpr uint64_t all=((UINT64_C(1)<<34)-1u)&~UINT64_C(1);
+    constexpr uint64_t control=(UINT64_C(1)<<29)|(UINT64_C(1)<<31);
+    const std::vector<PgxpFlowBlock> blocks={
+        {0x1000,{{0x1000,0x27bdffe8},{0x1004,0xafbf0010},
+                 {0x1008,0x48087000},{0x100c,0xac880000}}, {0x1010}},
+        {0x1010,{{0x1010,0x0c000800}}, {0x1018},true},
+        {0x1018,{{0x1018,0x8fbf0010},{0x101c,0},
+                 {0x1020,0x03e00008},{0x1024,0x27bd0018}}, {},true}};
+    const auto frame=pgxp_control_frame(blocks,0x1000);
+    CHECK(frame.valid && frame.bytes==24 && frame.offset==16);
+    const auto demand=pgxp_geometry_demand(blocks,0x1000,all&~control,{{0x2000,all&~control}});
+    for(auto pc:frame.sites())CHECK(demand.dead.count(pc));
+    CHECK(!demand.dead.count(0x1008) && !demand.dead.count(0x100c)); // GTE -> packet
+    // Unknown callees and actual SP-as-coordinate/opaque observers are roots.
+    const auto unknown=pgxp_geometry_demand(blocks,0x1000,all&~control,{});
+    CHECK(!unknown.dead.count(0x1000));
+    auto escaped=blocks;escaped[0].instructions[2].word=0x489d4800; // MTC2 SP,IR1
+    CHECK(!pgxp_control_frame(escaped,0x1000).valid);
+    auto observed=blocks;observed[0].instructions[0].opaque=true;
+    CHECK(!pgxp_control_frame(observed,0x1000).valid);
+    auto unbalanced=blocks;unbalanced[2].instructions.back().word=0x27bd0014;
+    CHECK(!pgxp_control_frame(unbalanced,0x1000).valid);
+#if defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS
+    for(int mode:{0,1}) {
+        pgxp_set_enabled(1);pgxp_set_cpu_mode(mode);pgxp_set_source_tracking(1);
+        seed(Address,Packed,8*65536+16384);
+        CHECK(pgxp_tag_word_source(Address,Packed,918));
+        const auto untouched=capture(Address,Packed);
+        seed(Other,Packed,8*65536+32768);
+        CHECK(pgxp_tag_word_source(Other,Packed,919));
+        // Identical RA bits at another KSEG/mirror spelling must still end the
+        // overwritten word's geometry/source lifetime, not validate it as live.
+        pgxp_write_owned(0xa0202000u,Packed,4);
+        const auto killed=capture(Other,Packed);
+        CHECK(!killed.flags && pgxp_load_source(Other,Packed)==0);
+        check_attributes(untouched,capture(Address,Packed));
+        CPUState cpu{};cpu.gpr[29]=0x8001ff00;cpu.gpr[31]=0x80009000;
+        CHECK(pgxp_native_scalar_gpr(&cpu,29,double((int32_t)cpu.gpr[29])+.25,1));
+        pgxp_native_clobber(&cpu,0xa0000000u,0);
+        double value=0;CHECK(!pgxp_native_gpr_scalar(29,cpu.gpr[29],&value));
+        check_attributes(untouched,capture(Address,Packed));
+    }
+#endif
+}
 int main() {
+    geometry_control_demand();
     pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_projection_tracking(1);
     seed(Address,Packed,(8<<16)+16384);
     PGXPProjection projection{12.5f,18.25f,2.0f,0.125f};

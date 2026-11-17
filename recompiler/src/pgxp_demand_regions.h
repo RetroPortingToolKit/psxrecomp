@@ -34,6 +34,139 @@ struct PgxpRegionPlan {
     std::set<uint32_t> roots;
     size_t definitions = 0;
 };
+/* A stack address and a return PC are integer/control dependencies, not
+ * automatic precision roots. This recognizer certifies only their balanced
+ * frame transport; it does not classify the rest of a geometry function.
+ * The backwards pass still receives real caller/opaque demands. */
+struct PgxpControlFrame {
+    bool valid = false;
+    uint32_t allocate = 0, save = 0, restore = 0, release = 0;
+    int16_t bytes = 0, offset = 0;
+    std::set<uint32_t> sites() const { return {allocate,save,restore,release}; }
+};
+inline PgxpControlFrame pgxp_control_frame(const std::vector<PgxpFlowBlock>& blocks,
+                                          uint32_t entry) {
+    std::map<uint32_t,PgxpFlowInstruction> words;
+    for(const auto& b:blocks)for(const auto& i:b.instructions) {
+        if(auto at=words.find(i.address);at!=words.end() &&
+                (at->second.word!=i.word || at->second.opaque!=i.opaque))return {};
+        words[i.address]=i;
+    }
+    auto first=words.find(entry);
+    if(first==words.end() || first->second.opaque ||
+            (first->second.word&0xffff0000u)!=0x27bd0000u)return {};
+    const int16_t delta=(int16_t)first->second.word;
+    if(delta>=0 || delta==-32768 || (delta&3))return {};
+    PgxpControlFrame frame;frame.allocate=entry;frame.bytes=(int16_t)-delta;
+    for(const auto& [pc,i]:words) {
+        const auto w=i.word,op=w>>26,rs=(w>>21)&31u,rt=(w>>16)&31u;
+        const auto e=pgxp_flow_effect(w);
+        if(pc==entry)continue;
+        if(op==0x2bu && rs==29u && rt==31u) {
+            if(frame.save || i.opaque || (int16_t)w<0 ||
+                    ((int16_t)w&3) || (int16_t)w>frame.bytes-4)return {};
+            frame.save=pc;frame.offset=(int16_t)w;continue;
+        }
+        if(op==0x23u && rs==29u && rt==31u) {
+            if(frame.restore || i.opaque)return {};
+            frame.restore=pc;continue;
+        }
+        if((w&0xffff0000u)==0x27bd0000u && (int16_t)w==frame.bytes) {
+            if(frame.release || i.opaque)return {};
+            frame.release=pc;continue;
+        }
+        // The architectural EA consumes integer SP only. Other stack values
+        // remain fully tracked, and any SP/RA copy or geometry input refuses.
+        const bool memory=(op>=0x20u&&op<=0x2eu)||op==0x32u||op==0x3au;
+        const uint64_t control=(UINT64_C(1)<<29)|(UINT64_C(1)<<31);
+        if(e.defines&control)return {};
+        if(e.uses&control)return {}; // includes a non-RA stack store's rt
+        if(rs==29u && !memory)return {};
+        // JAL's implicit RA write and JR's target are control flow only.
+        if(op==0u && (w&63u)==8u && rs==31u)continue;
+        if(op==3u)continue;
+        if((op==0u && ((w>>11)&31u)==29u) ||
+                (op>=8u&&op<=15u&&rt==29u))return {};
+    }
+    if(!frame.save || !frame.restore || !frame.release ||
+            frame.save>=frame.restore || frame.restore>=frame.release)return {};
+    if((int16_t)words.at(frame.restore).word!=frame.offset)return {};
+    auto jr=words.find(frame.release-4u);
+    if(jr==words.end() || jr->second.word!=0x03e00008u || jr->second.opaque)return {};
+    // No branch may enter the deallocation slot without executing its JR.
+    for(const auto& b:blocks) {
+        for(auto successor:b.successors)if(successor==frame.release)return {};
+        for(const auto& i:b.instructions)if(i.word==0x03e00008u &&
+                i.address!=frame.release-4u)return {};
+    }
+    if(frame.save>entry+8u)return {};
+    frame.valid=true;return frame;
+}
+struct PgxpGeometryDemand {
+    std::set<uint32_t> dead;
+    uint64_t inputs = 0;
+};
+/* Full unknown demand remains the default. A caller may remove a control
+ * output root only after its actual continuation/observer contract proves it
+ * dead. A callee demand is its precision INPUT set, never its integer readset.
+ * Missing/indirect callees and explicit opaque observations consume everything.
+ * This is compile-time flow, with no run-time readset or admission walk. */
+inline PgxpGeometryDemand pgxp_geometry_demand(const std::vector<PgxpFlowBlock>& blocks,
+        uint32_t entry, uint64_t outputs,
+        const std::map<uint32_t,uint64_t>& callees) {
+    constexpr uint64_t All=((UINT64_C(1)<<34)-1u)&~UINT64_C(1);
+    const auto frame=pgxp_control_frame(blocks,entry);
+    std::map<uint32_t,uint64_t> live_in;
+    for(const auto& b:blocks)live_in[b.address]=0;
+    auto transfer=[&](const PgxpFlowBlock& b,std::set<uint32_t>* dead) {
+        uint64_t live=b.successors.empty()?outputs:0;
+        for(auto target:b.successors) {
+            const auto at=live_in.find(target);live|=at==live_in.end()?All:at->second;
+        }
+        for(auto i=b.instructions.rbegin();i!=b.instructions.rend();++i) {
+            const uint32_t w=i->word,op=w>>26;
+            auto effect=pgxp_flow_effect(w);
+            if(i->opaque){live=All;continue;}
+            if(op==3u) {
+                const uint32_t target=((i->address+4u)&0xf0000000u)|((w&0x3ffffffu)<<2);
+                const auto at=callees.find(target);live|=at==callees.end()?All:at->second;
+                continue;
+            }
+            if(op==0u && (w&63u)==8u && ((w>>21)&31u)==31u)continue;
+            if(frame.valid && i->address==frame.save) {
+                // This word is overwritten by the real CPU store. It creates
+                // no geometry provenance; the write observer ends any old one.
+                if(dead)dead->insert(i->address);
+                continue;
+            }
+            if(frame.valid && i->address==frame.restore) {
+                if(!(live&(UINT64_C(1)<<31))) {
+                    if(dead)dead->insert(i->address);
+                    continue;
+                }
+            }
+            if(effect.barrier){live=All;continue;}
+            if(i->removable && effect.pure_alu && !(live&effect.defines)) {
+                if(dead)dead->insert(i->address);
+                continue;
+            }
+            live=(live&~effect.defines)|effect.uses;
+        }
+        return live;
+    };
+    bool changed=true;size_t rounds=0;
+    while(changed) {
+        if(++rounds>blocks.size()*34u+1u)return {};
+        changed=false;
+        for(auto b=blocks.rbegin();b!=blocks.rend();++b) {
+            const auto next=transfer(*b,nullptr);
+            if(live_in[b->address]!=next){live_in[b->address]=next;changed=true;}
+        }
+    }
+    PgxpGeometryDemand result;result.inputs=live_in[entry];
+    for(const auto& b:blocks)transfer(b,&result.dead);
+    return result;
+}
 inline bool pgxp_region_scalar_from_half(const PgxpRegionValue& a, unsigned mode) {
     return !a.constant || (a.flags[mode]==3 &&
         (a.value==(uint32_t)(int32_t)(int16_t)a.value || a.value==(a.value&65535u)));
@@ -101,11 +234,21 @@ inline bool pgxp_region_step(const PgxpFlowInstruction& i, PgxpRegionState& stat
     state={};return false;
 }
 inline PgxpRegionPlan pgxp_region_plan(const std::vector<PgxpFlowBlock>& blocks,
-                                        const std::set<uint32_t>& roots) {
+                                        const std::set<uint32_t>& roots,
+                                         const std::set<uint32_t>& discarded = {}) {
     PgxpRegionPlan plan;plan.roots=roots;
     std::map<uint32_t,PgxpRegionState> outgoing;
     std::map<uint32_t,std::vector<uint32_t>> predecessors;
     for(const auto& b:blocks) { plan.entry[b.address]={};for(auto s:b.successors)predecessors[s].push_back(b.address); }
+    auto step=[&](const PgxpFlowInstruction& i,PgxpRegionState& state) {
+        if(discarded.count(i.address)) {
+            const auto effect=pgxp_flow_effect(i.word);
+            if(effect.pure_alu)state[effect.destination]={};
+            else state={}; // real memory observer still sees other live receipts
+            return false;
+        }
+        return pgxp_region_step(i,state);
+    };
     bool changed=true;size_t rounds=0;
     while(changed) {
         if(++rounds>blocks.size()*128u+1u)return {}; // finite lattice proof failed: canonical only
@@ -126,14 +269,15 @@ inline PgxpRegionPlan pgxp_region_plan(const std::vector<PgxpFlowBlock>& blocks,
             // Constants/plain recipes retain their existing inter-block carry.
             for(unsigned r=1;r<32;++r)if(input[r].incoming_add)input[r]={};
             auto output=input;
-            for(const auto& i:b.instructions)pgxp_region_step(i,output);
+            for(const auto& i:b.instructions)step(i,output);
             if(b.boundary)output={};
             if(plan.entry[b.address]!=input || outgoing[b.address]!=output) {
                 plan.entry[b.address]=input;outgoing[b.address]=output;changed=true;
             }
         }
     }
-    for(const auto& b:blocks) { auto s=plan.entry[b.address];for(const auto& i:b.instructions)if(pgxp_region_step(i,s))++plan.definitions; }
+    for(const auto& b:blocks) { auto s=plan.entry[b.address];for(const auto& i:b.instructions)if(step(i,s))++plan.definitions; }
+    plan.definitions+=discarded.size();
     return plan;
 }
 }

@@ -65,6 +65,10 @@ uint32_t overlay_codegen_config_hash(const GameConfig& c) {
 
     h.words("sprite_tag_funcs", c.ws_sprite_tag_funcs);
     h.words("mod_function_entry_funcs", c.mod_function_entry_funcs);
+    if(!c.geometry_control_frames.empty()) {
+        h.tag("geometry_control_frames-v1");h.u32((uint32_t)c.geometry_control_frames.size());
+        for(const auto& [entry,guard]:c.geometry_control_frames) {h.u32(entry);h.tag(guard.c_str());}
+    }
     if (!c.ws_cull_packed_x_sites.empty()) {
         h.tag("cull_packed_x");
         auto sites = c.ws_cull_packed_x_sites;
@@ -3125,6 +3129,18 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     loaded.ws_cull_packed_x_sites = std::move(ws_cull_packed_x_sites);
     loaded.draw_distance_clamp_sites =
         parse_draw_distance_clamps(cfg, config_path);
+    if(recomp.contains("geometry_control_frames")) {
+        const auto& entries=toml::find(recomp,"geometry_control_frames").as_table();
+        for(const auto& [key,value]:entries) {
+            const uint32_t address=parse_hex(key,"recompiler.geometry_control_frames");
+            const auto symbol=value.as_string();
+            if((address&3u) || symbol.empty() ||
+                    !(std::isalpha((unsigned char)symbol[0]) || symbol[0]=='_') ||
+                    std::any_of(symbol.begin(),symbol.end(),[](unsigned char c){return !std::isalnum(c)&&c!='_';}))
+                throw std::runtime_error("geometry_control_frames requires aligned entries and C guard identifiers");
+            loaded.geometry_control_frames.emplace(address,symbol);
+        }
+    }
     reject_quality_presets(cfg, config_path);
     loaded.mod_immediate_sites = parse_mod_immediate_sites(cfg, config_path);
     return loaded;

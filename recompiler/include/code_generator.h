@@ -71,6 +71,8 @@ struct CodeGenConfig {
     // Only explicitly listed guest functions call the runtime dispatcher.
     std::set<uint32_t> mod_function_entry_funcs;
     std::set<uint32_t> mod_instruction_sites;
+    // [recompiler.geometry_control_frames]: entry -> exact title contract guard.
+    std::map<uint32_t,std::string> geometry_control_frames;
     // [[mod_immediate.sites]]: guarded instructions whose immediate a trusted mod
     // selects at run time; emitted as a selector switch over every variant.
     std::vector<PSXRecompV4::ModImmediateSite> mod_immediate_sites;
@@ -404,6 +406,9 @@ private:
     PgxpRegionState precision_region_state_{};
     mutable std::map<std::string,std::string> precision_region_materializers_;
     std::set<uint32_t> precision_region_opaque_;
+    std::set<uint32_t> precision_geometry_dead_;
+    bool precision_geometry_control_ = false;
+    std::string precision_geometry_guard_;
     std::string precision_region_owner_;
     std::string region_materializer(const PgxpRegionState&) const;
     std::string region_flush();

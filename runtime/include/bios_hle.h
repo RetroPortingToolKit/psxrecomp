@@ -74,6 +74,9 @@ extern int (*g_psx_bios_hle_hook)(struct CPUState* cpu, uint32_t phys);
  *               here so the reported state cannot overstate what can fire
  * Clears the shell-skip latch so rematch can skip again. The hook is installed
  * when either axis is on; both off = NULL = pure LLE. */
+/* Pure dispatch-boundary query. A foreign hook is never classified from a
+ * setting flag; the known builtin is quiet only away from its actual anchors. */
+int psx_bios_hle_dispatch_quiet(uint32_t address);
 void psx_bios_hle_configure(int call_hle, int boot_skip);
 
 int         psx_bios_hle_enabled(void);

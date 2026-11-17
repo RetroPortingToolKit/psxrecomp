@@ -1923,7 +1923,8 @@ int g_host_store_depth;   /* >0 inside psx_host_write_* */
  * fractions and depth, so the old shadow would be believed for a value it
  * did not produce. Drop the touched word's shadow instead. */
 static inline void pgxp_untracked_store(uint32_t phys, uint32_t value, uint32_t width) {
-#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+#if (defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS) || \
+    (defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS)
     pgxp_write_owned(phys, value, width);
 #else
     (void)value; (void)width;
@@ -1934,7 +1935,8 @@ static inline void pgxp_untracked_store(uint32_t phys, uint32_t value, uint32_t 
 
 /* The existing inline/DLL observer boundary, with no extra per-access
  * forwarding layer. Observers still see pre-write bytes/precision first. */
-#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+#if (defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS) || \
+    (defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS)
 void psx_direct_precision_write(uint32_t phys, uint32_t old_value, uint32_t value, uint8_t width) {
     debug_server_trace_write_check(phys, old_value, value, width);
     pgxp_write_owned(phys, value, width);
@@ -2801,7 +2803,8 @@ const PSXDirectMemoryView *psx_direct_memory_host_view(void) {
 #else
         &g_psx_memory_width_stats,
 #endif
-#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+#if (defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS) || \
+    (defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS)
         psx_direct_precision_write
 #else
         debug_server_trace_write_check

@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <array>
+#include <map>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -1547,6 +1548,9 @@ struct GameConfig {
     std::vector<ModImmediateSite> mod_immediate_sites;
     // Guarded SLTU on SX<<16 against screen width<<16; both wide edges.
     std::vector<WidescreenPackedXSite> ws_cull_packed_x_sites;
+    // A title-certified precision contract, not a generic register heuristic.
+    // Keys are function entries; values are linked C guard identifiers.
+    std::map<uint32_t,std::string> geometry_control_frames;
 };
 
 // Effective clip_edge_width: explicit value, else screen_w_imms[0], else 320.

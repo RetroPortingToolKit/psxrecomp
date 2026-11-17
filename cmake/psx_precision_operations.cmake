@@ -47,7 +47,7 @@ function(psxrecomp_precision_operations target)
         endif()
         foreach(_source IN LISTS P_GENERATED_SOURCES)
             file(READ "${_source}" _text LIMIT 2048)
-            if(NOT _text MATCHES "psx-pgxp-demand-regions-v1")
+            if(NOT _text MATCHES "psx-pgxp-demand-regions-v2")
                 message(FATAL_ERROR "Regenerate every game source before selecting PSX_PGXP_DEMAND_REGIONS: ${_source}")
             endif()
         endforeach()
@@ -57,12 +57,16 @@ function(psxrecomp_precision_operations target)
     file(CONFIGURE OUTPUT "${_dir}/demand.c" CONTENT
         "const unsigned psx_build_precision_demand_regions = ${_regions}u;\n" @ONLY)
     psxrecomp_add_implementation(${target}
-        NAME precision-demand CONTRACT observation-boundary-recipes-${_regions}-v1
+        NAME precision-demand CONTRACT geometry-demand-recipes-${_regions}-v2
         HLE_SOURCES "${_dir}/demand.c" LLE_SOURCES "${_dir}/demand.c"
         CONTRACT_FILES "${PSXRECOMP_ROOT}/runtime/include/pgxp_hooks.h"
             "${PSXRECOMP_ROOT}/runtime/include/psx_block_edge.h"
             "${PSXRECOMP_ROOT}/runtime/include/psx_native_span.h"
             "${PSXRECOMP_ROOT}/runtime/src/pgxp.cpp"
+            "${PSXRECOMP_ROOT}/runtime/src/memory.c"
+            "${PSXRECOMP_ROOT}/runtime/include/psx_direct_memory.h"
+            "${PSXRECOMP_ROOT}/runtime/src/bios_hle.c"
+            "${PSXRECOMP_ROOT}/runtime/include/bios_hle.h"
             "${PSXRECOMP_ROOT}/recompiler/src/pgxp_demand_regions.h"
             "${PSXRECOMP_ROOT}/recompiler/src/code_generator.cpp"
             "${CMAKE_CURRENT_FUNCTION_LIST_FILE}")

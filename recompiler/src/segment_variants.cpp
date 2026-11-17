@@ -154,6 +154,9 @@ CodeGenConfig move_exact_config_sites(const CodeGenConfig& cfg, At at) {
     move_set(v.ws_sprite_tag_funcs);
     move_set(v.data_shard_funcs);
     move_set(v.mod_function_entry_funcs);
+    { std::map<uint32_t,std::string> moved;
+      for(const auto& [entry,guard]:v.geometry_control_frames)moved.emplace(at(entry),guard);
+      v.geometry_control_frames=std::move(moved); }
     move_set(v.hot_funcs);
     move_set(v.load_charge_batch_funcs);
     move_set(v.ws_backdrop_unsquash_funcs);
