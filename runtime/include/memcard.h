@@ -114,6 +114,16 @@ int memcard_rebind_path(int card, const char *path);
 /* Reload in-memory images from the currently bound filepaths (0 = ok). */
 int memcard_reload_bound(void);
 
+/* Replay playback: the guest sees `images` (two MEMCARD_SIZE images, slot
+ * order; bit n of `mask` inserts card n+1) and its writes stay in memory.
+ * The player's cards are flushed first and come back, untouched, with
+ * memcard_replay_end. While a replay holds the cards, init, rebind and reload
+ * leave them alone. Refused (-1) when an extended-card codec or a card's
+ * extension data is active, since a raw image would drop it. */
+int memcard_replay_supported(void);
+int memcard_replay_begin(const uint8_t *images, uint32_t mask);
+void memcard_replay_end(void);
+
 #ifdef __cplusplus
 }
 #endif

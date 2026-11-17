@@ -1278,6 +1278,10 @@ int sio_get_pad_connected(int slot) {
     return (pad_connected & (1u << slot)) ? 1 : 0;
 }
 
+int sio_get_pad_config_capable(int slot) {
+    return (slot >= 0 && slot < PSX_MAX_PLAYERS) ? pad_supports_config[slot] : 0;
+}
+
 int sio_get_pad_analog(int slot) {
     return (slot >= 0 && slot < PSX_MAX_PLAYERS) ? pad_analog[slot] : 0;
 }
