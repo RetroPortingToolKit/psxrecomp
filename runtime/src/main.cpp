@@ -30,6 +30,7 @@
 #include "fntrace.h"
 #include "text_xlate.h"
 #include "boot_state.h"
+#include "source_stateio_identity.h"
 #include "bios_hle.h"
 #include "bios_hle_plan.h"
 #include "psx_bios_known_images.h"
@@ -3110,6 +3111,80 @@ static bool validate_disc_for_launch(const std::filesystem::path& path,
         return false;
     }
     return true;
+}
+
+/* compiler.txt relative paths belong to the installed overlay toolchain,
+ * never the caller's working directory or PATH. */
+static std::filesystem::path resolve_overlay_compiler_path(
+    const std::filesystem::path& toolchain, const std::string& configured) {
+    const auto marker = toolchain / "compiler-store.sha256";
+    if (std::filesystem::exists(marker)) {
+        const auto reject = [](const std::filesystem::path& bad) {
+            throw std::runtime_error("shared overlay compiler unavailable or corrupt: " + bad.string() +
+                "; repair or reinstall the shared compiler store, or rebuild as portable");
+        };
+        const auto valid_hash = [](const std::string& value) {
+            return value.size() == 64 && value.find_first_not_of("0123456789abcdef") == std::string::npos;
+        };
+        std::ifstream marker_file(marker, std::ios::binary);
+        std::string expected, extra;
+        std::error_code marker_error;
+        if (std::filesystem::file_size(marker, marker_error) != 65 || marker_error ||
+            !std::getline(marker_file, expected) || !valid_hash(expected) || std::getline(marker_file, extra))
+            reject(marker);
+        const std::filesystem::path compiler(configured);
+        if (!PSXRecompV4::host_path_is_absolute(compiler) || compiler.filename() != "clang.exe" ||
+            compiler.parent_path().filename() != "bin") reject(toolchain / "compiler.txt");
+        const auto store = compiler.parent_path().parent_path();
+        if (store.filename() != "overlay-clang-" + expected) reject(store);
+#ifdef _WIN32
+        struct StoreGuard {
+            HANDLE handle = INVALID_HANDLE_VALUE;
+            ~StoreGuard() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+        };
+        static StoreGuard guard;
+        if (guard.handle == INVALID_HANDLE_VALUE) {
+            const auto lock = std::filesystem::path(store.wstring() + L".lock");
+            guard.handle = CreateFileW(lock.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                      OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (guard.handle == INVALID_HANDLE_VALUE) reject(lock);
+        }
+#else
+        reject(store); // The managed Clang store is currently Windows-only.
+#endif
+        const auto manifest = store / "SHA256SUMS.txt";
+        char actual[65];
+        if (!source_stateio_file_sha256(manifest.string().c_str(), actual) || expected != actual)
+            reject(manifest);
+        std::ifstream entries(manifest, std::ios::binary);
+        std::string line, previous;
+        bool compiler_listed = false;
+        while (std::getline(entries, line)) {
+            if (line.size() < 67 || line.substr(64, 2) != "  " || !valid_hash(line.substr(0, 64)))
+                reject(manifest);
+            const std::string relative = line.substr(66);
+            const std::filesystem::path member(relative);
+            if (relative <= previous || member.is_absolute() || relative.find('\\') != std::string::npos ||
+                relative.find(':') != std::string::npos || member.lexically_normal().generic_string() != relative)
+                reject(manifest);
+            for (const auto& component : member) if (component == "..") reject(manifest);
+            previous = relative;
+            const auto file = store / member;
+            if (!std::filesystem::is_regular_file(file) ||
+                !source_stateio_file_sha256(file.string().c_str(), actual) || line.substr(0, 64) != actual)
+                reject(file);
+            if (relative == "bin/clang.exe") compiler_listed = true;
+        }
+        if (entries.bad() || !compiler_listed) reject(manifest);
+        return compiler;
+    }
+    if (configured.empty()) return {};
+    std::filesystem::path path(configured);
+    if (path.is_relative()) path = toolchain / path;
+    std::error_code error;
+    path = std::filesystem::absolute(path, error).lexically_normal();
+    if (error || !std::filesystem::is_regular_file(path, error)) return {};
+    return path;
 }
 
 static std::filesystem::path normalize_disc_path_for_launch(const std::filesystem::path& path) {
@@ -19107,8 +19182,11 @@ int main(int argc, char** argv) {
             if (cf.is_open() && std::getline(cf, line)) {
                 while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' '))
                     line.pop_back();
-                std::error_code cec;
-                if (!line.empty() && std::filesystem::exists(line, cec)) tk_compiler = line;
+            }
+            tk_compiler = resolve_overlay_compiler_path(tk_dir, line).string();
+            if (!line.empty() && std::filesystem::path(line).is_relative() && tk_compiler.empty()) {
+                throw std::runtime_error("bundled overlay compiler is missing: " +
+                                         (tk_dir / line).string());
             }
         }
         auto build_toolchain_cmd = [&](const char *compiler) {
