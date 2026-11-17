@@ -1,6 +1,6 @@
-/* Replay playback against stub host hooks: the anchor load, the per-vblank
- * P1 feed, the digest and END checks, takeover, power-on with cards, and the
- * identity refusals. */
+/* Replay recording and playback against stub host hooks: the anchor load,
+ * the per-vblank P1 feed, the digest and END checks, takeover, power-on with
+ * cards, the identity refusals, and recordings that play back in sync. */
 #include "replay_session.h"
 #include "replay_identity.h"
 #include <stdio.h>
@@ -70,6 +70,31 @@ uint64_t replay_host_cycle(void) { return s_cycle; }
 int replay_host_state_digest(uint32_t out[4])
 {
     memcpy(out, s_digest, sizeof s_digest);
+    return 1;
+}
+
+/* Recording hooks. */
+static int s_can_record = 1, s_anchor_requests, s_anchor_take;
+int replay_host_can_record(char *why, size_t cap)
+{
+    if (!s_can_record) snprintf(why, cap, "netplay is active");
+    return s_can_record;
+}
+int replay_host_request_anchor(void) { s_anchor_requests++; return 1; }
+int replay_host_take_anchor(uint8_t **data, size_t *size)
+{
+    if (s_anchor_take > 0) {
+        *data = (uint8_t *)malloc(48);
+        memset(*data, 0x5A, 48);
+        *size = 48;
+    }
+    return s_anchor_take;
+}
+void replay_host_settings_capture(char *out, size_t cap) { snprintf(out, cap, "cd_speed=1\n"); }
+int replay_host_cards_capture(uint8_t *images, uint32_t *mask)
+{
+    memset(images + REPLAY_FILE_CARD_BYTES, 0x77, REPLAY_FILE_CARD_BYTES);
+    *mask = 2u;
     return 1;
 }
 
@@ -160,6 +185,53 @@ static uint32_t run(uint16_t live, int *fed_ok)
         }
     }
     return fed;
+}
+
+static uint16_t rec_word(uint32_t i) { return (uint16_t)(0xFFFFu ^ (1u << (i / 7 % 16))); }
+
+/* Records `frames` boundaries of rec_word, then stops: by request (the file
+ * is written at the boundary after) or by shutdown. */
+static uint32_t record(uint32_t frames, int by_shutdown)
+{
+    uint32_t delivered = 0;
+    for (uint32_t i = 0; i < frames; ++i) {
+        const uint8_t sticks[4] = {(uint8_t)i, 0x80, 0x81, 0x82};
+        uint16_t b = 0;
+        uint8_t s[4];
+        if (replay_session_boundary(rec_word(i), sticks, &b, s) && b == rec_word(i) && !memcmp(s, sticks, 4))
+            ++delivered;
+        CHECK(replay_session_owns_p1());
+    }
+    if (by_shutdown) {
+        replay_session_shutdown();
+    } else {
+        const uint8_t centre[4] = {0x80, 0x80, 0x80, 0x80};
+        uint16_t b;
+        uint8_t s[4];
+        replay_session_stop_record();
+        CHECK(replay_session_state() == REPLAY_RECORDING);
+        CHECK(replay_session_boundary(0xFFFFu, centre, &b, s) == 0);
+    }
+    CHECK(replay_session_state() == REPLAY_IDLE && !replay_session_owns_p1());
+    return delivered;
+}
+
+/* Plays the file back; every fed word must be the recorded one. */
+static int play_back(const char *path, uint32_t frames)
+{
+    const uint8_t centre[4] = {0x80, 0x80, 0x80, 0x80};
+    uint32_t fed = 0, ok = 1;
+    s_load_result = 1;
+    if (!replay_session_play_file(path)) return 0;
+    for (int guard = 0; guard < 1000 && replay_session_state() != REPLAY_IDLE; ++guard) {
+        uint16_t b = 0;
+        uint8_t s[4];
+        if (replay_session_boundary(0xFFFFu, centre, &b, s)) {
+            if (b != rec_word(fed) || s[0] != (uint8_t)fed || s[1] != 0x80 || s[2] != 0x81 || s[3] != 0x82) ok = 0;
+            ++fed;
+        }
+    }
+    return ok && fed == frames && replay_session_last_result() == REPLAY_RESULT_IN_SYNC;
 }
 
 static int verdict_has(const char *text)
@@ -274,6 +346,54 @@ int main(void)
     CHECK(replay_session_state() == REPLAY_IDLE && s_settings_out == 1);
     CHECK(verdict_has("\"player_build\": \"f123456789abcdef0123456789abcdef01234567\""));
     CHECK(replay_session_play_file("replay_session_missing.psxrpl") == 0);
+
+    /* Anchored recording: arms, waits for the anchor, records each boundary's
+     * live word, and plays back in sync from that anchor. */
+    reset_host();
+    remove(REPLAY);
+    s_anchor_take = 0;
+    CHECK(replay_session_record_to(REPLAY) == 1);
+    CHECK(replay_session_state() == REPLAY_ARMING && s_anchor_requests == 1);
+    CHECK(replay_session_record_to(REPLAY) == 0); /* one at a time */
+    CHECK(replay_session_boundary(0xFFFFu, centre, &b, s) == 0); /* anchor pending */
+    s_anchor_take = 1;
+    CHECK(record(75, 0) == 75);
+    {
+        ReplayFileInfo info;
+        static ReplayStep steps[128];
+        FILE *f = fopen(REPLAY, "rb");
+        CHECK(f && replay_file_read(f, &info, steps, 128) == NULL);
+        if (f) fclose(f);
+        CHECK(info.frames == 75 && info.has_anchor && info.anchor_length == 48 && !info.power_on);
+        CHECK(info.digest_count == 2 && !strcmp(info.settings, "cd_speed=1\n"));
+        CHECK(strstr(info.product, "platform=windows-x64") != NULL);
+    }
+    CHECK(play_back(REPLAY, 75) && s_anchor_size == 48 && s_anchor_first == 0x5A);
+    CHECK(replay_session_record_to(REPLAY) == 0); /* the file exists */
+
+    /* Power-on recording: only at boot; it keeps the inserted card, ends at
+     * shutdown, and plays back with that card installed. */
+    reset_host();
+    remove(REPLAY);
+    CHECK(replay_session_record_power_on(REPLAY) == 0);
+    s_at_power_on = 1;
+    CHECK(replay_session_record_power_on(REPLAY) == 1 && replay_session_state() == REPLAY_RECORDING);
+    CHECK(record(40, 1) == 40);
+    CHECK(play_back(REPLAY, 39) && s_cards_in == 1 && s_cards_mask == 2u && s_card2_first == 0x77);
+
+    /* Refusals: the host cannot record; the anchor cannot be saved. */
+    reset_host();
+    remove(REPLAY);
+    s_can_record = 0;
+    CHECK(replay_session_record_to(REPLAY) == 0 && replay_session_state() == REPLAY_IDLE);
+    s_can_record = 1;
+    s_anchor_take = -1;
+    CHECK(replay_session_record_to(REPLAY) == 1);
+    CHECK(replay_session_boundary(0xFFFFu, centre, &b, s) == 0 && replay_session_state() == REPLAY_IDLE);
+    s_anchor_take = 1;
+    CHECK(replay_session_record_to(REPLAY) == 1);
+    replay_session_shutdown(); /* armed, nothing recorded: no file */
+    CHECK(replay_session_state() == REPLAY_IDLE && replay_session_play_file(REPLAY) == 0);
 
     remove(REPLAY);
     remove(VERDICT);

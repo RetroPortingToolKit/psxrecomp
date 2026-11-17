@@ -65,6 +65,10 @@ int boot_state_load_buffer_quiet(const uint8_t* data, size_t size, uint32_t bios
                                  uint32_t entry, CPUState* cpu) {
     (void)data; (void)size; (void)bios; (void)entry; (void)cpu; assert(0); return 0;
 }
+int boot_state_save_buffer(const CPUState* cpu, uint32_t bios, uint32_t entry,
+                           uint8_t** data, size_t* size) {
+    (void)cpu; (void)bios; (void)entry; (void)data; (void)size; assert(0); return 0;
+}
 int boot_state_save_buffer_raw(const CPUState* cpu, uint32_t bios, uint32_t entry,
                                 uint8_t** data, size_t* size) {
     (void)cpu; (void)bios; (void)entry; (void)data; (void)size; assert(0); return 0;

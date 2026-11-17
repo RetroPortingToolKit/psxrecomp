@@ -1,6 +1,6 @@
 #ifndef PSX_REPLAY_SESSION_H
 #define PSX_REPLAY_SESSION_H
-/* Player replay playback.
+/* Player replay recorder and player.
  *
  * A replay (replay_file.h) holds the P1 pad once per guest vblank, where it
  * starts (an anchor save state, or power-on with the memory cards the guest
@@ -22,7 +22,9 @@ extern "C" {
 
 typedef enum {
     REPLAY_IDLE = 0,
-    REPLAY_LOADING,    /* the anchor load was requested */
+    REPLAY_ARMING,     /* recording: the anchor state is being saved */
+    REPLAY_RECORDING,
+    REPLAY_LOADING,    /* playback: the anchor load was requested */
     REPLAY_PLAYING
 } ReplayState;
 
@@ -42,7 +44,18 @@ ReplayResult replay_session_last_result(void);
  * 0 with the reason on the OSD and stderr when it is refused. */
 int replay_session_play_file(const char *path);
 
-/* 1 while a replay drives P1. */
+/* Records P1 into the new file `path`. An anchored recording saves a
+ * state at the next safe boundary and reloads it quietly, so recording and
+ * playback both start right after the same load; it records from the
+ * boundary after that. A power-on recording starts at the first vblank of a
+ * cold boot, with the memory cards the guest boots with. Returns 1 when the
+ * recording starts or arms; 0 with the reason on the OSD and stderr. */
+int replay_session_record_to(const char *path);
+int replay_session_record_power_on(const char *path);
+/* Ends a recording at the next boundary, which writes the file. */
+void replay_session_stop_record(void);
+
+/* 1 while a replay drives P1 or a recording delivers it. */
 int replay_session_owns_p1(void);
 
 /* Once per guest vblank, at the frame boundary, with the live P1 state the
@@ -72,8 +85,8 @@ unsigned replay_session_digests_checked(void);
  * recorded and player builds and exe SHA-256s, power_on. NULL clears. */
 void replay_session_set_verdict_path(const char *path);
 
-/* Process exit, a disc change or a session restart: end a playback and put
- * the player's settings and cards back. */
+/* Process exit, a disc change or a session restart: write a recording, or
+ * end a playback and put the player's settings and cards back. */
 void replay_session_shutdown(void);
 
 /* ---- Host hooks (main.cpp; stubs in the unit test) ---- */
@@ -99,6 +112,19 @@ void replay_host_settings_restore(void);
  * the inserted ones are read). Its writes stay in memory. 0 on failure. */
 int replay_host_cards_install(const uint8_t *images, uint32_t mask);
 void replay_host_cards_restore(void);
+/* 0 with the reason when this session cannot record: netplay, a
+ * multitap, a port without a pad, memory cards the format cannot hold. */
+int replay_host_can_record(char *why, size_t cap);
+/* Save an anchor state at the next safe boundary and reload it quietly. */
+int replay_host_request_anchor(void);
+/* 1 = *data (malloc'd; the caller frees it) holds the anchor, -1 = failed,
+ * 0 = pending. */
+int replay_host_take_anchor(uint8_t **data, size_t *size);
+/* The settings lines replay_host_settings_apply takes. */
+void replay_host_settings_capture(char *out, size_t cap);
+/* The cards the guest boots with (2 x REPLAY_FILE_CARD_BYTES, slot order);
+ * *mask names the inserted ones. 0 on failure. */
+int replay_host_cards_capture(uint8_t *images, uint32_t *mask);
 /* Guest main RAM (2 MiB) and cycle count at the current boundary. */
 const uint8_t *replay_host_ram(void);
 uint64_t replay_host_cycle(void);

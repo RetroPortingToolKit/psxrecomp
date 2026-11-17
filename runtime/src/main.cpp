@@ -9395,7 +9395,16 @@ static void audio_buffer_diagnostics_tick() {
  * PSX_REPLAY_VERDICT=FILE (--replay-verdict) writes the verdict JSON;
  * PSX_REPLAY_EXIT_AT_END=1 exits when playback ends: 0 in sync, 3 out of
  * sync, 4 failed, stopped or not played; PSX_REPLAY_FAST=1 (--replay-fast)
- * plays at fast-forward. */
+ * plays at fast-forward.
+ *
+ * Recording: PSX_REPLAY_RECORD_BOOT=1, or the launcher's "Record replay"
+ * (RECOMP_LAUNCHER_HAS_RECORD_REPLAY), records from power-on into
+ * PSX_REPLAY_RECORD_FILE, or into <save root>/replays/<serial>-boot-<UTC
+ * time>.psxrpl. PSX_REPLAY_RECORD_FILE with PSX_REPLAY_RECORD_AT=N records
+ * from an anchor state saved at vblank N. PSX_REPLAY_RECORD_FRAMES=N stops
+ * after N frames; otherwise quitting the game ends and writes the replay.
+ * With PSX_REPLAY_EXIT_AT_END=1 a recording exits 0 when written, 5 when
+ * not. */
 static const char *g_replay_cli_path = nullptr;
 static const char *g_replay_cli_verdict = nullptr;
 static bool g_replay_cli_fast = false;
@@ -9405,6 +9414,10 @@ static uint32_t s_replay_bios_crc32 = 0;
 static bool s_replay_bios_crc_ok = false, s_replay_product_hashed = false;
 static const CPUState *s_replay_cpu = nullptr;
 static uint64_t s_replay_vblank = UINT64_MAX;
+static std::string s_replay_serial;
+/* The launcher's "Record replay" for this process. Not a saved setting: a
+ * tick left on would record, and write a file, in every later session. */
+static bool g_launcher_record_replay = false;
 
 extern "C" void replay_host_osd(const char *text, int ms) {
     std::fprintf(stdout, "replay_osd: %s\n", text);
@@ -9574,6 +9587,61 @@ extern "C" int replay_host_state_digest(uint32_t out[4]) {
     return 1;
 }
 
+extern "C" int replay_host_can_record(char *why, size_t cap) {
+    char slot0[600];
+    if (psx_netplay_active()) { std::snprintf(why, cap, "netplay is active"); return 0; }
+    if (sio_get_multitap() || g_offline_pad_count > 2) { std::snprintf(why, cap, "a multitap is attached"); return 0; }
+    if (psx_selfcheck_input_locked()) { std::snprintf(why, cap, "a self-check owns input"); return 0; }
+    if (!memcard_replay_supported()) {
+        std::snprintf(why, cap, "these memory cards cannot be stored in a replay"); return 0;
+    }
+    if (!savestate_slot_path(0, slot0, sizeof(slot0))) {
+        std::snprintf(why, cap, "save states are not available for this game"); return 0;
+    }
+    return 1;
+}
+extern "C" int replay_host_request_anchor(void) { return savestate_request_anchor(); }
+extern "C" int replay_host_take_anchor(uint8_t **data, size_t *size) { return savestate_take_anchor(data, size); }
+extern "C" void replay_host_settings_capture(char *out, size_t cap) {
+    std::snprintf(out, cap, "%s", replay_settings_capture().c_str());
+}
+extern "C" int replay_host_cards_capture(uint8_t *images, uint32_t *mask) {
+    *mask = 0;
+    for (int card = 0; card < 2; ++card)
+        if (memcard_export_raw(card, images + (size_t)card * MEMCARD_SIZE) == 0)
+            *mask |= 1u << card;
+    return 1;
+}
+
+/* <save root>/replays/<serial>-boot-<UTC time>.psxrpl; empty when there is
+ * no save root. */
+static std::string replay_boot_path(void) {
+    const char *root = savestate_root_dir();
+    if (!root || !root[0]) return std::string();
+    std::filesystem::path dir = std::filesystem::path(root) / "replays";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    std::string serial;
+    for (char c : s_replay_serial)
+        serial.push_back((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ? c : '_');
+    if (serial.empty()) serial = "game";
+    const std::time_t now = std::time(nullptr);
+    std::tm utc{};
+#ifdef _WIN32
+    gmtime_s(&utc, &now);
+#else
+    gmtime_r(&now, &utc);
+#endif
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%SZ", &utc);
+    for (int n = 0; n < 100; ++n) {
+        const std::string leaf = serial + "-boot-" + stamp + (n ? "-" + std::to_string(n) : std::string()) + ".psxrpl";
+        const std::filesystem::path path = dir / leaf;
+        if (!std::filesystem::exists(path, ec)) return path.string();
+    }
+    return std::string();
+}
+
 /* P1 as the host would deliver it this frame, for takeover. */
 static void replay_live_p1(int override, uint16_t *buttons, uint8_t sticks[4]) {
     sticks[0] = sticks[1] = sticks[2] = sticks[3] = 0x80u;
@@ -9596,9 +9664,11 @@ static void replay_exit(int status, const char *origin) {
 /* Once per guest vblank, before P1 is sampled: starts a requested replay
  * and runs its boundary. While a replay plays, the sampler feeds its word. */
 static void replay_frame_boundary(int override) {
-    static bool env_read = false, exit_at_end = false, fast_play = false;
+    static bool env_read = false, exit_at_end = false, fast_play = false, record_boot = false;
     static int fast_saved = -1;
-    static const char *play_path = nullptr;
+    static const char *play_path = nullptr, *record_file = nullptr;
+    static long long record_at = -1, record_frames = 0, recorded = 0;
+    static std::string record_path;
     static uint64_t vblanks = 0;
     static ReplayState previous = REPLAY_IDLE;
     if (!env_read) {
@@ -9611,12 +9681,33 @@ static void replay_frame_boundary(int override) {
         if (verdict && verdict[0]) replay_session_set_verdict_path(verdict);
         const char *fast = std::getenv("PSX_REPLAY_FAST");
         fast_play = g_replay_cli_fast || (fast && std::strcmp(fast, "1") == 0);
+        record_file = std::getenv("PSX_REPLAY_RECORD_FILE");
+        if (record_file && !record_file[0]) record_file = nullptr;
+        if (const char *e = std::getenv("PSX_REPLAY_RECORD_AT")) record_at = std::atoll(e);
+        if (const char *e = std::getenv("PSX_REPLAY_RECORD_FRAMES")) record_frames = std::atoll(e);
+        const char *boot = std::getenv("PSX_REPLAY_RECORD_BOOT");
+        record_boot = !play_path && (g_launcher_record_replay || (boot && std::strcmp(boot, "1") == 0));
     }
-    s_replay_vblank = vblanks++;
+    const uint64_t vb = vblanks++;
+    s_replay_vblank = vb;
     if (play_path) {
         const char *path = play_path;
         play_path = nullptr;
         if (!replay_session_play_file(path) && exit_at_end) replay_exit(4, "replay_not_played");
+    }
+    if (record_boot && vb == 0) {
+        record_path = record_file ? std::string(record_file) : replay_boot_path();
+        if (record_path.empty()) replay_host_osd("Replay not recorded: no save folder for this game", 2600);
+        if (record_path.empty() || !replay_session_record_power_on(record_path.c_str())) {
+            record_path.clear();
+            if (exit_at_end) replay_exit(5, "replay_not_recorded");
+        }
+    } else if (!record_boot && record_file && record_at >= 0 && (long long)vb == record_at) {
+        record_path = record_file;
+        if (!replay_session_record_to(record_file)) {
+            record_path.clear();
+            if (exit_at_end) replay_exit(5, "replay_not_recorded");
+        }
     }
     if (replay_session_state() == REPLAY_IDLE && previous == REPLAY_IDLE) return;
     uint16_t live, b;
@@ -9625,18 +9716,26 @@ static void replay_frame_boundary(int override) {
     if (replay_session_boundary(live, live_sticks, &b, s)) {
         g_replay_p1_buttons = b;
         std::memcpy(g_replay_p1_sticks, s, 4);
+        if (replay_session_state() == REPLAY_RECORDING && record_frames > 0 && ++recorded == record_frames)
+            replay_session_stop_record();   /* ends on the next boundary */
     }
     const ReplayState now = replay_session_state();
     if (fast_play) {   /* latched fast-forward only while a replay plays */
-        if (now != REPLAY_IDLE && fast_saved < 0) {
+        const bool playing = now == REPLAY_LOADING || now == REPLAY_PLAYING;
+        if (playing && fast_saved < 0) {
             fast_saved = g_manual_turbo_latched;
             g_manual_turbo_latched = 1;
-        } else if (now == REPLAY_IDLE && fast_saved >= 0) {
+        } else if (!playing && fast_saved >= 0) {
             g_manual_turbo_latched = fast_saved;
             fast_saved = -1;
         }
     }
     if (exit_at_end && previous != REPLAY_IDLE && now == REPLAY_IDLE) {
+        if (previous == REPLAY_RECORDING || previous == REPLAY_ARMING) {
+            std::error_code ec;
+            const bool written = !record_path.empty() && std::filesystem::exists(record_path, ec);
+            replay_exit(written ? 0 : 5, "replay_end");
+        }
         const ReplayResult r = replay_session_last_result();
         replay_exit(r == REPLAY_RESULT_IN_SYNC ? 0 : r == REPLAY_RESULT_OUT_OF_SYNC ? 3 : 4, "replay_end");
     }
@@ -17388,6 +17487,9 @@ namespace {
         }
 #endif
         gi->has_skip_fmv = skip_fmv_offered_b ? 1 : 0;
+#if defined(RECOMP_LAUNCHER_HAS_RECORD_REPLAY)
+        gi->has_record_replay = 1;
+#endif
         gi->has_turbo_loads = turbo_loads_offered_b ? 1 : 0;
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
         gi->has_render_pipeline = g_offer_render_pipeline ? 1 : 0;
@@ -19938,6 +20040,9 @@ int main(int argc, char** argv) {
                 }
             }
             ls.skip_launcher  = seed.skip_launcher ? 1 : 0;
+#if defined(RECOMP_LAUNCHER_HAS_RECORD_REPLAY)
+            ls.record_replay = g_launcher_record_replay ? 1 : 0;
+#endif
             ls.msu1_enabled   = 0;
             ls.msu1_dir[0]    = '\0';
             std::snprintf(ls.netplay_player_name, sizeof(ls.netplay_player_name), "%s",
@@ -20205,6 +20310,10 @@ int main(int argc, char** argv) {
                 rui_title.c_str(), &ls, &gi, assets_dir_str.c_str(),
                 rui_initial_disc.c_str(), rui_out_disc, sizeof(rui_out_disc));
             launcher_boot_timing_mark("host:after_run_window");
+#if defined(RECOMP_LAUNCHER_HAS_RECORD_REPLAY)
+            /* Play takes the box as the player left it; other results keep it. */
+            if (rui_rc == 0) g_launcher_record_replay = ls.record_replay > 0;
+#endif
 
             lr = rui_rc;
             if (lr == RECOMP_LAUNCHER_RESULT_PROFILE) {
@@ -21387,6 +21496,7 @@ session_reboot:
         /* The disc and BIOS a replay is played against. */
         replay_identity_set_product(ident.detected_serial.c_str(), disc_path_str.c_str(),
                                     bios_path_str.c_str());
+        s_replay_serial = ident.detected_serial;
         s_replay_bios_file = bios_path_str;
         s_replay_product_hashed = s_replay_bios_crc_ok = false;
         s_replay_exe_sha256.clear();
