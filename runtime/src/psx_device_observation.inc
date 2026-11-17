@@ -93,9 +93,12 @@ static unsigned observation_mmio_mask(uint32_t addr, int write) {
     if (addr >= 0x1F801100u && addr <= 0x1F80112Fu) return OBS_BIT(OBS_TIMER);
     if (addr >= 0x1F801800u && addr <= 0x1F801803u)
         return OBS_BIT(OBS_CD) | OBS_BIT(OBS_DMA);
-    /* GPU mode changes affect the timer divider; DMA and MDEC share FIFOs. */
+    /* GPUSTAT reads consume field phase; mode writes affect timer dividers.
+     * GP0 and MDEC only share the DMA FIFOs. */
     if (addr >= 0x1F801810u && addr <= 0x1F801827u)
-        return OBS_BIT(OBS_DMA) | ((write && (addr & ~3u) == 0x1F801814u) ? OBS_BIT(OBS_TIMER) : 0u);
+        return OBS_BIT(OBS_DMA)
+             | ((!write && (addr & ~3u) == 0x1F801814u) ? OBS_BIT(OBS_FRAME) : 0u)
+             | ((write && (addr & ~3u) == 0x1F801814u) ? OBS_BIT(OBS_TIMER) : 0u);
     if (addr >= 0x1F801C00u && addr <= 0x1F801FFFu)
         return OBS_BIT(OBS_CD) | OBS_BIT(OBS_DMA) | OBS_BIT(OBS_SPU);
     return 0;
