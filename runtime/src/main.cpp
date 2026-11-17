@@ -12002,7 +12002,6 @@ namespace {
             /* The row's verdict and its reason, for the run report: a red
              * row blocks Play, and the start then ends as "launcher closed".
              *
-             *
              * An image outside the disc list of a build with a serial list
              * has no single expected serial: it is refused for carrying none
              * of the list's. The row then names the list, and
