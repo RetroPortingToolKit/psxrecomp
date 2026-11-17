@@ -635,6 +635,13 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_textured_dot_nw_shift.py")
         add_test(NAME gl_readback_runner_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_readback_runner.py")
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            add_test(NAME depth24_upload_span_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_depth24_upload_span.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/.."
+                --compiler "${CMAKE_C_COMPILER}"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/depth24-upload-span")
+        endif()
     endif()
     if(MINGW AND PSX_GL_READBACK_SDL_ROOT
             AND EXISTS "${PSX_GL_READBACK_COMPILER_BIN}/gcc.exe"

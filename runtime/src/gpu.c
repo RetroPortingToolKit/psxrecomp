@@ -4626,10 +4626,11 @@ const uint16_t* gpu_get_vram(void) {
 /* Depth24: note/query/reset the CPU→VRAM upload span tracked above. Used to
  * hide trailing RGB columns when a movie blit doesn't fill the full CRTC
  * width — MotK's Star Wars crawl leaves ~8px of stale VRAM on the right.
- * Only FB-class A0s (w >= 256 halfwords) grow the span; texture uploads must
- * not collapse it. During present-hold, ignore updates entirely. */
+ * Include narrow movie strips as well as full-width uploads. The span only
+ * grows, so smaller uploads cannot collapse it. During present-hold, ignore
+ * updates entirely. */
 static void depth24_note_upload(uint32_t x, uint32_t w) {
-    if (!(display_depth & 1u) || w < 256u) return;
+    if (!(display_depth & 1u) || w == 0u) return;
     if (s_d24_present_hold > 0) return;
     uint32_t x1 = x + w;
     if (x1 > 1024u) x1 = 1024u;
