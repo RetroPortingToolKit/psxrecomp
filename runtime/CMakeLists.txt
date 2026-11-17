@@ -2559,6 +2559,18 @@ if(BUILD_TESTING)
     target_include_directories(psx_vblank_clock_test PRIVATE include)
     add_test(NAME psx_vblank_clock_test COMMAND psx_vblank_clock_test)
 
+    # A state save goes through a temporary and replaces the old file only
+    # when complete; a failed or uncreatable save keeps it byte for byte.
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        add_executable(boot_state_replace_test tests/test_boot_state_replace.c)
+        target_include_directories(boot_state_replace_test PRIVATE include src)
+        target_compile_definitions(boot_state_replace_test PRIVATE
+            PSX_ENABLE_BLOCK_CYCLES=1 PSX_NO_DEBUG_TOOLS=1)
+        target_compile_options(boot_state_replace_test PRIVATE -O2)
+        add_test(NAME boot_state_replace_test COMMAND boot_state_replace_test
+            ${CMAKE_CURRENT_BINARY_DIR})
+    endif()
+
     add_executable(psx_video_timing_test
         tests/test_psx_video_timing.c
         src/psx_video_timing.c)

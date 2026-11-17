@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include "cpu_state.h"
 
 /* Title adapters can require support before selecting HLE execution boundaries.
@@ -133,6 +134,18 @@ enum {
 /* Save a COMPLETE snapshot at game handoff. Returns 1 on success. */
 int  boot_state_save(const CPUState* cpu, uint32_t bios_checksum,
                      uint32_t entry_pc, const char* path);
+
+/* Replace `to` by `from` in one step (Windows: MoveFileExA with
+ * MOVEFILE_REPLACE_EXISTING; elsewhere rename). Returns 1 on success; on
+ * failure `to` is unchanged. boot_state_replace.inc. */
+int  boot_state_replace_file(const char* from, const char* to);
+
+/* Write `path` through `<path>.tmp`: `write` fills the open temporary and
+ * returns 1 on success. Only a complete, cleanly closed temporary replaces
+ * `path`; any failure removes the temporary, keeps the previous `path` byte
+ * for byte and returns 0. boot_state_replace.inc. */
+int  boot_state_write_file_atomic(const char* path,
+                                  int (*write)(FILE* f, void* ctx), void* ctx);
 
 /* Same as boot_state_save, but into a malloc'd buffer (caller frees *out_data).
  * Compresses large sections (disk-oriented). */
