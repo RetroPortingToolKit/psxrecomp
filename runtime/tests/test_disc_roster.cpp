@@ -149,6 +149,10 @@ int main() {
     // the same disc under another name was compared letter by letter with the
     // serial read ("SLUS-00594") and refused. Both sides now take one form.
     CHECK(disc_roster_serial_key("SLUS_005.94") == "SLUS-00594");
+    CHECK(disc_roster_serial_key("SLUSP012.06") == "SLUS-01206");
+    CHECK(disc_roster_serial_key("SLUSP012.06;1") == "SLUS-01206");
+    CHECK(disc_roster_serial_key("ABCDP012.06") == "ABCDP012.06");
+    CHECK(disc_roster_judge_serial({"SLUSP012.06"},1,"SLUS-01206") == DiscSetSerial::Listed);
     CHECK(disc_roster_serial_key("slus-00594") == "SLUS-00594");
     CHECK(disc_roster_serial_key("SLUS_005.94;1") == "SLUS-00594");
     CHECK(disc_roster_serial_key("SLUS 00594") == "SLUS-00594");

@@ -196,7 +196,7 @@ assert "return false" not in launch[warn : launch.index("resolve_disc_path", war
 notice = MAIN[MAIN.index("static void wrong_disc_notice("):]
 notice = notice[: notice.index("\n}\n")]
 assert '"Disc verification failed"' in notice
-assert re.search(r"if \(s_start_interactive && !g_headless\)\s*SDL_ShowSimpleMessageBox\(", notice)
+assert re.search(r"if \(s_start_interactive && !frontend_unattended\(\)\)\s*SDL_ShowSimpleMessageBox\(", notice)
 assert notice.count("SDL_ShowSimpleMessageBox(") == 1
 assert "++s_player_message_seq;" in notice and "s_player_message_text  = sentence;" in notice, (
     "the notice must count as the start's message, so that the refusal opens no second box"

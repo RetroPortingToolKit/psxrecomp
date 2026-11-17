@@ -3262,7 +3262,7 @@ static void wrong_disc_notice(const std::string& sentence) {
     s_player_message_title = "Disc verification failed";
     s_player_message_text  = sentence;
     std::fprintf(stderr, "Disc verification failed: %s\n", sentence.c_str());
-    if (s_start_interactive && !g_headless)
+    if (s_start_interactive && !frontend_unattended())
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Disc verification failed",
                                  sentence.c_str(), NULL);
 }
