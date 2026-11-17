@@ -58,3 +58,10 @@ python3 tools/tasreplays/verify_checkpoint_cohort.py runs/cohort --terminal 3000
 A cohort pass shows that resumes of that build reproduce its own runs without input. It does not compare the build with another emulator or with hardware.
 
 `python3 -B tools/tasreplays/test_checkpoint_tools.py` runs the tools against a stand-in game, with no disc or BIOS.
+
+The checkpoint runner has no total-run or graceful-shutdown time limit. It
+requests quit after the finite requested captures complete. A failed quit
+request retains the live owned process and records its PID with `needs_review`
+in `run.json`; review that process before continuing the cohort. Socket request
+timeouts remain protocol deadlines. Explicit cancellation or a capture error
+cleans up only the process started by that runner.
