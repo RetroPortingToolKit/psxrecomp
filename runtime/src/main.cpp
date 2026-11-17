@@ -20926,6 +20926,7 @@ session_reboot:
         };
         memcard_init_slots(memcard_dir_str.c_str(), slots);
     }
+    debug_server_set_shutdown_callback(shutdown_runtime);
     debug_server_apply_request(debug_port);
     if (!rematch_session) {
         std::atexit(memcard_flush_all);
