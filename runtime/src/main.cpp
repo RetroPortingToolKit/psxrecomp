@@ -2742,15 +2742,6 @@ extern "C" void psx_frontend_netplay_force_sw_gpu(void) {
     fflush(stderr);
 }
 
-/* Vsync self-heal state (see SDL_RenderPresent wrapper in
- * sdl_vblank_present). C linkage: freeze_heartbeat.c includes both in
- * the freeze dump so a slow-frames wedge can be attributed to driver
- * present backpressure from the dump alone. Defined in gpu_gl_renderer.c,
- * whose OpenGL swap applies the same self-heal. */
-extern "C" {
-extern uint32_t g_present_slow_count;     /* presents that blocked >250ms */
-extern int      g_present_vsync_disabled; /* 1 once self-heal tripped */
-}
 
 /* Turbo-through-loads (step 4). C linkage: debug_server.c reads/toggles the
  * enable and reports the frame counter. Enabled by game.toml [runtime]
@@ -4083,7 +4074,7 @@ static int host_driver_vsync_unreliable(void) {
 }
 
 static int present_vsync_owns_cadence(void) {
-    if (g_video_vsync == 0 || g_video_vsync == 2 || g_present_vsync_disabled)
+    if (g_video_vsync == 0 || g_video_vsync == 2 || psx_present_vsync_disabled())
         return 0;
     if (host_driver_vsync_unreliable())
         return 0;
@@ -4104,7 +4095,7 @@ extern "C" int psx_present_vsync_owns_cadence(void) {
 
 static int present_effective_swap_interval(void) {
     const int blocked = g_netplay_vsync_forced_off || psx_netplay_active() ||
-        g_frame_interpolation || g_present_vsync_disabled ||
+        g_frame_interpolation || psx_present_vsync_disabled() ||
         host_driver_vsync_unreliable();
     return psx_present_sync_interval(g_video_vsync, blocked,
         g_frame_period_ms > 0.0 ? 1000.0 / g_frame_period_ms : 0.0,
@@ -10955,11 +10946,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         netplay_note_present();
         const Uint64 freq = SDL_GetPerformanceFrequency();
         const Uint64 present_ms = (t1 >= t0 && freq) ? ((t1 - t0) * 1000u) / freq : 0;
-        if (!g_present_vsync_disabled && present_ms > 250) {
-            g_present_slow_count++;
-            if (g_present_slow_count >= 3 &&
+        if (!psx_present_vsync_disabled() && present_ms > 250) {
+            if (psx_present_note_slow() >= 3 &&
                 SDL_RenderSetVSync(sdl_renderer, 0) == 0) {
-                g_present_vsync_disabled = 1;
+                psx_present_disable_vsync();
             }
         }
     }

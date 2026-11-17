@@ -26,6 +26,12 @@ void psx_video_telemetry_compose(int renderer, int scale, int source_w, int sour
  * Counts include repeats, overlays and generated frames. */
 /* result: 1 accepted, 0 failed, -1 returned but API supplies no status (SDL2). */
 void psx_video_telemetry_present(int result);
+/* Shared driver-recovery state. Atomics stay private to the C owner; C++
+ * pacing and the heartbeat use these accessors rather than racing globals. */
+uint32_t psx_present_slow_count(void);
+uint32_t psx_present_note_slow(void);
+int psx_present_vsync_disabled(void);
+void psx_present_disable_vsync(void);
 /* Bounded passive read: valid=0 if a coherent composition was unavailable.
  * Completion/error counters remain available in that case. */
 void psx_video_telemetry_snapshot(PsxVideoTelemetry *out);
