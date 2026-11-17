@@ -1275,6 +1275,15 @@ if(BUILD_TESTING)
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lwlr_load_delay_forward.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        # Emitted DIV: divide-by-zero and -80000000h/-1 results (PSX-SPX),
+        # compiled and run at -O0/-O2.
+        add_test(
+            NAME div_edge_codegen
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_div_edge_codegen.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>
+                    --compiler ${CMAKE_C_COMPILER}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(
             NAME zero_run_compaction
             COMMAND ${Python3_EXECUTABLE}
