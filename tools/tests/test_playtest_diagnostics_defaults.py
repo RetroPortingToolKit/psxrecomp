@@ -3,6 +3,7 @@
 
 Usage: test_playtest_diagnostics_defaults.py [--cmake PATH]
 """
+import json
 import os
 from pathlib import Path
 import shutil
@@ -140,6 +141,50 @@ class DefaultsTests(unittest.TestCase):
         result = self.run_script(public=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("was not staged", result.stderr)
+
+    def test_regional_targets_keep_distinct_recorder_identities(self):
+        project = Path(self.tmp.name) / "identity"
+        project.mkdir()
+        (project / "main.cpp").write_text("int main() { return 0; }\n")
+        helper = (ROOT / "runtime/playtest_diagnostics.cmake").as_posix()
+        (project / "CMakeLists.txt").write_text('''cmake_minimum_required(VERSION 3.20)
+project(DiagnosticsIdentity LANGUAGES CXX)
+set(PSX_PUBLIC_RELEASE ON)
+include("@HELPER@")
+foreach(target us it)
+    add_executable(${target} main.cpp)
+    add_custom_target(${target}_mod_catalog_stage)
+endforeach()
+psxrecomp_add_playtest_diagnostics(us GAME_ID SCUS-94454 MOD_ID fixture.us)
+psxrecomp_add_playtest_diagnostics(it GAME_ID SCES-02686 MOD_ID fixture.it NO_OSD)
+'''.replace("@HELPER@", helper), encoding="utf-8")
+        build = project / "build"
+        args = [CMAKE, "-S", str(project), "-B", str(build), "-G", "Ninja",
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
+        cxx = os.environ.get("PSX_TEST_CXX")
+        if cxx:
+            args.append("-DCMAKE_CXX_COMPILER=" + cxx)
+        result = subprocess.run(args, capture_output=True, text=True,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        commands = json.loads((build / "compile_commands.json").read_text(encoding="utf-8"))
+        for target, game, other_game, mod, osd in (
+                ("us", "SCUS-94454", "SCES-02686", "fixture.us", 1),
+                ("it", "SCES-02686", "SCUS-94454", "fixture.it", 0)):
+            owned = [item for item in commands
+                     if "CMakeFiles/" + target + ".dir/" in item["command"].replace("\\", "/")]
+            recorder = [item for item in owned
+                        if Path(item["file"]).name == "playtest_diagnostics.cpp"]
+            self.assertEqual(len(recorder), 1)
+            command = recorder[0]["command"].replace("\\", "")
+            self.assertEqual(command.count("PSX_DIAGNOSTIC_GAME_ID="), 1)
+            self.assertIn('PSX_DIAGNOSTIC_GAME_ID="' + game + '"', command)
+            self.assertIn('PSX_DIAGNOSTIC_MOD_ID="' + mod + '"', command)
+            self.assertIn('PSX_DIAGNOSTIC_BUILD_ID="' + game + '/', command)
+            self.assertIn("PSX_DIAGNOSTIC_WITH_OSD=" + str(osd), command)
+            self.assertNotIn(other_game, command)
+            self.assertTrue(all("PSX_DIAGNOSTIC_" not in item["command"]
+                                for item in owned if Path(item["file"]).name == "main.cpp"))
 
 
 if __name__ == "__main__":

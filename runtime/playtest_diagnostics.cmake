@@ -83,13 +83,10 @@ function(psxrecomp_add_playtest_diagnostics target)
     # Generated game units can be enormous and do not use these definitions.
     set_property(SOURCE "${_root}/runtime/src/playtest_diagnostics.cpp" APPEND PROPERTY
         COMPILE_DEFINITIONS
-        "PSX_DIAGNOSTIC_GAME_ID=\"${DIAG_GAME_ID}\""
-        "PSX_DIAGNOSTIC_MOD_ID=\"${DIAG_MOD_ID}\""
-        "PSX_DIAGNOSTIC_BUILD_ID=\"${_identity}\"")
-    if(DIAG_NO_OSD)
-        set_property(SOURCE "${_root}/runtime/src/playtest_diagnostics.cpp" APPEND PROPERTY
-            COMPILE_DEFINITIONS PSX_DIAGNOSTIC_WITH_OSD=0)
-    endif()
+        "PSX_DIAGNOSTIC_GAME_ID=\"$<TARGET_PROPERTY:PSX_PLAYTEST_DIAGNOSTIC_GAME_ID>\""
+        "PSX_DIAGNOSTIC_MOD_ID=\"$<TARGET_PROPERTY:PSX_PLAYTEST_DIAGNOSTIC_MOD_ID>\""
+        "PSX_DIAGNOSTIC_BUILD_ID=\"$<TARGET_PROPERTY:PSX_PLAYTEST_DIAGNOSTIC_BUILD_ID>\""
+        "PSX_DIAGNOSTIC_WITH_OSD=$<TARGET_PROPERTY:PSX_PLAYTEST_DIAGNOSTIC_WITH_OSD>")
     set(_targets ${target})
     if(TARGET ${target}-pgxp)
         list(APPEND _targets ${target}-pgxp)
@@ -104,6 +101,17 @@ function(psxrecomp_add_playtest_diagnostics target)
             message(FATAL_ERROR "playtest diagnostics already configured for ${_target}")
         endif()
         set_property(TARGET ${_target} PROPERTY PSX_PLAYTEST_DIAGNOSTICS TRUE)
+        # The same recorder source can serve multiple regional targets in this
+        # directory. Its definitions resolve against the compiling target.
+        set_target_properties(${_target} PROPERTIES
+            PSX_PLAYTEST_DIAGNOSTIC_GAME_ID "${DIAG_GAME_ID}"
+            PSX_PLAYTEST_DIAGNOSTIC_MOD_ID "${DIAG_MOD_ID}"
+            PSX_PLAYTEST_DIAGNOSTIC_BUILD_ID "${_identity}")
+        if(DIAG_NO_OSD)
+            set_property(TARGET ${_target} PROPERTY PSX_PLAYTEST_DIAGNOSTIC_WITH_OSD 0)
+        else()
+            set_property(TARGET ${_target} PROPERTY PSX_PLAYTEST_DIAGNOSTIC_WITH_OSD 1)
+        endif()
         target_sources(${_target} PRIVATE "${_root}/runtime/src/playtest_diagnostics.cpp")
         target_include_directories(${_target} PRIVATE "${_root}/runtime/include")
         target_compile_features(${_target} PRIVATE cxx_std_17)
