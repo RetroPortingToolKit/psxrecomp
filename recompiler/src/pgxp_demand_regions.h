@@ -301,6 +301,16 @@ inline void pgxp_region_publish_facts(PgxpRegionState& state) {
         else value={};
     }
 }
+inline PgxpRegionValue pgxp_region_fact_join(const PgxpRegionValue& a,const PgxpRegionValue& b) {
+    if(a==b)return a;
+    // A predecessor with pending work publishes before this join. Its native
+    // integer fact is still identical to the already-published predecessor.
+    if(!(a.constant||a.bounded) || a.constant!=b.constant || a.bounded!=b.bounded ||
+            (a.constant&&a.value!=b.value) ||
+            (a.bounded&&(a.minimum!=b.minimum||a.maximum!=b.maximum)) ||
+            a.incoming_add || b.incoming_add || a.flags[0]!=b.flags[0] || a.flags[1]!=b.flags[1])return {};
+    auto fact=a;fact.known=false;return fact;
+}
 inline bool pgxp_region_explicit_cpu_effect(uint32_t w) {
     const auto e=pgxp_flow_effect(w);const unsigned op=w>>26;
     return e.pure_alu || (op>=0x20u&&op<=0x2eu) || op==0x32u || op==0x3au ||
@@ -356,7 +366,10 @@ inline PgxpRegionPlan pgxp_region_plan(const std::vector<PgxpFlowBlock>& blocks,
                     if(scratch && !visited.count(pred))continue;
                     const auto& s=outgoing[pred];
                     if(first){input=s;first=false;}
-                    else for(unsigned r=1;r<32;++r)if(input[r]!=s[r])input[r]={};
+                    else for(unsigned r=1;r<32;++r) {
+                        if(scratch)input[r]=pgxp_region_fact_join(input[r],s[r]);
+                        else if(input[r]!=s[r])input[r]={};
+                    }
                 }
                 if(scratch && first)continue;
             }

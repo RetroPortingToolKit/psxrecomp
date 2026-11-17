@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <array>
 #include <map>
+#include <set>
 #include <filesystem>
 #include <string>
 #include <vector>

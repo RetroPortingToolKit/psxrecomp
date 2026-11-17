@@ -56,6 +56,15 @@ static void scratch_operand_demand() {
     // Crossing scratch end, partial merges and MMIO are full boundaries.
     CHECK(!pgxp_region_operand_boundary(0x89c20001u,state));
     state[14].value=0x1f810000u;CHECK(!pgxp_region_scratch_memory(0x91c20000u,state));
+    // Publication on only one branch does not destroy the same native fact.
+    // The pending predecessor is normalized before the common block.
+    const std::vector<PgxpFlowBlock> diamond={
+        {0x2000,{{0x2000,0x3c0e1f80u}},{0x2010,0x2020}},
+        {0x2010,{{0x2010,0x00851021u}},{0x2030}},
+        {0x2020,{}, {0x2030}},
+        {0x2030,{{0x2030,0x91c202b4u}}, {},true}};
+    const auto merged=pgxp_region_plan(diamond,{0x2000},{},true);
+    CHECK(merged.entry.at(0x2030)[14].constant&&!merged.entry.at(0x2030)[14].known);
     // A loaded canonical source must first consume an old deferred alias.
     state={};state[14].known=true;state[14].constant=true;state[14].value=0x1f800000u;
     state[3].known=true;state[3].incoming_add=true;state[3].source=2;state[3].addend=1;
