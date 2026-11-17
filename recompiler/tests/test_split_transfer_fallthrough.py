@@ -53,10 +53,15 @@ def main():
             assert code, result.stdout
             for address in ("80010028", "80010078"):
                 assert f"func_{address}(cpu);  /* fallthrough to next function */" not in code
-            transfers = ("CPS taken: split", "CPS not taken: split", "CPS j: split") if cps == "1" else (
-                "taken: split piece", "not taken: split piece", "j to split (mid-func)")
+            transfers = ("CPS taken: split", "CPS not taken: split") if cps == "1" else (
+                "taken: split piece", "not taken: split piece")
             for transfer in transfers:
                 assert transfer in code, transfer
+            # The thunk at 0x80010060 resolves `li t2,0xB0; jr t2` as a
+            # constant transfer and ends after its delay slot, so the
+            # jump-shaped data at 0x80010070 is never emitted as code.
+            dead = "CPS j: split" if cps == "1" else "j to split (mid-func)"
+            assert dead not in code, dead
             print(f"PASS: CPS={cps}, explicit transfers retained, dead fallthroughs/warnings absent")
 
 
