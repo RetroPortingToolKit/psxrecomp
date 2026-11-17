@@ -79,6 +79,19 @@ inline std::string disc_roster_serial_key(const std::string& serial) {
     std::string s;
     for (char c : serial)
         if (std::isalnum((unsigned char)c)) s += (char)std::toupper((unsigned char)c);
+    // Match disc_identity's known-territory boot-file normalization (#868).
+    // A trailing ISO version is not part of the serial.
+    const auto version = serial.find(';');
+    if (version != std::string::npos) {
+        s.clear();
+        for (char c : serial.substr(0,version))
+            if (std::isalnum((unsigned char)c)) s += (char)std::toupper((unsigned char)c);
+    }
+    bool territory = false;
+    for (const char* prefix : {"SCUS","SLUS","SCES","SLES","SCED","SLED",
+                               "SCPS","SLPS","SLPM","SCPM","ESPM"})
+        if (s.compare(0,4,prefix)==0) { territory=true; break; }
+    if (s.size()==10 && territory && std::isalpha((unsigned char)s[4])) s.erase(4,1);
     bool shaped = s.size() >= 9;
     for (size_t i = 0; shaped && i < 9; ++i)
         shaped = i < 4 ? std::isalpha((unsigned char)s[i]) != 0
