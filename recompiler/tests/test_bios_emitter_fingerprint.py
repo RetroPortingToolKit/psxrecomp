@@ -59,7 +59,7 @@ class Tree:
             [self.cmake, f"-DROOT={self.root.as_posix()}", f"-DPROFILE={profile}", *defines,
              "-P", str(self.root / SCRIPT)],
             cwd=self.root, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=120)
+            encoding="utf-8", errors="replace")
 
     def fingerprint(self, profile: str = PROFILE) -> str:
         result = self.run(profile)
