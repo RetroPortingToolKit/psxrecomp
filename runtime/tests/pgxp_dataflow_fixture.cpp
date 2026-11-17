@@ -33,6 +33,7 @@ static WriteHistory history[256];static unsigned history_count;
 static CPUState *live_cpu;
 #if defined(PSX_TEST_GEOMETRY_CONTROL)
 static bool control_active,control_observer,partial_active;
+static int control_scratch_mode=-1;static unsigned control_scratch_irq;
 static void control_watch(CPUState*,uint32_t,uint32_t);
 #endif
 static uint64_t frame_count;
@@ -170,6 +171,18 @@ extern "C" void psx_observation_sample(void) {
 }
 extern "C" void psx_observation_edge(CPUState* cpu,uint32_t pc,int) {
     ++region_edges;++psx_observation_slow_edges;
+#if defined(PSX_TEST_GEOMETRY_SCRATCH)
+    if(control_scratch_mode==6 || control_scratch_mode==7) {
+        if(pc!=0x800108a0u || control_scratch_irq++)std::abort();
+        // A same-PC context change must leave private facts behind. Preserve
+        // the real caller-visible fractional value through the following ADDU.
+        cpu->gpr[14]=0x80023800u;
+        if(!pgxp_native_scalar_gpr(cpu,14,double((int32_t)cpu->gpr[14])+.625,1))std::abort();
+        psx_next_service_cycle=UINT64_MAX;
+        if(control_scratch_mode==7){cpu->pc=0x80055500u;cpu->gpr[2]=0x55aau;g_psx_call_bail=1;}
+        return;
+    }
+#endif
     region_sp_receipt(cpu);
     if(region_mode==2||region_mode==3) {
         if(pc!=REGION_LOOP_PC||region_entry[2]!=1u) {
@@ -359,27 +372,32 @@ static void run_region(RegionProduct& out,bool selected,unsigned mode) {
 #if defined(PSX_TEST_GEOMETRY_CONTROL)
 extern "C" void flow_reference_func_8001082C(CPUState*);
 extern "C" void flow_candidate_func_8001082C(CPUState*);
+extern "C" void flow_reference_func_80010884(CPUState*);
+extern "C" void flow_candidate_func_80010884(CPUState*);
 extern "C" int fixture_geometry_control_allowed(CPUState* cpu,uint32_t entry) {
-    return entry==0x8001082Cu && cpu->gpr[31]==0x80009000u &&
+    return (entry==0x8001082Cu || entry==0x80010884u) && cpu->gpr[31]==0x80009000u &&
         !control_observer && cpu->read_word==psx_read_word &&
         cpu->write_word==psx_write_word;
 }
 static void control_watch(CPUState* cpu,uint32_t address,uint32_t old) {
-    if(g_debug_last_store_pc==0x80010830u) {
+    if(g_debug_last_store_pc==0x80010830u || g_debug_last_store_pc==0x8001088cu) {
         if(pgxp_load_source(address,old)!=777) {
             std::fputs("FAIL write observer lost pre-write geometry/source\n",stderr);std::abort();
         }
         if(control_observer)region_sp_receipt(cpu); // real opaque metadata consumer => canonical
+        if(control_scratch_mode==3)cpu->gpr[14]=0x80023800u; // real observer GPR clobber, canonical admission
+        if(control_scratch_mode>=6)psx_next_service_cycle=psx_cycle_count; // due before next real block
+
     }
 }
 struct ControlProduct {
-    CPUState cpu;unsigned char bytes[sizeof ram];PGXPWordShadow packet[2];uint64_t source[2];
+    CPUState cpu;unsigned char bytes[sizeof ram];PGXPWordShadow packet[3];uint64_t source[3];
     WriteHistory writes[256];unsigned count;uint64_t alu,loads,stores,callbacks;double sp,observed_sp;int sp_precise,observed_precise;
-    PGXPWordShadow gte;uint64_t gte_source;
+    PGXPWordShadow gte;uint64_t gte_source,cycles;uint32_t frac;double saved_address;int saved_address_precise;
 };
 static ControlProduct control_reference,control_candidate;
 static uint32_t control_reader(uint32_t address) {++callback_reads;return psx_read_word(address)+(address==Input?1u:0u);}
-static void run_control(ControlProduct& out,bool selected,unsigned mode,int cpu_mode) {
+static void run_control(ControlProduct& out,bool selected,unsigned mode,int cpu_mode,bool scratch_case=false) {
     CPUState cpu{};live_cpu=region_cpu=&cpu;std::memset(ram,0,sizeof ram);history_count=0;
     cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;cpu.read_byte=psx_read_byte;
     cpu.write_word=psx_write_word;cpu.write_half=psx_write_half;cpu.write_byte=psx_write_byte;
@@ -388,6 +406,8 @@ static void run_control(ControlProduct& out,bool selected,unsigned mode,int cpu_
     cpu.gpr[5]=(mode==2u)?(Input^0x20000000u):Input;
     if(mode==4u)cpu.read_word=control_reader; // truthful canonical custom-bus path
     control_observer=mode==3u;control_active=false;
+    control_scratch_mode=scratch_case?int(mode):-1;control_scratch_irq=0;
+    if(scratch_case){std::memset(scratch,0,sizeof scratch);cpu.gpr[16]=mode==2u?0x80023800u:0x1f800000u;}
     pgxp_set_enabled(1);pgxp_set_cpu_mode(cpu_mode);pgxp_set_source_tracking(1);
     pgxp_set_projection_tracking(1);pgxp_invalidate_all();
     pgxp_native_clobber(&cpu,0xfffffffeu,0);
@@ -404,6 +424,13 @@ static void run_control(ControlProduct& out,bool selected,unsigned mode,int cpu_
     pgxp_tag_word_source(stack,cpu.gpr[31],777); // equal-bit stale geometry at RA slot
     // Restore the real GTE source after poisoning only the stack receipt.
     if(!pgxp_native_import_sxy(14,&word))std::abort();
+    if(scratch_case) {
+        scratch[0x2b4]=5;std::memcpy(scratch+20,&packed,4);
+        pgxp_store_gte_reg(0x1f800014u,14);pgxp_tag_word_source(0x1f800014u,packed,922);
+        psx_write_word(0x80023ab4u,5);psx_write_word(0x80023814u,packed);
+        pgxp_store_gte_reg(0x80023814u,14);pgxp_tag_word_source(0x80023814u,packed,923);
+        if(!pgxp_native_scalar_gpr(&cpu,16,double((int32_t)cpu.gpr[16])+.375,1))std::abort();
+    }
     psx_cycle_count=0;psx_next_service_cycle=psx_next_cycle_sample=UINT64_MAX;
     g_psx_cyc_batch=0;g_psx_cyc_local_acc=nullptr;g_psx_cyc_bb_defer=0;
     g_event_step_conservative=psx_in_device_service=g_psx_render_pass_active=0;
@@ -412,14 +439,17 @@ static void run_control(ControlProduct& out,bool selected,unsigned mode,int cpu_
     psx_defer_switch_pending=g_psx_savestate_pending=psx_observation_wait_active=0;i_stat=i_mask=0;
     history_count=0;callback_reads=0;region_observed_sp_precise=0;region_observed_sp_scalar=0;
     control_active=true;PGXPHookStats before{},after{};pgxp_get_hook_stats(&before);
-    if(selected)flow_candidate_func_8001082C(&cpu);else flow_reference_func_8001082C(&cpu);
+    if(scratch_case) {if(selected)flow_candidate_func_80010884(&cpu);else flow_reference_func_80010884(&cpu);}
+    else {if(selected)flow_candidate_func_8001082C(&cpu);else flow_reference_func_8001082C(&cpu);}
     pgxp_get_hook_stats(&after);control_active=false;
     out.cpu=cpu;std::memcpy(out.bytes,ram,sizeof ram);out.count=history_count;
+    out.cycles=psx_cycle_count;out.frac=g_psx_gcs_frac;out.saved_address=0;
+    out.saved_address_precise=pgxp_native_gpr_scalar(17,cpu.gpr[17],&out.saved_address);
     std::memcpy(out.writes,history,history_count*sizeof history[0]);
     out.alu=after.alu-before.alu;out.loads=after.load-before.load;out.stores=after.store-before.store;out.callbacks=callback_reads;
     out.observed_precise=region_observed_sp_precise;out.observed_sp=region_observed_sp_scalar;
     out.sp_precise=pgxp_native_gpr_scalar(29,cpu.gpr[29],&out.sp);
-    for(unsigned i=0;i<2;++i) {
+    for(unsigned i=0;i<(scratch_case?3u:2u);++i) {
         const uint32_t address=cpu.gpr[4]+4*i,value=psx_read_word(address);
         if(!pgxp_capture_word_shadow(address,value,&out.packet[i]))std::abort();
         out.source[i]=pgxp_load_source(address,value);
@@ -497,6 +527,33 @@ static void retained_partial_store_products() {
     }
     std::puts("PASS actual emitted SH/SWL/SWR write-boundary +retained canonical hooks, all byte lanes, equal SH fractions and aliases, CPU0/1");
 }
+#if defined(PSX_TEST_GEOMETRY_SCRATCH)
+static void scratch_products() {
+    for(int cpu_mode:{0,1})for(unsigned mode:{0u,1u,2u,3u,4u,6u,7u}) {
+        std::printf("RUN scratch EA/sink CPU%d mode%u\n",cpu_mode,mode);std::fflush(stdout);
+        run_control(control_reference,false,mode,cpu_mode,true);
+        const unsigned reference_irq=control_scratch_irq;
+        run_control(control_candidate,true,mode,cpu_mode,true);
+        const auto& a=control_reference;const auto& b=control_candidate;
+        if(std::memcmp(&a.cpu,&b.cpu,sizeof a.cpu)||std::memcmp(a.bytes,b.bytes,sizeof ram)||
+                a.count!=b.count||std::memcmp(a.writes,b.writes,a.count*sizeof history[0])||
+                a.cycles!=b.cycles||a.frac!=b.frac||a.callbacks!=b.callbacks||reference_irq!=control_scratch_irq)
+            {std::fputs("FAIL scratch CPU/RAM/write/clock/IRQ\n",stderr);std::abort();}
+        for(unsigned i=0;i<3;++i)if(!equal(a.packet[i],b.packet[i])||a.source[i]!=b.source[i])
+            {std::fprintf(stderr,"FAIL scratch actual geometry/source sink%u\n",i);std::abort();}
+        if(!equal(a.gte,b.gte)||a.gte_source!=b.gte_source || a.saved_address_precise!=b.saved_address_precise ||
+                (a.saved_address_precise&&a.saved_address!=b.saved_address))std::abort();
+        if(mode>=6u && control_scratch_irq!=1u)std::abort();
+        if(mode==6u && cpu_mode && (!b.saved_address_precise || b.saved_address!=double((int32_t)(0x80023814u))+.625))std::abort();
+        if(mode==7u && (b.cpu.pc!=0x80055500u || !g_psx_call_bail))std::abort();
+        if(mode<3u && (!(b.alu<a.alu)||!(b.loads<a.loads)||b.stores!=a.stores))std::abort();
+        if(mode==3u && (a.alu!=b.alu||a.loads!=b.loads||(!b.observed_precise&&cpu_mode)))std::abort();
+        std::printf("PASS scratch CPU%d mode%u ALU%llu/%llu LOAD%llu/%llu IRQ%u\n",cpu_mode,mode,
+            (unsigned long long)a.alu,(unsigned long long)b.alu,(unsigned long long)a.loads,(unsigned long long)b.loads,control_scratch_irq);
+    }
+    control_scratch_mode=-1;
+}
+#endif
 static void control_products() {
     for(int cpu_mode:{0,1})for(unsigned mode=0;mode<5;++mode) {
         std::printf("RUN geometry-only frame CPU%d mode%u\n",cpu_mode,mode);std::fflush(stdout);
@@ -726,6 +783,9 @@ int main(int argc,char** argv) {
 #if defined(PSX_TEST_GEOMETRY_CONTROL)
     control_products();
     retained_partial_store_products();
+#if defined(PSX_TEST_GEOMETRY_SCRATCH)
+    scratch_products();
+#endif
 #endif
 #endif
 #if !defined(PSX_TEST_PGXP_REGIONS_REMAINING)

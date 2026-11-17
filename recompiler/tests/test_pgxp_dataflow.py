@@ -107,6 +107,14 @@ def add_region_program(base,words):
     words += [0xa4880000,0x03e00008,0,  # 80010860 SH
               0xa8880000,0x03e00008,0,  # 8001086C SWL
               0xb8880000,0x03e00008,0]  # 80010878 SWR
+    # Actual scratch-index shape plus an opaque incoming GPR overwrite. The
+    # normal route never takes the DIV-fault BREAK, but that genuine opaque
+    # path must retain the complete SP/RA contract independently of EA work.
+    words += [0x27bdffe8,0x3c0e1f80,0xafbf0010,0x91c202b4,0x48037000,
+              0x10000001,0,0x00021080,0x004e1021,0x00408821,0xc8460000,
+              0xe8860004,0x02007021,0x91c202b4,0x48037000,0x00021080,
+              0x004e1021,0xc8460000,0xe88e0000,0xe8860008,0x10600005,0,
+              0x8fbf0010,0,0x03e00008,0x27bd0018,0x0007000d] # 80010884
     return base,words
 
 
@@ -119,6 +127,7 @@ def main():
                     help='Retain generated sources, objects and executable for a focused diagnosis')
     ap.add_argument('--compile-only', action='store_true', help='prepare the exact unit executable without rerunning qualified products')
     ap.add_argument('--reuse-passed-source', type=Path, help='O0 only: verify unchanged passed bodies and run remaining region cases')
+    ap.add_argument('--geometry-scratch', action='store_true', help='affected certified EA/sink/clobber/IRQ products')
     ap.add_argument('--geometry-control', action='store_true', help='existing regions products plus certified geometry-only control-frame outputs')
     ap.add_argument('--regions', action='store_true', help='actual private CFG/owner/clock/opaque-entry products')
     ap.add_argument('--tail-compile', action='store_true', help='O0 regions only: additionally compile the same candidate with the supported native-tail profile')
@@ -127,6 +136,7 @@ def main():
     ap.add_argument('--opt', choices=('0','2'), default='2')
     ap.add_argument('--operations', action='store_true', help='qualify guarded whole integer operations and write ownership')
     a = ap.parse_args()
+    if a.geometry_scratch and not a.geometry_control:ap.error('--geometry-scratch requires --geometry-control')
     if a.geometry_control and not a.regions:ap.error('--geometry-control requires --regions')
     if a.tail_compile and (not a.regions or a.opt!='0'):
         ap.error('--tail-compile is the single supported-profile O0 regions compile check')
@@ -145,7 +155,7 @@ def main():
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
             struct.pack_into('<I', header, offset, value)
         exe = work / 'flow.psx'; exe.write_bytes(header + struct.pack('<%dI' % len(words), *words))
-        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n'+('0x80010700\n0x80010800\n0x80010810\n0x8001082C\n0x80010860\n0x8001086C\n0x80010878\n' if a.regions else ''), encoding='utf-8')
+        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n'+('0x80010700\n0x80010800\n0x80010810\n0x8001082C\n0x80010860\n0x8001086C\n0x80010878\n0x80010884\n' if a.regions else ''), encoding='utf-8')
         out = work / 'generated'
         generate=[a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', a.runtime_root]
         if a.regions:
@@ -155,7 +165,8 @@ def main():
                 +'text_size="0x%X"\n'%(len(words)*4)+
                 '[recompiler]\nseeds="seeds.txt"\nout_dir="generated"\nmod_function_entry_funcs=["0x80010700","0x80010800","0x80010810"]\n'
                 'mod_instruction_sites=["0x80010804"]\n'+
-                ('geometry_control_frames={"0x8001082C"="fixture_geometry_control_allowed"}\n' if a.geometry_control else ''),encoding='utf-8')
+                ('geometry_control_frames={"0x8001082C"="fixture_geometry_control_allowed"'+(',"0x80010884"="fixture_geometry_control_allowed"' if a.geometry_scratch else '')+'}\n' if a.geometry_control else '')+
+                ('geometry_scratch_frames=["0x80010884"]\n' if a.geometry_scratch else ''),encoding='utf-8')
             generate+=['--ws-config',config]
         run(generate, verbose=False)
         sources = sorted(out.glob('*_full*.c'))
@@ -234,6 +245,17 @@ def main():
                 for address,word in [('80010860','A4880000'),('8001086C','A8880000'),('80010878','B8880000')]:
                     assert 'PGXP_STORE(0x'+word+'u' in body(address)
 
+            if a.geometry_scratch:
+                scratch=body('80010884').split('/* precision-demand-regions:',1)[1]
+                assert 'fixture_geometry_control_allowed' in body('80010884')
+                assert 'geometry-dead control frame' not in scratch # BREAK proof stays opaque
+                assert 'PGXP_STORE(0xAFBF0010' in scratch and 'PGXP_LOAD(0x8FBF0010' in scratch
+                for pc in ('80010890','800108A0','800108A4'):
+                    line=next(line for line in scratch.splitlines() if '0x'+pc+':' in line)
+                    assert 'native integer definition' in line and 'PGXP_' not in line
+                assert 'PGXP_LOAD(0x91C202B4' in scratch # second chain follows opaque t6 overwrite
+                assert 'operand-only scratch/GTE boundary' in scratch
+
 
             charge=re.search(r'psx_native_span_charge\((\d+)u\)',main_body)
             assert charge and 'precision_block_80010700:' in main_body and 'psx_block_edge_materialize' in main_body
@@ -258,6 +280,7 @@ def main():
                        '-DPSX_NATIVE_STATIC_CALLS=1','-DPSX_NATIVE_TAIL_CHAINS=0','-DPSX_HAS_GAME_DISPATCH',
                        '-fno-unwind-tables','-fno-asynchronous-unwind-tables','-I',str(work)]
         if a.geometry_control:common+=['-DPSX_TEST_GEOMETRY_CONTROL=1']
+        if a.geometry_scratch:common+=['-DPSX_TEST_GEOMETRY_SCRATCH=1']
         if a.reuse_passed_source:common+=['-DPSX_TEST_PGXP_REGIONS_REMAINING=1']
         objects = []
         for selected, name in ((0, 'reference'), (1, 'candidate')):
