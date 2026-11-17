@@ -48,6 +48,24 @@ int main(void) {
           "the two ports keep separate BAUD registers");
     sio_write(0x1F80104A, 0x0040);
     check(sio_read(0x1F80105E) == 0x00D8, "a controller port reset leaves SIO1_BAUD alone");
+    /* The real snapshot codec and register digest must retain both ports. */
+    uint32_t size = sio_snapshot_bytes(), ends[5];
+    uint8_t *saved = (uint8_t *)malloc(size);
+    check(saved != NULL, "snapshot allocation");
+    if (!saved) return 1;
+    sio_snapshot_write(saved);
+    sio_snapshot_section_ends(ends);
+    check(ends[0] == 16u && ends[4] == size, "register section includes the SIO1 latches");
+    check(sio_snapshot_validate(saved, size), "current snapshot validates");
+    check(!sio_snapshot_validate(saved, size - 1u), "truncated snapshot is rejected");
+    sio_write(0x1F801058, 0x1234);
+    sio_write(0x1F80105A, 0x0001);
+    sio_write(0x1F80105E, 0xABCD);
+    check(sio_snapshot_read(saved, size), "current snapshot restores");
+    free(saved);
+    check(sio_read(0x1F801058) == 0x004E, "snapshot restores SIO1_MODE");
+    check(sio_read(0x1F80105A) == 0x0825, "snapshot restores SIO1_CTRL without strobe bits");
+    check(sio_read(0x1F80105E) == 0x00D8, "snapshot restores SIO1_BAUD");
     sio_init();
     check(sio_read(0x1F80105E) == 0 && sio_read(0x1F801058) == 0 && sio_read(0x1F80105A) == 0,
           "sio_init clears the SIO1 latches");
