@@ -3301,7 +3301,7 @@ static int sio_snap_emit(PstW *w) {
 
 /* Cumulative section end offsets in the snapshot wire:
  * out[0]=regs, out[1]=pads, out[2]=memcard, out[3]=fsm_pace (netplay),
- * out[4]=full including fsm metadata, rumble, JogCon and pad-mode state. */
+ * out[4]=full including fsm metadata, rumble, JogCon, pad-mode and peripherals. */
 void sio_snapshot_section_ends(uint32_t out[5]) {
     PstW w;
     pst_w_init(&w, NULL, 0);
@@ -3320,6 +3320,8 @@ void sio_snapshot_section_ends(uint32_t out[5]) {
     (void)sio_snap_emit_peripherals(&w);
     out[4] = (uint32_t)w.written;
 }
+
+uint32_t sio_snapshot_bytes(void);
 
 static int sio_snap_parse(PstR *r) {
     const int full_response = (size_t)(r->end - r->p) == sio_snapshot_bytes();
