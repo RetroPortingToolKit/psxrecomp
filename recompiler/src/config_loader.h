@@ -376,6 +376,11 @@ struct RuntimeConfig {
     bool                  turbo_loads = false;
     bool                  has_turbo_loads = false;   // key present in game.toml
 
+    // fast_loading_optout: true keeps the Fast Loading mod from accelerating
+    // this title even when the player enables it, for a game whose in-play
+    // disc reads still look like loads to the engage gate.
+    bool                  fast_loading_optout = false;
+
     // offer_turbo_loads: DEPRECATED AND IGNORED, now that the generic switch
     // it gated no longer exists. Defaults false and is never consulted; the
     // migrated titles that set it false stay correct, and the titles that

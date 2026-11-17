@@ -709,6 +709,8 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         rt.turbo_loads = toml::find<bool>(runtime, "turbo_loads");
         rt.has_turbo_loads = true;
     }
+    if (runtime.contains("fast_loading_optout"))
+        rt.fast_loading_optout = toml::find<bool>(runtime, "fast_loading_optout");
     if (runtime.contains("offer_turbo_loads")) {
         rt.offer_turbo_loads =
             toml::find<bool>(runtime, "offer_turbo_loads");
