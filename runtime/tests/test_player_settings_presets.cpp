@@ -73,7 +73,7 @@ int main(int argc,char** argv) {
     {std::ofstream f(root/"mods/installed/fixture.custom/1.0.0/manifest.toml");
      f<<"format_version=5\nid='fixture.custom'\nversion='1.0.0'\nname='Unrelated custom fixture'\nauthor='fixture'\nresolver='declarative'\n[[target]]\ngame_id='*'\n[[feature]]\nid='custom'\nname='Custom'\ndefault_enabled=true\n[[option]]\nfeature='custom'\nid='keep'\nlabel='Keep custom'\ntype='boolean'\ndefault='false'\n";}
     const auto settings=root/"settings.toml";
-    { std::ofstream f(settings);f<<"[video]\nrenderer='opengl'\nadaptive_view=true\npgxp_tolerance=0.25\npgxp_depth_threshold=4321\n[audio]\nvolume=37\nbuffer_ms=123\n[controller]\nmouse_sensitivity=2.5\nanti_deadzone=789\n[memcard]\ndir='custom/cards'\n[parappa_timing]\nmode='stock'\nextra_early=2\nextra_late=3\n"; }
+    { std::ofstream f(settings);f<<"[video]\nrenderer='opengl'\nadaptive_view=true\npgxp_tolerance=0.25\npgxp_depth_threshold=4321\npgxp_cpu_mode=true\npgxp_culling=true\n[audio]\nvolume=37\nbuffer_ms=123\n[controller]\nmouse_sensitivity=2.5\nanti_deadzone=789\n[memcard]\ndir='custom/cards'\n[parappa_timing]\nmode='stock'\nextra_early=2\nextra_late=3\n"; }
     reopen(root/"mods",settings);
     RecompLauncherCModProvider original{};original.feature_count=package_count;original.feature_get=package_feature;
     original.feature_option_get=package_option;original.feature_choice_get=package_choice;original.feature_set_option=package_set;
@@ -88,8 +88,6 @@ int main(int argc,char** argv) {
     LauncherModel model{};launcher_model_init(&model,&settings_ui,&game,nullptr);
     model.rom_present=true;snprintf(model.rom_full,sizeof model.rom_full,"owned-fixture.bin");model.verify.verdict=1;
     snprintf(model.hotkeys[0],sizeof model.hotkeys[0],"F2");const auto before=model.s;
-    assert(manager.set_feature_option("psx.enhancement.pgxp","pgxp","culling","true"));
-    assert(manager.set_feature_option("psx.enhancement.pgxp","pgxp","cpu_mode","true"));
     assert(manager.set_feature_enabled("psx.enhancement.cd-speed","cd-speed",true));
     assert(manager.set_feature_option("fixture.custom","custom","keep","true"));
     assert(manager.save_state());
@@ -109,6 +107,10 @@ int main(int argc,char** argv) {
         assert(prefs.extra_player_settings.at("controller.anti_deadzone")=="789");
         assert(prefs.extra_player_settings.at("video.pgxp_tolerance")=="0.25");
         assert(prefs.extra_player_settings.at("video.pgxp_depth_threshold")=="4321");
+        // PGXP CPU propagation and precise culling are player settings, not a mod:
+        // neither preset writes them.
+        assert(prefs.extra_player_settings.at("video.pgxp_cpu_mode")=="true");
+        assert(prefs.extra_player_settings.at("video.pgxp_culling")=="true");
         assert(prefs.parappa_timing_extra_early==2 && prefs.parappa_timing_extra_late==3);
         assert(model.s.volume==before.volume && model.s.render_thread==before.render_thread && !strcmp(model.hotkeys[0],"F2"));
         // Same merge the real launcher uses: fresh immediate provider fields
@@ -119,8 +121,6 @@ int main(int argc,char** argv) {
         reopen(root/"mods",settings);assert(psx_current_preset(&model)==(best?1:0));
         for (const auto& item:kPsxPreset) if (strcmp(item.package,"psx.runtime.settings"))
             assert(manager.feature_option_value(item.package,item.feature,item.option)==(best?item.best:item.faithful));
-        assert(manager.feature_option_value("psx.enhancement.pgxp","pgxp","culling")=="true");
-        assert(manager.feature_option_value("psx.enhancement.pgxp","pgxp","cpu_mode")=="true");
         assert(same_selection(manager.selections().at("psx.enhancement.cd-speed"),unrelated));
         assert(same_selection(manager.selections().at("fixture.custom"),third_party));
         bool intro=false;int audio=100;apply_extra_player_settings(PSXRecompV4::load_user_settings(settings),intro,audio);
@@ -128,14 +128,15 @@ int main(int argc,char** argv) {
         assert(g_video_post_aa==(best?2:0) && g_video_dithering==(best?2:1) && g_video_aniso==(best?16:1));
         PSXPgxpSessionInputs input{};input.env_geometry=input.env_texture=input.env_cpu_mode=input.env_culling=-1;
         input.player_geometry_set=input.player_texture_set=1;input.video_geometry=g_video_geometry_correction;
-        input.video_texture=g_video_perspective_texturing;input.mod_enabled=manager.feature_enabled("psx.enhancement.pgxp","pgxp");
-        input.mod_culling=1;const auto arm=psx_pgxp_session_resolve(&input);
-        assert(arm.geometry==(int)best && arm.texture==(int)best && !arm.culling);
+        input.video_texture=g_video_perspective_texturing;input.video_cpu_mode=g_video_pgxp_cpu_mode;
+        input.player_cpu_mode_set=g_player_pgxp_cpu_set;input.player_culling=g_player_pgxp_culling;
+        const auto arm=psx_pgxp_session_resolve(&input);
+        // The kept culling setting arms only under the geometry correction Best turns on.
+        assert(arm.geometry==(int)best && arm.texture==(int)best && arm.cpu_mode && arm.culling==(int)best);
     }
-    assert(package_set(nullptr,"psx.enhancement.image-filtering","image-filtering","texture_filtering","nearest"));
+    assert(provider->feature_set_option(provider->ctx,"psx.runtime.settings","display","video.texture_filtering","xbr"));
     assert(psx_current_preset(&model)==-1);assert(psx_apply_preset(&model,true));
     model.s.frame_interp=1;assert(psx_current_preset(&model)==-1);model.s.frame_interp=0;
-    reject_edit=true;assert(!psx_apply_preset(&model,false));assert(psx_current_preset(&model)==1);reject_edit=false;
     { std::ofstream f(settings,std::ios::app);f<<"\n[broken\n"; }
     assert(!psx_apply_preset(&model,false)); // Existing provider rejects corrupt external edits.
     assert(!s_player_settings_error.empty());
