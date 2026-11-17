@@ -338,7 +338,12 @@ def main():
             start=clock.index('void psx_gte_read(CPUState* cpu, uint32_t rt) {')
             end=clock.index('\n}',start)+2
             source=work/'actual-gte-read.c'
-            source.write_text('#include "cpu_state.h"\n#include "psx_cycles.h"\n'+clock[start:end]+'\n',encoding='utf-8')
+            timing=clock[start:end]
+            if a.geometry_scratch:
+                start=clock.index('void psx_gte_stall(CPUState* cpu) {')
+                end=clock.index('\n}',start)+2
+                timing+='\n'+clock[start:end]
+            source.write_text('#include "cpu_state.h"\n#include "psx_cycles.h"\n'+timing+'\n',encoding='utf-8')
             obj=work/'actual-gte-read.o'
             run([a.cc,*common,'-c',source,'-o',obj]);objects.append(obj)
         if a.geometry_control:
@@ -351,11 +356,23 @@ def main():
             source.write_text('#include "psx_direct_memory.h"\n#include "pgxp.h"\n'+memory[start:end]+'\n',encoding='utf-8')
             obj=work/'actual-direct-precision-write.o'
             run([a.cc,*common,'-DPSX_PGXP_DEMAND_REGIONS=1','-c',source,'-o',obj]);objects.append(obj)
+        if a.geometry_scratch:
+            # Actual ordinary SWC2 precision publication. The selected closure
+            # excludes render/replay sandboxes; no replay behavior is claimed.
+            gte=(a.runtime_root/'runtime/src/gte.cpp').read_text(encoding='utf-8')
+            start=gte.index('extern "C" void gte_precision_store_word(')
+            end=gte.index('\n}',start)+2
+            source=work/'actual-gte-precision-store.cpp'
+            source.write_text('#include "pgxp.h"\nstatic int s_gte_replay_sandbox=0;\n'+gte[start:end]+'\n',encoding='utf-8')
+            obj=work/'actual-gte-precision-store.o'
+            run([a.cxx,*common,'-c',source,'-o',obj]);objects.append(obj)
         defined, undefined = nm_symbols(objects)
         provided = library_symbols(a.cc)
         stubs = {s for s in undefined-defined-provided if not s.startswith('__')}
         if any('pgxp_operation' in s or 'pgxp_write_owned' in s or s=='psx_hr_bus_callbacks' or 'pgxp_region_' in s or 'block_edge_materialize' in s or s in ('psx_observation_sample','psx_observation_edge','psx_slice_block_impl','psx_advance_cycles_slow','fixture_regions_owner','fixture_regions_dispatch','psx_gte_read','psx_game_text_native_ok','psx_direct_precision_write') for s in stubs):
             raise RuntimeError('candidate precision implementation is missing; cannot substitute a linker seam')
+        if a.geometry_scratch and stubs & {'psx_gte_stall','gte_precision_store_word'}:
+            raise RuntimeError('real scratch GTE timing/publication provider missing')
         result_exe = work/('products.exe' if os.name == 'nt' else 'products')
         for _ in range(20):
             write_stubs(work/'stubs.c', stubs)
