@@ -8680,9 +8680,9 @@ static void host_pause_loop(void) {
     freeze_heartbeat_set_paused(1);
     psx_sdl_audio_set_paused(sdl_audio_device, 1);
     while (psx_host_pause_depth() > 0) {
-#ifndef PSX_NO_DEBUG_TOOLS
+        /* Keep pause-pop and quit serviceable in shipping builds too.
+         * The debug server remains opt-in; polling is a no-op without it. */
         debug_server_poll();
-#endif
         SDL_Event ev;
         while (!g_headless && SDL_PollEvent(&ev)) {
             (void)psx_local_mouse_event(ev);
