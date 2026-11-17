@@ -15,6 +15,9 @@
 #  define PSX_ENVIRON ((const char *const *)_environ)
 #else
 #  include <unistd.h>
+#  if defined(__APPLE__)
+#    include <mach-o/dyld.h>
+#  endif
 extern char **environ;
 #  define PSX_ENVIRON ((const char *const *)environ)
 #endif
@@ -54,6 +57,9 @@ int source_stateio_exe_sha256(char out[65]) {
 #if defined(_WIN32)
     DWORD n = GetModuleFileNameA(NULL, path, (DWORD)sizeof path);
     if (n == 0 || n >= sizeof path) { out[0] = '\0'; return 0; }
+#elif defined(__APPLE__)
+    uint32_t n = (uint32_t)sizeof path;
+    if (_NSGetExecutablePath(path, &n) != 0) { out[0] = '\0'; return 0; }
 #else
     ssize_t n = readlink("/proc/self/exe", path, sizeof path - 1);
     if (n <= 0 || (size_t)n >= sizeof path) { out[0] = '\0'; return 0; }
@@ -76,13 +82,15 @@ int source_stateio_route_sha256(char out[65]) {
 /* Sorted so enumeration order cannot change the result; a stream hash rather
  * than an XOR so two distinct configurations cannot cancel each other out. */
 int source_stateio_config_digest_hex(char out[65]) {
-    const char *entries[512];
+    /* One extra slot detects overflow instead of hashing a truncated identity. */
+    const char *entries[513];
     size_t n;
     psx_sha256_ctx ctx;
     uint8_t dig[32];
     if (!out) return 0;
     out[0] = '\0';
-    n = source_tas_stateio_env_collect(PSX_ENVIRON, entries, 512);
+    n = source_tas_stateio_env_collect(PSX_ENVIRON, entries, 513);
+    if (n > 512) return 0;
     psx_sha256_init(&ctx);
     for (size_t i = 0; i < n; i++) {
         psx_sha256_update(&ctx, (const uint8_t *)entries[i], strlen(entries[i]));
