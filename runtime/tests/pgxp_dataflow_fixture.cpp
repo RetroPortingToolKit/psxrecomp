@@ -32,7 +32,7 @@ struct WriteHistory {uint32_t address,old_value,value,width,pc,v0,v1;};
 static WriteHistory history[256];static unsigned history_count;
 static CPUState *live_cpu;
 #if defined(PSX_TEST_GEOMETRY_CONTROL)
-static bool control_active,control_observer;
+static bool control_active,control_observer,partial_active;
 static void control_watch(CPUState*,uint32_t,uint32_t);
 #endif
 static uint64_t frame_count;
@@ -64,6 +64,7 @@ void debug_server_trace_write_check(uint32_t a,uint32_t old,uint32_t v,uint8_t w
     if(actual!=old)std::abort(); // observer still sees the pre-mutation bytes
 #if defined(PSX_TEST_GEOMETRY_CONTROL)
     if(control_active)control_watch(live_cpu,a,old);
+    if(partial_active && pgxp_load_source(a,old)!=901)std::abort();
 #endif
     history[history_count++]={a,old,v,width,g_debug_last_store_pc,
         live_cpu?live_cpu->gpr[2]:0u,live_cpu?live_cpu->gpr[3]:0u};
@@ -425,6 +426,67 @@ static void run_control(ControlProduct& out,bool selected,unsigned mode,int cpu_
         std::fputs("FAIL equal-value RA overwrite retained geometry\n",stderr);std::abort();
     }
 }
+extern "C" void flow_reference_func_80010860(CPUState*);
+extern "C" void flow_candidate_func_80010860(CPUState*);
+extern "C" void flow_reference_func_8001086C(CPUState*);
+extern "C" void flow_candidate_func_8001086C(CPUState*);
+extern "C" void flow_reference_func_80010878(CPUState*);
+extern "C" void flow_candidate_func_80010878(CPUState*);
+static void retained_partial_store_products() {
+    struct Result {uint32_t value;PGXPWordShadow word;uint64_t source;WriteHistory write;};
+    constexpr uint32_t destination=0x80023600u,source=0x80023700u,old_word=0x000c0008u;
+    for(int cpu_mode:{0,1})for(unsigned kind=0;kind<3;++kind) {
+        const unsigned lanes=kind?4u:2u;
+        for(unsigned lane=0;lane<lanes;++lane) {
+            Result result[2]{};
+            for(unsigned selected=0;selected<2;++selected) {
+                CPUState cpu{};live_cpu=&cpu;control_active=false;
+                cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;cpu.read_byte=psx_read_byte;
+                cpu.write_word=psx_write_word;cpu.write_half=psx_write_half;cpu.write_byte=psx_write_byte;
+                const uint32_t low=kind?9u:lane?12u:8u,word=(15u<<16)|low;
+                // Alternate segment/mirror aliases exercise the same receipt.
+                cpu.gpr[4]=(lane&1u?0xa0223600u:destination)+(kind?lane:lane*2u);
+                cpu.gpr[8]=word;cpu.gpr[31]=0x80009000u;
+                pgxp_set_enabled(1);pgxp_set_cpu_mode(cpu_mode);pgxp_set_source_tracking(1);
+                pgxp_set_projection_tracking(1);pgxp_invalidate_all();
+                psx_write_word(destination,old_word);psx_write_word(source,word);
+                pgxp_gte_push_sxy(8*65536+16384,12*65536+32768,300,old_word);
+                PGXPProjection p{8.25f,12.5f,2.f,.5f};pgxp_gte_set_projection(&p);
+                pgxp_store_gte_reg(destination,15);pgxp_tag_word_source(destination,old_word,901);
+                pgxp_gte_push_sxy(int32_t(low)*65536+49152,15*65536+16384,450,word);
+                pgxp_store_gte_reg(source,15);pgxp_tag_word_source(source,word,902);
+                psx_pgxp_load(&cpu,0x8c080000u,source,word);
+                history_count=0;g_psx_call_bail=0;psx_cycle_count=0;
+                psx_next_service_cycle=psx_next_cycle_sample=UINT64_MAX;
+                const uint64_t inline_before=g_psx_direct_memory_stats.store_inline_ram;partial_active=true;
+                if(!kind) {if(selected)flow_candidate_func_80010860(&cpu);else flow_reference_func_80010860(&cpu);}
+                else if(kind==1) {if(selected)flow_candidate_func_8001086C(&cpu);else flow_reference_func_8001086C(&cpu);}
+                else {if(selected)flow_candidate_func_80010878(&cpu);else flow_reference_func_80010878(&cpu);}
+                partial_active=false;
+                if(history_count!=1u || g_psx_direct_memory_stats.store_inline_ram!=inline_before+1u)std::abort();
+                auto& out=result[selected];out.value=psx_read_word(destination);out.write=history[0];
+                if(!pgxp_capture_word_shadow(destination,out.value,&out.word))std::abort();
+                out.source=pgxp_load_source(destination,out.value);
+            }
+            const auto& a=result[0];const auto& b=result[1];
+            if(b.write.address!=0x23600u || b.write.old_value!=old_word || b.write.width!=(kind?4u:2u))std::abort();
+            if(a.value!=b.value||!equal(a.word,b.word)||a.source!=b.source||
+                    std::memcmp(&a.write,&b.write,sizeof a.write))std::abort();
+            if(!kind) {
+                // Equal integer SH still replaces the touched coordinate's
+                // fraction. The untouched coordinate stays exactly canonical.
+                if(b.value!=old_word || b.source || (b.word.flags&PGXP_F_VXY)!=PGXP_F_VXY ||
+                        b.word.z || (b.word.flags&PGXP_F_PROJECTION))std::abort();
+                if(!lane && (b.word.x16!=8*65536+49152 || b.word.y16!=12*65536+32768))std::abort();
+                if(lane && (b.word.x16!=8*65536+16384 || b.word.y16!=12*65536+49152))std::abort();
+            } else if((kind==1u&&lane==3u)||(kind==2u&&lane==0u)) {
+                if(b.source!=902 || (b.word.flags&PGXP_F_VXY)!=PGXP_F_VXY ||
+                        b.word.x16!=9*65536+49152 || b.word.y16!=15*65536+16384)std::abort();
+            } else if(b.word.valid || b.source)std::abort(); // canonical partial SWL/SWR kills the word
+        }
+    }
+    std::puts("PASS actual emitted SH/SWL/SWR write-boundary +retained canonical hooks, all byte lanes, equal SH fractions and aliases, CPU0/1");
+}
 static void control_products() {
     for(int cpu_mode:{0,1})for(unsigned mode=0;mode<5;++mode) {
         run_control(control_reference,false,mode,cpu_mode);run_control(control_candidate,true,mode,cpu_mode);
@@ -644,6 +706,7 @@ int main(int argc,char** argv) {
     region_products();
 #if defined(PSX_TEST_GEOMETRY_CONTROL)
     control_products();
+    retained_partial_store_products();
 #endif
 #endif
 #if !defined(PSX_TEST_PGXP_REGIONS_REMAINING)

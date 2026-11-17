@@ -101,6 +101,12 @@ def add_region_program(base,words):
     words += [0x27bdffe8,0xafbf0010,0x48087000,0x01004821,0x25290001,
               0xac890000,0x8caa0000,0,0xac8a0004,0x8fbf0010,0,
               0x03e00008,0x27bd0018]
+    # Retained typed hooks run after the ACTUAL generated native write boundary.
+    # Cover SH's untouched half and every SWL/SWR byte lane, including the
+    # normalized full-word cases. No hand-written unaligned store substitute.
+    words += [0xa4880000,0x03e00008,0,  # 80010860 SH
+              0xa8880000,0x03e00008,0,  # 8001086C SWL
+              0xb8880000,0x03e00008,0]  # 80010878 SWR
     return base,words
 
 
@@ -139,7 +145,7 @@ def main():
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
             struct.pack_into('<I', header, offset, value)
         exe = work / 'flow.psx'; exe.write_bytes(header + struct.pack('<%dI' % len(words), *words))
-        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n'+('0x80010700\n0x80010800\n0x80010810\n0x8001082C\n' if a.regions else ''), encoding='utf-8')
+        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n'+('0x80010700\n0x80010800\n0x80010810\n0x8001082C\n0x80010860\n0x8001086C\n0x80010878\n' if a.regions else ''), encoding='utf-8')
         out = work / 'generated'
         generate=[a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', a.runtime_root]
         if a.regions:
@@ -225,6 +231,9 @@ def main():
                     assert hook not in control
                 assert control.count('precision-demand: geometry-dead control frame')==4
                 assert 'PGXP_COP2' in control and 'PGXP_STORE' in control and 'PGXP_LOAD' in control
+                for address,word in [('80010860','A4880000'),('8001086C','A8880000'),('80010878','B8880000')]:
+                    assert 'PGXP_STORE(0x'+word+'u' in body(address)
+
 
             charge=re.search(r'psx_native_span_charge\((\d+)u\)',main_body)
             assert charge and 'precision_block_80010700:' in main_body and 'psx_block_edge_materialize' in main_body

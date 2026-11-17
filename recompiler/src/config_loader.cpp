@@ -3133,7 +3133,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         const auto& entries=toml::find(recomp,"geometry_control_frames").as_table();
         for(const auto& [key,value]:entries) {
             const uint32_t address=parse_hex(key,"recompiler.geometry_control_frames");
-            const auto symbol=value.as_string();
+            const auto symbol=toml::get<std::string>(value);
             if((address&3u) || symbol.empty() ||
                     !(std::isalpha((unsigned char)symbol[0]) || symbol[0]=='_') ||
                     std::any_of(symbol.begin(),symbol.end(),[](unsigned char c){return !std::isalnum(c)&&c!='_';}))
