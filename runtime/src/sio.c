@@ -3268,7 +3268,9 @@ static int sio_r_mcslot(PstR *r, McSlotState *s) {
 static int sio_snap_emit_regs(PstW *w) {
     return pst_w_u8(w, sio_tx_data) && pst_w_u8(w, sio_rx_data) &&
            pst_w_u16(w, sio_stat) && pst_w_u16(w, sio_mode) &&
-           pst_w_u16(w, sio_ctrl) && pst_w_u16(w, sio_baud);
+           pst_w_u16(w, sio_ctrl) && pst_w_u16(w, sio_baud) &&
+           pst_w_u16(w, sio1_mode) && pst_w_u16(w, sio1_ctrl) &&
+           pst_w_u16(w, sio1_baud);
 }
 
 static int sio_snap_emit_pads(PstW *w) {
@@ -3402,7 +3404,9 @@ static int sio_snap_parse(PstR *r) {
     int16_t tr;
     if (!pst_r_u8(r, &sio_tx_data) || !pst_r_u8(r, &sio_rx_data) ||
         !pst_r_u16(r, &sio_stat) || !pst_r_u16(r, &sio_mode) ||
-        !pst_r_u16(r, &sio_ctrl) || !pst_r_u16(r, &sio_baud))
+        !pst_r_u16(r, &sio_ctrl) || !pst_r_u16(r, &sio_baud) ||
+        !pst_r_u16(r, &sio1_mode) || !pst_r_u16(r, &sio1_ctrl) ||
+        !pst_r_u16(r, &sio1_baud))
         return 0;
     if (!pst_r_bytes(r, pad_analog, PSX_MAX_PLAYERS) || !pst_r_u8(r, &pad_connected) ||
         !pst_r_u32(r, &u) || !pst_r_i32(r, &i) ||
