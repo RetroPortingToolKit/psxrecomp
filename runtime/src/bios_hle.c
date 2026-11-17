@@ -329,6 +329,14 @@ static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
 
 /* ── selection ───────────────────────────────────────────────────────────── */
 
+int psx_bios_hle_dispatch_quiet(uint32_t address) {
+    const uint32_t phys = address & 0x1FFFFFFFu;
+    if (!g_psx_bios_hle_hook) return 1;
+    if (g_psx_bios_hle_hook != bios_hle_dispatch) return 0;
+    return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
+        (!psx_bios_image.shell_entry_phys || phys != psx_bios_image.shell_entry_phys);
+}
+
 void psx_bios_hle_configure(int call_hle, int boot_skip)
 {
     /* IMPORTANT (Ape Escape + OpenBIOS): clamp call-HLE to deliver_event_ret.

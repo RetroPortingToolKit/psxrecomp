@@ -10,8 +10,9 @@ step below is the framework's, so a release fix lands once for every title.
 
 --channel is REQUIRED and has no default:
   public    public production release. -DPSX_RELEASE_CHANNEL=public, so
-            PSX_PUBLIC_RELEASE=ON and Playtest Diagnostics ship default off.
-  playtest  non-public playtest package. Diagnostics ship default on and every
+            PSX_PUBLIC_RELEASE=ON. Recording starts on; the optional input display
+            starts off in both channels.
+  playtest  non-public playtest package. The same independent defaults apply; every
             artifact name carries "-playtest".
 Every audit runs in the matching mode.
 
@@ -76,6 +77,7 @@ sys.path.insert(0, str(TOOLS))
 import runtime_hot_pgo
 
 CHANNELS = ('public', 'playtest')
+DIAGNOSTICS_DEFAULTS = {'recording': True, 'osd': False}
 PLATFORMS = ('windows', 'linux')
 ARTIFACT_SUFFIX = {'windows': 'windows-x64.zip', 'linux': 'linux-x86_64.AppImage'}
 TOOLCHAIN_PLATFORM = {'windows': 'win', 'linux': 'linux'}
@@ -1019,18 +1021,28 @@ def check_public_mod_packages(payload, package_ids):
             fail('public release contains a forbidden loading mod package path: %s' % relative.as_posix())
 
 
+def diagnostics_features(data):
+    features = {f.get('id'): f for f in data.get('feature', [])}
+    # X4's maintained recording control predates the shared feature spelling.
+    # Normalize only this known package; preserve its public ID and bindings.
+    if (data.get('id') == 'mmx4.diagnostics' and
+            'recording' not in features and 'inputs' in features):
+        features['recording'] = features['inputs']
+    return features
+
+
 def diagnostics_manifests(mods_root):
     found = {}
     for manifest in sorted(Path(mods_root).glob('*/*/manifest.toml')):
         data = tomllib.loads(read_text(manifest))
-        features = {f.get('id') for f in data.get('feature', [])}
+        features = set(diagnostics_features(data))
         if {'recording', 'osd'} <= features and str(data.get('id', '')).endswith('.diagnostics'):
             found.setdefault(data['id'], []).append((manifest, data))
     return found
 
 
 def check_diagnostics(ctx, stage):
-    """Diagnostics defaults follow the channel; a diagnostics package the
+    """Recording is on and optional display off; a diagnostics package the
     config does not declare is a config error, not something to skip."""
     found = diagnostics_manifests(Path(stage) / 'mods/bundled')
     declared = ctx.config.diagnostics
@@ -1042,17 +1054,16 @@ def check_diagnostics(ctx, stage):
     entries = found.get(declared['package_id'])
     if not entries:
         fail('staged catalog is missing %s' % declared['package_id'])
-    want = ctx.channel == 'playtest'
     for manifest, data in entries:
         if data.get('channel') == 'developer':
             fail('%s must stay player-selectable' % manifest)
-        features = {f.get('id'): f for f in data.get('feature', [])}
-        for feature in ('recording', 'osd'):
+        features = diagnostics_features(data)
+        for feature, want in DIAGNOSTICS_DEFAULTS.items():
             got = features[feature].get('default_enabled')
             if got is not want or features[feature].get('channel') == 'developer':
                 fail('%s: %s default_enabled=%r, a %s package needs %r'
                      % (manifest, feature, got, ctx.channel, want))
-    log('Playtest Diagnostics default %s (%s)' % ('on' if want else 'off', ctx.channel))
+    log('Diagnostics recording on, optional display off (%s)' % ctx.channel)
 
 
 def declared_overlay_assets(stage):
@@ -1063,7 +1074,7 @@ def declared_overlay_assets(stage):
             rel = PurePosixPath(overlay.get('file', ''))
             if (rel.is_absolute() or '..' in rel.parts or not rel.parts or
                     rel.parts[0] != 'assets' or rel.suffix.lower() != '.bin' or
-                    overlay.get('target') != 'disc_user'):
+                    overlay.get('target') not in ('disc_user', 'disc_raw')):
                 continue
             digest = overlay.get('sha256', '')
             expected = overlay.get('expected_sha256', '')
@@ -1161,7 +1172,7 @@ def write_manifest(ctx, extra):
         dirty_paths=ctx.prov['dirty_paths'], framework_commit=ctx.prov['framework_commit'],
         recomp_ui_commit=ctx.prov['recomp_ui_commit'], debug_tools=False,
         bios_backends=['OpenBIOS'], setup_wizard=cmake_bool(ctx.cache.get('PSX_SETUP_WIZARD', 'OFF')),
-        playtest_diagnostics_default_enabled=(ctx.channel == 'playtest') if ctx.config.diagnostics else None,
+        playtest_diagnostics_default_enabled=True if ctx.config.diagnostics else None,
         mod_packages=ctx.mod_packages, aot_mode=ctx.config.aot_mode,
         overlay_toolchain=ctx.config.ship_toolchain, signed=getattr(ctx, 'signed', False),
         packager='psxrecomp/tools/package_title_release.py')
@@ -1309,13 +1320,12 @@ def verify_payload(payload, exe_path, config, channel, plat, version):
         problems.append('mod catalog %s != manifest %s' % (staged, manifest.get('mod_packages')))
     found = diagnostics_manifests(payload / 'mods/bundled')
     if config.diagnostics:
-        want = channel == 'playtest'
         entries = found.get(config.diagnostics['package_id'], [])
         if not entries:
             problems.append('diagnostics package missing')
         for manifest_file, data in entries:
-            features = {f.get('id'): f for f in data.get('feature', [])}
-            for feature in ('recording', 'osd'):
+            features = diagnostics_features(data)
+            for feature, want in DIAGNOSTICS_DEFAULTS.items():
                 if features[feature].get('default_enabled') is not want:
                     problems.append('%s %s default_enabled is not %r' % (manifest_file, feature, want))
     elif found:
@@ -1557,20 +1567,18 @@ def verify(args):
 
 
 def check_diagnostics_dir(args):
-    """Every *.diagnostics package in a staged mods/bundled follows the channel.
+    """Every *.diagnostics package records by default with its optional display off.
     For packagers that have no release config (package_game_release.sh)."""
     found = diagnostics_manifests(args.bundled)
-    want = args.channel == 'playtest'
     for package, entries in sorted(found.items()):
         for manifest, data in entries:
-            features = {f.get('id'): f for f in data.get('feature', [])}
-            for feature in ('recording', 'osd'):
+            features = diagnostics_features(data)
+            for feature, want in DIAGNOSTICS_DEFAULTS.items():
                 got = features[feature].get('default_enabled')
                 if got is not want or features[feature].get('channel') == 'developer':
                     fail('%s: %s default_enabled=%r, a %s package needs %r'
                          % (manifest, feature, got, args.channel, want))
-        log('%s: Playtest Diagnostics default %s (%s)' % (package, 'on' if want else 'off',
-                                                        args.channel))
+        log('%s: recording on, optional display off (%s)' % (package, args.channel))
     if not found:
         log('no Playtest Diagnostics package in %s' % args.bundled)
     return 0

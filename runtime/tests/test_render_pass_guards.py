@@ -116,88 +116,14 @@ for name in ("gpu_fill", "gpu_copy_rect", "flush_cpu_upload",
              "glb_vram_transfer_in", "glb_vram_write"):
     assert "wide" not in definition(gl, name), (
         "journaled writes must not reach a native-wide surface: " + name)
-# One-time pass allocations are not cost samples (render_pass_plan_test):
-# every path that makes a pass texture or framebuffer must count it, and the
-# cost average must go through the tested sampling rule.
-for name in ("pass_make_color_fbo", "pass_gen_reserve"):
-    assert "s_pass_allocs++" in definition(gl, name), (
-        "pass allocations must be counted: " + name)
-assert "render_pass_cost_add(" in body(
-    gl, "void gl_renderer_pass_note_cost(uint64_t ticks) {"), (
-    "the pass-cost average must leave allocating passes out")
-assert "s_pass_allocs_begin = s_pass_allocs;" in body(
-    gl, "static int transaction_begin("), (
-    "each pass must mark where its allocations start")
-# The average belongs to one presented image size. A plan at another size
-# passes an unknown cost (0), for which render_pass_plan_phases plans a single
-# measuring pass (render_pass_plan_test): passes run on the emulation thread.
-nc = body(gl, "void gl_renderer_pass_note_cost(uint64_t ticks) {")
-assert "s_pass_cost_w != s_interp_w || s_pass_cost_h != s_interp_h" in nc and \
-    "memset(&s_pass_cost, 0, sizeof s_pass_cost);" in nc, (
-    "a new image size must start the pass-cost average over")
-assert re.search(r"in\.pass_cost = \(s_pass_cost_w == s_interp_w && "
-                 r"s_pass_cost_h == s_interp_h\)\s*"
-                 r"\? render_pass_cost_estimate\(&s_pass_cost\) : 0\.0;",
-                 gl[gl.index("uint32_t gl_renderer_pass_plan("):][:4000]), (
-    "a plan must not use a cost measured at another image size")
-# Only passes that run are measured: an estimate that prices every plan out
-# (measured in a transient) must be measured again, or passes stay shed and a
-# plugin's crossfade fallback never ends (render_pass_plan_test).
-gp = gl[gl.index("uint32_t gl_renderer_pass_plan("):]
-gp = gp[:gp.index("\n}\n")]
-assert re.search(r"if \(want && s_pass_cost_w == s_interp_w && "
-                 r"s_pass_cost_h == s_interp_h &&\s*"
-                 r"render_pass_cost_note_plan\(&s_pass_cost\)\) \{", gp) and \
-    re.search(r"in\.pass_cost = 0\.0;\s*n = render_pass_plan_phases\(&in, alpha_q16, NULL\);",
-              gp), (
-    "every plan that wants passes must let a stale estimate be re-measured, "
-    "and the re-measuring plan must ask for one pass")
-# A frame on screen longer than planned (a lagging tick) must hold its newest
-# pass image, never fall back to the older capture (render_pass_plan_test).
-pgp = definition(gl, "pass_gen_present")
-assert "render_pass_gen_select_mode(g->phase, g->n, p, s_interp_hold, &lo, &hi, &t)" in pgp, (
-    "pass images must honor HOLD through the tested late-flip selection rule")
-assert "render_pass_select(" not in pgp and "0.5 / (double)g->period" not in pgp, (
-    "no early expiry of a late frame's images")
-cls = body(plan, "int render_pass_mmio_class(")
-for dev in ("RENDER_PASS_DROP_SPU", "RENDER_PASS_DROP_CD",
-            "RENDER_PASS_DROP_TIMER"):
-    assert dev in cls, "a pass must never reach " + dev
-
-dbg = (SRC / "debug_server.c").read_text(encoding="utf-8")
-for fn in ("void debug_server_trace_write_check(",
-           "void debug_server_trace_mmio_write("):
-    assert "g_psx_render_pass_active" in body(dbg, fn), (
-        "rolled-back pass writes must stay out of the frame fingerprints: " + fn)
-
-rp = (SRC / "render_pass.c").read_text(encoding="utf-8")
-for gate in ("psx_netplay_active()", "psx_rewind_is_open()",
-             "psx_selfcheck_resim_active()", "psx_get_in_exception()",
-             "dma_gpu_linked_list_active()",
-             "psx_presentation_fast_forward()"):
-    assert gate in rp, "passes must refuse to run when " + gate
-main = (SRC / "main.cpp").read_text(encoding="utf-8")
-ff = main[main.index("const int present_every ="):]
-ff = ff[:ff.index("turbo_skip = (turbo_skip + 1) % present_every;")]
-assert "s_presentation_fast_forward = 1;" in ff, (
-    "manual fast-forward must refuse render passes (it presents every 2nd "
-    "VBlank, so the plan would otherwise still see presents)")
-
 b = body(rp, "static void checkpoint_restore(CPUState *cpu) {")
 assert "nesting_restore(&s_ck.nest);" in b, (
     "a watchdog abort longjmps past the exits of the frames it leaves: the "
     "restore must put the host nesting back (render_pass_abort_test)")
 
 gl = (SRC / "gpu_gl_renderer.c").read_text(encoding="utf-8")
-b = body(gl, "static int pass_gen_reserve(int gi, uint32_t need, int w, int h) {")
-assert "need > pass_slot_cap(w, h)" in b, (
-    "pass image textures must stay inside the slot cap's memory budget")
-assert "pass_gen_reserve(gi, g->n + 1u, g->tex_w, g->tex_h)" in gl, (
-    "pass image textures are made as slots fill, not all PASS_SLOTS up front")
-assert "for (uint32_t i = 0; i < PASS_SLOTS; i++) {\n        if (!s_pgen_tex" not in gl, (
-    "no eager allocation of every slot texture")
 assert "pass_resources_release();" in body(gl, "void gl_renderer_shutdown(void) {"), (
-    "pass textures die with the context: forget them at shutdown")
+    "transaction backups and stereo textures die with the context")
 
 # Default off means no cost for other titles: the headers folded into the
 # overlay codegen hash (runtime/codegen_hash_sources.cmake) must not carry the

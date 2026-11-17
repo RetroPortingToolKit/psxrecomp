@@ -74,9 +74,8 @@ def main():
     failures = []
     if guarded_begin not in source:
         failures.append("basic-block defer is not wholly GCC/Clang guarded")
-    flush = "psx_cyc_bb_defer_flush();\n#endif\n"
-    if flush not in source or "psx_check_interrupts_at(cpu," not in source:
-        failures.append("generated interrupt edges do not flush deferred cycles")
+    if "PSX_BLOCK_EDGE(cpu," not in source:
+        failures.append("generated interrupt edges do not use the publishing boundary")
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)

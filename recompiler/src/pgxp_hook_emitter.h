@@ -6,6 +6,51 @@
 
 namespace PSXRecomp {
 
+/* A conservative straight-line precision summary. Entry registers may carry
+ * geometry; ADDIU constants and arithmetic on metadata-free values cannot.
+ * LUI, shifts and bitwise exact-half producers keep their full hooks. Memory,
+ * coprocessors and unsupported instructions terminate that knowledge. */
+class PgxpPlainSpan {
+    uint32_t plain_ = 1u;
+public:
+    void barrier() { plain_ = 1u; }
+    bool consume_alu(uint32_t instruction, uint32_t& destination) {
+        const uint32_t op = instruction >> 26;
+        const uint32_t rs = (instruction >> 21) & 31u;
+        const uint32_t rt = (instruction >> 16) & 31u;
+        const auto plain = [this](uint32_t reg) { return (plain_ & (uint32_t{1} << reg)) != 0; };
+        bool result = false;
+        destination = rt;
+        if (op == 0) {
+            destination = (instruction >> 11) & 31u;
+            switch (instruction & 63u) {
+            case 0x20: case 0x21: case 0x22: case 0x23:
+                result = plain(rs) && plain(rt); break;
+            case 0x25: /* OR with zero is a move; other bitwise ops can
+                        * originate exact-zero coordinate halves. */
+                result = (rs == 0 || rt == 0) && plain(rs) && plain(rt); break;
+            case 0x2A: case 0x2B:
+                result = true; break;
+            default:
+                barrier(); return false;
+            }
+        } else {
+            switch (op) {
+            case 0x08: case 0x09:
+                result = plain(rs); break;
+            case 0x0A: case 0x0B:
+                result = true; break;
+            default:
+                barrier(); return false;
+            }
+        }
+        if (!destination) return false;
+        const uint32_t bit = uint32_t{1} << destination;
+        plain_ = (plain_ & ~bit) | (result ? bit : 0u);
+        return result;
+    }
+};
+
 /* PGXP dataflow-shadowing hook emission (docs/ENHANCEMENTS.md G1.10; runtime
  * pgxp_hooks.h). Shared by BOTH emitters — CodeGenerator (game) and
  * StrictTranslator (BIOS) — so the hook grammar can never drift between them.

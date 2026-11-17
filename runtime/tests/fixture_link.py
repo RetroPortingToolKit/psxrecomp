@@ -70,7 +70,8 @@ def write_stubs(path, symbols):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=()):
+def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=(),
+                  fixture_defines=()):
     """Compile runtime/src `modules` and `test_name` at `opt`, link, run."""
     tag = opt.replace("-", "")
     include = str(src_root / "include")
@@ -88,7 +89,8 @@ def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=())
 
     test_o = work / ("fixture" + tag + ".o")
     subprocess.run([cc, "-std=c11", opt, "-Wall", "-Wextra", "-Werror",
-                    "-I", include, "-c", str(here / test_name), "-o", str(test_o)],
+                    "-I", include, *["-D" + d for d in fixture_defines],
+                    "-c", str(here / test_name), "-o", str(test_o)],
                    check=True)
     exe = work / ("fixture" + tag + (".exe" if os.name == "nt" else ""))
     # Include fixture seams before synthesizing stubs. Besides avoiding a

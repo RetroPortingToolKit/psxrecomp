@@ -32,6 +32,7 @@ extern int g_psx_guest_time_frozen;
 typedef struct PsxCycleFreeze {
     uint64_t cycle_count;
     uint64_t next_service;
+    uint64_t next_cycle_sample;
     uint64_t fast_limit;
     uint32_t batch;
     uint32_t batch_limit;
