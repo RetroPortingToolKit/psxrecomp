@@ -24,6 +24,7 @@ void SDL_RenderClear(void*) {}
 void SDL_RenderCopy(void*,void*,void*,void*) {}
 void host_osd_draw_sdl(void*) {}
 void SDL_RenderPresent(void*) {}
+void software_present_with_telemetry(void* renderer) { SDL_RenderPresent(renderer); }
 """
 CHECKS = r"""
 int main() {
