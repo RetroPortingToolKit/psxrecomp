@@ -14,10 +14,8 @@ namespace fs=std::filesystem;
 static void both32(uint8_t* p,uint32_t value) {
     for(unsigned i=0;i<4;i++) {p[i]=(uint8_t)(value>>(8*i));p[7-i]=p[i];}
 }
-// boot is the SYSTEM.CNF file name. With decoy, an unrelated "cdrom:" string
-// sits in the early image; without it, a copy of the real line does, so an
-// image whose TOC cannot be mounted still names its serial to the early scan.
-static void fixture(const fs::path& path,bool raw,const char* boot="SLPS_009.98",bool decoy=true) {
+static void fixture(const fs::path& path,bool raw,
+                    const std::string& boot="SLPS_009.98",bool with_decoy=true) {
     const unsigned unit=raw?2352:2048,offset=raw?24:0;
     std::ofstream file(path,std::ios::binary);
     file.seekp(10000ull*unit-1);file.put(0);
@@ -34,14 +32,14 @@ static void fixture(const fs::path& path,bool raw,const char* boot="SLPS_009.98"
     auto* root=pvd.data()+156;root[0]=34;both32(root+2,20);both32(root+10,2048);
     root[25]=2;root[28]=root[31]=root[32]=1;
     write(16,pvd);
-    const std::string cnf=std::string("BOOT = cdrom:")+boot+";1\r\n";
+    const std::string cnf="BOOT = cdrom:"+boot+";1\r\n";
     std::vector<uint8_t> directory(2048);
     directory[0]=46;both32(directory.data()+2,9000);both32(directory.data()+10,(uint32_t)cnf.size());
     directory[28]=directory[31]=1;directory[32]=12;
     std::memcpy(directory.data()+33,"SYSTEM.CNF;1",12);write(20,directory);
     write(9000,std::vector<uint8_t>(cnf.begin(),cnf.end()));
-    const std::string early=decoy?"BOOT = cdrom:SLUS_999.99;1\r\n":cnf;
-    write(40,std::vector<uint8_t>(early.begin(),early.end()));
+    const std::string decoy="BOOT = cdrom:SLUS_999.99;1\r\n";
+    if(with_decoy) write(40,std::vector<uint8_t>(decoy.begin(),decoy.end()));
 }
 // An uncompressed CHD v5 fixture with one MODE2_RAW track. The libchdr
 // decoder is the independent format reader; expected identity is the raw BIN.
@@ -64,6 +62,14 @@ static void raw_chd(const fs::path& raw,const fs::path& output) {
     std::ofstream file(output,std::ios::binary);file.write((char*)prefix.data(),prefix.size());
     std::ifstream source(raw,std::ios::binary);std::vector<char> sector(unit);
     for(unsigned i=0;i<frames;i++){source.read(sector.data(),2352);file.write(sector.data(),sector.size());}
+}
+// Puts a copy of the boot line where the decoy would go, so an image whose TOC
+// cannot be mounted still names its serial to the early scan.
+static void early_boot_line(const fs::path& path,bool raw,const std::string& boot) {
+    const unsigned unit=raw?2352:2048,offset=raw?24:0;
+    const std::string cnf="BOOT = cdrom:"+boot+";1\r\n";
+    std::fstream file(path,std::ios::binary|std::ios::in|std::ios::out);
+    file.seekp(40ull*unit+offset);file.write(cnf.data(),cnf.size());
 }
 // The launcher's SBI File row is OK only when the disc mounted with its SBI
 // loaded (ae_disc_verify: toc_opened && sbi_loaded). The missing-SBI warning
@@ -99,12 +105,12 @@ static void sbi_row_and_warning(const fs::path& root) {
         {"track-missing",      true, Companion::none,     true, -1,-1},
         {"track-missing-sbi",  true, Companion::good,     true, -1,-1},
     };
-    // The listed serial is Soul Reaver (Europe), SLES-01301, on kKnownLibcryptSerials.
+    // SLES-01301 is on kKnownLibcryptSerials; SLPS-00998 is not.
     std::setvbuf(stdout,nullptr,_IONBF,0);
     int misses=0;
     const auto listed=root/"listed.bin",plain=root/"plain.bin";
-    fixture(listed,true,"SLES_013.01",false);
-    fixture(plain,true,"SLPS_009.98",false);
+    fixture(listed,true,"SLES_013.01",false);early_boot_line(listed,true,"SLES_013.01");
+    fixture(plain,true,"SLPS_009.98",false);early_boot_line(plain,true,"SLPS_009.98");
     const std::string cue_main="FILE \"disc.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n";
     const std::string cue_track="FILE \"disc.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n"
                                 "FILE \"missing track 02.bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n";
@@ -143,6 +149,7 @@ int main() {
     auto root=fs::temp_directory_path()/ ("psx-disc-identity-"+std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directory(root);
+    sbi_row_and_warning(root);   // removes what it writes
     for(bool raw:{false,true}) {
         auto image=root/(raw?"disc.bin":"disc.iso");fixture(image,raw);
         auto id=PSXRecompV4::identify_disc(image,"",0,false,false);
@@ -205,6 +212,5 @@ int main() {
         assert(!PSXRecompV4::required_disc_content_matches({},required,&error));
         assert(PSXRecompV4::required_disc_content_matches(image,{},&error));
     }
-    sbi_row_and_warning(root);
     fs::remove(root/"disc.iso");fs::remove(root/"disc.bin");fs::remove(root);
 }
