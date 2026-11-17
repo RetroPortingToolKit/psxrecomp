@@ -61,6 +61,17 @@ default is none — wizard/`ensure-toolchain` fetch GitHub `/releases/latest`).
 Generate/rebuild still need Python 3
 for `psxrecomp_cli.py`.
 
+The setup host never removes a pack that may be in use. A new pack is unpacked
+beside the installed one and checked there; only then is the installed folder
+renamed aside (`.old-<pid>-<tag>`), the new one moved into its name, and the old
+one removed. On Windows a folder with an open file cannot be renamed, so a pack
+a running build uses stays whole and the new one is dropped. A pack that fails
+its check is passed over for the rest of the process, never removed or renamed.
+An install interrupted between the two renames is put back at the next start.
+With `PSXRECOMP_TOOLCHAIN_READONLY=1` the setup host deletes, renames, prunes and
+installs nothing and moves no pointer or stamp; it still uses a pack that is
+there and names each skipped step on stderr. Tests that start a setup host set it.
+
 ## Commands
 
 ```bash

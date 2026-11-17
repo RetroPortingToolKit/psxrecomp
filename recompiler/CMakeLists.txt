@@ -1459,6 +1459,7 @@ if(BUILD_TESTING)
                 codegen_hash_build_tree
                 codegen_hash_line_endings
                 codegen_host_bios_stems
+                codegen_host_toolchain_keep_pack
                 default_renderer_guards
                 mod_owned_display_controls
                 fmv_quiet_guards
