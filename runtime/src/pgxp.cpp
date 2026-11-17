@@ -34,6 +34,7 @@
 
 #include "pgxp.h"
 #include "pgxp_hooks.h"
+#include "pgxp_deprecation.hpp"
 #include "cpu_state.h"
 #include "psx_memory.h"
 #include "mod_memory.h"
@@ -52,21 +53,6 @@ extern "C" int gte_geometry_correction_lookup_probe(uint32_t packed,
 /* Shadow storage                                                             */
 /* ------------------------------------------------------------------------- */
 
-enum {
-    PGXP_F_VX = 1u << 0,   /* low half  (screen X) tracked                    */
-    PGXP_F_VY = 1u << 1,   /* high half (screen Y) tracked                    */
-    PGXP_F_VZ = 1u << 2,   /* projected depth rode along intact               */
-    PGXP_F_PROJECTION = 1u << 3,
-    /* The tracked half was DERIVED by guest arithmetic that rounds (a CPU
-     * divide of a precise sum, see the scalar tier below), so the guest
-     * integer is that arithmetic's rounding of the value, not its floor: the
-     * precise value may sit up to one pixel below or two above it. */
-    PGXP_F_DX = 1u << 4,
-    PGXP_F_DY = 1u << 5,
-    PGXP_F_UNCLAMPED = 1u << 6, /* exact GTE projection; intact word only */
-    PGXP_F_VXY = PGXP_F_VX | PGXP_F_VY,
-};
-
 struct PGXPValue {
     int32_t  x16, y16;   /* sub-pixel screen coords, 16.16                    */
     uint16_t z;          /* projected SZ depth (perspective source), 0 = none */
@@ -75,6 +61,7 @@ struct PGXPValue {
     uint32_t gen;        /* valid iff == s_gen (O(1) invalidate-all)          */
     PGXPProjection projection;
 };
+struct PGXPTemp : PGXPValue { uint64_t source; };
 
 /* Shadow covers the host RAM backing so the opt-in 8 MB map tracks its high
  * banks; retail sessions only ever touch the low 2 MiB of it. The same array
@@ -96,6 +83,42 @@ static PGXPValue  s_scratch[PGXP_SCRATCH_WORDS];
 static PGXPValue  s_gpr[34];                  /* 32 GPRs + HI + LO            */
 static PGXPValue  s_gte[32];                  /* GTE data registers           */
 static PGXPValue  s_gtc[32];                  /* GTE control registers (CTC2) */
+
+/* Optional lineage lives beside precision storage. Keep the existing hot
+ * value layout and memory footprint unchanged while source tracking is off. */
+#define PGXP_SOURCE_WORDS (PGXP_SHADOW_WORDS + PGXP_SCRATCH_WORDS + 34u + 32u + 32u)
+static uint64_t *s_sources = nullptr;
+static size_t source_index(const PGXPValue *pv) {
+    const uintptr_t p = (uintptr_t)pv;
+    const PGXPValue *arrays[] = {s_ram, s_scratch, s_gpr, s_gte, s_gtc};
+    const size_t counts[] = {PGXP_SHADOW_WORDS, PGXP_SCRATCH_WORDS, 34, 32, 32};
+    size_t base = 0;
+    for (unsigned i = 0; i < 5; ++i) {
+        const uintptr_t start = (uintptr_t)arrays[i];
+        if (arrays[i] && p >= start && p - start < counts[i] * sizeof(PGXPValue))
+            return base + (p - start) / sizeof(PGXPValue);
+        base += counts[i];
+    }
+    return PGXP_SOURCE_WORDS;
+}
+static uint64_t source_get(const PGXPValue *pv) {
+    if (!s_sources) return 0;
+    const size_t i = source_index(pv);
+    return i < PGXP_SOURCE_WORDS ? s_sources[i] : 0;
+}
+static void source_set(PGXPValue *pv, uint64_t token) {
+    if (!s_sources) return;
+    const size_t i = source_index(pv);
+    if (i < PGXP_SOURCE_WORDS) s_sources[i] = token;
+}
+static void pv_copy(PGXPValue *dst, const PGXPValue *src) {
+    *dst = *src;
+    if (s_sources) source_set(dst, source_get(src));
+}
+static void pv_copy(PGXPValue *dst, const PGXPTemp *src) {
+    *dst = *src;
+    if (s_sources) source_set(dst, src->source);
+}
 
 /* Scalar tier (cpu-mode). Engines also use the GTE as a multiplier for
  * vertex arithmetic: Ape Escape's terrain subdivider packs two projected X
@@ -120,6 +143,8 @@ static uint32_t s_gen = 1;
 static int      s_enabled = 0;
 static int      s_cpu_mode = 0;
 static int      s_projection_tracking = 0;
+static int      s_source_tracking = 0;
+static uint64_t s_source_revision = 0;
 static float    s_tolerance = 0.5f;   /* user-validated seam clamp (G1.10) */
 static int      s_position_fallback = 1;   /* G1.4 cache tier (G1.11 switch) */
 static int      s_preserve_projection = 0; /* exact-projection shadows (G1.11) */
@@ -129,11 +154,19 @@ static int      s_deferred_invalidate = 0;
 
 /* Single hot-path gate for every hook. */
 static int g_pgxp_active = 0;
+extern "C" {
+int psx_pgxp_plain_enabled = 0;
+uint32_t psx_pgxp_plain_mask = 0;
+uint32_t psx_pgxp_plain_values[32] = {};
+}
+static void flush_plain_writes(void);
 static inline void recompute_active(void) {
-    g_pgxp_active = (s_enabled && s_suppress == 0) ? 1 : 0;
+    g_pgxp_active = ((s_enabled || s_source_tracking) && s_suppress == 0) ? 1 : 0;
+    psx_pgxp_plain_enabled = g_pgxp_active;
 }
 
 static PGXPStats s_stats;
+static PGXPHookStats s_hook_stats;
 static PGXPStoreRecord *s_store_ring = nullptr;   /* pgxp_store_ring; with s_ram */
 
 /* ------------------------------------------------------------------------- */
@@ -144,6 +177,7 @@ static void ck_wrapped(void);
 
 extern "C" void pgxp_invalidate_all(void) {
     if (s_suppress != 0) { s_deferred_invalidate = 1; return; }
+    psx_pgxp_plain_mask = 0;
     if (++s_gen == 0) {
         ck_wrapped();
         /* generation wrapped: physically clear so stale slots can't revive */
@@ -155,6 +189,7 @@ extern "C" void pgxp_invalidate_all(void) {
         std::memset(s_gpr_s, 0, sizeof(s_gpr_s));
         std::memset(s_gte_s, 0, sizeof(s_gte_s));
         std::memset(s_gtc_s, 0, sizeof(s_gtc_s));
+        if (s_sources) std::memset(s_sources, 0, PGXP_SOURCE_WORDS * sizeof(uint64_t));
         s_gen = 1;
     }
 }
@@ -184,6 +219,26 @@ extern "C" int pgxp_active(void) { return g_pgxp_active; }
 
 extern "C" void pgxp_set_cpu_mode(int enabled) { s_cpu_mode = enabled ? 1 : 0; }
 extern "C" int  pgxp_cpu_mode(void) { return s_cpu_mode; }
+
+extern "C" int pgxp_set_source_tracking(int enabled) {
+    enabled = !!enabled;
+    if (enabled && !s_ram) {
+        s_ram = (PGXPValue *)std::calloc(PGXP_SHADOW_WORDS, sizeof(PGXPValue));
+        if (!s_ram) return 0;
+    }
+    if (enabled && !s_sources) {
+        s_sources = (uint64_t *)std::calloc(PGXP_SOURCE_WORDS, sizeof(uint64_t));
+        if (!s_sources) return 0;
+    }
+    if (s_source_tracking != enabled) {
+        s_source_tracking = enabled;
+        ++s_source_revision;
+        pgxp_invalidate_all();
+        recompute_active();
+    }
+    if (!enabled) { std::free(s_sources); s_sources = nullptr; }
+    return 1;
+}
 
 extern "C" void pgxp_set_projection_tracking(int enabled) {
     if (s_projection_tracking == !!enabled) return;
@@ -231,6 +286,7 @@ extern "C" int pgxp_mod_request_take(int *cpu_mode, int *culling) {
 }
 
 extern "C" void pgxp_suppress_begin(void) {
+    flush_plain_writes();
     ++s_suppress;
     recompute_active();
 }
@@ -247,6 +303,10 @@ extern "C" void pgxp_suppress_end(void) {
 
 extern "C" void pgxp_get_stats(PGXPStats *out) {
     if (out) *out = s_stats;
+}
+
+extern "C" void pgxp_get_hook_stats(PGXPHookStats *out) {
+    if (out) *out = s_hook_stats;
 }
 
 extern "C" void pgxp_note_rect_bypass(int all_precise) {
@@ -360,6 +420,7 @@ struct PGXPJournalEntry {
     PGXPValue *slot;
     size_t index;
     PGXPValue old;
+    uint64_t source;
 };
 
 static uint32_t          s_ck_depth = 0;
@@ -369,9 +430,11 @@ static PGXPJournalEntry *s_ck_log = nullptr;
 static size_t            s_ck_n = 0, s_ck_cap = 0;
 static int               s_ck_lossy = 0;
 static PGXPValue         s_ck_gpr[34], s_ck_gte[32], s_ck_gtc[32];
+static uint64_t          s_ck_gpr_source[34], s_ck_gte_source[32], s_ck_gtc_source[32];
 static PGXPScalar        s_ck_gpr_s[34], s_ck_gte_s[32], s_ck_gtc_s[32];
 static uint32_t          s_ck_gen = 0, s_ck_suppress = 0;
 static int               s_ck_deferred = 0;
+static uint64_t          s_ck_source_revision = 0;
 
 static inline size_t ck_index(const PGXPValue *pv) {
     if (pv >= s_scratch && pv < s_scratch + PGXP_SCRATCH_WORDS)
@@ -402,6 +465,7 @@ static inline void ck_note(PGXPValue *pv, uint32_t addr) {
     s_ck_log[s_ck_n].slot = pv;
     s_ck_log[s_ck_n].index = i;
     s_ck_log[s_ck_n].old = *pv;
+    s_ck_log[s_ck_n].source = source_get(pv);
     s_ck_n++;
 }
 
@@ -456,6 +520,21 @@ extern "C" int pgxp_capture_word_shadow(uint32_t addr, uint32_t expected,
     return 1;
 }
 
+/* The same receipt fields feed sandbox restoration and native publication. */
+static PGXPValue value_from_word_shadow(const PGXPWordShadow *in) {
+    PGXPValue restored{};
+    if (in->valid) {
+        restored.value = in->value;
+        restored.gen = s_gen;
+        restored.x16 = in->x16;
+        restored.y16 = in->y16;
+        restored.z = in->z;
+        restored.flags = in->flags;
+        restored.projection = in->projection;
+    }
+    return restored;
+}
+
 static int restore_word_shadow(uint32_t addr, uint32_t expected,
                                const PGXPWordShadow *in, bool relocated) {
     uint32_t canonical, source;
@@ -470,17 +549,8 @@ static int restore_word_shadow(uint32_t addr, uint32_t expected,
     if (!destination) return in->valid == 0u;
     ck_note(destination, addr);
     if (s_ck_lossy) return 0;
-    PGXPValue restored{};
-    if (in->valid) {
-        restored.value = in->value;
-        restored.gen = s_gen;
-        restored.x16 = in->x16;
-        restored.y16 = in->y16;
-        restored.z = in->z;
-        restored.flags = in->flags;
-        restored.projection = in->projection;
-    }
-    *destination = restored;
+    *destination = value_from_word_shadow(in);
+    source_set(destination, 0);
     return 1;
 }
 
@@ -496,7 +566,9 @@ extern "C" int pgxp_restore_relocated_word_shadow(uint32_t destination,
 }
 
 extern "C" void pgxp_checkpoint_begin(void) {
+    flush_plain_writes();
     if (s_ck_depth++ != 0) return;             /* the outermost pass journals */
+    s_ck_source_revision = s_source_revision;
     if (!s_ck_bits) {
         s_ck_bits = (uint8_t *)std::calloc(
             ((size_t)PGXP_SHADOW_WORDS + PGXP_SCRATCH_WORDS + 7u) / 8u, 1);
@@ -507,6 +579,13 @@ extern "C" void pgxp_checkpoint_begin(void) {
     std::memcpy(s_ck_gpr, s_gpr, sizeof s_gpr);
     std::memcpy(s_ck_gte, s_gte, sizeof s_gte);
     std::memcpy(s_ck_gtc, s_gtc, sizeof s_gtc);
+    if (s_sources) {
+        for (unsigned i = 0; i < 34; ++i) s_ck_gpr_source[i] = source_get(&s_gpr[i]);
+        for (unsigned i = 0; i < 32; ++i) {
+            s_ck_gte_source[i] = source_get(&s_gte[i]);
+            s_ck_gtc_source[i] = source_get(&s_gtc[i]);
+        }
+    }
     std::memcpy(s_ck_gpr_s, s_gpr_s, sizeof s_gpr_s);
     std::memcpy(s_ck_gte_s, s_gte_s, sizeof s_gte_s);
     std::memcpy(s_ck_gtc_s, s_gtc_s, sizeof s_gtc_s);
@@ -516,11 +595,13 @@ extern "C" void pgxp_checkpoint_begin(void) {
 }
 
 extern "C" void pgxp_checkpoint_rollback(void) {
+    flush_plain_writes();
     if (s_ck_depth == 0) return;
     if (--s_ck_depth != 0) return;
     for (size_t i = s_ck_n; i-- > 0;) {
         PGXPJournalEntry *e = &s_ck_log[i];
         *e->slot = e->old;
+        source_set(e->slot, e->source);
         size_t k = e->index;
         s_ck_bits[k >> 3] &= (uint8_t)~(1u << (k & 7u));
     }
@@ -528,6 +609,13 @@ extern "C" void pgxp_checkpoint_rollback(void) {
     std::memcpy(s_gpr, s_ck_gpr, sizeof s_gpr);
     std::memcpy(s_gte, s_ck_gte, sizeof s_gte);
     std::memcpy(s_gtc, s_ck_gtc, sizeof s_gtc);
+    if (s_sources) {
+        for (unsigned i = 0; i < 34; ++i) source_set(&s_gpr[i], s_ck_gpr_source[i]);
+        for (unsigned i = 0; i < 32; ++i) {
+            source_set(&s_gte[i], s_ck_gte_source[i]);
+            source_set(&s_gtc[i], s_ck_gtc_source[i]);
+        }
+    }
     std::memcpy(s_gpr_s, s_ck_gpr_s, sizeof s_gpr_s);
     std::memcpy(s_gte_s, s_ck_gte_s, sizeof s_gte_s);
     std::memcpy(s_gtc_s, s_ck_gtc_s, sizeof s_gtc_s);
@@ -537,13 +625,14 @@ extern "C" void pgxp_checkpoint_rollback(void) {
     s_suppress = s_ck_suppress;
     s_deferred_invalidate = s_ck_deferred;
     recompute_active();
-    if (s_ck_lossy || s_ram != s_ck_ram) {
+    if (s_ck_lossy || s_ram != s_ck_ram || s_source_revision != s_ck_source_revision) {
         s_ck_lossy = 0;
         pgxp_invalidate_all();
     }
 }
 
 extern "C" int pgxp_projective_scope_begin(PGXPProjectiveScope *scope) {
+    flush_plain_writes();
     if (!scope || scope->active) return 0;
     scope->saved_enabled = s_enabled;
     scope->saved_cpu_mode = s_cpu_mode;
@@ -560,6 +649,7 @@ extern "C" int pgxp_projective_scope_begin(PGXPProjectiveScope *scope) {
 }
 
 extern "C" void pgxp_projective_scope_end(PGXPProjectiveScope *scope) {
+    flush_plain_writes();
     if (!scope || !scope->active) return;
     s_cpu_mode = scope->saved_cpu_mode;
     if (!scope->saved_enabled) pgxp_set_enabled(0);
@@ -575,7 +665,10 @@ static inline int pv_live(const PGXPValue *pv) {
 static inline void pv_validate(PGXPValue *pv, uint32_t actual) {
     if (pv->gen != s_gen) return;
     uint32_t diff = pv->value ^ actual;
-    if (diff) pv->flags &= (uint16_t)~(PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
+    if (diff) {
+        pv->flags &= (uint16_t)~(PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
+        source_set(pv, 0);
+    }
     if ((pv->flags & PGXP_F_VX) && (diff & 0x0000FFFFu))
         pv->flags &= (uint16_t)~(PGXP_F_VX | PGXP_F_DX | PGXP_F_VZ);
     if ((pv->flags & PGXP_F_VY) && (diff & 0xFFFF0000u))
@@ -590,6 +683,7 @@ static inline void pv_reset(PGXPValue *pv, uint32_t value) {
     pv->flags = 0;
     pv->value = value;
     pv->gen = s_gen;
+    source_set(pv, 0);
 }
 
 static inline void pv_kill(PGXPValue *pv) { pv->gen = 0; }
@@ -599,6 +693,34 @@ extern "C" void pgxp_invalidate_word(uint32_t addr) {
     PGXPValue *pv = pgxp_ptr_w(addr);       /* a render pass rolls it back */
     if (pv) pv_kill(pv);
 }
+
+extern "C" void pgxp_write_owned(uint32_t addr, uint32_t value, uint32_t width) {
+#if defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS
+    if (!g_pgxp_active || (width != 1 && width != 2 && width != 4)) return;
+    // Geometry-demand stores end only an EXISTING receipt. Do not allocate or
+    // maintain a parallel plain-word shadow for ordinary nongeometry writes.
+    // A retained geometry STORE publishes its source after the real write.
+    if(width==4u && !(addr&3u)) {
+        const PGXPValue* old=pgxp_ptr(addr);
+        if(old && old->gen==s_gen)pv_kill(pgxp_ptr_w(addr));
+        return;
+    }
+    for(uint32_t i=0;i<width;++i) {
+        const PGXPValue* old=pgxp_ptr(addr+i);
+        if(!old || old->gen!=s_gen)continue;
+        PGXPValue* dst=pgxp_ptr_w(addr+i);
+        const uint32_t shift=((addr+i)&3u)*8u;
+        dst->value=(dst->value&~(0xffu<<shift))|(((value>>(8u*i))&0xffu)<<shift);
+        const uint16_t half=((addr+i)&2u)?(PGXP_F_VY|PGXP_F_DY):(PGXP_F_VX|PGXP_F_DX);
+        dst->flags&=(uint16_t)~(half|PGXP_F_VZ|PGXP_F_PROJECTION|PGXP_F_UNCLAMPED);
+        dst->z=0;source_set(dst,0);
+    }
+    return;
+#else
+    (void)addr; (void)value; (void)width;
+#endif
+}
+
 
 /* ------------------------------------------------------------------------- */
 /* Instruction field helpers                                                  */
@@ -617,6 +739,24 @@ static inline int32_t  f_simm(uint32_t i)  { return (int32_t)(int16_t)(i & 0xFFF
 /* ------------------------------------------------------------------------- */
 
 static inline void sc_kill(PGXPScalar *s) { s->gen = 0; }
+/* Coalescing stores the last actual value, never a later CPU register value:
+ * the latter can have changed at a deferred guest load writeback. */
+static void flush_plain_writes(void) {
+#if (defined(PSX_NATIVE_PRECISION_SLICES) && PSX_NATIVE_PRECISION_SLICES) || \
+    (defined(PSX_PGXP_DATAFLOW) && PSX_PGXP_DATAFLOW)
+    const uint32_t mask = psx_pgxp_plain_mask;
+    if (!mask) return;
+    psx_pgxp_plain_mask = 0;
+    ++s_hook_stats.plain_batches;
+    for (uint32_t r = 1; r < 32; ++r) {
+        if (!(mask & (UINT32_C(1) << r))) continue;
+        ++s_hook_stats.plain_registers;
+        pv_reset(&s_gpr[r], psx_pgxp_plain_values[r]);
+        sc_kill(&s_gpr_s[r]);
+    }
+#endif
+}
+
 static inline void sc_set(PGXPScalar *s, double v, uint32_t value) {
     s->v = v; s->value = value; s->gen = s_gen;
 }
@@ -677,17 +817,34 @@ static inline int32_t scalar_to_half(double v, int32_t half, int *ok, int *deriv
 /* Memory-mode hooks: loads / stores                                          */
 /* ------------------------------------------------------------------------- */
 
+/* Preserve these ABI symbols solely to reject old callers explicitly. */
+extern "C" int psx_pgxp_operation_begin(CPUState *cpu, uint32_t reads, uint32_t outputs,
+    const PSXPGXPOperationAccess *access, uint32_t count,
+    uint32_t alu, uint32_t loads, uint32_t stores) {
+    (void)cpu; (void)reads; (void)outputs; (void)access; (void)count;
+    (void)alu; (void)loads; (void)stores;
+    PSXRecompV4::precision::reject_legacy_operations();
+}
+
+extern "C" void psx_pgxp_operation_end(CPUState *cpu, uint32_t plain, uint32_t exact,
+    uint32_t high, uint32_t low, uint32_t zero_halves) {
+    (void)cpu; (void)plain; (void)exact; (void)high; (void)low; (void)zero_halves;
+    PSXRecompV4::precision::reject_legacy_operations();
+}
+
 /* SXY2 and SXYP are one register seen at two addresses: whichever the hook
  * just filled, the other describes the same word. */
 static inline void gte_sxy2_mirror(uint32_t reg) {
-    if (reg == 14)      s_gte[15] = s_gte[14];
-    else if (reg == 15) s_gte[14] = s_gte[15];
+    if (reg == 14)      pv_copy(&s_gte[15], &s_gte[14]);
+    else if (reg == 15) pv_copy(&s_gte[14], &s_gte[15]);
 }
 
 extern "C" void psx_pgxp_load(struct CPUState *cpu, uint32_t instr,
                               uint32_t addr, uint32_t value) {
     (void)cpu;
     if (!g_pgxp_active) return;
+    ++s_hook_stats.load;
+    flush_plain_writes();
     uint32_t rt = f_rt(instr);
     if (rt == 0) return;
     PGXPValue *dst = &s_gpr[rt];
@@ -704,7 +861,7 @@ extern "C" void psx_pgxp_load(struct CPUState *cpu, uint32_t instr,
         PGXPValue *src = pgxp_ptr_w(addr);     /* validation may mutate it    */
         if (src && src->gen == s_gen) {
             pv_validate(src, value);
-            *dst = *src;
+            pv_copy(dst, src);
         } else {
             pv_reset(dst, value);
         }
@@ -739,10 +896,49 @@ extern "C" void psx_pgxp_load(struct CPUState *cpu, uint32_t instr,
     }
 }
 
+/* Shared logical partial-word publication. In particular, never read or
+ * validate the unconsumed destination half: an SH into a generation-stale
+ * word knows only its written half, even if live RAM contains other bits. */
+static void publish_half_shadow(PGXPValue *dst, uint32_t addr, uint32_t value,
+                                const PGXPValue *src, bool tracked_scalar, double scalar) {
+    int hi_half = (addr >> 1) & 1;
+    uint32_t half = value & 0xFFFFu;
+    if (dst->gen != s_gen) pv_reset(dst, half << (hi_half ? 16 : 0));
+    /* Patch the stored half into the tracked word; the other half's
+     * validity (if any) survives untouched. Depth never survives a
+     * half-write — the vertex it described no longer exists whole. */
+    if (hi_half) dst->value = (dst->value & 0x0000FFFFu) | (half << 16);
+    else         dst->value = (dst->value & 0xFFFF0000u) | half;
+    dst->flags &= (uint16_t)~((hi_half ? (PGXP_F_VY | PGXP_F_DY) : (PGXP_F_VX | PGXP_F_DX)) |
+                              PGXP_F_VZ | PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
+    dst->z = 0;
+    source_set(dst, 0);
+    int ok = 0, derived = 0;
+    int32_t v16 = 0;
+    /* Hooks pass either the full register or just the stored half (the
+     * interpreters), so the scalar is matched on the stored half. */
+    if (s_cpu_mode && tracked_scalar)
+        v16 = scalar_to_half(scalar, (int16_t)half, &ok, &derived);
+    if (ok) {
+        /* A scalar (e.g. a midpoint computed by MVMVA + DIV) becomes a
+         * coordinate half here. */
+        if (hi_half) { dst->y16 = v16; dst->flags |= (uint16_t)(PGXP_F_VY | (derived ? PGXP_F_DY : 0)); }
+        else         { dst->x16 = v16; dst->flags |= (uint16_t)(PGXP_F_VX | (derived ? PGXP_F_DX : 0)); }
+    } else if (src && src->gen == s_gen && !(src->flags & PGXP_F_UNCLAMPED) &&
+               (src->flags & PGXP_F_VX) &&
+               ((src->value ^ value) & 0xFFFFu) == 0) {
+        const uint16_t d = (src->flags & PGXP_F_DX) ? (hi_half ? PGXP_F_DY : PGXP_F_DX) : 0;
+        if (hi_half) { dst->y16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VY | d); }
+        else         { dst->x16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VX | d); }
+    }
+}
+
 extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
                                uint32_t addr, uint32_t value) {
     (void)cpu;
     if (!g_pgxp_active) return;
+    ++s_hook_stats.store;
+    flush_plain_writes();
     PGXPValue *dst = pgxp_ptr_w(addr);
     if (!dst) return;
     uint32_t rt = f_rt(instr);
@@ -760,7 +956,7 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
         if (src) before = *src;
         if (src && src->gen == s_gen) {
             pv_validate(src, value);
-            *dst = *src;
+            pv_copy(dst, src);
         } else {
             pv_reset(dst, value);
         }
@@ -783,36 +979,10 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
         return;
     }
     case 0x29: {                               /* SH                          */
-        int hi_half = (addr >> 1) & 1;
-        uint32_t half = value & 0xFFFFu;
-        if (dst->gen != s_gen) pv_reset(dst, half << (hi_half ? 16 : 0));
-        /* Patch the stored half into the tracked word; the other half's
-         * validity (if any) survives untouched. Depth never survives a
-         * half-write — the vertex it described no longer exists whole. */
-        if (hi_half) dst->value = (dst->value & 0x0000FFFFu) | (half << 16);
-        else         dst->value = (dst->value & 0xFFFF0000u) | half;
-        dst->flags &= (uint16_t)~((hi_half ? (PGXP_F_VY | PGXP_F_DY) : (PGXP_F_VX | PGXP_F_DX)) |
-                                  PGXP_F_VZ | PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
-        dst->z = 0;
-        int ok = 0, derived = 0;
-        int32_t v16 = 0;
-        /* Hooks pass either the full register or just the stored half (the
-         * interpreters), so the scalar is matched on the stored half. */
-        if (s_cpu_mode && rt != 0 && s_gpr_s[rt].gen == s_gen &&
-            (s_gpr_s[rt].value & 0xFFFFu) == half)
-            v16 = scalar_to_half(s_gpr_s[rt].v, (int16_t)half, &ok, &derived);
-        if (ok) {
-            /* A scalar (e.g. a midpoint computed by MVMVA + DIV) becomes a
-             * coordinate half here. */
-            if (hi_half) { dst->y16 = v16; dst->flags |= (uint16_t)(PGXP_F_VY | (derived ? PGXP_F_DY : 0)); }
-            else         { dst->x16 = v16; dst->flags |= (uint16_t)(PGXP_F_VX | (derived ? PGXP_F_DX : 0)); }
-        } else if (src && src->gen == s_gen && !(src->flags & PGXP_F_UNCLAMPED) &&
-                   (src->flags & PGXP_F_VX) &&
-                   ((src->value ^ value) & 0xFFFFu) == 0) {
-            const uint16_t d = (src->flags & PGXP_F_DX) ? (hi_half ? PGXP_F_DY : PGXP_F_DX) : 0;
-            if (hi_half) { dst->y16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VY | d); }
-            else         { dst->x16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VX | d); }
-        }
+        const uint32_t half = value & 0xFFFFu;
+        const bool scalar = rt != 0 && s_gpr_s[rt].gen == s_gen &&
+                            (s_gpr_s[rt].value & 0xFFFFu) == half;
+        publish_half_shadow(dst, addr, value, src, scalar, scalar ? s_gpr_s[rt].v : 0.0);
         note_store(0x29, rt, src, addr, half, dst);
         return;
     }
@@ -824,6 +994,7 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
         dst->flags &= (uint16_t)~(((addr & 2u) ? (PGXP_F_VY | PGXP_F_DY) : (PGXP_F_VX | PGXP_F_DX)) |
                                   PGXP_F_VZ | PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
         dst->z = 0;
+        source_set(dst, 0);
         return;
     }
     default:                                   /* SWL/SWR: forget the word    */
@@ -840,6 +1011,8 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
                               uint32_t value, uint32_t addr) {
     (void)cpu;
     if (!g_pgxp_active) return;
+    ++s_hook_stats.cop2;
+    flush_plain_writes();
 
     switch (f_op(instr)) {
     case 0x32: {                               /* LWC2: gte[rt] <- [addr]     */
@@ -847,7 +1020,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
         PGXPValue *dst = &s_gte[f_rt(instr)];
         if (src && src->gen == s_gen) {
             pv_validate(src, value);
-            *dst = *src;
+            pv_copy(dst, src);
         } else {
             pv_reset(dst, value);
         }
@@ -862,7 +1035,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
         const PGXPValue before = *src;
         if (src->gen == s_gen) {
             pv_validate(src, value);
-            *dst = *src;
+            pv_copy(dst, src);
         } else {
             pv_reset(dst, value);
         }
@@ -877,7 +1050,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
             PGXPValue *src = &s_gte[f_rd(instr)];
             if (src->gen == s_gen) {
                 pv_validate(src, value);
-                s_gpr[rt] = *src;
+                pv_copy(&s_gpr[rt], src);
             } else {
                 pv_reset(&s_gpr[rt], value);
             }
@@ -894,7 +1067,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
             PGXPValue *dst = &s_gte[rd];
             if (rt != 0 && s_gpr[rt].gen == s_gen) {
                 pv_validate(&s_gpr[rt], value);
-                *dst = s_gpr[rt];
+                pv_copy(dst, &s_gpr[rt]);
             } else {
                 pv_reset(dst, value);
             }
@@ -916,7 +1089,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
             uint32_t rd = f_rd(instr);
             if (s_cpu_mode && s_gtc[rd].gen == s_gen) {
                 pv_validate(&s_gtc[rd], value);
-                s_gpr[rt] = s_gtc[rd];
+                pv_copy(&s_gpr[rt], &s_gtc[rd]);
             } else {
                 pv_reset(&s_gpr[rt], value);
             }
@@ -935,7 +1108,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
             uint32_t rd = f_rd(instr);
             if (s_cpu_mode && rt != 0 && s_gpr[rt].gen == s_gen) {
                 pv_validate(&s_gpr[rt], value);
-                s_gtc[rd] = s_gpr[rt];
+                pv_copy(&s_gtc[rd], &s_gpr[rt]);
             } else {
                 pv_reset(&s_gtc[rd], value);
             }
@@ -954,9 +1127,263 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
     }
 }
 
+/* Native geometry transports the existing word receipts instead of executing
+ * the CPU load/ALU/store shadow stream. No receipt survives the operation. */
+static int native_word_valid(const PGXPNativeWord *word) {
+    uint32_t source;
+    return word && word->word.valid <= 1u &&
+        word->word.source_generation == s_gen &&
+        packet_shadow_address(word->word.address, &source) &&
+        source == word->word.address && (!word->word.valid || s_enabled);
+}
+
+extern "C" int pgxp_native_capture_words(const uint32_t *addresses,
+                                         const uint32_t *values,
+                                         PGXPNativeWord *out, uint32_t count) {
+    if (!addresses || !values || !out || count == 0 || count > 4u) return 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t canonical;
+        if (!packet_shadow_address(addresses[i], &canonical)) return 0;
+    }
+    PGXPNativeWord captured[4]{};
+    for (uint32_t i = 0; i < count; ++i) {
+        // The native operation consumes these words exactly as a hooked load
+        // does: retain matching halves and end stale lineage before capture.
+        if (g_pgxp_active) {
+            PGXPValue *source = pgxp_ptr_w(addresses[i]);
+            if (source && source->gen == s_gen) pv_validate(source, values[i]);
+        }
+        if (!pgxp_capture_word_shadow(addresses[i], values[i], &captured[i].word)) return 0;
+        const PGXPValue *source = pgxp_ptr(addresses[i]);
+        if (source && source->gen == s_gen && source->value == values[i])
+            captured[i].source = source_get(source);
+    }
+    std::memcpy(out, captured, count * sizeof(*out));
+    if (g_pgxp_active) s_hook_stats.native_words_captured += count;
+    return 1;
+}
+
+extern "C" int pgxp_native_capture_half(uint32_t address, uint16_t value,
+                                         int sign_extend, PGXPNativeWord *out) {
+    uint32_t canonical;
+    if (!out || (address & 1u) || !packet_shadow_address(address & ~3u, &canonical)) return 0;
+    PGXPNativeWord result{};
+    result.word.address = canonical;
+    result.word.source_generation = s_gen;
+    result.word.value = sign_extend ? (uint32_t)(int32_t)(int16_t)value : value;
+    result.word.valid = s_enabled ? 1u : 0u;
+    result.word.flags = PGXP_F_VY;
+    result.word.y16 = (int32_t)(int16_t)(result.word.value >> 16) * 65536;
+    const PGXPValue *source = pgxp_ptr(address);
+    const bool high = (address & 2u) != 0;
+    if (source && source->gen == s_gen && !(source->flags & PGXP_F_UNCLAMPED) &&
+        (source->flags & (high ? PGXP_F_VY : PGXP_F_VX)) &&
+        (uint16_t)(source->value >> (high ? 16 : 0)) == value) {
+        result.word.flags |= PGXP_F_VX;
+        result.word.x16 = high ? source->y16 : source->x16;
+        if (source->flags & (high ? PGXP_F_DY : PGXP_F_DX)) result.word.flags |= PGXP_F_DX;
+    }
+    *out = result;
+    if (g_pgxp_active) ++s_hook_stats.native_words_captured;
+    return 1;
+}
+
+extern "C" int pgxp_native_publish_words(const uint32_t *destinations,
+                                         const PGXPNativeWord *words,
+                                         uint32_t count) {
+    if (!destinations || !words || count == 0 || count > 4u) return 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t canonical;
+        if (!packet_shadow_address(destinations[i], &canonical) ||
+            !native_word_valid(&words[i])) return 0;
+    }
+    if (!g_pgxp_active) return 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        PGXPValue *destination = pgxp_ptr_w(destinations[i]);
+        if (!destination) continue;
+        PGXPValue restored = value_from_word_shadow(&words[i].word);
+        // Source tracking can be active with visual correction disabled.
+        if (!words[i].word.valid) {
+            restored.value = words[i].word.value;
+            restored.gen = s_gen;
+        }
+        *destination = restored;
+        source_set(destination, words[i].source);
+        note_store(PGXP_STORE_NATIVE_WORD, 0xFFu, &restored,
+                   destinations[i], words[i].word.value, destination);
+    }
+    s_hook_stats.native_words_published += count;
+    return 1;
+}
+
+extern "C" int pgxp_native_publish_half(uint32_t address, const PGXPNativeWord *word,
+                                         double scalar, int tracked_scalar) {
+    uint32_t canonical;
+    if ((address & 1u) || !packet_shadow_address(address & ~3u, &canonical) ||
+        !native_word_valid(word) || (tracked_scalar && !std::isfinite(scalar))) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();
+    PGXPValue *destination = pgxp_ptr_w(address);
+    if (!destination) return 1;
+    PGXPValue source = value_from_word_shadow(&word->word);
+    if (!word->word.valid) { source.value = word->word.value; source.gen = s_gen; }
+    publish_half_shadow(destination, address, word->word.value, &source, tracked_scalar != 0, scalar);
+    note_store(0x29, 0xFFu, &source, address, word->word.value & 65535u, destination);
+    ++s_hook_stats.native_words_published;
+    return 1;
+}
+
+extern "C" int pgxp_native_import_gpr(uint32_t reg, const PGXPNativeWord *word) {
+    if (reg == 0u || reg >= 32u || !native_word_valid(word)) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();
+    psx_pgxp_plain_mask &= ~(UINT32_C(1) << reg);
+    PGXPValue restored = value_from_word_shadow(&word->word);
+    if (!word->word.valid) {
+        restored.value = word->word.value;
+        restored.gen = s_gen;
+    }
+    s_gpr[reg] = restored;
+    source_set(&s_gpr[reg], word->source);
+    sc_kill(&s_gpr_s[reg]);
+    ++s_hook_stats.native_gpr_imports;
+    return 1;
+}
+
+extern "C" int pgxp_native_import_sxy(uint32_t reg, const PGXPNativeWord *word) {
+    if (reg < 12u || reg > 14u || !native_word_valid(word)) return 0;
+    if (!g_pgxp_active) return 1;
+    PGXPValue restored = value_from_word_shadow(&word->word);
+    if (!word->word.valid) {
+        restored.value = word->word.value;
+        restored.gen = s_gen;
+    }
+    s_gte[reg] = restored;
+    source_set(&s_gte[reg], word->source);
+    sc_kill(&s_gte_s[reg]);
+    gte_sxy2_mirror(reg);
+    ++s_hook_stats.native_sxy_imports;
+    return 1;
+}
+
+extern "C" void pgxp_native_clobber(CPUState *cpu, uint32_t gpr_mask,
+                                     uint32_t gte_mask) {
+    if (!cpu || !g_pgxp_active) return;
+    flush_plain_writes();
+    psx_pgxp_plain_mask &= ~gpr_mask;
+    for (uint32_t r = 1; r < 32u; ++r) {
+        if (gpr_mask & (UINT32_C(1) << r)) {
+            pv_reset(&s_gpr[r], cpu->gpr[r]);
+            sc_kill(&s_gpr_s[r]);
+        }
+    }
+    // SXY has FIFO/alias semantics and is owned by import_sxy, never clobber.
+    gte_mask &= ~UINT32_C(0xF000);
+    for (uint32_t r = 0; r < 32u; ++r) {
+        if (gte_mask & (UINT32_C(1) << r)) {
+            pv_reset(&s_gte[r], cpu->gte_data[r]);
+            sc_kill(&s_gte_s[r]);
+        }
+    }
+    if (g_pgxp_active) ++s_hook_stats.native_clobbers;
+}
+
 /* ------------------------------------------------------------------------- */
 /* CPU-mode hooks: arithmetic (tier 2, default off)                           */
 /* ------------------------------------------------------------------------- */
+
+extern "C" void pgxp_native_exact_gpr(CPUState *cpu, uint32_t gpr_mask) {
+    if (!cpu || !g_pgxp_active) return;
+    flush_plain_writes();
+    psx_pgxp_plain_mask &= ~gpr_mask;
+    for (uint32_t r = 1; r < 32u; ++r) {
+        if (!(gpr_mask & (UINT32_C(1) << r))) continue;
+        const uint32_t value = cpu->gpr[r];
+        pv_reset(&s_gpr[r], value);
+        s_gpr[r].x16 = (int32_t)(int16_t)value * 65536;
+        s_gpr[r].y16 = (int32_t)(int16_t)(value >> 16) * 65536;
+        s_gpr[r].flags = PGXP_F_VXY;
+        sc_kill(&s_gpr_s[r]);
+    }
+    ++s_hook_stats.native_clobbers;
+}
+
+extern "C" int pgxp_native_import_control(uint32_t reg, const PGXPNativeWord *word) {
+    if (reg >= 32u || !native_word_valid(word)) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();
+    PGXPValue restored = value_from_word_shadow(&word->word);
+    if (!word->word.valid) { restored.value = word->word.value; restored.gen = s_gen; }
+    s_gtc[reg] = restored;
+    source_set(&s_gtc[reg], word->source);
+    sc_kill(&s_gtc_s[reg]);
+    return 1;
+}
+
+extern "C" int pgxp_native_scalar_gpr(CPUState *cpu, uint32_t reg, double precise, int tracked) {
+    if (!cpu || reg == 0u || reg >= 34u || (tracked && !std::isfinite(precise))) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();
+    if (reg < 32u) psx_pgxp_plain_mask &= ~(UINT32_C(1) << reg);
+    const uint32_t value = reg < 32u ? cpu->gpr[reg] : reg == 32u ? cpu->hi : cpu->lo;
+    pv_reset(&s_gpr[reg], value);
+    if (tracked && s_cpu_mode) sc_set(&s_gpr_s[reg], precise, value);
+    else sc_kill(&s_gpr_s[reg]);
+    ++s_hook_stats.native_clobbers;
+    return 1;
+}
+
+extern "C" int pgxp_native_import_data(uint32_t reg, const PGXPNativeWord *word) {
+    if (reg >= 32u || (reg >= 12u && reg <= 15u) || !native_word_valid(word)) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();
+    PGXPValue restored = value_from_word_shadow(&word->word);
+    if (!word->word.valid) { restored.value = word->word.value; restored.gen = s_gen; }
+    s_gte[reg] = restored;
+    source_set(&s_gte[reg], word->source);
+    sc_kill(&s_gte_s[reg]);
+    return 1;
+}
+
+extern "C" int pgxp_native_gpr_scalar(uint32_t reg, uint32_t expected, double *precise) {
+    if (!precise || reg == 0u || reg >= 34u || !g_pgxp_active || !s_cpu_mode) return 0;
+    flush_plain_writes();
+    if (!sc_valid(&s_gpr_s[reg], expected)) return 0;
+    *precise = s_gpr_s[reg].v;
+    return 1;
+}
+
+extern "C" int pgxp_native_gte_scalar(uint32_t reg, uint32_t expected, double *precise) {
+    if (!precise || reg >= 32u || !g_pgxp_active || !s_cpu_mode ||
+        !sc_valid(&s_gte_s[reg], expected)) return 0;
+    *precise = s_gte_s[reg].v;
+    return 1;
+}
+
+extern "C" int pgxp_native_scalar_data(uint32_t reg, uint32_t value, double precise, int tracked) {
+    if (reg >= 32u || (reg >= 12u && reg <= 15u) || (tracked && !std::isfinite(precise))) return 0;
+    if (!g_pgxp_active) return 1;
+    flush_plain_writes();pv_reset(&s_gte[reg], value);
+    if (tracked && s_cpu_mode) sc_set(&s_gte_s[reg], precise, value);
+    else sc_kill(&s_gte_s[reg]);
+    return 1;
+}
+
+extern "C" int pgxp_native_word_exact(uint32_t address, uint32_t expected) {
+    uint32_t canonical;
+    if (!packet_shadow_address(address, &canonical)) return 0;
+    const PGXPValue *value = pgxp_ptr(address);
+    if (!g_pgxp_active || !value || value->gen != s_gen) return 1;
+    if ((value->flags & (PGXP_F_PROJECTION | PGXP_F_UNCLAMPED)) && value->value == expected) return 0;
+    for (unsigned axis = 0; axis < 2; ++axis) {
+        const uint32_t mask = axis ? 0xFFFF0000u : 0xFFFFu;
+        if (!(value->flags & (axis ? PGXP_F_VY : PGXP_F_VX)) ||
+            ((value->value ^ expected) & mask)) continue;
+        const int32_t exact = (int32_t)(int16_t)(expected >> (16u * axis)) * 65536;
+        if ((axis ? value->y16 : value->x16) != exact) return 0;
+    }
+    return 1;
+}
 
 /* One 16-bit operand component in 16.16: a tracked half contributes its
  * sub-pixel value; an untracked half contributes its exact integer value
@@ -1096,13 +1523,14 @@ static void alu_bitwise(PGXPValue *dst, const PGXPValue *a, uint32_t s1,
         keep_depth(dst, from[0], from[0] == p ? q : p);
 }
 
-static const PGXPValue kNoShadow = { 0, 0, 0, 0, 0, 0 };
+static const PGXPValue kNoShadow = {};
 
 /* Snapshot a source GPR shadow: the destination may alias a source (in-place
  * ops such as `or t2, t2, t9` or `addiu t0, t0, 4`), and it is reset before
  * the sources are read. */
-static inline const PGXPValue *gpr_shadow(uint32_t r, PGXPValue *copy) {
-    *copy = (r != 0) ? s_gpr[r] : kNoShadow;
+static inline const PGXPTemp *gpr_shadow(uint32_t r, PGXPTemp *copy) {
+    static_cast<PGXPValue&>(*copy) = (r != 0) ? s_gpr[r] : kNoShadow;
+    copy->source = r != 0 ? source_get(&s_gpr[r]) : 0;
     return copy;
 }
 
@@ -1190,12 +1618,94 @@ static int alu_scalar(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2,
     return 0;
 }
 
+static void add_immediate_halves(PGXPValue *dst, const PGXPTemp *a,
+        uint32_t result, uint32_t s1, int32_t imm) {
+    if (imm == 0) {                        /* MOVE idiom                  */
+        if (a->gen == s_gen) {
+            pv_copy(dst, a);
+            pv_validate(dst, result);
+        } else pv_reset(dst, result);
+        return;
+    }
+    /* A negative immediate is a subtraction of its magnitude: checking
+     * carry on the sign-extended form would reject nearly every -N. */
+    int neg = imm < 0;
+    uint32_t mag = (uint32_t)(neg ? -imm : imm);
+    if (!s_cpu_mode ||
+        !halves_independent(s1, mag, result, neg) ||
+        (!comp_tracked(a, s1, 0) && !comp_tracked(a, s1, 1))) {
+        pv_reset(dst, result);
+        return;
+    }
+    int32_t dx = (int32_t)(mag & 0xFFFFu) << 16;
+    pv_reset(dst, result);
+    dst->x16 = comp16(a, s1, 0) + (neg ? -dx : dx);
+    dst->y16 = comp16(a, s1, 1);           /* no carry crossed: Y untouched */
+    dst->flags = (uint16_t)(PGXP_F_VXY | derived_bits(a, s1));
+    if (comp_tracked(a, s1, 0) && comp_tracked(a, s1, 1))
+        keep_depth(dst, a, nullptr);
+    return;
+}
+
 static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2);
+
+extern "C" void psx_pgxp_region_materialize(struct CPUState *cpu, uint32_t mask,
+        uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1) {
+    if (!g_pgxp_active || !cpu) return;
+    flush_plain_writes();
+    const uint32_t x = s_cpu_mode ? x1 : x0, y = s_cpu_mode ? y1 : y0;
+    mask &= ~1u;
+    for (uint32_t r = 1; mask && r < 32; ++r) {
+        const uint32_t bit = UINT32_C(1) << r;
+        if (!(mask & bit)) continue;
+        mask &= ~bit;
+        const uint32_t value = cpu->gpr[r];
+        pv_reset(&s_gpr[r], value);
+        if (x & bit) { s_gpr[r].x16 = (int32_t)((uint32_t)(uint16_t)value << 16); s_gpr[r].flags |= PGXP_F_VX; }
+        if (y & bit) { s_gpr[r].y16 = (int32_t)(value & 0xffff0000u); s_gpr[r].flags |= PGXP_F_VY; }
+        sc_kill(&s_gpr_s[r]);
+    }
+}
+
+/* Publish a set of independent incoming-register affine definitions at a real
+ * precision/observer boundary. No register shadow, scalar or source is assumed
+ * absent. Copy sources first because a destination can alias another source.
+ * The compiler refuses dependent deferred chains, so this is a final-value
+ * receipt batch, never a guest instruction stream or a shadow-CPU loop. */
+extern "C" void psx_pgxp_region_add_immediates(CPUState *cpu,
+        const PSXPGXPRegionAdd *definitions, uint32_t count) {
+    if (!g_pgxp_active || !cpu || !definitions || count > 31u) return;
+    flush_plain_writes();
+    struct Incoming { PGXPTemp shadow; PGXPScalar scalar; uint32_t value, result; } incoming[31];
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& d = definitions[i];
+        if (!d.destination || d.destination >= 32u || !d.source || d.source >= 32u || !d.addend) return;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& d = definitions[i];auto& in = incoming[i];
+        gpr_shadow(d.source,&in.shadow);in.scalar=s_gpr_s[d.source];
+        in.result=cpu->gpr[d.destination];in.value=in.result-(uint32_t)(int32_t)d.addend;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& d = definitions[i];const auto& in = incoming[i];
+        int precise=0;double value=0;
+        if (s_cpu_mode) {
+            value=reg_scalar(&in.scalar,&in.shadow,in.value,0,&precise);
+            const int64_t exact=(int64_t)(int32_t)in.value+(int64_t)d.addend;
+            if (exact!=(int64_t)(int32_t)in.result) precise=0;
+        }
+        add_immediate_halves(&s_gpr[d.destination],&in.shadow,in.result,in.value,d.addend);
+        if (precise) sc_set(&s_gpr_s[d.destination],value+(double)d.addend,in.result);
+        else sc_kill(&s_gpr_s[d.destination]);
+    }
+}
 
 extern "C" void psx_pgxp_alu(struct CPUState *cpu, uint32_t instr,
                              uint32_t result, uint32_t s1, uint32_t s2) {
     (void)cpu;
     if (!g_pgxp_active) return;
+    ++s_hook_stats.alu;
+    flush_plain_writes();
     int dst = -1;
     double v = 0.0;
     const int has = s_cpu_mode && alu_scalar(instr, result, s1, s2, &dst, &v);
@@ -1208,7 +1718,7 @@ extern "C" void psx_pgxp_alu(struct CPUState *cpu, uint32_t instr,
 
 static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2) {
     uint32_t op = f_op(instr);
-    PGXPValue ca, cb;
+    PGXPTemp ca, cb;
 
     if (op == 0) {                             /* SPECIAL                     */
         uint32_t dst_reg = f_rd(instr);
@@ -1218,7 +1728,7 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
             PGXPValue *hl = &s_gpr[funct == 0x11 ? PGXP_REG_HI : PGXP_REG_LO];
             if (s_cpu_mode && rs != 0 && s_gpr[rs].gen == s_gen) {
                 pv_validate(&s_gpr[rs], result);
-                *hl = s_gpr[rs];
+                pv_copy(hl, &s_gpr[rs]);
             } else pv_reset(hl, result);
             return;
         }
@@ -1231,14 +1741,14 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
             PGXPValue *hl = &s_gpr[funct == 0x10 ? PGXP_REG_HI : PGXP_REG_LO];
             if (s_cpu_mode && hl->gen == s_gen) {
                 pv_validate(hl, result);
-                *dst = *hl;
+                pv_copy(dst, hl);
             } else pv_reset(dst, result);
             return;
         }
         case 0x00: case 0x02: case 0x03:       /* SLL / SRL / SRA             */
         case 0x04: case 0x06: case 0x07: {     /* SLLV / SRLV / SRAV          */
             uint32_t sh = (funct < 4) ? f_shamt(instr) : (s2 & 31u);
-            const PGXPValue *src = gpr_shadow(rt, &ca);
+            const PGXPTemp *src = gpr_shadow(rt, &ca);
             int right = (funct & 3u) != 0;
             pv_reset(dst, result);
             if (!s_cpu_mode || sh != 16 || src->gen != s_gen)
@@ -1263,13 +1773,13 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
             return;
         }
         case 0x24: case 0x25: case 0x26: case 0x27: {  /* AND/OR/XOR/NOR     */
-            const PGXPValue *a = gpr_shadow(rs, &ca);
-            const PGXPValue *b = gpr_shadow(rt, &cb);
+            const PGXPTemp *a = gpr_shadow(rs, &ca);
+            const PGXPTemp *b = gpr_shadow(rt, &cb);
             /* OR with $zero is the MOVE idiom: the whole shadow, depth too. */
             if (funct == 0x25 && (rs == 0 || rt == 0)) {
-                const PGXPValue *m = (rt == 0) ? a : b;
+                const PGXPTemp *m = (rt == 0) ? a : b;
                 if (m->gen == s_gen) {
-                    *dst = *m;
+                    pv_copy(dst, m);
                     pv_validate(dst, result);
                 } else pv_reset(dst, result);
                 return;
@@ -1279,14 +1789,14 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
         }
         case 0x20: case 0x21:                  /* ADD / ADDU                  */
         case 0x22: case 0x23: {                /* SUB / SUBU                  */
-            const PGXPValue *a = gpr_shadow(rs, &ca);
-            const PGXPValue *b = gpr_shadow(rt, &cb);
+            const PGXPTemp *a = gpr_shadow(rs, &ca);
+            const PGXPTemp *b = gpr_shadow(rt, &cb);
             int is_sub = (funct == 0x22 || funct == 0x23);
             /* MOVE idioms first - exact, so they run in both tiers. */
             if (rt == 0 || (!is_sub && rs == 0)) {
-                const PGXPValue *m = (rt == 0) ? a : b;
+                const PGXPTemp *m = (rt == 0) ? a : b;
                 if (m->gen == s_gen) {
-                    *dst = *m;
+                    pv_copy(dst, m);
                     pv_validate(dst, result);
                 } else pv_reset(dst, result);
                 return;
@@ -1323,7 +1833,7 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
     uint32_t dst_reg = f_rt(instr);
     if (dst_reg == 0) return;
     PGXPValue *dst = &s_gpr[dst_reg];
-    const PGXPValue *a = gpr_shadow(f_rs(instr), &ca);
+    const PGXPTemp *a = gpr_shadow(f_rs(instr), &ca);
 
     switch (op) {
     case 0x0F: {                               /* LUI: both halves exact      */
@@ -1334,31 +1844,7 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
         return;
     }
     case 0x08: case 0x09: {                    /* ADDI / ADDIU                */
-        int32_t imm = f_simm(instr);
-        if (imm == 0) {                        /* MOVE idiom                  */
-            if (a->gen == s_gen) {
-                *dst = *a;
-                pv_validate(dst, result);
-            } else pv_reset(dst, result);
-            return;
-        }
-        /* A negative immediate is a subtraction of its magnitude: checking
-         * carry on the sign-extended form would reject nearly every -N. */
-        int neg = imm < 0;
-        uint32_t mag = (uint32_t)(neg ? -imm : imm);
-        if (!s_cpu_mode ||
-            !halves_independent(s1, mag, result, neg) ||
-            (!comp_tracked(a, s1, 0) && !comp_tracked(a, s1, 1))) {
-            pv_reset(dst, result);
-            return;
-        }
-        int32_t dx = (int32_t)(mag & 0xFFFFu) << 16;
-        pv_reset(dst, result);
-        dst->x16 = comp16(a, s1, 0) + (neg ? -dx : dx);
-        dst->y16 = comp16(a, s1, 1);           /* no carry crossed: Y untouched */
-        dst->flags = (uint16_t)(PGXP_F_VXY | derived_bits(a, s1));
-        if (comp_tracked(a, s1, 0) && comp_tracked(a, s1, 1))
-            keep_depth(dst, a, nullptr);
+        add_immediate_halves(dst, a, result, s1, f_simm(instr));
         return;
     }
     case 0x0C: case 0x0D: case 0x0E: {         /* ANDI / ORI / XORI           */
@@ -1383,6 +1869,8 @@ extern "C" void psx_pgxp_muldiv(struct CPUState *cpu, uint32_t instr,
                                 uint32_t s1, uint32_t s2) {
     (void)cpu;
     if (!g_pgxp_active) return;
+    ++s_hook_stats.muldiv;
+    flush_plain_writes();
     /* Products/quotients of screen coordinates are not screen coordinates:
      * the half shadows of HI/LO are known-but-imprecise. The scalar tier
      * (cpu-mode) does carry a product or quotient when an operand is precise:
@@ -1588,23 +2076,24 @@ extern "C" void pgxp_gte_push_sxy(int32_t x16, int32_t y16, uint16_t sz3,
                                   uint32_t packed) {
     if (!g_pgxp_active) return;
     s_stats.produced++;
-    s_gte[12] = s_gte[13];
-    s_gte[13] = s_gte[14];
+    pv_copy(&s_gte[12], &s_gte[13]);
+    pv_copy(&s_gte[13], &s_gte[14]);
     PGXPValue *pv = &s_gte[14];
     pv->x16 = x16;
     pv->y16 = y16;
     pv->z = sz3;
     pv->flags = (uint16_t)(PGXP_F_VXY | (sz3 != 0 ? PGXP_F_VZ : 0));
+    source_set(pv, 0);
     pv->value = packed;
     pv->gen = s_gen;
-    s_gte[15] = *pv;                           /* SXYP mirrors SXY2           */
+    pv_copy(&s_gte[15], pv);                           /* SXYP mirrors SXY2           */
 }
 
 extern "C" void pgxp_gte_mark_unclamped(uint32_t depth) {
     if (!g_pgxp_active) return;
     s_gte[14].flags |= PGXP_F_UNCLAMPED;
     s_gte[14].projection.z = (float)depth;
-    s_gte[15] = s_gte[14];
+    pv_copy(&s_gte[15], &s_gte[14]);
 }
 
 extern "C" float pgxp_get_unclamped_depth(uint32_t addr, uint32_t word) {
@@ -1623,7 +2112,7 @@ extern "C" void pgxp_gte_set_projection(const PGXPProjection *projection) {
     if (!g_pgxp_active || !s_projection_tracking || !projection) return;
     s_gte[14].projection = *projection;
     s_gte[14].flags |= PGXP_F_PROJECTION;
-    s_gte[15] = s_gte[14];
+    pv_copy(&s_gte[15], &s_gte[14]);
 }
 static int projection_read(const PGXPValue *pv, uint32_t packed, PGXPProjection *out) {
     const uint16_t flags = PGXP_F_VXY | PGXP_F_PROJECTION;
@@ -1637,6 +2126,29 @@ extern "C" int pgxp_load_projection(uint32_t addr, uint32_t packed, PGXPProjecti
 }
 extern "C" int pgxp_get_gte_projection(uint32_t index, uint32_t packed, PGXPProjection *out) {
     return index < 4 ? projection_read(&s_gte[12+index], packed, out) : 0;
+}
+
+extern "C" int pgxp_tag_gte_source(uint32_t index, uint32_t expected, uint64_t token) {
+    if (!g_pgxp_active || !s_source_tracking || index >= 3) return 0;
+    PGXPValue *pv = &s_gte[12 + index];
+    if (pv->gen != s_gen || pv->value != expected ||
+        (pv->flags & PGXP_F_VXY) != PGXP_F_VXY) return 0;
+    source_set(pv, token);
+    if (index == 2) pv_copy(&s_gte[15], pv);
+    return 1;
+}
+extern "C" uint64_t pgxp_load_source(uint32_t address, uint32_t expected) {
+    if (!g_pgxp_active || !s_source_tracking || (address & 3u)) return 0;
+    const PGXPValue *pv = pgxp_ptr(address);
+    return pv && pv->gen == s_gen && pv->value == expected ? source_get(pv) : 0;
+}
+extern "C" int pgxp_tag_word_source(uint32_t address, uint32_t expected, uint64_t token) {
+    if (!g_pgxp_active || !s_source_tracking || (address & 3u)) return 0;
+    PGXPValue *pv = pgxp_ptr_w(address);
+    if (!pv) return 0;
+    if (pv->gen != s_gen || pv->value != expected) pv_reset(pv, expected);
+    source_set(pv, token);
+    return 1;
 }
 
 extern "C" int pgxp_get_gte_sxy_checked(uint32_t index, uint32_t expect,
@@ -1657,7 +2169,7 @@ static inline int pgxp_accept(int32_t px, int32_t py, int32_t int_x,
                               int32_t int_y, uint32_t word, uint16_t flags);
 
 extern "C" int pgxp_gte_nclip_precise(const uint32_t sxy[3], int64_t *cross) {
-    if (!g_pgxp_active) return 0;
+    if (!g_pgxp_active || !s_enabled) return 0;
     int64_t x[3], y[3];
     for (int i = 0; i < 3; i++) {
         const PGXPValue *pv = &s_gte[12 + i];
@@ -1695,8 +2207,8 @@ extern "C" void pgxp_gte_reg_written(int reg, uint32_t value) {
          * the fourth through SXYP, NCLIP, store SXY0..2 into the packet - so
          * the shadows shift with the registers. The MTC2 / LWC2 hook then
          * copies the source shadow into the pushed slot. */
-        s_gte[12] = s_gte[13];
-        s_gte[13] = s_gte[14];
+        pv_copy(&s_gte[12], &s_gte[13]);
+        pv_copy(&s_gte[13], &s_gte[14]);
         reg = 14;
     }
     pv_kill(&s_gte[reg]);
@@ -1896,7 +2408,7 @@ extern "C" void pgxp_store_gte_reg(uint32_t addr, uint8_t reg) {
     const PGXPValue *src = &s_gte[reg & 31u];
     if (src->gen != s_gen) return;
     s_stats.swc2_stores++;
-    *dst = *src;
+    pv_copy(dst, src);
 }
 
 extern "C" int pgxp_store_flagged_gte_sxy(uint32_t addr, uint8_t reg,
@@ -1913,8 +2425,9 @@ extern "C" int pgxp_store_flagged_gte_sxy(uint32_t addr, uint8_t reg,
     if (x < INT32_MIN || x > INT32_MAX || y < INT32_MIN || y > INT32_MAX) return 0;
     PGXPValue* dst = pgxp_ptr_w(addr);
     if (!dst) return 0;
-    *dst = *src;
+    pv_copy(dst, src);
     dst->value = stored_word;
+    if (stored_word != source_word) source_set(dst, 0);
     dst->x16 = (int32_t)x;
     dst->y16 = (int32_t)y;
     return 1;
@@ -1923,6 +2436,7 @@ extern "C" int pgxp_store_flagged_gte_sxy(uint32_t addr, uint8_t reg,
 extern "C" int pgxp_debug_shadow(int space, uint32_t key, int *live,
                                  uint32_t *value, uint32_t *flags,
                                  int32_t *x16, int32_t *y16, uint16_t *z) {
+    flush_plain_writes();
     const PGXPValue *pv = nullptr;
     if (space == 0)                pv = pgxp_ptr(key);
     else if (space == 1 && key < 34) pv = &s_gpr[key];
@@ -1952,6 +2466,7 @@ extern "C" void pgxp_test_seed_gte_sxy(uint32_t index, uint32_t packed,
     pv->value = packed;
     pv->flags = (uint16_t)(PGXP_F_VXY | (z != 0 ? PGXP_F_VZ : 0));
     pv->gen = valid ? s_gen : 0;
+    source_set(pv, 0);
 }
 
 extern "C" void pgxp_test_get_gte_sxy(uint32_t index, uint32_t *packed,

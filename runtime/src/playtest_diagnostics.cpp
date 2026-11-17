@@ -47,6 +47,9 @@
 #define PSX_DIAGNOSTIC_MOD_ID "psxrecomp.diagnostics"
 #endif
 #define PSX_DIAGNOSTIC_INPUT_FORMAT "psxrecomp-input-v2"
+#ifndef PSX_DIAGNOSTIC_WITH_OSD
+#define PSX_DIAGNOSTIC_WITH_OSD 1
+#endif
 
 namespace {
 using psx_playtest_diagnostic::Row;
@@ -479,6 +482,7 @@ void restored() {
     psx_mod_counter_add("psxrecomp.diagnostics.state-segments", 1);
 }
 
+#if PSX_DIAGNOSTIC_WITH_OSD
 std::string input_line(unsigned seat, uint16_t buttons, uint32_t frame) {
     static const char *names[] = {"Se", "L3", "R3", "St", "U", "R", "D", "L", "L2", "R2", "L1", "R1", "T", "O", "X", "[]"};
     std::string text = "P" + std::to_string(seat + 1) + ":";
@@ -493,7 +497,9 @@ std::string input_line(unsigned seat, uint16_t buttons, uint32_t frame) {
     else if (recording.is_open()) text += " REC";
     return text;
 }
+#endif
 
+#if PSX_DIAGNOSTIC_WITH_OSD
 void tick_osd() {
     if (!osd_enabled || psx_mod_netplay_is_active()) {
         host_osd_set_diagnostics(nullptr, nullptr);
@@ -506,6 +512,7 @@ void tick_osd() {
     host_osd_set_diagnostics(first.c_str(), second.c_str());
     ++osd_sequence;
 }
+#endif
 
 const char *column_name(unsigned column) {
     static const char *names[RowColumns] = {"sequence", "P1 buttons", "P2 buttons",
@@ -641,11 +648,13 @@ void activate() {
     host_osd_set_diagnostics(nullptr, nullptr);
 }
 
+#if PSX_DIAGNOSTIC_WITH_OSD
 void activate_osd() {
     osd_enabled = true;
     osd_sequence = 0;
     host_osd_set_diagnostics(nullptr, nullptr);
 }
+#endif
 }
 
 PSX_MOD_CONSTRUCTOR(psx_register_playtest_diagnostics) {
@@ -653,6 +662,8 @@ PSX_MOD_CONSTRUCTOR(psx_register_playtest_diagnostics) {
     psx_mod_register_activation_plugin(PSX_DIAGNOSTIC_MOD_ID, activate);
     psx_mod_register_vblank_plugin(PSX_DIAGNOSTIC_MOD_ID, tick);
     psx_mod_register_savestate_plugin(PSX_DIAGNOSTIC_MOD_ID, restored);
+#if PSX_DIAGNOSTIC_WITH_OSD
     psx_mod_register_activation_plugin(PSX_DIAGNOSTIC_MOD_ID ".osd", activate_osd);
     psx_mod_register_vblank_plugin(PSX_DIAGNOSTIC_MOD_ID ".osd", tick_osd);
+#endif
 }

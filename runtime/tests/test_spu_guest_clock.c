@@ -17,7 +17,14 @@
 #include "../src/spu.c"
 
 uint64_t s_frame_count;
+#if defined(PSX_TEST_SCHEDULER)
+#include "interrupts.h"
+void psx_set_midframe_audio_pump(void (*fn)(void));
+uint64_t psx_cycle_count;
+#define g_cycle psx_cycle_count
+#else
 static uint64_t g_cycle;
+#endif
 uint64_t psx_get_cycle_count(void) { return g_cycle; }
 void audio_trace_pcm(int tap, const int16_t *stereo, int frames) { (void)tap; (void)stereo; (void)frames; }
 void audio_trace_event(uint16_t kind, uint32_t a, uint32_t b) { (void)kind; (void)a; (void)b; }
@@ -181,12 +188,119 @@ static void test_pcm_overlay_uses_guest_clock(void) {
           "unbinding restores native silence without advancing mod playback");
 }
 
+static void test_cd_reset_keeps_due_audio(void) {
+    g_cycle = 0;
+    spu_init();
+    spu_write(0x1F801DAAu, 0xC001u);
+    spu_write(0x1F801D80u, 0x3FFFu);
+    spu_write(0x1F801D82u, 0x3FFFu);
+    spu_write(0x1F801DB0u, 0x7FFFu);
+    spu_write(0x1F801DB2u, 0x7FFFu);
+    const int16_t cd[8] = {1000,-1000,2000,-2000,3000,-3000,4000,-4000};
+    spu_cd_audio_push(cd, 4);
+    g_cycle = 768u * 2u;
+    spu_cd_audio_reset();
+    int16_t out[8] = {0};
+    CHECK(spu_output_pop(out, 4) == 2u && out[0] > 0 && out[1] < 0 &&
+          out[2] > out[0] && out[3] < out[1],
+          "CD reset first renders already-due input samples");
+    CHECK(cd_frame_count == 0, "CD reset discards only the remaining future queue");
+    g_cycle = 768u * 4u;
+    spu_catch_up();
+    CHECK(spu_output_pop(out, 4) == 2u && !out[0] && !out[1] && !out[2] && !out[3],
+          "samples after the CD reset observe the cleared queue");
+}
+
+static void render_partition(int granular, int16_t *out, SpuVoiceState *state) {
+    g_cycle = 0;
+    stage_voice0();
+    spu_write(0x1F801DAAu, 0xC001u); // output and CD input enabled
+    spu_write(0x1F801D80u, 0x3FFFu);
+    spu_write(0x1F801D82u, 0x3FFFu);
+    spu_write(0x1F801DB0u, 0x7FFFu);
+    spu_write(0x1F801DB2u, 0x7FFFu);
+    spu_write(0x1F801D88u, 1u);
+    int16_t cd[128];
+    for (int i = 0; i < 128; ++i) cd[i] = (int16_t)(i * 97 - 6000);
+    for (unsigned sample = 1; sample <= 735; ++sample) {
+        if (granular || sample == 200 || sample == 500 || sample == 735) {
+            g_cycle = sample * 768u;
+            spu_catch_up();
+        }
+        if (sample == 200) spu_cd_audio_push(cd, 64);
+        if (sample == 500) spu_write(0x1F801D8Cu, 1u);
+    }
+    CHECK(spu_output_pop(out, 735) == 735, "partition renders one frame of PCM");
+    spu_get_voice_state(0, state);
+}
+
+static void test_block_pcm_partition(void) {
+    int16_t sample_pcm[735 * 2], block_pcm[735 * 2];
+    SpuVoiceState sample_state, block_state;
+    render_partition(1, sample_pcm, &sample_state);
+    render_partition(0, block_pcm, &block_state);
+    CHECK(memcmp(sample_pcm, block_pcm, sizeof sample_pcm) == 0,
+          "sample and observation-block PCM are exact across CD input and KEYOFF");
+    CHECK(memcmp(&sample_state, &block_state, sizeof sample_state) == 0,
+          "block partition preserves decoder, pitch and envelope state");
+    int audible = 0;
+    for (int i = 0; i < 735 * 2; ++i) audible |= sample_pcm[i] != 0;
+    CHECK(audible, "partition comparison contains real nonzero audio");
+}
+
+#if defined(PSX_TEST_SCHEDULER)
+static unsigned scheduler_pumps;
+static void scheduler_pump(void) { ++scheduler_pumps; spu_catch_up(); }
+static void test_scheduler_latch_rearm(void) {
+    g_cycle = 0;
+    stage_voice0();
+    psx_set_midframe_audio_pump(scheduler_pump);
+    spu_write(0x1F801DA4u, 0x2000u >> 3);
+    spu_write(0x1F801DAAu, 0x8040u);
+    CHECK(spu_irq_can_raise(), "unlatched armed SPU can raise a sample IRQ");
+    CHECK(psx_spu_sample_event_cycles_to_next() == 768u,
+          "real scheduler keeps the next possible IRQ sample");
+    g_cycle += 768u;
+    psx_spu_sample_event_service();
+    CHECK(scheduler_pumps == 1u, "unlatched sample invokes the real pump");
+    spu_irq_check(0x2000u, 2u);
+    CHECK(!spu_irq_can_raise(), "a hardware RAM hit latches the IRQ");
+#if defined(PSX_BLOCK_AUDIO) && PSX_BLOCK_AUDIO
+    CHECK(psx_spu_sample_event_cycles_to_next() == UINT32_MAX,
+          "ENHANCED batches a latched interval until a real observation");
+    g_cycle += 768u;
+    psx_spu_sample_event_service();
+    CHECK(scheduler_pumps == 1u, "latched ENHANCED interval needs no sample pump");
+#else
+    CHECK(psx_spu_sample_event_cycles_to_next() == 768u,
+          "REFERENCE retains the original per-sample deadline");
+    g_cycle += 768u;
+    psx_spu_sample_event_service();
+    CHECK(scheduler_pumps == 2u, "REFERENCE retains the sample pump");
+#endif
+    spu_write(0x1F801DAAu, 0x8000u); // catches up before clearing latch
+    spu_write(0x1F801DAAu, 0x8040u);
+    CHECK(spu_irq_can_raise() && psx_spu_sample_event_cycles_to_next() == 768u,
+          "guest acknowledgement/rearm restores the sample deadline");
+    unsigned old_pumps = scheduler_pumps;
+    g_cycle += 768u;
+    psx_spu_sample_event_service();
+    CHECK(scheduler_pumps == old_pumps + 1u, "rearmed IRQ pumps before the next observation");
+    psx_set_midframe_audio_pump(NULL);
+}
+#endif
+
 int main(void) {
     test_initial_clock_boundary();
     test_envelope_rises_between_accesses();
     test_snapshot_keeps_clock_phase();
     test_gate_and_rewind();
     test_pcm_overlay_uses_guest_clock();
+    test_block_pcm_partition();
+    test_cd_reset_keeps_due_audio();
+#if defined(PSX_TEST_SCHEDULER)
+    test_scheduler_latch_rearm();
+#endif
     if (failures) { fprintf(stderr, "%d failure(s)\n", failures); return 1; }
     puts("spu_guest_clock_test: ok");
     return 0;

@@ -79,6 +79,15 @@ This is an integration primitive, not a standalone FPS improvement. Ape's
 packet producer is its first intended consumer. The original `gte_execute`
 always retains faithful timing in both profiles.
 
+A native packet producer can keep the existing C++ `GTEState` resident across
+its operation with `psx_hle_gte_packet_load/command/store`. This avoids repeated
+CPU register marshaling around each logical command. The producer resolves
+earlier work, owns its completion charge, and publishes its final state and
+validated native precision outputs before returning. The batch command entry
+accepts non-projecting packet commands only; unsupported commands return false
+without changing state. Projection/capture continues through the ordinary
+maintained entry. This interface does not select or qualify a title replacement.
+
 ## Generated CPU spans
 
 The ENHANCED profile selects the qualified generated native timing service
