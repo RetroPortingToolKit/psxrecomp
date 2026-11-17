@@ -1599,6 +1599,23 @@ struct UserSettings {
     // launcher save would overwrite their file with defaults.
     bool parse_error = false;
 
+    // The top-level `settings_format` of the file that was read; 0 when the
+    // file has none (every file written before format 2). save_user_settings
+    // always writes kFormat. Format 2 marks the files in which `fast_boot` and
+    // `bios_hle` are the player's own lines: see boot_keys_were_echoes.
+    static constexpr int kFormat = 2;
+    int  settings_format = 0;
+    // True when the file was older than format 2 and held `fast_boot` or
+    // `bios_hle`. Up to that format the launcher wrote both keys at every
+    // save, with whatever value was in force, although it has no control for
+    // either. The line then overrode game.toml for good: a later change of
+    // `bios_hle` in the game's game.toml never reached a player who had
+    // started an older build once, and two netplay peers of one build could
+    // boot in different BIOS modes. Such a line cannot be told from a hand
+    // edit, so it is taken for what it almost always is: the has_* flags stay
+    // false, game.toml decides, and the next save leaves the keys out.
+    bool boot_keys_were_echoes = false;
+
     // [video]
     bool has_renderer       = false; int  renderer       = DEFAULT_VIDEO_RENDERER; // 0=software,1=opengl,2=vulkan
     // No supersampling / internal_resolution / supersample /
@@ -1628,6 +1645,9 @@ struct UserSettings {
     // later game.toml change is exactly the write-only latch that shipped
     // turbo-on to MegaManX6Recomp users who had no way to turn it off.
     bool has_turbo_loads    = false; bool turbo_loads    = false;
+    // The two BIOS boot keys have no launcher control. They are in the file
+    // only when the player wrote them there (format 2 and later; see
+    // boot_keys_were_echoes), and the launcher writes them back only then.
     bool has_fast_boot      = false; bool fast_boot      = false;
     // HLE BIOS tier toggle (see RuntimeConfig::bios_hle). Overrides game.toml.
     bool has_bios_hle       = false; bool bios_hle       = false;
