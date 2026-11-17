@@ -15,12 +15,14 @@ import tempfile
 import threading
 import time
 import zlib
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from compare_boot_states import compare, sections  # noqa: E402
 from compare_checkpoint_runs import compare_runs  # noqa: E402
+import run_checkpoint as checkpoint_driver  # noqa: E402
 from run_checkpoint import main as run_main, run  # noqa: E402
 from verify_checkpoint_cohort import cohort, main as cohort_main  # noqa: E402
 
@@ -73,8 +75,7 @@ def fake_game(port, mode):
         if os.environ.get('PSX_TAS_PERTURB_RESTORE') == 'timer2' and mode != 'blind':
             timer_offset += 1
     pending = None  # (requested, take_at)
-    deadline = time.monotonic() + 30
-    while not quit_event.is_set() and time.monotonic() < deadline:
+    while not quit_event.is_set():
         if frame < save_at[-1] + 10:
             frame += 1
             if pending is None and frame in save_at:
@@ -107,6 +108,55 @@ def check(ok, what):
         raise AssertionError(what)
 
 
+def test_run_ownership(tmp):
+    class OwnedProcess:
+        pid = 12345
+        returncode = None
+        killed = False
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self):
+            self.returncode = 0 if self.returncode is None else self.returncode
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+    row = {'frame': 10, 'requested_frame': 10}
+    owned = OwnedProcess()
+    with patch.object(checkpoint_driver.subprocess, 'Popen', return_value=owned), \
+            patch.object(checkpoint_driver, 'captures', side_effect=[[], [row], [row]]), \
+            patch.object(checkpoint_driver, 'request_quit', return_value=True), \
+            patch.object(checkpoint_driver.time, 'sleep'), \
+            patch.object(checkpoint_driver.time, 'monotonic', side_effect=[0.0, 7201.0]):
+        code, _ = run(tmp / 'long-owned', ['owned'], [10])
+    check(code == 0 and not owned.killed, 'healthy finite capture has no elapsed kill or quit-wait deadline')
+
+    owned = OwnedProcess()
+    with patch.object(checkpoint_driver.subprocess, 'Popen', return_value=owned), \
+            patch.object(checkpoint_driver, 'captures', return_value=[row]), \
+            patch.object(checkpoint_driver, 'request_quit', return_value=False):
+        code, _ = run(tmp / 'quit-review', ['owned'], [10])
+    report = json.loads((tmp / 'quit-review' / 'run.json').read_text(encoding='utf-8'))
+    check(code == 1 and report['needs_review'] and report['pid'] == owned.pid
+          and owned.poll() is None and not owned.killed,
+          'failed quit protocol retains the owned healthy process and review evidence')
+
+    owned = OwnedProcess()
+    with patch.object(checkpoint_driver.subprocess, 'Popen', return_value=owned), \
+            patch.object(checkpoint_driver, 'captures', side_effect=KeyboardInterrupt):
+        try:
+            run(tmp / 'cancel-owned', ['owned'], [10])
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError('explicit cancellation did not propagate')
+    check(owned.killed, 'explicit cancellation cleans up its own process')
+
+
 def test_compare_boot_states(tmp):
     a, b, c = tmp / 'a.pst', tmp / 'b.pst', tmp / 'c.pst'
     a.write_bytes(image(10, 0))
@@ -133,12 +183,12 @@ def test_cohort(tmp, mode, expect_passed, failing=None):
     if mode == 'honest':
         # The documented command line: options after the output folder, the game after --.
         out = tmp / f'cohort-{mode}'
-        code = cohort_main([str(out), '--terminal', '2600', '--port', str(port), '--timeout', '60',
+        code = cohort_main([str(out), '--terminal', '2600', '--port', str(port),
                             '--', *game_command(port, mode)])
         report = json.loads((out / 'results.json').read_text(encoding='utf-8'))
         check(code == 0, f'the cohort command line exits 0 on a pass, got {code}')
     else:
-        report = cohort(tmp / f'cohort-{mode}', game_command(port, mode), 2600, port, 60)
+        report = cohort(tmp / f'cohort-{mode}', game_command(port, mode), 2600, port)
     check(report['passed'] == expect_passed, f'{mode}: cohort passed={report["passed"]}: {report.get("error")}')
     if failing:
         check(failing in report.get('error', ''), f'{mode}: fails at {failing}: {report.get("error")}')
@@ -150,6 +200,7 @@ def main(argv):
         return fake_game(int(argv[2]), argv[3])
     with tempfile.TemporaryDirectory(prefix='checkpoint-tools-') as name:
         tmp = Path(name)
+        test_run_ownership(tmp)
         test_compare_boot_states(tmp)
 
         report = test_cohort(tmp, 'honest', True)
@@ -183,12 +234,12 @@ def main(argv):
 
         # A refused resume ends the run with the game's status.
         port = free_port()
-        code, _ = run(tmp / 'refused', game_command(port), [600], tmp / 'nothing.pst', None, port, 30)
+        code, _ = run(tmp / 'refused', game_command(port), [600], tmp / 'nothing.pst', None, port)
         check(code == 2, f'a refused resume returns the game status, got {code}')
 
         # The documented run command line, options after the output folder.
         port = free_port()
-        code = run_main([str(tmp / 'cli'), '--save-at', '600', '--port', str(port), '--timeout', '30',
+        code = run_main([str(tmp / 'cli'), '--save-at', '600', '--port', str(port),
                          '--', *game_command(port)])
         check(code == 0 and json.loads((tmp / 'cli' / 'captures.json').read_text())[0]['requested_frame'] == 600,
               f'the run command line captures at the requested frame, got exit {code}')

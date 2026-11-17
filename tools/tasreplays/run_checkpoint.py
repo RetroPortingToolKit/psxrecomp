@@ -7,7 +7,10 @@ requested frame has its manifest, then asks the debug server to quit. It
 writes OUT/captures.json, one entry per manifest, and OUT/run.json with the
 command, exit status and duration. Its exit status is 0 when the run reached
 the last capture, otherwise 1, or the game's own status when it exited first
-(2 is a refused resume).
+(2 is a refused resume). There is no elapsed run or shutdown cutoff. If the
+quit request fails, run.json retains the owned PID and needs_review; the game
+is left running. Explicit cancellation or a capture failure cleans up only the
+process this invocation started.
 """
 import argparse
 import json
@@ -49,8 +52,7 @@ def request_quit(port, timeout=5.0):
         return False
 
 
-def run(out, command, save_at, resume=None, perturb=None, port=4370, timeout=3600.0,
-        poll=0.25):
+def run(out, command, save_at, resume=None, perturb=None, port=4370, poll=0.25):
     out = Path(out)
     out.mkdir(parents=True)
     env = dict(os.environ)
@@ -69,31 +71,32 @@ def run(out, command, save_at, resume=None, perturb=None, port=4370, timeout=360
     begin = time.monotonic()
     with (out / 'run.log').open('wb') as log:
         process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+        record['pid'] = process.pid
         try:
             while process.poll() is None:
                 if any(row['frame'] >= last for row in captures(out, strict=False)):
                     record['reached_last_capture'] = True
-                    if not request_quit(port):
-                        process.terminate()
-                    try:
-                        process.wait(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                    break
-                if time.monotonic() - begin > timeout:
-                    process.kill()
+                    if request_quit(port):
+                        # Shutdown may drain healthy work; no elapsed kill cutoff.
+                        process.wait()
+                    elif process.poll() is None:
+                        record['needs_review'] = True
+                        record['error'] = 'capture complete; owned process did not acknowledge quit'
                     break
                 time.sleep(poll)
-        finally:
+        except BaseException:
+            # Explicit cancellation or a failed capture operation owns cleanup.
+            # A quit transport failure above instead retains the live process.
             if process.poll() is None:
                 process.kill()
             process.wait()
+            raise
     record['exit_code'] = process.returncode
     record['seconds'] = round(time.monotonic() - begin, 3)
     rows = captures(out)
     (out / 'captures.json').write_text(json.dumps(rows, indent=2) + '\n', encoding='utf-8')
     (out / 'run.json').write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')
-    if record['reached_last_capture']:
+    if record['reached_last_capture'] and not record.get('needs_review'):
         return 0, rows
     return process.returncode or 1, rows
 
@@ -106,7 +109,6 @@ def main(argv=None):
     parser.add_argument('--resume-from', type=Path, help='a state written by an earlier capture')
     parser.add_argument('--perturb-restore', choices=PERTURB_FIELDS)
     parser.add_argument('--port', type=int, default=4370, help='the build\'s debug-server port')
-    parser.add_argument('--timeout', type=float, default=3600.0, help='seconds before the run is stopped')
     argv = sys.argv[1:] if argv is None else list(argv)
     cut = argv.index('--') if '--' in argv else len(argv)
     args = parser.parse_args(argv[:cut])
@@ -118,7 +120,7 @@ def main(argv=None):
     if args.perturb_restore and not args.resume_from:
         parser.error('--perturb-restore needs --resume-from')
     code, rows = run(args.out, command, sorted(set(args.save_at)), args.resume_from,
-                     args.perturb_restore, args.port, args.timeout)
+                     args.perturb_restore, args.port)
     print(f'{len(rows)} capture(s), exit {code}: {args.out}')
     return code
 

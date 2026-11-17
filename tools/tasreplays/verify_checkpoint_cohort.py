@@ -33,7 +33,7 @@ def source_commit():
         return None
 
 
-def cohort(output, command, terminal, port=4370, timeout=3600.0, resumes=RESUMES, runner=run):
+def cohort(output, command, terminal, port=4370, resumes=RESUMES, runner=run):
     output = Path(output)
     output.mkdir(parents=True)
     points = sorted({p for k in resumes for p in (k, k + 1, k + 60)} | {terminal})
@@ -45,7 +45,7 @@ def cohort(output, command, terminal, port=4370, timeout=3600.0, resumes=RESUMES
 
     def record(name, start=0, resume=None, perturb=None):
         save_at = [p for p in points if p > start]
-        code, rows = runner(output / name, command, save_at, resume, perturb, port, timeout)
+        code, rows = runner(output / name, command, save_at, resume, perturb, port)
         report['runs'][name] = json.loads((output / name / 'run.json').read_text(encoding='utf-8'))
         save()
         if code:
@@ -85,7 +85,6 @@ def main(argv=None):
     parser.add_argument('output', type=Path, help='new directory for the runs and results.json')
     parser.add_argument('--terminal', type=int, required=True, help='last frame; must exceed 2560')
     parser.add_argument('--port', type=int, default=4370)
-    parser.add_argument('--timeout', type=float, default=3600.0, help='seconds per run')
     argv = sys.argv[1:] if argv is None else list(argv)
     cut = argv.index('--') if '--' in argv else len(argv)
     args = parser.parse_args(argv[:cut])
@@ -94,7 +93,7 @@ def main(argv=None):
         parser.error('give the game command after "--"')
     if args.terminal <= 2560:
         parser.error('--terminal must exceed 2560')
-    report = cohort(args.output, command, args.terminal, args.port, args.timeout)
+    report = cohort(args.output, command, args.terminal, args.port)
     print('COHORT', 'PASS' if report['passed'] else 'FAIL', args.output, flush=True)
     return 0 if report['passed'] else 1
 
