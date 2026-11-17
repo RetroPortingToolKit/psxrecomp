@@ -987,6 +987,16 @@ if(BUILD_TESTING)
                 "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_interp_cop0_read_sample.py"
                 --cc ${CMAKE_C_COMPILER})
     endif()
+    # Checkpoint manifest and identity dimensions (a debug feature for replays).
+    # Both drivers compile their own C at O0 and O2 with -Werror.
+    if(Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        add_test(NAME tas_stateio_manifest COMMAND ${Python3_EXECUTABLE} -B
+            ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_source_tas_stateio.py
+            --cc ${CMAKE_C_COMPILER})
+        add_test(NAME tas_stateio_identity COMMAND ${Python3_EXECUTABLE} -B
+            ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_source_stateio_identity.py
+            --cc ${CMAKE_C_COMPILER})
+    endif()
     if(Python3_Interpreter_FOUND)
         add_test(NAME optional_netplay_auth
             COMMAND ${Python3_EXECUTABLE}
