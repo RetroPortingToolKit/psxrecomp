@@ -163,7 +163,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "disc_content_hash.h"
 #include "sbi_setup.h"
 #include "disc_path.h"
-#include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
+#include "disc_boot_image.h" /* text-image guard: the boot EXE on the disc */
 #include "psx_keybinds.h"
 #include "host_overlay.h"
 #include "psx_disc_tray.h"
@@ -319,6 +319,35 @@ extern "C" void     dirty_ram_register_text_image(uint32_t phys_lo,
                                                   const uint8_t *bytes,
                                                   uint32_t len);
 
+extern "C" uint32_t dirty_ram_text_note_source_image(
+    const uint8_t *loaded, uint32_t phys_lo, uint32_t len,
+    const uint32_t *source_crc32, uint32_t source_count,
+    uint32_t source_phys_lo, uint32_t source_len, uint32_t *first_phys);
+/* Generated dispatcher, or game_dispatch_compat.c when it has no table. */
+extern "C" const uint32_t *psx_game_source_page_crc32(uint32_t *count,
+                                                      uint32_t *phys_lo,
+                                                      uint32_t *len);
+
+/* Tell the guard which pages of the executable the console loads differ from
+ * the executable the static code was generated from (text_source_guard.h).
+ * A disc of a set that carries the program with a per-disc code byte is the
+ * case: its differing page must run from RAM, not from the other disc's
+ * compiled function. `loaded` is not kept. */
+static void note_text_source_image(const uint8_t *loaded, uint32_t phys_lo,
+                                   uint32_t len, const char *what) {
+    uint32_t count = 0, source_lo = 0, source_len = 0, first = 0;
+    const uint32_t *crcs = psx_game_source_page_crc32(&count, &source_lo, &source_len);
+    if (!crcs || count == 0) return;
+    const uint32_t pages = dirty_ram_text_note_source_image(
+        loaded, phys_lo, len, crcs, count, source_lo, source_len, &first);
+    if (pages)
+        std::fprintf(stdout,
+            "psxrecomp: text image guard: %u page(s) of the %s differ from the "
+            "executable this build was generated from (first 0x%08X); code on "
+            "those pages runs from RAM\n",
+            pages, what, first | 0x80000000u);
+}
+
 /* Arm the dirty-RAM text-image guard with the boot EXE bytes. The guard is
  * load-bearing: dispatch native-safety (dirty_ram_text_native_ok) and the
  * fntrace alternate game-start latch both key off the registered image, so
@@ -332,6 +361,12 @@ static void arm_text_image_guard(const std::string &exe_path,
                                  uint32_t load_address,
                                  const std::string &disc_path) {
     const uint32_t phys_lo = load_address & 0x1FFFFFFFu;
+    /* The console loads the mounted disc's boot EXE, whichever image becomes
+     * the reference below. Read it first so the source-image check always
+     * judges the bytes that will be in RAM. */
+    uint32_t disc_len = 0;
+    std::string disc_name;
+    uint8_t *disc_img = psx_read_disc_boot_image(exe_path, disc_path, &disc_len, &disc_name);
     /* 1. Local EXE file (skip the 2048-byte PS-X EXE header). */
     if (!exe_path.empty()) {
         std::ifstream ef(exe_path, std::ios::binary | std::ios::ate);
@@ -347,6 +382,13 @@ static void arm_text_image_guard(const std::string &exe_path,
                         std::fprintf(stdout,
                             "psxrecomp: text image guard armed (0x%08X..0x%08X, local EXE)\n",
                             load_address, load_address + img_len);
+                        if (disc_img)
+                            note_text_source_image(disc_img, phys_lo, disc_len,
+                                                   "mounted disc's boot executable");
+                        else
+                            note_text_source_image(img, phys_lo, img_len,
+                                                   "local boot executable");
+                        std::free(disc_img);
                         return;
                     }
                     std::free(img);
@@ -354,74 +396,20 @@ static void arm_text_image_guard(const std::string &exe_path,
             }
         }
     }
-    /* 2. Extract the boot EXE from the disc image. */
-    if (!disc_path.empty()) {
-        PS1::ISOReader iso;
-        if (iso.Open(disc_path)) {
-            /* The boot filename: basename of the game.toml exe field (it names
-             * the same file the recompiler consumed, which came off this disc);
-             * fall back to the SYSTEM.CNF BOOT token for configs whose local
-             * name differs from the disc name. */
-            std::string boot_name;
-            if (!exe_path.empty()) {
-                const size_t slash = exe_path.find_last_of("/\\");
-                boot_name = (slash == std::string::npos)
-                                ? exe_path : exe_path.substr(slash + 1);
-            }
-            PS1::ISOFileEntry ent;
-            if (boot_name.empty() || !iso.FindFile(boot_name, ent)) {
-                /* SYSTEM.CNF: `BOOT = cdrom:\SCUS_944.23;1` */
-                uint8_t cnf[2048] = {0};
-                size_t n = iso.ReadFile("SYSTEM.CNF", cnf, sizeof(cnf) - 1);
-                if (n > 0) {
-                    std::string text((const char *)cnf, n);
-                    std::string lower = text;
-                    for (char &c : lower) c = (char)std::tolower((unsigned char)c);
-                    const size_t key = lower.find("cdrom:");
-                    if (key != std::string::npos) {
-                        size_t j = key + 6;
-                        while (j < text.size() && (text[j] == '\\' || text[j] == '/')) j++;
-                        std::string tok;
-                        while (j < text.size()) {
-                            char c = text[j];
-                            if (c == ';' || c == '\r' || c == '\n' || c == ' ' ||
-                                c == '\t' || c == '\0') break;
-                            tok += c; j++;
-                            if (tok.size() > 64) break;
-                        }
-                        const size_t s2 = tok.find_last_of("\\/");
-                        if (s2 != std::string::npos) tok = tok.substr(s2 + 1);
-                        if (!tok.empty() && iso.FindFile(tok, ent)) boot_name = tok;
-                    }
-                }
-            }
-            if (!boot_name.empty() && iso.FindFile(boot_name, ent) &&
-                ent.size > 2048) {
-                uint8_t *file = (uint8_t *)std::malloc(ent.size);
-                if (file) {
-                    size_t got = iso.ReadFile(boot_name, file, ent.size);
-                    if (got > 2048) {
-                        uint32_t img_len = (uint32_t)(got - 2048);
-                        uint8_t *img = (uint8_t *)std::malloc(img_len);
-                        if (img) {
-                            memcpy(img, file + 2048, img_len);
-                            std::free(file);
-                            dirty_ram_register_text_image(phys_lo, img, img_len);
-                            std::fprintf(stdout,
-                                "psxrecomp: text image guard armed (0x%08X..0x%08X, disc %s)\n",
-                                load_address, load_address + img_len,
-                                boot_name.c_str());
-                            return;
-                        }
-                    }
-                    std::free(file);
-                }
-            }
-        }
+    /* 2. The boot EXE from the disc image. */
+    if (disc_img) {
+        dirty_ram_register_text_image(phys_lo, disc_img, disc_len);
+        std::fprintf(stdout,
+            "psxrecomp: text image guard armed (0x%08X..0x%08X, disc %s)\n",
+            load_address, load_address + disc_len, disc_name.c_str());
+        note_text_source_image(disc_img, phys_lo, disc_len,
+                               "mounted disc's boot executable");
+        return;
     }
     std::fprintf(stdout,
         "psxrecomp: WARNING: text image guard NOT armed (no local EXE, no disc "
-        "boot EXE) — native text dispatch will be conservative\n");
+        "boot EXE) — no statically compiled game function will run; the game's "
+        "own code is interpreted\n");
 }
 
 /* dma.c */

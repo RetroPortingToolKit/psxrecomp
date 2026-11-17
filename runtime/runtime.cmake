@@ -395,6 +395,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/local_mouse_policy.cpp
     ${PSXRECOMP_ROOT}/runtime/src/local_mouse_sdl.cpp
     ${PSXRECOMP_ROOT}/runtime/src/memory.c
+    ${PSXRECOMP_ROOT}/runtime/src/text_source_guard.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_ram_geometry.c
     ${PSXRECOMP_ROOT}/runtime/src/kernel_patch_ranges.c
     ${PSXRECOMP_ROOT}/runtime/src/guest_tty.c
@@ -510,6 +511,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/color_lut.c
     ${PSXRECOMP_ROOT}/runtime/src/iso_reader.cpp
     ${PSXRECOMP_ROOT}/runtime/src/iso_reader_c.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/disc_boot_image.cpp
     ${PSXRECOMP_ROOT}/runtime/src/psx_cycles.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_icache.c
     ${PSXRECOMP_ROOT}/runtime/src/starvation_ring.c
@@ -1691,6 +1693,13 @@ function(psxrecomp_add_runtime_target target)
             if(game_dispatch_native_ok_full_decl)
                 set(has_game_dispatch_native_ok_full TRUE)
             endif()
+            file(STRINGS "${PSXRT_GAME_GENERATED_DISPATCH_C}"
+                game_dispatch_source_page_crc32_decl
+                REGEX "psx_game_source_page_crc32\\("
+                LIMIT_COUNT 1)
+            if(game_dispatch_source_page_crc32_decl)
+                set(has_game_dispatch_source_page_crc32 TRUE)
+            endif()
         endif()
     endif()
     # Layer B: statically-compiled overlay dispatch, generated from the
@@ -2347,6 +2356,14 @@ function(psxrecomp_add_runtime_target target)
             ${PSXRECOMP_ROOT}/runtime/src/game_dispatch_compat.c
             APPEND PROPERTY COMPILE_DEFINITIONS
             PSX_GAME_DISPATCH_HAS_NATIVE_OK_FULL=1)
+    endif()
+    if(has_game_dispatch_source_page_crc32)
+        # The dispatcher carries the generated-from image's page CRCs; the
+        # compatibility unit must not define the empty fallback beside it.
+        set_property(SOURCE
+            ${PSXRECOMP_ROOT}/runtime/src/game_dispatch_compat.c
+            APPEND PROPERTY COMPILE_DEFINITIONS
+            PSX_GAME_DISPATCH_HAS_SOURCE_PAGE_CRC32=1)
     endif()
     if(has_overlay_dispatch)
         target_compile_definitions(${target} PRIVATE PSX_HAS_OVERLAY_DISPATCH=1)

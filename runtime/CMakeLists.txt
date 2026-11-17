@@ -536,6 +536,15 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kseg2_inline_load.py"
                 --cc "${CMAKE_C_COMPILER}")
         endif()
+        # A disc of a multi-disc set can carry the program with a per-disc
+        # code byte. The page where the loaded executable differs from the
+        # generated-from image is refused native dispatch by the real
+        # memory.c guard, so its code runs from RAM.
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            add_test(NAME text_source_guard_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_text_source_guard.py"
+                --cc "${CMAKE_C_COMPILER}")
+        endif()
         if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
             add_test(NAME dma_mdec_jobs_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dma_mdec_jobs.py"
@@ -985,6 +994,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
             tests/test_psx_ram_runtime_map.c
             tests/psx_ram_runtime_map_stubs.c
             src/memory.c
+            src/text_source_guard.c
+            src/crc32.c
             src/dma.c
             src/gpu_timeline.c
             src/boot_state.c
@@ -1007,6 +1018,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
             tests/test_isc_store.c
             tests/psx_ram_runtime_map_stubs.c
             src/memory.c
+            src/text_source_guard.c
+            src/crc32.c
             src/dma.c
             src/gpu_timeline.c
             src/boot_state.c
@@ -1031,6 +1044,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
             tests/test_pgxp_untracked_store.c
             tests/psx_ram_runtime_map_stubs.c
             src/memory.c
+            src/text_source_guard.c
+            src/crc32.c
             src/dma.c
             src/gpu_timeline.c
             src/boot_state.c
@@ -1930,6 +1945,19 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_include_directories(iso_reader_sbi_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
     target_link_libraries(iso_reader_sbi_test PRIVATE chdr-static)
     add_test(NAME iso_reader_sbi_test COMMAND iso_reader_sbi_test)
+
+    # The boot executable is read from where SYSTEM.CNF says it is,
+    # also in a subdirectory of the disc. The text image guard has no reference
+    # image without it, and then no statically compiled game function runs.
+    add_executable(disc_boot_image_test
+        tests/test_disc_boot_image.cpp
+        src/disc_boot_image.cpp
+        src/iso_reader.cpp
+        src/cue_sheet.cpp)
+    target_include_directories(disc_boot_image_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
+    target_link_libraries(disc_boot_image_test PRIVATE chdr-static)
+    add_test(NAME disc_boot_image_test COMMAND disc_boot_image_test
+        ${CMAKE_CURRENT_BINARY_DIR})
 
     add_executable(mod_packages_test
         tests/test_mod_packages.cpp
