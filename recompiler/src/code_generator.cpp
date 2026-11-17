@@ -276,6 +276,11 @@ void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
         blocks.push_back(std::move(f));
     }
     if(contract!=config_.geometry_control_frames.end()) {
+        // Operand publication is independent of optional dead-frame elision.
+        // A genuine opaque exception path can require the full SP/RA receipts
+        // while the same guarded closure still owns canonical scratch EAs.
+        precision_geometry_scratch_=config_.geometry_scratch_frames.count(cfg.function_start)!=0;
+        if(precision_geometry_scratch_)precision_geometry_guard_=contract->second;
         constexpr uint64_t control=(UINT64_C(1)<<29)|(UINT64_C(1)<<31);
         constexpr uint64_t all=((UINT64_C(1)<<34)-1u)&~UINT64_C(1);
         // The title declaration certifies this exact caller/callback closure's
@@ -291,7 +296,6 @@ void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
             if(complete) {
                 precision_geometry_dead_=sites;precision_geometry_control_=true;
                 precision_geometry_guard_=contract->second;
-                precision_geometry_scratch_=config_.geometry_scratch_frames.count(cfg.function_start)!=0;
             }
         }
     }
@@ -3635,9 +3639,10 @@ GeneratedFunction CodeGenerator::generate_function(
                 body_ss<<"#if "<<region_condition<<"\n";
                 if(precision_region_plan_.roots.count(c) && cfg.blocks.count(c)) {
                     body_ss<<config_.indent<<fmt::format("        case 0x{:08X}u: ",runtime_pc(c));
-                    if(precision_geometry_control_)body_ss<<fmt::format(
-                        "if(!{}(cpu,0x{:08X}u)) {{ {}_canonical(cpu,_cont); return; }} pgxp_native_clobber(cpu,0xA0000000u,0u); ",
+                    if(precision_geometry_control_||precision_geometry_scratch_)body_ss<<fmt::format(
+                        "if(!{}(cpu,0x{:08X}u)) {{ {}_canonical(cpu,_cont); return; }} ",
                         precision_geometry_guard_,runtime_pc(c),precision_region_owner_);
+                    if(precision_geometry_control_)body_ss<<"pgxp_native_clobber(cpu,0xA0000000u,0u); ";
                     body_ss<<fmt::format("goto precision_block_{:08X};\n",c);
                 }
                 else
@@ -3746,10 +3751,11 @@ GeneratedFunction CodeGenerator::generate_function(
 
     if(regions) {
         body_ss<<"#if "<<region_condition<<"\n";
-        if(precision_geometry_control_)body_ss<<config_.indent<<fmt::format(
-            "if(!{}(cpu,0x{:08X}u)) {{ {}_canonical(cpu,0x{:08X}u); return; }}\n"
-            "    pgxp_native_clobber(cpu,0xA0000000u,0u); /* geometry-dead SP/RA, not affine receipts */\n",
+        if(precision_geometry_control_||precision_geometry_scratch_)body_ss<<config_.indent<<fmt::format(
+            "if(!{}(cpu,0x{:08X}u)) {{ {}_canonical(cpu,0x{:08X}u); return; }}\n",
             precision_geometry_guard_,runtime_pc(func.start_addr),precision_region_owner_,runtime_pc(func.start_addr));
+        if(precision_geometry_control_)body_ss<<config_.indent<<
+            "pgxp_native_clobber(cpu,0xA0000000u,0u); /* geometry-dead SP/RA, not affine receipts */\n";
         body_ss<<config_.indent<<fmt::format("goto precision_block_{:08X};\n",func.start_addr)<<"#else\n";
     }
     body_ss << blocks_ss.str();
@@ -3821,7 +3827,7 @@ GeneratedFunction CodeGenerator::generate_function(
 
     if(regions) {
         annotation_prefix+="#if "+region_condition+"\n";
-        if(precision_geometry_control_)annotation_prefix+=fmt::format("extern int {}(CPUState*,uint32_t);\n",precision_geometry_guard_);
+        if(precision_geometry_control_||precision_geometry_scratch_)annotation_prefix+=fmt::format("extern int {}(CPUState*,uint32_t);\n",precision_geometry_guard_);
         for(const auto& [name,text]:precision_region_materializers_)annotation_prefix+=text;
         // Keep the full-precision CFG out of the hot native host owner. The
         // public function retains its one cleanup scope and all entry hooks;
