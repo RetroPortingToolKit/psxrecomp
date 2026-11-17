@@ -92,7 +92,7 @@ int main(void) {
         psx_write_word(a, PACKED);
         produce(a);
         psx_write_word(a, PACKED);
-#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+#if defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS
         check(!precise(a), "write ownership ends same-value CPU lineage before typed publication");
         produce(a);
         check(precise(a), "typed CPU/GTE receipt republishes after the actual write");
@@ -132,7 +132,7 @@ int main(void) {
     g_dma_exec_depth = 0;
     check(!precise(0x80100000u), "DMA store through a mirror drops the shadow");
 
-#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+#if defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS
     pgxp_set_source_tracking(1);
     for(unsigned i=0;i<2;++i) {
         const uint32_t a=addrs[i];PGXPWordShadow old,now;

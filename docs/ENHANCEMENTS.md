@@ -406,6 +406,27 @@ stays, inert + A/B-able). What was learned, so the next attempt starts ahead:
 
 ## G1 — Sub-pixel vertex precision + perspective-correct textures (issue #92)
 
+### Retired PGXP optimization selectors
+
+`PSX_NATIVE_PRECISION_SLICES`, `PSX_PGXP_DATAFLOW` and `PSX_PGXP_OPERATIONS`
+are **deprecated and disabled**. Enabling any of them now fails CMake
+configuration and direct C/C++ compilation with a deprecation error. The legacy
+operation ABI entry points throw
+`std::logic_error` if an old caller reaches them. Launching with any obsolete
+environment variable enabled also fails before starting the launcher or guest.
+Unset the variables or use `0`, `OFF`, `FALSE`, or `NO` to leave them disabled.
+
+The current replacement is `PSX_PGXP_DEMAND_REGIONS`, where generated code
+tracks precision demand and materializes the required values at observation
+boundaries. It requires regenerated, qualified ENHANCED title sources; changing
+an old option's name alone does not qualify a title. Leave the retired options
+OFF for ordinary full precision tracking and REFERENCE builds.
+
+The PGXP Precision mod, geometry/perspective correction, shared precision
+helpers and conservative fallback hooks remain supported. The following
+sections retain the implementation history of the underlying value-propagation
+engine.
+
 PS1 polygon jitter ("wobble", "bouncing lines") and warped floor/wall textures
 have one root cause each, both in the fixed-point geometry pipeline:
 

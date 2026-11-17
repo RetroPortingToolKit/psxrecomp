@@ -70,6 +70,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "mod_immediate.h"
 #include "display_scanout.h"
 #include "pgxp.h"
+#include "pgxp_deprecation.hpp"
 #include "pgxp_session.h"
 #include "interrupts.h"
 #include "psx_video_timing.h"
@@ -17525,6 +17526,27 @@ static void host_pause_service(void) {
 int main(int argc, char** argv) {
     g_main_argc = argc;
     g_main_argv = argv;
+    /* Reject retired selections before starting a regional child, launcher,
+     * renderer or guest. Do not quietly ignore an old launch environment. */
+    try {
+        PSXRecompV4::precision::validate_legacy_environment();
+    } catch (const std::logic_error& error) {
+        /* This rejection precedes normal argument parsing. Honor unattended
+         * launches before using the existing native warning dialog. */
+        for (int i = 1; i < argc; ++i) {
+            if (std::strcmp(argv[i], "--headless") == 0 ||
+                std::strcmp(argv[i], "--headless-opengl") == 0)
+                g_headless = 1;
+            if (std::strcmp(argv[i], "--hidden-window") == 0)
+                g_hidden_window = 1;
+        }
+        if (const char* e = std::getenv("PSX_HEADLESS"))
+            if (*e && *e != '0') g_headless = 1;
+        if (const char* e = std::getenv("PSX_HIDDEN_WINDOW"))
+            if (*e && *e != '0') g_hidden_window = 1;
+        launcher_warning("Deprecated PGXP method", error.what());
+        return EXIT_FAILURE;
+    }
     const int regional_result = PSXRecompV4::regional::startup(argc, argv);
     if (regional_result >= 0) return regional_result;
     /* Force line-buffered output so messages appear even if killed. */

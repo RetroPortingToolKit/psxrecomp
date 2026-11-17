@@ -134,8 +134,10 @@ def main():
     ap.add_argument('--runtime-root', type=Path, default=ROOT, help='verified production headers/project root for test-only fixture worktree')
     ap.add_argument('--dispatch', type=Path, help='already verified actual normal BIOS dispatch for owner extraction')
     ap.add_argument('--opt', choices=('0','2'), default='2')
-    ap.add_argument('--operations', action='store_true', help='qualify guarded whole integer operations and write ownership')
+    ap.add_argument('--operations', action='store_true', help='DEPRECATED: rejected; current demand uses --regions')
     a = ap.parse_args()
+    if a.operations:
+        ap.error('PSX_PGXP_OPERATIONS is DEPRECATED; use supported full PGXP or qualified --regions products')
     if a.geometry_scratch and not a.geometry_control:ap.error('--geometry-scratch requires --geometry-control')
     if a.geometry_control and not a.regions:ap.error('--geometry-control requires --regions')
     if a.tail_compile and (not a.regions or a.opt!='0'):
@@ -149,7 +151,7 @@ def main():
             work.mkdir(parents=True, exist_ok=False)
         base, words = program()
         if a.regions:
-            if a.operations or not a.dispatch: ap.error("--regions requires --dispatch and OPERATIONS remains OFF")
+            if not a.dispatch: ap.error("--regions requires --dispatch and deprecated modes remain OFF")
             base,words=add_region_program(base,words)
         header = bytearray(2048); header[:8] = b'PS-X EXE'
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
@@ -174,43 +176,7 @@ def main():
         if not emitted or any('psx-pgxp-dataflow-v2' not in x[:2048] for x in emitted):
             raise RuntimeError('actual CLI generation lacks the precision-lifetimes v2 marker')
         text = '\n'.join(emitted)
-        dead_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_(?:DEAD|ELIDED)_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
-        elided_words = {int(x, 16) for x in re.findall(r'PGXP_FLOW_ELIDED_ALU\(\d+u, 0x([0-9A-F]+)u', text)}
-        if words[21] not in elided_words or words[1] in elided_words or words[4] in elided_words:
-            raise RuntimeError('actual lifetime elision crossed an observation or kept an overwritten record')
-        if not {words[1], words[4], words[21]} <= dead_words:
-            raise RuntimeError('actual CFG emitter failed to remove cross-block control/dead-copy hooks')
-        for word in words[7:15] + [words[18], words[28]]:
-            if word in dead_words:
-                raise RuntimeError('actual emitter removed live coordinate arithmetic 0x%08X' % word)
-        if words[64] in dead_words:
-            raise RuntimeError('actual emitter lost a conditional external caller boundary')
-        print('Actual emitted precision hooks: %d elided lifetimes, %d deferred dead writes, %d retained ALU hooks' %
-              (len(re.findall(r'PGXP_FLOW_ELIDED_ALU\(', text)),
-               len(re.findall(r'PGXP_FLOW_DEAD_ALU\(', text)),
-               len(re.findall(r'PGXP_(?:PLAIN_)?ALU\(', text))), flush=True)
-        if a.operations:
-            for address in ('80010300','80010500'):
-                # An overlapping function can be an entry wrapper AFTER its
-                # shared alias body. Inspect the actual executing block, never
-                # the next unrelated operation following that public wrapper.
-                entries = list(re.finditer(r'(?m)^block_'+address+r':\s*\n', text))
-                if len(entries)!=1:
-                    raise RuntimeError('actual nongeometry block entry is not unique: '+address)
-                entry = entries[0].end()
-                boundary = re.search(r'(?m)^(?:block_[0-9A-Fa-f]{8}:|(?:static )?void (?:func_|psx_alias_body_))', text[entry:])
-                stop = entry+boundary.start() if boundary else len(text)
-                start = text.index('psx-pgxp-integer-operation-v2', entry, stop)
-                end = text.index('} else\n#endif', start, stop)
-                if re.search(r'\bPGXP_(?:ALU|LOAD|STORE|COP2|MULDIV|FLOW_|PLAIN_)', text[start:end]):
-                    raise RuntimeError('actual nongeometry operation retained an instruction hook')
-                if 'psx_pgxp_operation_begin' not in text[start:end] or 'psx_pgxp_operation_end' not in text[start:end]:
-                    raise RuntimeError('actual nongeometry operation lacks its boundary proof/receipt')
-                if address=='80010500' and ('PSX_STORE_WORD' not in text[start:end] or
-                    'PSX_STORE_HALF' not in text[start:end] or 'PSX_STORE_BYTE' not in text[start:end] or
-                    text[start:end].count('psx_store_cycle_barrier()')!=3):
-                    raise RuntimeError('actual mixed operation lost a maintained store/barrier')
-            print('Actual nongeometry load/ALU/store operations: zero instruction PGXP hooks; all widths/barriers and canonical fallback retained', flush=True)
+        print('Actual emitted supported PGXP products; retired DATAFLOW/OPERATIONS/SLICES stay OFF', flush=True)
         if a.regions:
             from test_static_dispatch_owner import function
             dispatch=a.dispatch.read_text(encoding='utf-8')
@@ -290,9 +256,9 @@ def main():
                               else 'flow_'+name+'_'+symbol) for symbol in sorted(names))
             c.write_text(aliases+text, encoding='utf-8')
             obj = work / (name+'.o')
-            selection = ['-DPSX_PGXP_DATAFLOW='+str(0 if a.regions else selected),
+            selection = ['-DPSX_PGXP_DATAFLOW=0',
                          '-DPSX_PGXP_DEMAND_REGIONS='+str(int(a.regions and selected)),
-                         '-DPSX_PGXP_OPERATIONS='+str(int(a.operations and selected))]
+                         '-DPSX_PGXP_OPERATIONS=0']
             if a.regions:
                 # Inspect the actual selected C, not mutually-exclusive source
                 # text: the native compiler must see only its private CFG.
@@ -327,7 +293,7 @@ def main():
             (a.cxx, ROOT/'runtime/tests/pgxp_test_mod_memory.cpp', 'mod-memory'),
             (a.cxx, ROOT/'runtime/tests/pgxp_dataflow_fixture.cpp', 'fixture')):
             obj = work/(name+'.o')
-            run([compiler, *common, '-DPSX_PGXP_DATAFLOW='+str(0 if a.regions else 1), '-DPSX_PGXP_OPERATIONS='+str(int(a.operations)), '-DPSX_PGXP_DEMAND_REGIONS='+str(int(a.regions)), '-c', source, '-o', obj]); objects.append(obj)
+            run([compiler, *common, '-DPSX_PGXP_DATAFLOW=0', '-DPSX_PGXP_OPERATIONS=0', '-DPSX_PGXP_DEMAND_REGIONS='+str(int(a.regions)), '-c', source, '-o', obj]); objects.append(obj)
         if a.regions:
             obj=work/'actual-owner.o'
             run([a.cc,*common,'-c',ROOT/'recompiler/tests/test_static_dispatch_owner.c','-o',obj])

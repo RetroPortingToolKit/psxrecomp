@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <stdexcept>
 
 extern "C" int gte_geometry_correction_lookup(uint32_t,int32_t*,int32_t*) {return 0;}
 extern "C" int gte_geometry_correction_lookup_probe(uint32_t,int32_t*,int32_t*) {return 0;}
@@ -589,94 +590,20 @@ int main() {
     CHECK(pgxp_tag_word_source(HalfNative,Packed,919));
     CHECK(pgxp_native_publish_half(HalfNative,&half_source,0,0));
     CHECK(pgxp_load_source(HalfNative,0x000C0007u)==0);
-#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
-    pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_source_tracking(1);
-    // Whole integer receipts must reproduce canonical scalar/half behavior.
-    struct IntegerCase {uint32_t instruction,input,result,kind;};
-    const IntegerCase cases[]={
-        {0x3c1a1234u,0,0x12340000u,1}, // LUI: both exact
-        {0x001bd400u,0x76543210u,0x32100000u,3}, // SLL16: zero low half
-        {0x001bd402u,0x76543210u,0x00007654u,2}, // SRL16: exact high half
-        {0x337a0000u,0x76543210u,0,4}, // ANDI0: two exact zero halves
-        {0x277a0007u,17,24,0}, // untracked ADDIU
-        {0x2b7a0020u,17,1,0}, // SLTI kills coordinate lifetime
-    };
-    for(const auto& c:cases) {
-        pgxp_invalidate_all();CPUState cpu{};cpu.gpr[27]=c.input;
-        pgxp_native_clobber(&cpu,1u<<27,0);
-        cpu.gpr[26]=c.result;
-        psx_pgxp_alu(&cpu,c.instruction,c.result,c.input,c.instruction&0xffffu);
-        psx_pgxp_store(&cpu,0xac1a0000u,Other,c.result);
-        const auto expected=capture(Other,c.result);
-        pgxp_native_clobber(&cpu,(1u<<27)|(1u<<26),0);
-        CHECK(psx_pgxp_operation_begin(&cpu,1u<<27,1u<<26,nullptr,0,1,0,0));
-        psx_pgxp_operation_end(&cpu,c.kind==0?1u<<26:0,c.kind==1?1u<<26:0,
-            c.kind==2?1u<<26:0,c.kind==3?1u<<26:0,c.kind==4?1u<<26:0);
-        psx_pgxp_store(&cpu,0xac1a0000u,Other,c.result);
-        check_attributes(expected,capture(Other,c.result));
+    // Retired ABI entry points must fail loudly even when PGXP itself is off.
+    // Ordinary word/geometry/source and current demand receipts remain below.
+    for(int enabled:{0,1})for(bool begin:{false,true}) {
+        pgxp_set_enabled(enabled);CPUState cpu{};bool rejected=false;
+        try {
+            if(begin)(void)psx_pgxp_operation_begin(&cpu,0,0,nullptr,0,0,0,0);
+            else psx_pgxp_operation_end(&cpu,0,0,0,0,0);
+        } catch(const std::logic_error& error) {
+            rejected=std::strstr(error.what(),"PSX_PGXP_OPERATIONS") &&
+                     std::strstr(error.what(),"DEPRECATED");
+        }
+        CHECK(rejected);
     }
-    // Actual write ownership is the sole store metadata producer inside a
-    // mixed operation. Keep all typed records, including preexisting precision
-    // in an equal-bit destination and the raw virtual alias supplied by code.
-    constexpr uint32_t StoreReference=0x80061000u,StoreNative=0x80061004u;
-    CPUState owner{};owner.gpr[27]=Packed;pgxp_native_clobber(&owner,1u<<27,0);
-    PGXPProjection old_projection{8.25f,12.5f,2.f,.5f};
-    auto seed_store=[&](uint32_t a){seed(a,Packed,(8<<16)+16384);
-        pgxp_gte_set_projection(&old_projection);pgxp_store_gte_reg(a,15);};
-    seed_store(StoreReference);seed_store(StoreNative);
-    const PGXPStoreRecord *records=nullptr;uint32_t capacity=0;
-    const uint64_t canonical_begin=pgxp_store_ring(&records,&capacity);
-    pgxp_write_owned(StoreReference,Packed,4);psx_pgxp_store(&owner,0xac1b0000u,StoreReference,Packed);
-    pgxp_write_owned(StoreReference+2,8,2);psx_pgxp_store(&owner,0xa41b0000u,StoreReference+2,8);
-    pgxp_write_owned(StoreReference+3,8,1);psx_pgxp_store(&owner,0xa01b0000u,StoreReference+3,8);
-    const auto store_expected=capture(StoreReference,0x08080008u);
-    const uint64_t canonical_end=pgxp_store_ring(&records,&capacity);
-    CHECK(canonical_end-canonical_begin==2);
-    PGXPStoreRecord expected_records[2]={records[canonical_begin%capacity],records[(canonical_begin+1)%capacity]};
-    uint8_t proof_bytes[4]={};
-    const uint32_t native_alias=StoreNative^0x20200000u; // KSEG1 + retail mirror
-    PSXPGXPOperationAccess owned_writes[]={
-        {native_alias,0x104u,proof_bytes,0xac1b0000u},
-        {native_alias+2,0x102u,proof_bytes,0xa41b0000u},
-        {native_alias+3,0x101u,proof_bytes,0xa01b0000u}};
-    CHECK(psx_pgxp_operation_begin(&owner,1u<<27,0,owned_writes,3,0,0,3));
-    pgxp_write_owned(StoreNative,Packed,4);pgxp_write_owned(StoreNative+2,8,2);pgxp_write_owned(StoreNative+3,8,1);
-    psx_pgxp_operation_end(&owner,0,0,0,0,0);
-    auto actual_store=capture(StoreNative,0x08080008u);actual_store.address=store_expected.address;
-    check_attributes(store_expected,actual_store);
-    const uint64_t native_end=pgxp_store_ring(&records,&capacity);CHECK(native_end-canonical_end==2);
-    for(unsigned j=0;j<2;++j){auto expected=expected_records[j],actual=records[(canonical_end+j)%capacity];
-        expected.seq=actual.seq;expected.addr=native_alias+j*2u;
-        CHECK(!std::memcmp(&expected,&actual,sizeof expected));}
-    // A partial write retains the untouched low coordinate/depth semantics,
-    // and its checkpoint rolls back exactly like the canonical typed SH.
-    seed_store(StoreReference);seed_store(StoreNative);
-    pgxp_write_owned(StoreReference+2,8,2);psx_pgxp_store(&owner,0xa41b0000u,StoreReference+2,8);
-    const auto half_expected=capture(StoreReference,0x00080008u),half_before=capture(StoreNative,Packed);
-    PSXPGXPOperationAccess owned_partial{native_alias+2,0x102u,proof_bytes,0xa41b0000u};
-    pgxp_checkpoint_begin();CHECK(psx_pgxp_operation_begin(&owner,1u<<27,0,&owned_partial,1,0,0,1));
-    pgxp_write_owned(StoreNative+2,8,2);psx_pgxp_operation_end(&owner,0,0,0,0,0);
-    auto half_actual=capture(StoreNative,0x00080008u);half_actual.address=half_expected.address;
-    check_attributes(half_expected,half_actual);pgxp_checkpoint_rollback();
-    check_attributes(half_before,capture(StoreNative,Packed));
-    // Do not bypass cold partial-word validation merely because both stores
-    // and reads are integer. Full-word write then read is an owned safe case.
-    pgxp_invalidate_word(StoreNative);
-    PSXPGXPOperationAccess partial_read[]={owned_partial,{native_alias,4,proof_bytes,0}};
-    CHECK(!psx_pgxp_operation_begin(&owner,1u<<27,0,partial_read,2,0,1,1));
-    CPUState proof{};proof.gpr[5]=7;pgxp_native_clobber(&proof,1u<<5,0);
-    CHECK(pgxp_native_scalar_gpr(&proof,5,7.25,1));
-    CHECK(!psx_pgxp_operation_begin(&proof,1u<<5,0,nullptr,0,1,0,0));
-    uint8_t actual[]={8,0,12,0};PSXPGXPOperationAccess access{StoreNative+64,4,actual,0};
-    pgxp_write_owned(StoreNative+64,Packed,4);
-    CHECK(psx_pgxp_operation_begin(&proof,0,0,&access,1,0,1,0));
-    CHECK(pgxp_tag_word_source(StoreNative+64,Packed,811));
-    CHECK(!psx_pgxp_operation_begin(&proof,0,0,&access,1,0,1,0));
-    pgxp_write_owned(StoreNative+64,Packed,4);actual[0]^=1;
-    CHECK(!psx_pgxp_operation_begin(&proof,0,0,&access,1,0,1,0));
-    actual[0]=8;seed(StoreNative+64,Packed,(8<<16)+16384);
-    CHECK(!psx_pgxp_operation_begin(&proof,0,0,&access,1,0,1,0));
-#endif
+
     // Compare actual canonical instruction results with compiler receipts in
     // both CPU modes, including equal-word overwrite of existing source/scalar.
     for(int mode=0;mode<2;++mode) {

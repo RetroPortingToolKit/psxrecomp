@@ -37,6 +37,7 @@
  */
 
 #include <stdint.h>
+#include "pgxp_deprecation.h"
 
 #ifdef __cplusplus
 extern "C" {

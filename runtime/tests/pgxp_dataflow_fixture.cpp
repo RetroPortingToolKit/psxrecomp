@@ -785,7 +785,11 @@ int main(int argc,char** argv) {
             std::fputs("FAIL: custom writer values/effects bypassed canonical operation fallback\n",stderr);return 1;}
         if(candidate.cold_operations){std::fputs("FAIL: cold partial-word LW validation was bypassed\n",stderr);return 1;}
 #endif
-        if(candidate.alu>=reference.alu) {std::fputs("FAIL: generated dataflow path did not remove hooks\n",stderr);return 1;}
+#if defined(PSX_TEST_PGXP_REGIONS)
+        if(candidate.alu>=reference.alu) {std::fputs("FAIL: generated demand path did not remove hooks\n",stderr);return 1;}
+#else
+        if(candidate.alu!=reference.alu) {std::fputs("FAIL: full-PGXP baseline unexpectedly changed instruction hooks\n",stderr);return 1;}
+#endif
         if(!v)std::printf("Generated GTE-to-packet ALU hooks reference/native: %llu/%llu\n",
             (unsigned long long)reference.alu,(unsigned long long)candidate.alu);
     }

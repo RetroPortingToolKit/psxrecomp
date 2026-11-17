@@ -965,7 +965,7 @@ if(BUILD_TESTING)
             src/psx_ram_geometry.c)
         target_include_directories(pgxp_write_owned_store_test PRIVATE include src)
         target_compile_definitions(pgxp_write_owned_store_test PRIVATE
-            PSX_STUBS_REAL_PGXP=1 PSX_STUBS_REAL_ICACHE=1 PSX_PGXP_OPERATIONS=1)
+            PSX_STUBS_REAL_PGXP=1 PSX_STUBS_REAL_ICACHE=1 PSX_PGXP_DEMAND_REGIONS=1)
         target_compile_options(pgxp_write_owned_store_test PRIVATE
             -O2 -flto -ffunction-sections -fdata-sections -Wno-lto-type-mismatch)
         target_link_options(pgxp_write_owned_store_test PRIVATE -flto -Wno-lto-type-mismatch
@@ -1279,12 +1279,6 @@ if(BUILD_TESTING)
     target_include_directories(pgxp_test PRIVATE include)
     add_test(NAME pgxp_test COMMAND pgxp_test)
     target_compile_definitions(pgxp_test PRIVATE PSX_PGXP=1)
-    add_executable(pgxp_slices_test tests/test_pgxp.cpp src/pgxp.cpp
-        src/psx_ram_geometry.c)
-    target_include_directories(pgxp_slices_test PRIVATE include)
-    target_compile_definitions(pgxp_slices_test PRIVATE
-        PSX_PGXP=1 PSX_NATIVE_PRECISION_SLICES=1)
-    add_test(NAME pgxp_slices_test COMMAND pgxp_slices_test)
 
 
     add_executable(pgxp_word_shadow_test tests/test_pgxp_word_shadow.cpp
@@ -1292,11 +1286,11 @@ if(BUILD_TESTING)
     target_include_directories(pgxp_word_shadow_test PRIVATE include)
     add_test(NAME pgxp_word_shadow_test COMMAND pgxp_word_shadow_test)
 
-    add_executable(pgxp_operation_receipts_test tests/test_pgxp_word_shadow.cpp
+    add_executable(pgxp_demand_receipts_test tests/test_pgxp_word_shadow.cpp
         src/pgxp.cpp src/psx_ram_geometry.c)
-    target_include_directories(pgxp_operation_receipts_test PRIVATE include)
-    target_compile_definitions(pgxp_operation_receipts_test PRIVATE PSX_PGXP_OPERATIONS=1)
-    add_test(NAME pgxp_operation_receipts_test COMMAND pgxp_operation_receipts_test)
+    target_include_directories(pgxp_demand_receipts_test PRIVATE include)
+    target_compile_definitions(pgxp_demand_receipts_test PRIVATE PSX_PGXP_DEMAND_REGIONS=1)
+    add_test(NAME pgxp_demand_receipts_test COMMAND pgxp_demand_receipts_test)
 
     # psx.enhancement.pgxp at session start (docs/ENHANCEMENTS.md G1.11): the
     # real builtin activation (mod API stubbed) and the pgxp_session.h
@@ -1345,7 +1339,7 @@ if(BUILD_TESTING)
     endforeach()
 
     foreach(_pgxp_isolated_test
-            gte_register_access_test gte_hle_contract_test pgxp_test pgxp_slices_test pgxp_session_test pgxp_session_hooks_test)
+            gte_register_access_test gte_hle_contract_test pgxp_test pgxp_session_test pgxp_session_hooks_test)
         target_sources(${_pgxp_isolated_test} PRIVATE tests/pgxp_test_mod_memory.cpp)
     endforeach()
 
