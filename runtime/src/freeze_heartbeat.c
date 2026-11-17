@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -184,6 +185,39 @@ static uint32_t s_spin_waits_ended = 0;
 static FreezeDumpPolicy s_dump_policy = {0};
 static uint32_t s_last_wedge_kind = 0;  /* informational, last detected kind */
 static volatile int s_wedge_classification_paused = 0;
+
+/* PSX_DUMP_AT_FRAME=<n>: one deliberate full dump at the first heartbeat
+ * sample whose frame count is n or more. It is asked for, so it is outside
+ * the automatic policy: it needs no slot and spends none. The heartbeat
+ * samples every 100 ms, so the dump's own "frame_count" names the frame it
+ * was taken at. Kind 6 takes no stack samples and never suspends the main
+ * thread. */
+#define REQUESTED_DUMP_KIND 6u
+static int      s_requested_dump_parsed = 0;
+static uint64_t s_requested_dump_frame = 0;   /* 0 = not asked for */
+static uint32_t s_requested_dump_attempts = 0;
+static uint32_t s_requested_dumps = 0;
+
+static void hb_requested_dump_init(void) {
+    if (s_requested_dump_parsed) return;
+    s_requested_dump_parsed = 1;
+    const char *text = getenv("PSX_DUMP_AT_FRAME");
+    if (!text || !text[0]) return;
+    uint64_t value = 0;
+    for (const char *p = text; *p; p++) {
+        if (*p < '0' || *p > '9' || value > (UINT64_MAX - 9u) / 10u) {
+            value = 0;
+            break;
+        }
+        value = value * 10u + (uint64_t)(*p - '0');
+    }
+    if (value == 0) {
+        fprintf(stderr, "[freeze] PSX_DUMP_AT_FRAME is not a frame count of 1 "
+                        "or more; no dump is requested\n");
+        return;
+    }
+    s_requested_dump_frame = value;
+}
 
 void freeze_heartbeat_set_paused(int paused) {
     s_wedge_classification_paused = paused ? 1 : 0;
@@ -616,7 +650,8 @@ static int freeze_dump_write(long long wall, uint64_t frame, uint64_t cyc,
         (wedge_kind == 2) ? "reentry_storm" :
         (wedge_kind == 3) ? "slow_frames" :
         (wedge_kind == 4) ? "fatal" :
-        (wedge_kind == 5) ? "spin_freeze" : "unknown",
+        (wedge_kind == 5) ? "spin_freeze" :
+        (wedge_kind == REQUESTED_DUMP_KIND) ? "requested" : "unknown",
         (unsigned)DUMP_CAP_WTRACE_ALL,
         (unsigned)DUMP_CAP_WTRACE,
         (unsigned)DUMP_CAP_FRAME_HISTORY,
@@ -775,6 +810,10 @@ static int gcp_sample_fn(uint64_t seq, uint32_t *fn, int *in_exception) {
     return 1;
 }
 static void heartbeat_write(void) {
+    /* Read at start, on the main thread. This call covers a caller that
+     * samples without the thread. */
+    hb_requested_dump_init();
+
     uint64_t cyc = psx_get_cycle_count();
     uint64_t frame = s_frame_count;
     uint32_t cur_fn = g_debug_current_func_addr;
@@ -919,6 +958,23 @@ static void heartbeat_write(void) {
         freeze_dump_policy_record_result(&s_dump_policy, written);
     }
 
+    /* The requested dump. A fatal halt writes its own dump of the same
+     * rings, so nothing is requested once one is active. A write that fails
+     * is tried again on the next samples, a bounded number of times. */
+    if (s_requested_dump_frame != 0 && s_requested_dumps == 0 &&
+        frame >= s_requested_dump_frame && g_psx_fatal_reason == NULL &&
+        s_requested_dump_attempts < FREEZE_DUMP_MAX_FAILED_ATTEMPTS) {
+        s_last_wedge_kind = REQUESTED_DUMP_KIND;
+        if (freeze_dump_write(
+                wall, frame, cyc, exc_reentry, cur_fn, last_store,
+                i_stat, i_mask, in_exc, total_checks,
+                dispatch_count, exc_entries,
+                sio_stat, sio_ctrl, card_active, mc_max, tx_writes))
+            s_requested_dumps = 1;
+        else
+            s_requested_dump_attempts++;
+    }
+
     /* Timer1/RootCounter1 decode (Tomba 2 RCnt-wait diagnosis): if the game
      * spins on an RCnt1-based wait that never completes, t1_irq_fired stays
      * flat and/or t1_count never reaches t1_target. clock-source (mode bits
@@ -1022,6 +1078,9 @@ static void heartbeat_write(void) {
         "  \"automatic_freeze_dump_limit\":%u,\n"
         "  \"spin_pinned_ticks\":%u,\n"
         "  \"spin_waits_ended\":%u,\n"
+        "  \"refilled_freeze_dump_slots\":%u,\n"
+        "  \"requested_dump_frame\":%llu,\n"
+        "  \"requested_dumps\":%u,\n"
         "  \"fatal\":%s%s%s\n"
         "}\n",
         s_backend,
@@ -1087,6 +1146,9 @@ static void heartbeat_write(void) {
         (unsigned)FREEZE_DUMP_AUTO_LIMIT,
         s_spin_pinned_ticks,
         s_spin_waits_ended,
+        s_dump_policy.ordinary_refills + s_dump_policy.hard_refills,
+        (unsigned long long)s_requested_dump_frame,
+        s_requested_dumps,
         g_psx_fatal_reason ? "\"" : "",
         g_psx_fatal_reason ? fatal_esc : "null",
         g_psx_fatal_reason ? "\"" : "");
@@ -1186,6 +1248,8 @@ void freeze_heartbeat_start(const char *backend_label) {
         memcpy(s_backend, backend_label, n);
         s_backend[n] = 0;
     }
+    /* Before the thread exists: it then never reads the environment. */
+    hb_requested_dump_init();
 #ifdef _WIN32
     /* Duplicate the main thread's pseudo-handle into a real handle so the
      * heartbeat thread can SuspendThread/GetThreadContext for stack capture

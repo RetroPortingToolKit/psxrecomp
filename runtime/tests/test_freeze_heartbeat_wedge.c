@@ -202,6 +202,19 @@ static void moving(unsigned count, unsigned frames) {
                0x80100000u + 4u * t_samples, 1000);
 }
 
+/* Frames arrive, but only one in four samples: 5 a window, the slow class. */
+static void slow(unsigned count) {
+    for (unsigned i = 0; i < count; i++)
+        sample((t_samples % 4u) == 3u ? 1u : 0u, 0x80012340u,
+               0x80100000u + 4u * t_samples, 1000);
+}
+
+/* The frame count stands still: the hard class. */
+static void stopped(unsigned count) {
+    for (unsigned i = 0; i < count; i++)
+        sample(0, 0x80012340u, 0x80055AA0u, 1000);
+}
+
 /* Frames arrive and the three values stand still: a wait, or a spin. */
 static void pinned(unsigned count, unsigned frames) {
     for (unsigned i = 0; i < count; i++)
@@ -217,6 +230,93 @@ static long long heartbeat_field(const char *name) {
     text[n] = 0;
     fclose(f);
     return json_integer(text, name);
+}
+
+static void set_dump_at_frame(const char *value) {
+#ifdef _WIN32
+    _putenv_s("PSX_DUMP_AT_FRAME", value ? value : "");
+#else
+    if (value)
+        setenv("PSX_DUMP_AT_FRAME", value, 1);
+    else
+        unsetenv("PSX_DUMP_AT_FRAME");
+#endif
+}
+
+/* Startup spends the ordinary slot on slow frames. After more than
+ * 60 healthy seconds a second wedge must still get a dump; a third must not,
+ * so that the output of one process stays bounded. */
+static void budget_after_startup(void) {
+    slow(40);
+    CHECK(t_dump_count == 1 && t_dumps[0].kind == 3,
+          "startup slow frames: %d dump(s), kind %lld; expected 1 of kind 3",
+          t_dump_count, t_dumps[0].kind);
+
+    moving(700, 6);
+    CHECK(t_dump_count == 1, "70 healthy seconds wrote a dump");
+    slow(40);
+    CHECK(t_dump_count == 2,
+          "a wedge after 70 healthy seconds: %d dump(s) in all; expected 2",
+          t_dump_count);
+    if (t_dump_count >= 2)
+        CHECK(t_dumps[1].kind == 3, "the late dump is kind %lld; expected 3",
+              t_dumps[1].kind);
+    CHECK(heartbeat_field("automatic_freeze_dumps") == 2,
+          "automatic_freeze_dumps is %lld; expected 2",
+          heartbeat_field("automatic_freeze_dumps"));
+
+    moving(700, 6);
+    slow(40);
+    CHECK(t_dump_count == 2,
+          "a third wedge: %d dump(s) in all; the bound is 2 of this class",
+          t_dump_count);
+    CHECK(heartbeat_field("suppressed_freeze_events") >= 1,
+          "suppressed_freeze_events is %lld; the third wedge must be counted",
+          heartbeat_field("suppressed_freeze_events"));
+}
+
+/* Both automatic slots are spent at startup, as in a long run that wedged
+ * later. PSX_DUMP_AT_FRAME=5000 must still write one dump, at the first
+ * sample whose frame count is 5000 or more, and must not count as automatic. */
+static void dump_at_frame(void) {
+    set_dump_at_frame("5000");
+    slow(40);
+    stopped(25);
+    CHECK(t_dump_count == 2 && t_dumps[0].kind == 3 && t_dumps[1].kind == 1,
+          "startup: %d dump(s), kinds %lld and %lld; expected kinds 3 and 1",
+          t_dump_count, t_dumps[0].kind, t_dumps[1].kind);
+
+    while (s_frame_count + 50u < 5000u) moving(1, 50);
+    CHECK(t_dump_count == 2, "a dump was written before frame 5000");
+    moving(1, 50);
+    CHECK(t_dump_count == 3,
+          "frame %llu reached: %d dump(s) in all; expected 3",
+          (unsigned long long)s_frame_count, t_dump_count);
+    if (t_dump_count >= 3) {
+        CHECK(t_dumps[2].kind == 6, "the requested dump is kind %lld; expected 6",
+              t_dumps[2].kind);
+        CHECK(t_dumps[2].frame >= 5000 && t_dumps[2].frame < 5050,
+              "the requested dump is at frame %lld; expected 5000 to 5049",
+              t_dumps[2].frame);
+    }
+
+    moving(100, 50);
+    CHECK(t_dump_count == 3, "the requested dump was written %d times",
+          t_dump_count - 2);
+    CHECK(heartbeat_field("automatic_freeze_dumps") == 2,
+          "automatic_freeze_dumps is %lld; the requested dump must not count",
+          heartbeat_field("automatic_freeze_dumps"));
+    CHECK(heartbeat_field("requested_dumps") == 1,
+          "requested_dumps is %lld; expected 1",
+          heartbeat_field("requested_dumps"));
+}
+
+/* A value that is not a whole frame count asks for nothing. */
+static void dump_at_frame_bad_value(void) {
+    set_dump_at_frame("5000x");
+    moving(200, 50);
+    CHECK(t_dump_count == 0, "PSX_DUMP_AT_FRAME=5000x wrote %d dump(s)",
+          t_dump_count);
 }
 
 /* The shape that six healthy runs recorded: the last store is at
@@ -307,6 +407,9 @@ int main(int argc, char **argv) {
         const char *name;
         void (*run)(void);
     } scenarios[] = {
+        {"budget-after-startup", budget_after_startup},
+        {"dump-at-frame", dump_at_frame},
+        {"dump-at-frame-bad-value", dump_at_frame_bad_value},
         {"spin-ends-only", spin_ends_only},
         {"spin-wait-ends", spin_wait_ends},
         {"spin-real", spin_real},
@@ -316,6 +419,7 @@ int main(int argc, char **argv) {
     const char *wanted = argc > 1 ? argv[1] : "";
     for (size_t i = 0; i < sizeof(scenarios) / sizeof(scenarios[0]); i++) {
         if (strcmp(scenarios[i].name, wanted) != 0) continue;
+        set_dump_at_frame(NULL);
         scenarios[i].run();
         if (failures) {
             fprintf(stderr, "freeze heartbeat %s: %d failure(s)\n", wanted,
