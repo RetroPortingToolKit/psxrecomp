@@ -138,7 +138,7 @@ assert re.search(
 )
 assert re.search(
     r": \(\(id\.expected_serial_given && !id\.serial_matches\) \|\| set_wrong_disc\)\s*"
-    r"\? \"the disc does not carry the expected serial\"\s*: id\.netplay_detail\.c_str\(\);",
+    r"\? \"the disc does not carry the expected serial\"\s*:[^;]*id\.netplay_detail\.c_str\(\);",
     row,
 ), "a wrong disc outside the list must give the serial as the reason in the report"
 assert re.search(r"id\.detected_serial\.c_str\(\), expected_for_row\.c_str\(\),", row)
