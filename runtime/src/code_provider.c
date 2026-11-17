@@ -16,6 +16,33 @@
 #include "code_provider.h"
 #include "autocompile.h"
 #include "overlay_backend.h"
+#include "overlay_loader.h"
+#include "psx_cycles.h"
+
+int code_provider_session_interpreted_sealed(void) {
+    return overlay_loader_session_interpreted_sealed() &&
+           autocompile_session_interpreted_sealed();
+}
+int code_provider_session_seal_interpreted(void) {
+    if (code_provider_session_interpreted_sealed()) return 1;
+    if (psx_get_cycle_count() != 0 || !overlay_loader_session_can_seal_interpreted()) return 0;
+    if (!autocompile_session_set_interpreted(1)) return 0;
+    if (!overlay_loader_session_set_interpreted(1)) {
+        (void)autocompile_session_set_interpreted(0);
+        return 0;
+    }
+    return 1;
+}
+int code_provider_session_end_interpreted(void) {
+    int compiler_was_sealed = autocompile_session_interpreted_sealed();
+    if (!compiler_was_sealed && !overlay_loader_session_interpreted_sealed()) return 1;
+    if (!autocompile_session_set_interpreted(0)) return 0;
+    if (!overlay_loader_session_set_interpreted(0)) {
+        (void)autocompile_session_set_interpreted(compiler_was_sealed);
+        return 0;
+    }
+    return 1;
+}
 
 /* ---- gcc provider: pass-through to the validated spawn->DLL->rescan path --- */
 /* The hook signatures match autocompile_* exactly, so we point straight at
@@ -37,6 +64,7 @@ static const CodeProvider s_gcc = {
 static const CodeProvider *s_active = &s_gcc;
 
 void code_provider_init(const char *cfg_backend, int gcc_configured) {
+    if (code_provider_session_interpreted_sealed()) return;
     /* overlay_backend_resolve resolves AUTO to GCC or TCC (never AUTO). Both the
      * gcc and tcc tiers are the same spawn-a-compiler->DLL->rescan provider
      * (the actual compiler is whatever overlay_autocompile_cmd runs, selected in

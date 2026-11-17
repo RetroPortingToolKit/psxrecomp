@@ -109,6 +109,12 @@ typedef struct {
     int32_t offset_x, offset_y;
 } GpuDrawArea;
 void gpu_get_draw_area(GpuDrawArea* out);
+typedef struct GpuDrawingEnvironment {
+    GpuDrawArea area;
+    uint32_t mode, texture_window;
+} GpuDrawingEnvironment;
+/* Read-only host observation; no GPUSTAT polling or guest cycle side effects. */
+void gpu_get_drawing_environment(GpuDrawingEnvironment* out);
 /* Non-zero when the frame that just reached vblank used two side-by-side draw
  * areas. Presentation-only helpers use this to expand a local split-screen
  * viewport without changing the underlying framebuffer or netplay hashes. */
@@ -610,6 +616,14 @@ void gpu_ws_set_nw_left_hud_packet_range(uint32_t lo, uint32_t hi);
 void gpu_ws_begin_linked_list(void);
 void gpu_ws_end_linked_list(void);
 void gpu_ws_prepass_linked_list(uint32_t start_addr);
+/* Native submission classifies the immutable packet copy as it is gathered.
+ * Finalize whole-list UI grouping before submitting those same packet bytes. */
+void gpu_ws_native_list_begin(void);
+void gpu_ws_native_list_node(uint32_t addr, uint32_t header,
+                             const uint32_t *words);
+void gpu_ws_native_list_end(void);
+void gpu_submit_gp0_node(uint32_t addr, uint32_t count,
+                          const uint32_t *words);
 void gpu_ws_validate_linked_list_header(uint32_t addr, uint32_t header);
 void gpu_ws_validate_linked_list_node(uint32_t addr, uint32_t num_words);
 void gpu_ws_restore_linked_list_rank(uint32_t rank);
@@ -660,6 +674,12 @@ int  psx_ws_backdrop_ring_json(char *buf, int cap);
  * y, h) alongside its union-find root and final anchor — enough to tell whether
  * two HUD primitives shared a run, and which key component split them if not. */
 int  psx_ws_ui_groups_json(char *buf, int cap);
+/* Copy the ordinary auto-UI transform for one exact packet in the current
+ * linked-list prepass. Read-only: coordinates precede the draw offset, just
+ * as in native GP0 processing. rectangle distinguishes sprite sizing/rounding from polygon corners.
+ * Returns one only for a guarded current-list UI entry; never pairs frames. */
+int gpu_ws_copy_presented_ui(uint32_t source,const uint32_t *words,uint32_t count,
+    int32_t x[4],int32_t y[4],unsigned vertices,int rectangle);
 
 /* Live-tunable backdrop widen amount (ws_backdrop_margin command): <0 whole-row,
  * 0 off, >0 N-column widen. g_ws_bd_from_interp is the interp's one-shot

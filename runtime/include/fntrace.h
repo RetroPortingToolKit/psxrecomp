@@ -85,6 +85,9 @@ extern uint64_t      g_disp_tail_seq;
 
 /* Hot path. Called from psx_dispatch on every entry. Inlinable. */
 void fntrace_record(CPUState* cpu, uint32_t target);
+/* Same logical history for an entry that skips the physical owner. */
+void fntrace_record_tail(CPUState* cpu, uint32_t target);
+extern uint64_t g_psx_owner_dispatch_count;
 /* Register the game's text range for one-shot game-start detection.
  * First dispatch into [lo, hi) calls cdrom_notify_game_started(). */
 void fntrace_set_game_range(uint32_t lo, uint32_t hi);

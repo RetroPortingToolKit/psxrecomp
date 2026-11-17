@@ -320,6 +320,25 @@ void address_adapter_guard() {
     check(count_of(out, guard) == 3, "all variants retain the original word for address-adapter guards");
 }
 
+void precision_plain_emission() {
+    constexpr uint32_t constant = 0x24020001u; // addiu v0,zero,1
+    constexpr uint32_t increment = 0x24420001u;
+    PSXRecomp::CodeGenConfig config{};
+    auto out = generate({constant, increment, 0x8c230000u, increment}, config).full_code;
+    check(count_of(out, "PGXP_PLAIN_ALU(") == 2,
+          "plain constants and aliases coalesce; memory kills the summary");
+    config.mod_instruction_sites.insert(kBase + 4u);
+    out = generate({constant, increment, increment}, config).full_code;
+    check(count_of(out, "PGXP_PLAIN_ALU(") == 1,
+          "an instruction hook and its mutated inputs stay conservative");
+    out = generate({0x3c020001u, increment, 0x304200ffu, increment}, {}).full_code;
+    check(out.find("PGXP_PLAIN_ALU(") == std::string::npos,
+          "LUI and bitwise exact-half producers retain full tracking");
+    out = generate({constant, 0x10000001u, increment, increment}, {}).full_code;
+    check(count_of(out, "PGXP_PLAIN_ALU(") == 1,
+          "delay-slot clones and successor block entries keep full hooks");
+}
+
 void overlay_identity() {
     auto none = load(base_config());
     auto some = load(base_config() + sites_block({site("0x80023500", "0x28820020", 1, "64")}));
@@ -348,6 +367,7 @@ int main(int argc, char** argv) {
     shared_decls();
     overlay_identity();
     address_adapter_guard();
+    precision_plain_emission();
     if (failures) {
         std::fprintf(stderr, "mod_immediate_codegen_test: %d failure(s)\n", failures);
         return 1;

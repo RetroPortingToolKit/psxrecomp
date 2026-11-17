@@ -76,6 +76,7 @@ typedef uint32_t (*parity_read_word_fn)(void* ctx, uint32_t addr);
 void parity_trace_config(uint32_t watched_tcb, uint32_t trigger_target,
                          uint32_t tcb_epc_off, uint32_t tcb_state_off,
                          const uint32_t* watch_addrs, int watch_count);
+extern uint32_t g_parity_trace_armed;
 void parity_trace_arm(int on);     /* on=1 begins recording (idempotent) */
 void parity_trace_reset(void);     /* clear ring + unfreeze (keeps config) */
 int  parity_trace_is_armed(void);  /* hot-path gate: cheap one-branch check */

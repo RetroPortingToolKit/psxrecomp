@@ -25,6 +25,7 @@
 
 #include "frame_trace.h"
 #include "render_pass.h"
+#include "local_pair_prepare.h"
 #include "render_pass_plan.h"
 
 #include <stdint.h>
@@ -38,6 +39,7 @@
 #include "mod_plugins.h"
 #include "mod_runtime.h"
 #include "psx_cycles.h"
+#include "psx_video_timing.h"
 #include "timers.h"
 
 static ModFunctionEntryContext s_mod_entry;
@@ -278,6 +280,8 @@ int gl_renderer_local_view_end(int keep) {
 }
 static uint32_t s_stereo_mask;
 static uint64_t s_stereo_published;
+static uint64_t s_parked_lease,s_next_parked_lease=1;
+static uint32_t s_parked_mask;
 static int s_capture_fail_eye = -1;
 uint32_t gl_renderer_stereo_unavailable(void) { return s_gl_status; }
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
@@ -295,6 +299,18 @@ int gl_renderer_stereo_end(uint32_t eye, int keep) {
     return 1;
 }
 void gl_renderer_stereo_stage_reset(void) { s_stereo_mask = 0; }
+uint64_t gl_renderer_stereo_stage_park(void) {
+    if(s_stereo_mask!=3 || s_parked_lease)return 0;
+    s_parked_mask=s_stereo_mask;s_stereo_mask=0;return s_parked_lease=s_next_parked_lease++;
+}
+void gl_renderer_stereo_parked_cancel(uint64_t lease) {
+    if(lease==s_parked_lease){s_parked_lease=0;s_parked_mask=0;}
+}
+int gl_renderer_stereo_parked_publish(uint64_t lease,uint64_t id,uint64_t cycle,const int32_t view[2][3]) {
+    (void)cycle;(void)view;
+    if(!lease || lease!=s_parked_lease || s_parked_mask!=3)return 0;
+    s_stereo_published=id;s_parked_lease=0;s_parked_mask=0;return 1;
+}
 int gl_renderer_stereo_stage_readback_pair(uint32_t w,uint32_t h,uint8_t *rgba) {
     if((s_stereo_mask & 3u) != 3u) return 0;
     memset(rgba,0x5A,(size_t)w*h*8);return 1;
@@ -425,6 +441,29 @@ static int never_fn(struct CPUState *cpu, void *user, uint32_t alpha_q16) {
     return 1;
 }
 
+/* The generic temporal entry is retired. These store/clock/refusal tests
+ * exercise the SAME maintained native own-view sandbox once, with explicit
+ * mock netplay ownership. Stereo/local pairs have their own cases below. */
+static int native_view_pass(CPUState *cpu,const PSXModRenderPass *pass,PSXModRenderPassFn fn,void *user) {
+    const int old_netplay=s_netplay_active,old_backend=s_local_status;
+    s_netplay_active=1;s_local_status=s_gl_status;
+    const int result=psx_mod_render_local_view(cpu,pass,fn,user);
+    s_netplay_active=old_netplay;s_local_status=old_backend;return result;
+}
+static unsigned retired_calls;
+static int retired_draw(CPUState *cpu,void *user,uint32_t alpha) {
+    (void)cpu;(void)user;(void)alpha;retired_calls++;return 1;
+}
+static void test_retired_temporal(void) {
+    CPUState cpu={0};PSXModRenderPass pass={sizeof pass,32768,0,0,320,240};
+    render_pass_reset_session();
+    CHECK(!psx_mod_render_pass(&cpu,&pass,retired_draw,NULL) && !retired_calls,
+          "retired temporal API refuses without entering guest drawing");
+    s_netplay_active=1;psx_mod_set_render_pass_netplay(1);
+    CHECK(!psx_mod_render_pass(&cpu,&pass,retired_draw,NULL) && !retired_calls,
+          "netplay opt-in cannot revive retired temporal drawing");
+    render_pass_reset_session();s_netplay_active=0;
+}
 static void test_pass(void) {
     CPUState cpu;
     PSXModRenderPass pass;
@@ -437,6 +476,7 @@ static void test_pass(void) {
     uint32_t stat0, mask0;
     int irqs0;
 
+    s_local_kept=0;
     memset(&cpu, 0, sizeof cpu);
     cpu.gpr[8] = 0x55u;
     memset(s_ram, 0xA5, sizeof s_ram);
@@ -469,9 +509,9 @@ static void test_pass(void) {
     irqs0 = s_irqs_raised;
     s_mmio_calls = 0;
 
-    CHECK(psx_mod_render_pass(&cpu, &pass, pass_fn, NULL) == 1, "the pass ran and was kept");
+    CHECK(native_view_pass(&cpu, &pass, pass_fn, NULL) == 1, "the pass ran and was kept");
     render_pass_get_stats(&st);
-    CHECK(st.passes == 1 && s_kept == 1 && s_open_passes == 0, "one image, pass closed");
+    CHECK(st.local_views == 1 && s_local_kept == 1 && s_open_passes == 0, "one image, pass closed");
     CHECK(st.dropped[RENDER_PASS_DROP_SPU] == 2, "2 SPU stores dropped and counted");
     CHECK(st.dropped[RENDER_PASS_DROP_CD] == 1, "1 CD store dropped and counted");
     CHECK(st.dropped[RENDER_PASS_DROP_TIMER] == 1, "1 timer store dropped and counted");
@@ -500,25 +540,25 @@ static void test_pass(void) {
 
     /* Status gates refuse without running the callback. */
     s_fast_forward = 1;
-    CHECK(psx_mod_render_pass_status() == PSX_MOD_RENDER_PASS_FAST_FORWARD,
+    CHECK(psx_mod_render_stereo_status() == PSX_MOD_RENDER_PASS_FAST_FORWARD,
           "fast-forward status");
-    CHECK(psx_mod_render_pass(&cpu, &pass, never_fn, NULL) == 0,
+    CHECK(native_view_pass(&cpu, &pass, never_fn, NULL) == 0,
           "no pass during fast-forward");
     s_fast_forward = 0;
     s_gl_status = PSX_MOD_RENDER_PASS_BACKEND;
-    CHECK(psx_mod_render_pass_status() == PSX_MOD_RENDER_PASS_BACKEND,
+    CHECK(psx_mod_render_stereo_status() == PSX_MOD_RENDER_PASS_BACKEND,
           "backend status");
-    CHECK(psx_mod_render_pass(&cpu, &pass, never_fn, NULL) == 0,
+    CHECK(native_view_pass(&cpu, &pass, never_fn, NULL) == 0,
           "no pass while the backend declines");
     s_gl_status = PSX_MOD_RENDER_PASS_READY;
-    CHECK(psx_mod_render_pass_status() == PSX_MOD_RENDER_PASS_READY, "ready again");
+    CHECK(psx_mod_render_stereo_status() == PSX_MOD_RENDER_PASS_READY, "ready again");
 
     render_pass_get_stats(&st);
     CHECK(st.status_refused == 2 && st.refused == 0 &&
           st.last_failure.status == PSX_MOD_RENDER_PASS_BACKEND,
           "pass refusal counters are separate from plan refusals");
     s_begin_ok = 0;
-    CHECK(psx_mod_render_pass(&cpu, &pass, never_fn, NULL) == 0, "begin refusal");
+    CHECK(native_view_pass(&cpu, &pass, never_fn, NULL) == 0, "begin refusal");
     render_pass_get_stats(&st);
     CHECK(st.begin_refused == 1 && st.checkpoint_refused == 0 &&
           strcmp(st.last_failure.reason, "capture_size") == 0 &&
@@ -527,7 +567,7 @@ static void test_pass(void) {
     uint64_t failed_attempt = st.last_failure.attempt;
     s_begin_ok = 1;
     s_checkpoint_ok = 0;
-    CHECK(psx_mod_render_pass(&cpu, &pass, never_fn, NULL) == 0, "checkpoint refusal");
+    CHECK(native_view_pass(&cpu, &pass, never_fn, NULL) == 0, "checkpoint refusal");
     render_pass_get_stats(&st);
     CHECK(st.checkpoint_refused == 1 && s_open_passes == 0 &&
           strcmp(st.last_failure.reason, "checkpoint_gpu") == 0 &&
@@ -538,7 +578,7 @@ static void test_pass(void) {
     /* A refusal whose producer named no reason still reads as a failure. */
     s_begin_ok = 0;
     s_diag_null = 1;
-    CHECK(psx_mod_render_pass(&cpu, &pass, never_fn, NULL) == 0, "anonymous begin refusal");
+    CHECK(native_view_pass(&cpu, &pass, never_fn, NULL) == 0, "anonymous begin refusal");
     render_pass_get_stats(&st);
     CHECK(st.last_failure.reason && st.last_failure.reason[0] &&
           st.last_failure.attempt > failed_attempt,
@@ -546,7 +586,7 @@ static void test_pass(void) {
     failed_attempt = st.last_failure.attempt;
     s_diag_null = 0;
     s_begin_ok = 1;
-    CHECK(psx_mod_render_pass(&cpu, &pass, pass_fn, NULL) == 1, "success after refusals");
+    CHECK(native_view_pass(&cpu, &pass, pass_fn, NULL) == 1, "success after refusals");
     render_pass_get_stats(&st);
     CHECK(st.last_failure.attempt == failed_attempt && st.pass_attempts == 7,
           "success does not erase last failure");
@@ -555,14 +595,14 @@ static void test_pass(void) {
     CHECK(!st.last_failure.reason && st.pass_attempts == 0,
           "session reset clears failure diagnostics");
     s_netplay_active = 1;
-    CHECK(psx_mod_render_pass_status() == PSX_MOD_RENDER_PASS_SESSION, "netplay requires explicit title opt-in");
+    CHECK(psx_mod_render_stereo_status() == PSX_MOD_RENDER_PASS_SESSION, "netplay requires explicit title opt-in");
     psx_mod_set_render_pass_netplay(1);
-    CHECK(psx_mod_render_pass_status() == PSX_MOD_RENDER_PASS_READY, "forward netplay can render in the sandbox");
+    CHECK(psx_mod_render_stereo_status() == PSX_MOD_RENDER_PASS_READY, "forward netplay can render in the sandbox");
     s_netplay_resim = 1;
-    CHECK(psx_mod_render_pass_status() == PSX_MOD_RENDER_PASS_SESSION, "rollback replay refuses extra rendering");
+    CHECK(psx_mod_render_stereo_status() == PSX_MOD_RENDER_PASS_SESSION, "rollback replay refuses extra rendering");
     s_netplay_resim = 0;
     g_ls_replay_active = 1;
-    CHECK(psx_mod_render_pass_status() == PSX_MOD_RENDER_PASS_SESSION, "lockstep replay refuses extra rendering");
+    CHECK(psx_mod_render_stereo_status() == PSX_MOD_RENDER_PASS_SESSION, "lockstep replay refuses extra rendering");
     g_ls_replay_active = 0;
     render_pass_reset_session();
     CHECK(!render_pass_netplay_enabled(), "netplay opt-in does not carry into the next session");
@@ -623,10 +663,10 @@ static void test_ram_8mb(void) {
     pass.w = 320; pass.h = 240;
     pass.alpha_q16 = 16384u;
     render_pass_get_stats(&st0);
-    CHECK(psx_mod_render_pass(&cpu, &pass, pass8_fn, NULL) == 1,
+    CHECK(native_view_pass(&cpu, &pass, pass8_fn, NULL) == 1,
           "8 MiB: the pass ran and was kept");
     render_pass_get_stats(&st1);
-    CHECK(st1.passes == st0.passes + 1, "8 MiB: one more pass");
+    CHECK(st1.local_views == st0.local_views + 1, "8 MiB: one more pass");
     CHECK(memcmp(ram0, s_ram, RAM_8MB) == 0,
           "8 MiB: all of RAM restored, above 2 MiB too");
     CHECK(cpu.gpr[9] == 0u, "8 MiB: CPU registers restored");
@@ -636,7 +676,7 @@ static void test_ram_8mb(void) {
      * live size are neither written nor needed. */
     s_ram_live = RAM_2MB;
     s_retail_fold_seen = 0;
-    CHECK(psx_mod_render_pass(&cpu, &pass, pass_retail_fn, ram0) == 1,
+    CHECK(native_view_pass(&cpu, &pass, pass_retail_fn, ram0) == 1,
           "retail after 8 MiB: the pass ran");
     CHECK(s_retail_fold_seen, "retail after 8 MiB: 0x80600010 folded onto 0x10");
     CHECK(memcmp(ram0, s_ram, RAM_8MB) == 0,
@@ -1034,10 +1074,38 @@ static void test_local_pair(void) {
     s_gl_status=s_local_status=0;
 }
 
-static int local_temporal_draw(CPUState *cpu, void *user, uint32_t alpha) {
-    CHECK(alpha == 32768u, "temporal local view receives its phase");
-    return local_draw(cpu, user, 0);
+static void test_prepared_local_pair(void) {
+    CPUState cpu={0};PSXModStereoFrame f={sizeof f,1,0,240,320,240};
+    render_pass_reset_session();s_gl_status=s_local_status=0;s_begin_ok=1;
+    s_netplay_active=0;s_eye_decline=-1;s_eye_calls=0;
+    cpu.gpr[8]=123;s_ram[0x456]=0x77;
+    const uint64_t cycle=psx_cycle_count,published=s_stereo_published;
+    const uint64_t lease=psx_mod_prepare_local_pair(&cpu,&f,local_pair_draw,NULL);
+    CHECK(lease && s_eye_calls==2 && s_stereo_published==published && !s_stereo_mask,
+          "preparation parks exactly two draws without publishing either eye");
+    CHECK(cpu.gpr[8]==123 && s_ram[0x456]==0x77 && psx_cycle_count==cycle && !psx_mod_local_view_scope(),
+          "preparation restores the same simulation/time as the ordinary pair");
+    CHECK(!psx_mod_prepare_local_pair(&cpu,&f,local_pair_draw,NULL) && s_eye_calls==2,
+          "one bounded pending pair refuses another draw");
+    psx_cycle_count+=g_psx_vblank_cycles;
+    CHECK(!psx_mod_commit_prepared_local_pair(lease+1) && s_stereo_published==published,
+          "wrong owner token cannot publish");
+    CHECK(psx_mod_commit_prepared_local_pair(lease) && s_eye_calls==2 && s_stereo_published!=published,
+          "original boundary commits owned pair without another guest draw");
+    CHECK(!psx_mod_commit_prepared_local_pair(lease),"commit consumes token once");
+    uint64_t cancelled=psx_mod_prepare_local_pair(&cpu,&f,local_pair_draw,NULL);
+    psx_mod_cancel_prepared_local_pair(cancelled);
+    CHECK(cancelled && !psx_mod_commit_prepared_local_pair(cancelled),"cancel cannot revive pending image");
+    cancelled=psx_mod_prepare_local_pair(&cpu,&f,local_pair_draw,NULL);
+    render_pass_reset_session();
+    CHECK(cancelled && !psx_mod_commit_prepared_local_pair(cancelled),"session reset revokes prepared image");
+    cancelled=psx_mod_prepare_local_pair(&cpu,&f,local_pair_draw,NULL);
+    psx_cycle_count+=5ull*g_psx_vblank_cycles;
+    CHECK(cancelled && !psx_mod_commit_prepared_local_pair(cancelled) && !s_parked_lease,
+          "expired native interval cannot publish a stale pair");
+    psx_cycle_count=cycle;render_pass_reset_session();
 }
+
 
 /* Shared-state digest deliberately excludes the local presentation image. */
 static uint64_t shared_digest(const CPUState *cpu) {
@@ -1055,13 +1123,13 @@ static uint64_t shared_digest(const CPUState *cpu) {
     return h * 0x100000001b3ull;
 }
 
-static int local_temporal_discard(CPUState *cpu, void *user, uint32_t alpha) {
-    (void)local_temporal_draw(cpu, user, alpha);
+static int local_discard(CPUState *cpu, void *user, uint32_t alpha) {
+    (void)local_draw(cpu, user, alpha);
     return 0;
 }
 
-static int local_temporal_abort(CPUState *cpu, void *user, uint32_t alpha) {
-    (void)local_temporal_draw(cpu, user, alpha);
+static int local_abort(CPUState *cpu, void *user, uint32_t alpha) {
+    (void)local_draw(cpu, user, alpha);
     (void)render_pass_mmio_read_allowed(0x1F801800u, 1);
     CHECK(0, "device-read abort must not return to guest code");
     return 0;
@@ -1075,7 +1143,7 @@ static void test_local_view(void) {
     RenderPassStats st;
     uint64_t cycle;
     uint64_t digest;
-    render_pass_reset_session(); s_gl_status = 0; s_begin_ok = 1;
+    render_pass_reset_session(); s_gl_status = 0; s_begin_ok = 1;s_local_kept=0;
     memset(&r, 0, sizeof r);
     r.struct_size = sizeof r;
     r.y = 240; r.w = 320; r.h = 240;
@@ -1122,22 +1190,22 @@ static void test_local_view(void) {
     psx_mod_set_render_pass_netplay(1);
     r.alpha_q16 = 32768u;
     digest = shared_digest(&cpu);
-    CHECK(psx_mod_render_pass(&cpu, &r, local_temporal_draw, NULL) == 1,
-          "opted-in temporal pass uses own-view scope");
+    CHECK(psx_mod_render_local_view(&cpu, &r, local_draw, NULL) == 1,
+          "native own-view transaction uses own-view scope");
     CHECK(shared_digest(&cpu) == digest,
-          "actual opted-in temporal pass preserves shared digest");
-    CHECK(!psx_mod_render_pass(&cpu, &r, local_temporal_discard, NULL) &&
+          "native own-view transaction preserves shared digest");
+    CHECK(!psx_mod_render_local_view(&cpu, &r, local_discard, NULL) &&
           shared_digest(&cpu) == digest,
-          "discarded temporal pass preserves shared digest");
-    CHECK(!psx_mod_render_pass(&cpu, &r, local_temporal_abort, NULL) &&
+          "discarded native view preserves shared digest");
+    CHECK(!psx_mod_render_local_view(&cpu, &r, local_abort, NULL) &&
           shared_digest(&cpu) == digest && s_open_passes == 0,
-          "aborted temporal pass restores shared state and closes transaction");
+          "aborted native view restores shared state and closes transaction");
     CHECK(s_ws_scope == 0 && psx_mod_local_view_scope() == 0 &&
           cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
-          "temporal local pass restores scope, RAM, registers and clock");
+          "native own-view transaction restores scope, RAM, registers and clock");
     s_resim = 1;
-    CHECK(!psx_mod_render_pass(&cpu, &r, never_fn, NULL),
-          "temporal local rendering never runs during rollback replay");
+    CHECK(!psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
+          "native own-view rendering never runs during rollback replay");
     s_resim = 0;
     psx_mod_set_render_pass_netplay(0);
     CHECK(!psx_mod_render_pass(&cpu, &r, never_fn, NULL) &&
@@ -1221,6 +1289,7 @@ static void test_isolated_capture(void) {
           "the pair after a capture captures its own baseline");
 }
 int main(void) {
+    test_retired_temporal();
     test_store_policy();
     test_pass();
     test_ram_8mb();
@@ -1230,6 +1299,7 @@ int main(void) {
     test_trace_substages();
     test_local_view();
     test_local_pair();
+    test_prepared_local_pair();
     test_texture_stream_journal();
     CHECK(s_prec_open == 0, "precision checkpoints balanced");
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);

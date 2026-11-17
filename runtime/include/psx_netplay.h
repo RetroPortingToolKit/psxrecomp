@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "netplay_host_profile.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -132,7 +133,25 @@ typedef struct PsxNetplayConfig {
     uint32_t    session_id;
     char        bind_hostport[64];
     char        peer_hostport[64];
+    /* Current frontend paths must require the capability/profile exchange.
+     * Zero is retained only for legacy standalone integrations/fixtures. */
+    int         host_profile_required;
 } PsxNetplayConfig;
+
+/* Trusted startup only; copied, consumed by the next required start, and
+ * immutable during an active match. NULL/invalid inputs clear registration.
+ * This never constructs qualification from names/features/compilation. */
+int psx_netplay_host_profile_register(const PSXHostCapabilities *,const PSXHostProfileCatalog *);
+const char *psx_netplay_host_profile_status(void);
+int psx_netplay_host_profile_selection(PSXHostSelection *out);
+int psx_netplay_host_profile_failed(void);
+int psx_netplay_host_profile_ready(void);
+/* Immutable first settlement, captured before state/media work or guest entry. */
+int psx_netplay_host_profile_initial_settlement(uint64_t *cycles,uint32_t *tick);
+int psx_netplay_direct_loopback_scope(const PsxNetplayConfig *);
+/* Internal: startup-delayed RB controls, released in receive order only after
+ * capability agreement. The rollback wire loop consumes these first. */
+int psx_netplay_take_deferred_rb_sync(uint32_t *,uint32_t *,uint32_t *,uint32_t *,uint8_t *,uint8_t *,uint8_t *,int *from);
 
 void psx_netplay_config_defaults(PsxNetplayConfig *cfg);
 void psx_netplay_apply_env(PsxNetplayConfig *cfg);
