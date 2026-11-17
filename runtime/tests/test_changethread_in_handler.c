@@ -193,6 +193,9 @@ static void g_handler(CPUState *cpu) {
         for (uint32_t off = 0x08u; off <= 0x98u; off += 4u)
             fx_write(SAVE_AREA + 0x100u + off, fx_read(TCB_WORKER + off));
         count_at_switch = fx_read(WORK_COUNT);
+        /* The outer exception may leave BD set; the ordinary SYSCALL below
+         * must replace it in the saved handler context. */
+        cpu->cop0[13] |= 0x80000000u;
         change_thread(cpu, TCB_MAIN);
         FX_FAIL("ChangeThread inside the handler came back to the handler at once");
     }
@@ -257,8 +260,8 @@ static void g_main(CPUState *cpu) {
     }
     if (fx_read(TCB_WORKER + 0x8Cu) != 0xDEAD1111u || fx_read(TCB_WORKER + 0x90u) != 0xDEAD2222u)
         FX_FAIL("step 1: the old block's HI/LO are not the handler's");
-    if ((fx_read(TCB_CAUSE(TCB_WORKER)) & 0x7Cu) != (8u << 2))
-        FX_FAIL("step 1: the old block's Cause is 0x%08X, want exception code 8",
+    if ((fx_read(TCB_CAUSE(TCB_WORKER)) & (0x80000000u | 0x7Cu)) != (8u << 2))
+        FX_FAIL("step 1: the old block's Cause is 0x%08X, want exception code 8 with BD clear",
                 (unsigned)fx_read(TCB_CAUSE(TCB_WORKER)));
 
     /* The switch was taken at the call: the worker did not do another pass. */
