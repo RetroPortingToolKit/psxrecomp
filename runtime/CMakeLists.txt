@@ -629,7 +629,7 @@ if(BUILD_TESTING)
                     --sdl-library "$<TARGET_FILE:SDL3::SDL3-static>"
                     --output "${CMAKE_CURRENT_BINARY_DIR}/gl-depth-clear-${_depth_window}")
             set_tests_properties(gl_depth_clear_${_depth_window}_test PROPERTIES
-                LABELS "gpu;opengl;hardware" TIMEOUT 180
+                LABELS "gpu;opengl;hardware"
                 ENVIRONMENT "PSX_GL_HIRES_WINDOW=${_depth_window}")
         endforeach()
         add_test(NAME gl_texture_filter_test
