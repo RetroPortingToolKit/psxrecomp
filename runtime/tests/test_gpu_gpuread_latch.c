@@ -196,10 +196,41 @@ static void run_rules(void) {
     CHECK(gpu_read_gpuread() == 0u, "index 18h mirrors 08h");
 }
 
+/* Exercise the production snapshot wire codec independently of renderer resync. */
+static void run_snapshot(void) {
+    vram_pattern = g1b_pattern;
+    g1b_hi = 0x4444u;
+    power_on();
+    gp1_get_info(0x10000002u);
+    c0(0, 0, 3, 1);
+    (void)gpu_read_gpuread();
+    CHECK(gpu_read_gpuread() == 0x44443333u, "snapshot bus word before save");
+    CHECK(gpu_read_gpuread() == 0x000ABCDEu, "snapshot info latch before save");
+    uint32_t size = gpu_snapshot_bytes();
+    uint8_t *saved = (uint8_t *)malloc(size);
+    CHECK(saved != NULL, "snapshot allocation");
+    if (!saved) return;
+    gpu_snapshot_write(saved);
+
+    /* Make both latches disagree with the saved values before restoring. */
+    g1b_hi = 0xFFF0u;
+    c0(0, 0, 3, 1);
+    (void)gpu_read_gpuread(); (void)gpu_read_gpuread();
+    gp1_get_info(0x10000008u);
+    PstR reader;
+    pst_r_init(&reader, saved, size);
+    CHECK(gpu_snap_parse(&reader) && reader.p == reader.end, "GPU snapshot codec restore");
+    free(saved);
+    CHECK(gpu_read_gpuread() == 0x000ABCDEu, "snapshot restores independent info latch");
+    gp1_get_info(0x10000003u);
+    CHECK(gpu_read_gpuread() == 0x44411523u, "snapshot restores VRAM bus high bits for GP1 info");
+}
+
 int main(void) {
     run_g1();
     run_g1b();
     run_rules();
+    run_snapshot();
     if (failures) {
         fprintf(stderr, "%d failure(s)\n", failures);
         return 1;

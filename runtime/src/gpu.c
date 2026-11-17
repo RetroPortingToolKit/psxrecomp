@@ -8400,6 +8400,7 @@ static int gpu_snap_emit(PstW *w) {
     /* Depth24 present helpers (MotK FMV) — must resume with upload span. */
     WU(s_d24_upload_x1); WI(s_d24_present_hold | 0x200 | (s_d24_present_skip ? 0x100 : 0));
     WU(s_d24_prev_disp_h);
+    WU(gpuread_data_last);
 #undef WU
 #undef WI
 #undef WH
@@ -8421,8 +8422,6 @@ static int gpu_snap_parse(PstR *r) {
     RU(display_area_x); RU(display_area_y);
     RU(h_display_x1); RU(h_display_x2); RU(v_display_y1); RU(v_display_y2);
     RU(gpuread_latch);
-    /* The snapshot keeps the info latch only; take it as the last bus word. */
-    gpuread_data_last = gpuread_latch;
     if (!pst_r_u32(r, &u)) return 0;
     gp0_state = (Gp0State)u;
     for (int k = 0; k < 16; k++) RU(gp0_cmd_buf[k]);
@@ -8435,6 +8434,7 @@ static int gpu_snap_parse(PstR *r) {
     RI(vram_read_active); RH(vram_read_x); RH(vram_read_y); RH(vram_read_w); RH(vram_read_h);
     RH(vram_read_col); RH(vram_read_row);
     RU(s_d24_upload_x1); RI(s_d24_present_hold); RU(s_d24_prev_disp_h);
+    RU(gpuread_data_last);
     /* Bit 9 marks an explicit skip flag (bit 8). GP1 can arm a positive
      * count before VBlank, when skip is still false: that state must round
      * trip exactly. Older snaps without the marker infer skip from count. */
