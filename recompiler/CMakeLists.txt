@@ -1461,6 +1461,7 @@ if(BUILD_TESTING)
                 codegen_host_bios_stems
                 codegen_host_toolchain_keep_pack
                 codegen_host_toolchain_steps
+                codegen_host_disc_cfg_handoff
                 default_renderer_guards
                 mod_owned_display_controls
                 fmv_quiet_guards

@@ -127,6 +127,14 @@ respective files.
 | `discs` | game (multi-disc) | array of .cue paths; `disc` is sugar for `discs = [disc]` |
 | `disc_serials` | game (multi-disc, optional) | array parallel to `discs`: the serial each disc carries (`["SCUS-94163", "SCUS-94164", "SCUS-94165"]`). Without it every disc is checked against `[game] id` — the BOOT disc's serial — so selecting disc 2 reports "wrong disc". A disc with no entry here is not serial-gated; the ISO-header check still applies. |
 
+### Disc set and settings at the first start
+
+The setup host records the disc set in `disc.cfg` and the launcher settings in
+`settings.toml` beside the setup executable. When it starts the built product,
+after a rebuild or on a later start, it copies each file beside the product
+only if the product has none. An existing product `settings.toml`, even an
+empty one, keeps its contents; an empty product `disc.cfg` is filled in.
+
 ### Multi-disc selection
 
 Relative paths in executable-side `settings.toml` (`[disc] path`, `[bios] path`,
