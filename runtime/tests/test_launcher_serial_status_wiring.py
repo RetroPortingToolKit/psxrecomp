@@ -90,7 +90,7 @@ expected = MAIN[MAIN.index("static std::string expected_serial_for_disc("):]
 expected = expected[: expected.index("\n}\n")]
 assert re.search(
     r"return PSXRecompV4::disc_roster_expected_serial\(\s*"
-    r"g_disc_metadata_roster, g_disc_serials, disc, fallback\);",
+    r"g_disc_metadata_roster, g_disc_serials, g_program_discs, disc, fallback\);",
     expected,
 )
 assert re.search(

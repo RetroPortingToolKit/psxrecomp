@@ -38,6 +38,24 @@ static void setup(void) {
 }
 static void sector(void);
 static void ack(void);
+static int test_disc_scope;
+
+/* A disc change names later states for the mounted disc: its roster index,
+ * or, for a program of a multi-program set, its position in the whole set. */
+static void disc_select_scope_tokens(void) {
+    const char *const roster[2] = {"discs/Disc 3.cue", "discs/Disc 1.cue"};
+    const int set_positions[2] = {3, 1};
+    setup();
+    cdrom_disc_roster_set(roster, 2, 1);
+    cdrom_disc_scope_tokens_set(NULL, 0);
+    CHECK(cdrom_disc_select(2) && test_disc_scope == 2);
+    CHECK(cdrom_disc_select(1) && test_disc_scope == 1);
+    cdrom_disc_scope_tokens_set(set_positions, 2);
+    CHECK(cdrom_disc_select(2) && test_disc_scope == 1);
+    CHECK(cdrom_disc_select(1) && test_disc_scope == 3);
+    cdrom_disc_scope_tokens_set(NULL, 0);
+    cdrom_disc_roster_set(NULL, 0, 0);
+}
 static void request(void);
 static void drain(unsigned lba, int words);
 static int resident_copy(void* context) {
@@ -420,6 +438,7 @@ int main(void) {
     snapshot_pending_deadline();
     snapshot_stream_identity();
     snapshot_cd_volume();
+    disc_select_scope_tokens();
     puts("PASS: CD FIFO latching, pending IRQ, DMA continuation, and state compatibility");
     return 0;
 }
@@ -441,7 +460,8 @@ int iso_track_count(void* h) {(void)h;return 1;}
 int iso_track_is_audio(void* h,int track) {(void)h;(void)track;return 0;}
 void event_ring_record_aux(uint16_t k,uint8_t d,uint32_t a) {(void)k;(void)d;(void)a;}
 void event_ring_record(uint16_t k,uint8_t d) {(void)k;(void)d;}
-void savestate_set_disc_scope(int n) {(void)n;}
+static int test_disc_scope = -1;
+void savestate_set_disc_scope(int n) {test_disc_scope = n;}
 int psx_netplay_cd_bisect_active(void) {return 0;}
 uint32_t psx_netplay_sim_tick(void) {return 0;}
 uint32_t interrupts_get_cycles_since_vblank(void) {return 0;}
