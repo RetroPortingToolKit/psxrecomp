@@ -2047,6 +2047,23 @@ if(BUILD_TESTING)
                  COMMAND autocompile_toolchain_hash_test)
     endif()
 
+    # The compiler child must inherit its log pipe and nothing else, or an
+    # open save, replay or settings file cannot be renamed while a compile
+    # runs. The fault is a Windows one (a held file does not block rename()
+    # on POSIX), so the test is registered everywhere and reports itself
+    # skipped, with the reason, off Windows.
+    add_executable(autocompile_handle_inherit_test
+        tests/test_autocompile_handle_inherit.c)
+    if(WIN32)
+        target_sources(autocompile_handle_inherit_test PRIVATE
+            src/autocompile.c src/host_span_ring.c)
+        target_include_directories(autocompile_handle_inherit_test PRIVATE include)
+    endif()
+    add_test(NAME autocompile_handle_inherit_test
+             COMMAND autocompile_handle_inherit_test)
+    set_tests_properties(autocompile_handle_inherit_test PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 120)
+
     # Always-on wall-time frame/span rings (host_span_ring.h): the hitch-attribution
     # rings every runtime stall probe reads.
     add_executable(host_span_ring_test
