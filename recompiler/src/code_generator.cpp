@@ -4685,9 +4685,21 @@ std::string CodeGenerator::generate_file(
             std::vector<Function> new_funcs;
             std::set<uint32_t> affected;
 
-            for (uint32_t target : gap_targets) {
+            for (auto git = gap_targets.begin(); git != gap_targets.end(); ++git) {
+                uint32_t target = *git;
                 auto next_it = std::upper_bound(func_starts.begin(), func_starts.end(), target);
                 uint32_t gap_end = (next_it != func_starts.end()) ? *next_it : exe_end;
+                // Sibling gap targets PARTITION the gap, exactly as splits_by_func
+                // below partitions a function it splits. func_starts is a snapshot
+                // taken before this pass created anything, so without this bound
+                // every target in one gap ends at the same gap_end and their bodies
+                // nest: n targets in a gap re-emit the gap's tail n times. On
+                // Galerians that cost 440 MB of duplicated bodies (27x). The
+                // trailing piece still reaches the next one by fall-through, which
+                // generate_functions emits as a tail call.
+                auto sibling = std::next(git);
+                if (sibling != gap_targets.end() && *sibling < gap_end)
+                    gap_end = *sibling;
                 if (target >= gap_end) continue;
 
                 Function nf;

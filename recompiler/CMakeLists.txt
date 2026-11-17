@@ -1411,6 +1411,7 @@ if(BUILD_TESTING)
                 bios_resident_shard
                 computed_stride_jump_codegen
                 msvc_cps_codegen
+                no_overlapping_bodies
                 overlay_guard_codegen
                 overlay_store_barrier_codegen
                 reachable_discovery_codegen)
