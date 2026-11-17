@@ -213,14 +213,20 @@ std::string CodeGenerator::region_materializer(const PgxpRegionState& state) con
     return name;
 }
 
-std::string CodeGenerator::region_flush() {
+std::string CodeGenerator::region_flush(bool preserve_integer_facts) {
     bool any=false;for(unsigned r=1;r<32;++r)any|=precision_region_state_[r].known;
     const auto out=any ? config_.indent+region_materializer(precision_region_state_)+"(cpu);\n" : "";
-    precision_region_state_={};return out;
+    if(preserve_integer_facts)pgxp_region_publish_facts(precision_region_state_);
+    else precision_region_state_={};
+    return out;
 }
 void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
-    std::vector<PgxpFlowBlock> blocks;
+    std::vector<PgxpFlowBlock> blocks,geometry_blocks;
     std::set<uint32_t> roots{cfg.function_start};
+    precision_geometry_dead_.clear();precision_geometry_control_=false;precision_geometry_scratch_=false;
+    std::set<uint32_t> load_delay_opaque;
+    precision_geometry_guard_.clear();
+    const auto contract=config_.geometry_control_frames.find(cfg.function_start);
     precision_region_opaque_.clear();
     for(const auto& [pc,b]:cfg.blocks) {
         PgxpFlowBlock f{pc,{},b.successors};
@@ -248,15 +254,66 @@ void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
             if(op>=0x20&&op<=0x26&&rt)if(auto next=exe_.read_word(a+4u)) {
                 if(pgxp_flow_effect(*next).uses&(UINT64_C(1)<<rt)) {
                     opaque=true;precision_region_opaque_.insert(a+4u);
+                    load_delay_opaque.insert(a);load_delay_opaque.insert(a+4u);
                 }
             }
             if(opaque)precision_region_opaque_.insert(a);
             f.instructions.push_back({a,*w,opaque});
         }
+        auto geometry=f;
+        for(auto& i:geometry.instructions) {
+            // Timing/GTE helpers are not arbitrary metadata consumers. Exact
+            // selectors remain opaque. A scratch-frame declaration certifies
+            // the exact handled adapters' SP/RA roles; emission still publishes
+            // every pending geometry receipt before invoking those adapters.
+            i.opaque=extra_labels_.count(i.address)||
+                (!config_.geometry_scratch_frames.count(cfg.function_start) &&
+                 !mod_instruction_call(i.address,i.word).empty())||
+                find_mod_immediate_site(i.address,i.word)||
+                !draw_distance_clamp_prefix(i.address,i.word).empty();
+        }
+        geometry_blocks.push_back(std::move(geometry));
         blocks.push_back(std::move(f));
     }
+    if(contract!=config_.geometry_control_frames.end()) {
+        // Operand publication is independent of optional dead-frame elision.
+        // A genuine opaque exception path can require the full SP/RA receipts
+        // while the same guarded closure still owns canonical scratch EAs.
+        precision_geometry_scratch_=config_.geometry_scratch_frames.count(cfg.function_start)!=0;
+        if(precision_geometry_scratch_)precision_geometry_guard_=contract->second;
+        constexpr uint64_t control=(UINT64_C(1)<<29)|(UINT64_C(1)<<31);
+        constexpr uint64_t all=((UINT64_C(1)<<34)-1u)&~UINT64_C(1);
+        // The title declaration certifies this exact caller/callback closure's
+        // control-register roles. It does not declare any other register dead.
+        std::map<uint32_t,uint64_t> callees;
+        for(const auto& b:geometry_blocks)for(const auto& i:b.instructions)
+            if(i.word>>26==3u)callees[((i.address+4u)&0xf0000000u)|((i.word&0x3ffffffu)<<2)]=all&~control;
+        const auto frame=pgxp_control_frame(geometry_blocks,cfg.function_start);
+        const auto demand=pgxp_geometry_demand(geometry_blocks,cfg.function_start,all&~control,callees);
+        if(frame.valid) {
+            const auto sites=frame.sites();
+            bool complete=true;for(auto pc:sites)complete&=demand.dead.count(pc)!=0;
+            if(complete) {
+                precision_geometry_dead_=sites;precision_geometry_control_=true;
+                precision_geometry_guard_=contract->second;
+            }
+        }
+    }
+    if(precision_geometry_scratch_) {
+        // Runtime guard certifies this exact canonical-bus/handled-adapter
+        // closure. Helpers are classified by real operands below, not by the
+        // presence of a psx_/gte_ name. Load-delay and explicit hooks stay full.
+        blocks=geometry_blocks;precision_region_opaque_=load_delay_opaque;
+        for(auto& b:blocks)for(auto& i:b.instructions) {
+            // The certified adapter may consume geometry metadata: publish
+            // before it even though its declared CPU-register effects are zero.
+            i.opaque=i.opaque||load_delay_opaque.count(i.address)||
+                !mod_instruction_call(i.address,i.word).empty();
+            if(i.opaque)precision_region_opaque_.insert(i.address);
+        }
+    }
     for(auto& b:blocks)for(auto& i:b.instructions)if(precision_region_opaque_.count(i.address))i.opaque=true;
-    precision_region_plan_=pgxp_region_plan(blocks,roots);
+    precision_region_plan_=pgxp_region_plan(blocks,roots,precision_geometry_dead_,precision_geometry_scratch_);
 }
 
 std::string CodeGenerator::emit_interrupt_check(uint32_t resume_pc,
@@ -282,7 +339,9 @@ std::string CodeGenerator::emit_interrupt_check(uint32_t resume_pc,
 
 std::string CodeGenerator::emit_interrupt_check_expr(const std::string& resume_pc_expr,
                                                      const std::string& indent) const {
-    if(precision_region_body_) return indent+region_materializer(precision_region_state_)+"(cpu);\n"+
+    if(precision_region_body_) return
+        (precision_geometry_control_ ? indent+"pgxp_native_clobber(cpu,0xA0000000u,0u); /* dead control outputs */\n" : "")+
+        indent+region_materializer(precision_region_state_)+"(cpu);\n"+
         indent+fmt::format("PSX_BLOCK_EDGE(cpu, {});\n", resume_pc_expr);
     return indent + precision_operation_receipt_ + fmt::format("PSX_BLOCK_EDGE(cpu, {});\n", resume_pc_expr);
 }
@@ -1121,12 +1180,23 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr,
     const bool ordinary = !imm_site && hook.empty() && clamp.empty() &&
         body.find("psx_") == std::string::npos && body.find("gte_") == std::string::npos;
     if(precision_region_body_) {
+        if(precision_geometry_dead_.count(addr)) {
+            const auto effect=pgxp_flow_effect(instr);
+            std::string prefix;
+            if(effect.pure_alu)precision_region_state_[effect.destination]={};
+            else prefix=region_flush(precision_geometry_scratch_);
+            const bool saved=precision_operation_body_;precision_operation_body_=true;
+            const auto integer=translate_instruction_core(addr,instr);
+            precision_operation_body_=saved;
+            return prefix+integer+" /* precision-demand: geometry-dead control frame */";
+        }
         const auto before=precision_region_state_;
         const auto hook_at=body.find("PGXP_ALU(");
-        const bool candidate=ordinary && !precision_region_opaque_.count(addr) &&
-            hook_at!=std::string::npos && body.find("PGXP_ALU(",hook_at+1u)==std::string::npos;
+        const bool candidate=!precision_region_opaque_.count(addr) &&
+            ((ordinary && hook_at!=std::string::npos && body.find("PGXP_ALU(",hook_at+1u)==std::string::npos) ||
+             (precision_geometry_scratch_ && (instr>>26)==0x24u && pgxp_region_scratch_memory(instr,before)));
         unsigned destination=0;PgxpRegionValue value;
-        if(candidate && pgxp_region_definition(instr,before,destination,value)) {
+        if(candidate && pgxp_region_definition(instr,before,destination,value,precision_geometry_scratch_)) {
             const bool saved=precision_operation_body_;precision_operation_body_=true;
             const auto integer=translate_instruction_core(addr,instr);
             precision_operation_body_=saved;
@@ -1134,8 +1204,25 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr,
             return integer+" /* precision-demand: native integer definition */";
         }
         const auto effect=pgxp_flow_effect(instr);
-        if(!ordinary || effect.defines || effect.uses || effect.barrier || (instr>>26)>=0x10u)
-            return region_flush()+hook+body;
+        if(precision_geometry_scratch_ && !precision_region_opaque_.count(addr)) {
+            auto next=before;uint32_t publish=0;
+            if(pgxp_region_operand_boundary(instr,next,&publish)) {
+                auto consumed=before;bool any=false;
+                for(unsigned r=1;r<32;++r) {
+                    if(!(publish&(1u<<r)))consumed[r]={};
+                    any|=consumed[r].known;
+                }
+                precision_region_state_=next;
+                return (any?config_.indent+region_materializer(consumed)+"(cpu);\n":"")+
+                    hook+body+" /* precision-demand: operand-only scratch/GTE boundary */";
+            }
+        }
+        if(!ordinary || effect.defines || effect.uses || effect.barrier || (instr>>26)>=0x10u) {
+            const bool explicit_cpu=precision_geometry_scratch_ && pgxp_region_explicit_cpu_effect(instr);
+            const auto out=region_flush(explicit_cpu);
+            if(explicit_cpu)pgxp_region_canonical_effect(instr,precision_region_state_);
+            return out+hook+body;
+        }
         return hook+body;
     }
     bool dead_shadow = false;
@@ -3550,8 +3637,14 @@ GeneratedFunction CodeGenerator::generate_function(
             // is a runtime PC; the label is the compile identity (§5.2).
             if(regions) {
                 body_ss<<"#if "<<region_condition<<"\n";
-                if(precision_region_plan_.roots.count(c) && cfg.blocks.count(c))
-                    body_ss<<config_.indent<<fmt::format("        case 0x{:08X}u: goto precision_block_{:08X};\n",runtime_pc(c),c);
+                if(precision_region_plan_.roots.count(c) && cfg.blocks.count(c)) {
+                    body_ss<<config_.indent<<fmt::format("        case 0x{:08X}u: ",runtime_pc(c));
+                    if(precision_geometry_control_||precision_geometry_scratch_)body_ss<<fmt::format(
+                        "if(!{}(cpu,0x{:08X}u)) {{ {}_canonical(cpu,_cont); return; }} ",
+                        precision_geometry_guard_,runtime_pc(c),precision_region_owner_);
+                    if(precision_geometry_control_)body_ss<<"pgxp_native_clobber(cpu,0xA0000000u,0u); ";
+                    body_ss<<fmt::format("goto precision_block_{:08X};\n",c);
+                }
                 else
                     body_ss<<config_.indent<<fmt::format("        case 0x{:08X}u: {}_canonical(cpu,_cont); return;\n",runtime_pc(c),precision_region_owner_);
                 body_ss<<"#else\n";
@@ -3656,8 +3749,15 @@ GeneratedFunction CodeGenerator::generate_function(
                               func.start_addr, func.size, cfg.blocks.size());
     }
 
-    if(regions)body_ss<<"#if "<<region_condition<<"\n"
-        <<config_.indent<<fmt::format("goto precision_block_{:08X};\n",func.start_addr)<<"#else\n";
+    if(regions) {
+        body_ss<<"#if "<<region_condition<<"\n";
+        if(precision_geometry_control_||precision_geometry_scratch_)body_ss<<config_.indent<<fmt::format(
+            "if(!{}(cpu,0x{:08X}u)) {{ {}_canonical(cpu,0x{:08X}u); return; }}\n",
+            precision_geometry_guard_,runtime_pc(func.start_addr),precision_region_owner_,runtime_pc(func.start_addr));
+        if(precision_geometry_control_)body_ss<<config_.indent<<
+            "pgxp_native_clobber(cpu,0xA0000000u,0u); /* geometry-dead SP/RA, not affine receipts */\n";
+        body_ss<<config_.indent<<fmt::format("goto precision_block_{:08X};\n",func.start_addr)<<"#else\n";
+    }
     body_ss << blocks_ss.str();
     const size_t canonical_suffix_at=body_ss.str().size();
 
@@ -3727,6 +3827,7 @@ GeneratedFunction CodeGenerator::generate_function(
 
     if(regions) {
         annotation_prefix+="#if "+region_condition+"\n";
+        if(precision_geometry_control_||precision_geometry_scratch_)annotation_prefix+=fmt::format("extern int {}(CPUState*,uint32_t);\n",precision_geometry_guard_);
         for(const auto& [name,text]:precision_region_materializers_)annotation_prefix+=text;
         // Keep the full-precision CFG out of the hot native host owner. The
         // public function retains its one cleanup scope and all entry hooks;
@@ -4187,7 +4288,7 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     ss << "extern void cosim_instr(uint32_t pc);\n";
     ss << "#endif\n";
     ss << "#include \"psx_static_calls.h\"\n/* psx-native-tail-game-v1 */\n";
-    ss << "/* psx-pgxp-demand-regions-v1; psx-pgxp-operations-v2 */\n";
+    ss << "/* psx-pgxp-demand-regions-v2; psx-pgxp-operations-v2 */\n";
     ss << "extern int  psx_game_text_native_ok(uint32_t addr);  /* stale-static guard (dispatch shard) */\n";
     ss << "extern int  psx_datashard_enter(CPUState* cpu, uint32_t key);  /* data-shard replay/capture (data_shards.c) */\n";
     ss << "extern void psx_mod_instruction(CPUState*, uint32_t, uint32_t);\n";
@@ -4334,7 +4435,7 @@ std::string CodeGenerator::build_shared_decls_header(const std::vector<Generated
     h << "/* Generated by PSXRecomp - shared declarations for split full.c shards. DO NOT EDIT. */\n";
     h << "#pragma once\n";
     h << "#include \"psx_runtime.h\"\n\n";
-    h << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-demand-regions-v1; psx-pgxp-operations-v2 */\n\n";
+    h << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-demand-regions-v2; psx-pgxp-operations-v2 */\n\n";
     emit_runtime_externs(h);
     emit_unaligned_helpers(h, /*as_inline=*/true);
     if (!gen_funcs.empty()) {
@@ -4359,7 +4460,7 @@ std::string CodeGenerator::generate_file(
     // Include the generic PSX runtime header.
     // This provides CPUState, GTE/trap declarations, and call_by_address().
     ss << "#include \"psx_runtime.h\"\n\n";
-    ss << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-demand-regions-v1; psx-pgxp-operations-v2 */\n\n";
+    ss << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-demand-regions-v2; psx-pgxp-operations-v2 */\n\n";
     emit_runtime_externs(ss);
     emit_unaligned_helpers(ss, /*as_inline=*/false);
 

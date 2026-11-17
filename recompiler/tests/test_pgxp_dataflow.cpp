@@ -7,7 +7,87 @@ using namespace PSXRecomp;
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr,"FAIL line%d: %s\n",__LINE__,#c);std::abort(); } } while(0)
 static uint32_t i(unsigned op,unsigned rs,unsigned rt,unsigned imm=0) {return op<<26|rs<<21|rt<<16|imm;}
 static uint32_t r(unsigned rs,unsigned rt,unsigned rd,unsigned fn,unsigned sh=0) {return rs<<21|rt<<16|rd<<11|sh<<6|fn;}
+// Pure CFG proofs use the normal C++ exception/unwind profile, not the
+// runtime receipt fixture. Keep these assertions separate from memory effects.
+static void geometry_control_demand() {
+    using namespace PSXRecomp;
+    constexpr uint64_t all=((UINT64_C(1)<<34)-1u)&~UINT64_C(1);
+    constexpr uint64_t control=(UINT64_C(1)<<29)|(UINT64_C(1)<<31);
+    const std::vector<PgxpFlowBlock> blocks={
+        {0x1000,{{0x1000,0x27bdffe8},{0x1004,0xafbf0010},
+                 {0x1008,0x48087000},{0x100c,0xac880000}}, {0x1010}},
+        {0x1010,{{0x1010,0x0c000800}}, {0x1018},true},
+        {0x1018,{{0x1018,0x8fbf0010},{0x101c,0},
+                 {0x1020,0x03e00008},{0x1024,0x27bd0018}}, {},true}};
+    const auto frame=pgxp_control_frame(blocks,0x1000);
+    CHECK(frame.valid && frame.bytes==24 && frame.offset==16);
+    const auto demand=pgxp_geometry_demand(blocks,0x1000,all&~control,{{0x2000,all&~control}});
+    for(auto pc:frame.sites())CHECK(demand.dead.count(pc));
+    CHECK(!demand.dead.count(0x1008) && !demand.dead.count(0x100c)); // GTE -> packet
+    // Unknown callees and actual SP-as-coordinate/opaque observers are roots.
+    const auto unknown=pgxp_geometry_demand(blocks,0x1000,all&~control,{});
+    CHECK(!unknown.dead.count(0x1000));
+    auto escaped=blocks;escaped[0].instructions[2].word=0x489d4800; // MTC2 SP,IR1
+    CHECK(!pgxp_control_frame(escaped,0x1000).valid);
+    auto observed=blocks;observed[0].instructions[0].opaque=true;
+    CHECK(!pgxp_control_frame(observed,0x1000).valid);
+    auto unbalanced=blocks;unbalanced[2].instructions.back().word=0x27bd0014;
+    CHECK(!pgxp_control_frame(unbalanced,0x1000).valid);
+}
+static void scratch_operand_demand() {
+    PgxpRegionState state{};unsigned dst=0;PgxpRegionValue value;
+    CHECK(pgxp_region_definition(0x3c0e1f80u,state,dst,value,true));state[dst]=value;
+    // A real frame save publishes pending receipts but cannot change t6's
+    // proven native integer. This fact is separate from pending precision.
+    pgxp_region_publish_facts(state);CHECK(!state[14].known&&state[14].constant);
+    CHECK(pgxp_region_step({0x1000,0x91c202b4u},state,true)); // LBU v0,2B4(t6)
+    CHECK(state[2].bounded&&state[2].maximum==255&&!state[2].flags[1]);
+    CHECK(pgxp_region_step({0x1004,0x00021080u},state,true)); // SLL v0,2
+    CHECK(state[2].maximum==1020);
+    CHECK(pgxp_region_step({0x1008,0x004e1021u},state,true)); // ADDU v0,t6
+    CHECK(state[2].minimum==0x1f800000u&&state[2].maximum==0x1f8003fcu);
+    CHECK(state[2].flags[0]==0&&state[2].flags[1]==3);
+    uint32_t publish=~0u;
+    CHECK(pgxp_region_operand_boundary(0xc8460000u,state,&publish)&&!publish); // LWC2 gte6,(v0)
+    CHECK(state[2].known); // EA is not a precision operand
+    CHECK(!pgxp_region_scratch_memory(0xc8460004u,state)); // full word crosses scratch end
+    CHECK(pgxp_region_operand_boundary(0xadC20000u,state,&publish)&&(publish&(1u<<2))); // SW v0,(t6)
+    CHECK(!state[2].known&&state[14].constant);
+    // Crossing scratch end, partial merges and MMIO are full boundaries.
+    CHECK(!pgxp_region_operand_boundary(0x89c20001u,state));
+    state[14].value=0x1f810000u;CHECK(!pgxp_region_scratch_memory(0x91c20000u,state));
+    // Publication on only one branch does not destroy the same native fact.
+    // The pending predecessor is normalized before the common block.
+    const std::vector<PgxpFlowBlock> diamond={
+        {0x2000,{{0x2000,0x3c0e1f80u}},{0x2010,0x2020}},
+        {0x2010,{{0x2010,0x00851021u}},{0x2030}},
+        {0x2020,{}, {0x2030}},
+        {0x2030,{{0x2030,0x91c202b4u}}, {},true}};
+    const auto merged=pgxp_region_plan(diamond,{0x2000},{},true);
+    CHECK(merged.entry.at(0x2030)[14].constant&&!merged.entry.at(0x2030)[14].known);
+    // A loaded canonical source must first consume an old deferred alias.
+    state={};state[14].known=true;state[14].constant=true;state[14].value=0x1f800000u;
+    state[3].known=true;state[3].incoming_add=true;state[3].source=2;state[3].addend=1;
+    CHECK(pgxp_region_operand_boundary(0x8dc20000u,state,&publish)&&(publish&(1u<<3)));
+    CHECK(!state[2].known&&!state[3].known);
+    // A loop's unvisited backedge is not an unknown value. The dominating
+    // LUI survives a quiet backedge; a real overwrite/opaque entry ends it.
+    const std::vector<PgxpFlowBlock> loop={
+        {0x1000,{{0x1000,0x3c0e1f80u}},{0x1010}},
+        {0x1010,{{0x1010,0x91c202b4u},{0x1014,0x00021080u},{0x1018,0x004e1021u},
+                   {0x101c,0xc8460000u}},{0x1010,0x1020}},
+        {0x1020,{}, {},true}};
+    const auto plan=pgxp_region_plan(loop,{0x1000},{},true);
+    CHECK(plan.entry.at(0x1010)[14].constant&&plan.definitions>=4);
+    auto clobbered=loop;clobbered[1].instructions.insert(clobbered[1].instructions.begin(),{0x100c,0x01a07021u});
+    CHECK(!pgxp_region_plan(clobbered,{0x1000},{},true).entry.at(0x1020)[14].constant);
+    auto opaque=loop;opaque[1].instructions.insert(opaque[1].instructions.begin(),{0x100c,0x0c000800u,true});
+    CHECK(!pgxp_region_plan(opaque,{0x1000},{},true).entry.at(0x1020)[14].constant);
+    const auto canonical=pgxp_region_plan(loop,{0x1000},{},false);
+    CHECK(!canonical.entry.at(0x1020)[2].known);
+}
 int main() {
+    geometry_control_demand();scratch_operand_demand();
     // GTE -> split halves -> arithmetic -> repack -> memory: every precision
     // dependency remains, including an in-place destination/source alias.
     PgxpFlowBlock geometry{0,{{0,0x48087000},{4,r(0,8,9,3,16)},

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <csetjmp>
 #if defined(PSX_TEST_PGXP_REGIONS)
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -31,6 +32,12 @@ extern "C" void flow_candidate_func_80010600(CPUState*);
 struct WriteHistory {uint32_t address,old_value,value,width,pc,v0,v1;};
 static WriteHistory history[256];static unsigned history_count;
 static CPUState *live_cpu;
+#if defined(PSX_TEST_GEOMETRY_CONTROL)
+static bool control_active,control_observer,partial_active;
+static int control_scratch_mode=-1;static unsigned control_scratch_irq;
+static std::jmp_buf control_scratch_escape;
+static void control_watch(CPUState*,uint32_t,uint32_t);
+#endif
 static uint64_t frame_count;
 static unsigned char ram[0x200000],scratch[1024];
 extern "C" {
@@ -58,10 +65,22 @@ void debug_server_trace_write_check(uint32_t a,uint32_t old,uint32_t v,uint8_t w
     if(width>=2)actual|=(uint32_t)ram[(a+1)&0x1fffffu]<<8;
     if(width==4)actual|=(uint32_t)ram[(a+2)&0x1fffffu]<<16|(uint32_t)ram[(a+3)&0x1fffffu]<<24;
     if(actual!=old)std::abort(); // observer still sees the pre-mutation bytes
+#if defined(PSX_TEST_GEOMETRY_CONTROL)
+    if(control_active)control_watch(live_cpu,a,old);
+    if(partial_active) {
+        // The observer receives the old accessed width. Source receipts are
+        // aligned whole words, including before an SH into the high half.
+        const uint32_t aligned=a&~3u;
+        uint32_t word;std::memcpy(&word,ram+(aligned&0x1fffffu),sizeof word);
+        if(pgxp_load_source(aligned,word)!=901)std::abort();
+    }
+#endif
     history[history_count++]={a,old,v,width,g_debug_last_store_pc,
         live_cpu?live_cpu->gpr[2]:0u,live_cpu?live_cpu->gpr[3]:0u};
 }
+#if !defined(PSX_TEST_GEOMETRY_CONTROL)
 void psx_direct_precision_write(uint32_t a,uint32_t old,uint32_t v,uint8_t width) {debug_server_trace_write_check(a,old,v,width);pgxp_write_owned(a,v,width);}
+#endif
 uint32_t g_psx_cyc_batch,g_psx_cyc_batch_limit,g_psx_gcs_frac,g_psx_gcs_recip_q16=65536;
 uint32_t *g_psx_cyc_local_acc;
 int g_event_step_conservative,psx_in_device_service,g_psx_cyc_bb_defer,g_psx_load_delay;
@@ -154,6 +173,23 @@ extern "C" void psx_observation_sample(void) {
 }
 extern "C" void psx_observation_edge(CPUState* cpu,uint32_t pc,int) {
     ++region_edges;++psx_observation_slow_edges;
+#if defined(PSX_TEST_GEOMETRY_SCRATCH)
+    if(control_scratch_mode==6 || control_scratch_mode==7) {
+        if(pc!=0x800108a0u || control_scratch_irq++)std::abort();
+        // A same-PC context change must leave private facts behind. Preserve
+        // the real caller-visible fractional value through the following ADDU.
+        cpu->gpr[14]=0x80023800u;
+        if(!pgxp_native_scalar_gpr(cpu,14,double((int32_t)cpu->gpr[14])+.625,1))std::abort();
+        psx_next_service_cycle=UINT64_MAX;
+        if(control_scratch_mode==7) {
+            cpu->pc=0x80055500u;cpu->gpr[2]=0x55aau;g_psx_call_bail=1;
+            // The maintained nonlocal scheduler/thread transfer never returns
+            // to an old compiled frame (interrupts.c uses longjmp too).
+            std::longjmp(control_scratch_escape,1);
+        }
+        return;
+    }
+#endif
     region_sp_receipt(cpu);
     if(region_mode==2||region_mode==3) {
         if(pc!=REGION_LOOP_PC||region_entry[2]!=1u) {
@@ -340,6 +376,226 @@ static void run_region(RegionProduct& out,bool selected,unsigned mode) {
         out.source[r]=pgxp_load_source(address,cpu.gpr[r]);
     }
 }
+#if defined(PSX_TEST_GEOMETRY_CONTROL)
+extern "C" void flow_reference_func_8001082C(CPUState*);
+extern "C" void flow_candidate_func_8001082C(CPUState*);
+extern "C" void flow_reference_func_80010884(CPUState*);
+extern "C" void flow_candidate_func_80010884(CPUState*);
+extern "C" int fixture_geometry_control_allowed(CPUState* cpu,uint32_t entry) {
+    return (entry==0x8001082Cu || entry==0x80010884u) && cpu->gpr[31]==0x80009000u &&
+        !control_observer && cpu->read_word==psx_read_word &&
+        cpu->write_word==psx_write_word;
+}
+static void control_watch(CPUState* cpu,uint32_t address,uint32_t old) {
+    if(g_debug_last_store_pc==0x80010830u || g_debug_last_store_pc==0x8001088cu) {
+        if(pgxp_load_source(address,old)!=777) {
+            std::fputs("FAIL write observer lost pre-write geometry/source\n",stderr);std::abort();
+        }
+        if(control_observer)region_sp_receipt(cpu); // real opaque metadata consumer => canonical
+        if(control_scratch_mode==3)cpu->gpr[14]=0x80023800u; // real observer GPR clobber, canonical admission
+        if(control_scratch_mode>=6)psx_next_service_cycle=psx_cycle_count; // due before next real block
+
+    }
+}
+struct ControlProduct {
+    CPUState cpu;unsigned char bytes[sizeof ram];PGXPWordShadow packet[3];uint64_t source[3];
+    WriteHistory writes[256];unsigned count;uint64_t alu,loads,stores,callbacks;double sp,observed_sp;int sp_precise,observed_precise;
+    PGXPWordShadow gte;uint64_t gte_source,cycles;uint32_t frac;double saved_address;int saved_address_precise;
+};
+static ControlProduct control_reference,control_candidate;
+static uint32_t control_reader(uint32_t address) {++callback_reads;return psx_read_word(address)+(address==Input?1u:0u);}
+static void run_control(ControlProduct& out,bool selected,unsigned mode,int cpu_mode,bool scratch_case=false) {
+    // Nonlocal context transfer must not make an automatic CPU object
+    // indeterminate across setjmp/longjmp. Both arms own this same reset storage.
+    static CPUState control_cpu;control_cpu=CPUState{};CPUState& cpu=control_cpu;
+    live_cpu=region_cpu=&cpu;std::memset(ram,0,sizeof ram);history_count=0;
+    cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;cpu.read_byte=psx_read_byte;
+    cpu.write_word=psx_write_word;cpu.write_half=psx_write_half;cpu.write_byte=psx_write_byte;
+    cpu.gpr[29]=0x8001ff00u;cpu.gpr[31]=0x80009000u;
+    cpu.gpr[4]=(mode==1u)?cpu.gpr[29]-8u:Output;
+    cpu.gpr[5]=(mode==2u)?(Input^0x20000000u):Input;
+    if(mode==4u)cpu.read_word=control_reader; // truthful canonical custom-bus path
+    control_observer=mode==3u;control_active=false;
+    control_scratch_mode=scratch_case?int(mode):-1;control_scratch_irq=0;
+    if(scratch_case){std::memset(scratch,0,sizeof scratch);cpu.gpr[16]=mode==2u?0x80023800u:0x1f800000u;}
+    pgxp_set_enabled(1);pgxp_set_cpu_mode(cpu_mode);pgxp_set_source_tracking(1);
+    pgxp_set_projection_tracking(1);pgxp_invalidate_all();
+    pgxp_native_clobber(&cpu,0xfffffffeu,0);
+    if(!pgxp_native_scalar_gpr(&cpu,29,double((int32_t)cpu.gpr[29])+.25,1))std::abort();
+    const uint32_t packed=0x000c0008u,stack=cpu.gpr[29]-8u;
+    psx_write_word(Input,packed);psx_write_word(stack,cpu.gpr[31]);
+    pgxp_gte_push_sxy(8*65536+16384,12*65536+32768,300,packed);
+    PGXPProjection projection{8.25f,12.5f,2.f,.5f};pgxp_gte_set_projection(&projection);
+    pgxp_store_gte_reg(Input,15);pgxp_tag_word_source(Input,packed,921);
+    PGXPNativeWord word{};const uint32_t input=Input;
+    if(!pgxp_native_capture_words(&input,&packed,&word,1)||!pgxp_native_import_sxy(14,&word))std::abort();
+    cpu.gte_data[14]=cpu.gte_data[15]=packed;
+    pgxp_gte_push_sxy(16384,32768,301,cpu.gpr[31]);pgxp_store_gte_reg(stack,15);
+    pgxp_tag_word_source(stack,cpu.gpr[31],777); // equal-bit stale geometry at RA slot
+    // Restore the real GTE source after poisoning only the stack receipt.
+    if(!pgxp_native_import_sxy(14,&word))std::abort();
+    if(scratch_case) {
+        scratch[0x2b4]=5;std::memcpy(scratch+20,&packed,4);
+        pgxp_store_gte_reg(0x1f800014u,14);pgxp_tag_word_source(0x1f800014u,packed,922);
+        psx_write_word(0x80023ab4u,5);psx_write_word(0x80023814u,packed);
+        pgxp_store_gte_reg(0x80023814u,14);pgxp_tag_word_source(0x80023814u,packed,923);
+        if(!pgxp_native_scalar_gpr(&cpu,16,double((int32_t)cpu.gpr[16])+.375,1))std::abort();
+    }
+    psx_cycle_count=0;psx_next_service_cycle=psx_next_cycle_sample=UINT64_MAX;
+    g_psx_cyc_batch=0;g_psx_cyc_local_acc=nullptr;g_psx_cyc_bb_defer=0;
+    g_event_step_conservative=psx_in_device_service=g_psx_render_pass_active=0;
+    g_ls_replay_active=g_ls_mode=g_ds_recording=0;g_overlay_flush_pending_cycles=nullptr;
+    g_psx_gcs_recip_q16=65536u;g_psx_gcs_frac=0;g_psx_precise_slice=g_psx_guest_time_frozen=g_psx_call_bail=0;
+    psx_defer_switch_pending=g_psx_savestate_pending=psx_observation_wait_active=0;i_stat=i_mask=0;
+    history_count=0;callback_reads=0;region_observed_sp_precise=0;region_observed_sp_scalar=0;
+    control_active=true;PGXPHookStats before{},after{};pgxp_get_hook_stats(&before);
+    if(!scratch_case || mode!=7u || setjmp(control_scratch_escape)==0) {
+        if(scratch_case) {if(selected)flow_candidate_func_80010884(&cpu);else flow_reference_func_80010884(&cpu);}
+        else {if(selected)flow_candidate_func_8001082C(&cpu);else flow_reference_func_8001082C(&cpu);}
+    }
+    pgxp_get_hook_stats(&after);control_active=false;
+    out.cpu=cpu;std::memcpy(out.bytes,ram,sizeof ram);out.count=history_count;
+    out.cycles=psx_cycle_count;out.frac=g_psx_gcs_frac;out.saved_address=0;
+    out.saved_address_precise=pgxp_native_gpr_scalar(17,cpu.gpr[17],&out.saved_address);
+    std::memcpy(out.writes,history,history_count*sizeof history[0]);
+    out.alu=after.alu-before.alu;out.loads=after.load-before.load;out.stores=after.store-before.store;out.callbacks=callback_reads;
+    out.observed_precise=region_observed_sp_precise;out.observed_sp=region_observed_sp_scalar;
+    out.sp_precise=pgxp_native_gpr_scalar(29,cpu.gpr[29],&out.sp);
+    for(unsigned i=0;i<(scratch_case?3u:2u);++i) {
+        const uint32_t address=cpu.gpr[4]+4*i,value=psx_read_word(address);
+        if(!pgxp_capture_word_shadow(address,value,&out.packet[i]))std::abort();
+        out.source[i]=pgxp_load_source(address,value);
+    }
+    pgxp_store_gte_reg(Probe,14);
+    if(!pgxp_capture_word_shadow(Probe,packed,&out.gte))std::abort();
+    out.gte_source=pgxp_load_source(Probe,packed);
+    if(mode!=1u && (pgxp_load_source(stack,cpu.gpr[31]) ||
+            (pgxp_capture_word_shadow(stack,psx_read_word(stack),&word.word),word.word.flags))) {
+        std::fputs("FAIL equal-value RA overwrite retained geometry\n",stderr);std::abort();
+    }
+}
+extern "C" void flow_reference_func_80010860(CPUState*);
+extern "C" void flow_candidate_func_80010860(CPUState*);
+extern "C" void flow_reference_func_8001086C(CPUState*);
+extern "C" void flow_candidate_func_8001086C(CPUState*);
+extern "C" void flow_reference_func_80010878(CPUState*);
+extern "C" void flow_candidate_func_80010878(CPUState*);
+static void retained_partial_store_products() {
+    struct Result {uint32_t value;PGXPWordShadow word;uint64_t source;WriteHistory write;};
+    constexpr uint32_t destination=0x80023600u,source=0x80023700u,old_word=0x000c0008u;
+    for(int cpu_mode:{0,1})for(unsigned kind=0;kind<3;++kind) {
+        const unsigned lanes=kind?4u:2u;
+        for(unsigned lane=0;lane<lanes;++lane) {
+            std::printf("RUN retained typed store CPU%d kind%u lane%u\n",cpu_mode,kind,lane);std::fflush(stdout);
+            Result result[2]{};
+            for(unsigned selected=0;selected<2;++selected) {
+                CPUState cpu{};live_cpu=&cpu;control_active=false;
+                cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;cpu.read_byte=psx_read_byte;
+                cpu.write_word=psx_write_word;cpu.write_half=psx_write_half;cpu.write_byte=psx_write_byte;
+                const uint32_t low=kind?9u:lane?12u:8u,word=(15u<<16)|low;
+                // Alternate segment/mirror aliases exercise the same receipt.
+                cpu.gpr[4]=(lane&1u?0xa0223600u:destination)+(kind?lane:lane*2u);
+                cpu.gpr[8]=word;cpu.gpr[31]=0x80009000u;
+                pgxp_set_enabled(1);pgxp_set_cpu_mode(cpu_mode);pgxp_set_source_tracking(1);
+                pgxp_set_projection_tracking(1);pgxp_invalidate_all();
+                psx_write_word(destination,old_word);psx_write_word(source,word);
+                pgxp_gte_push_sxy(8*65536+16384,12*65536+32768,300,old_word);
+                PGXPProjection p{8.25f,12.5f,2.f,.5f};pgxp_gte_set_projection(&p);
+                pgxp_store_gte_reg(destination,15);pgxp_tag_word_source(destination,old_word,901);
+                pgxp_gte_push_sxy(int32_t(low)*65536+49152,15*65536+16384,450,word);
+                pgxp_store_gte_reg(source,15);pgxp_tag_word_source(source,word,902);
+                psx_pgxp_load(&cpu,0x8c080000u,source,word);
+                history_count=0;g_psx_call_bail=0;psx_cycle_count=0;
+                psx_next_service_cycle=psx_next_cycle_sample=UINT64_MAX;
+                const uint64_t inline_before=g_psx_direct_memory_stats.store_inline_ram;partial_active=true;
+                if(!kind) {if(selected)flow_candidate_func_80010860(&cpu);else flow_reference_func_80010860(&cpu);}
+                else if(kind==1) {if(selected)flow_candidate_func_8001086C(&cpu);else flow_reference_func_8001086C(&cpu);}
+                else {if(selected)flow_candidate_func_80010878(&cpu);else flow_reference_func_80010878(&cpu);}
+                partial_active=false;
+                if(history_count!=1u || g_psx_direct_memory_stats.store_inline_ram!=inline_before+1u)std::abort();
+                auto& out=result[selected];out.value=psx_read_word(destination);out.write=history[0];
+                if(!pgxp_capture_word_shadow(destination,out.value,&out.word))std::abort();
+                out.source=pgxp_load_source(destination,out.value);
+            }
+            const auto& a=result[0];const auto& b=result[1];
+            const uint32_t observed_address=0x23600u+(!kind?lane*2u:0u);
+            const uint32_t observed_old=kind?old_word:(old_word>>(lane*16u))&0xffffu;
+            if(b.write.address!=observed_address || b.write.old_value!=observed_old ||
+                    b.write.width!=(kind?4u:2u))std::abort();
+            if(a.value!=b.value||!equal(a.word,b.word)||a.source!=b.source||
+                    std::memcmp(&a.write,&b.write,sizeof a.write))std::abort();
+            if(!kind) {
+                // Equal integer SH still replaces the touched coordinate's
+                // fraction. The untouched coordinate stays exactly canonical.
+                if(b.value!=old_word || b.source || (b.word.flags&PGXP_F_VXY)!=PGXP_F_VXY ||
+                        b.word.z || (b.word.flags&PGXP_F_PROJECTION))std::abort();
+                if(!lane && (b.word.x16!=8*65536+49152 || b.word.y16!=12*65536+32768))std::abort();
+                if(lane && (b.word.x16!=8*65536+16384 || b.word.y16!=12*65536+49152))std::abort();
+            } else if((kind==1u&&lane==3u)||(kind==2u&&lane==0u)) {
+                if(b.source!=902 || (b.word.flags&PGXP_F_VXY)!=PGXP_F_VXY ||
+                        b.word.x16!=9*65536+49152 || b.word.y16!=15*65536+16384)std::abort();
+            } else if(b.word.valid || b.source)std::abort(); // canonical partial SWL/SWR kills the word
+        }
+    }
+    std::puts("PASS actual emitted SH/SWL/SWR write-boundary +retained canonical hooks, all byte lanes, equal SH fractions and aliases, CPU0/1");
+}
+#if defined(PSX_TEST_GEOMETRY_SCRATCH)
+static void scratch_products() {
+    for(int cpu_mode:{0,1})for(unsigned mode:{0u,1u,2u,3u,4u,6u,7u}) {
+        std::printf("RUN scratch EA/sink CPU%d mode%u\n",cpu_mode,mode);std::fflush(stdout);
+        run_control(control_reference,false,mode,cpu_mode,true);
+        const unsigned reference_irq=control_scratch_irq;
+        run_control(control_candidate,true,mode,cpu_mode,true);
+        const auto& a=control_reference;const auto& b=control_candidate;
+        if(std::memcmp(&a.cpu,&b.cpu,sizeof a.cpu)||std::memcmp(a.bytes,b.bytes,sizeof ram)||
+                a.count!=b.count||std::memcmp(a.writes,b.writes,a.count*sizeof history[0])||
+                a.cycles!=b.cycles||a.frac!=b.frac||a.callbacks!=b.callbacks||reference_irq!=control_scratch_irq)
+            {std::fputs("FAIL scratch CPU/RAM/write/clock/IRQ\n",stderr);std::abort();}
+        for(unsigned i=0;i<3;++i)if(!equal(a.packet[i],b.packet[i])||a.source[i]!=b.source[i])
+            {std::fprintf(stderr,"FAIL scratch actual geometry/source sink%u\n",i);std::abort();}
+        if(!equal(a.gte,b.gte)||a.gte_source!=b.gte_source || a.saved_address_precise!=b.saved_address_precise ||
+                (a.saved_address_precise&&a.saved_address!=b.saved_address))std::abort();
+        if(mode>=6u && control_scratch_irq!=1u)std::abort();
+        if(mode==6u && cpu_mode && (!b.saved_address_precise || b.saved_address!=double((int32_t)(0x80023814u))+.625))std::abort();
+        if(mode==7u && (b.cpu.pc!=0x80055500u || !g_psx_call_bail))std::abort();
+        if(mode<3u && (!(b.alu<a.alu)||!(b.loads<a.loads)||b.stores!=a.stores))std::abort();
+        if(mode==3u && (a.alu!=b.alu||a.loads!=b.loads||(!b.observed_precise&&cpu_mode)))std::abort();
+        std::printf("PASS scratch CPU%d mode%u ALU%llu/%llu LOAD%llu/%llu IRQ%u\n",cpu_mode,mode,
+            (unsigned long long)a.alu,(unsigned long long)b.alu,(unsigned long long)a.loads,(unsigned long long)b.loads,control_scratch_irq);
+    }
+    control_scratch_mode=-1;
+}
+#endif
+static void control_products() {
+    for(int cpu_mode:{0,1})for(unsigned mode=0;mode<5;++mode) {
+        std::printf("RUN geometry-only frame CPU%d mode%u\n",cpu_mode,mode);std::fflush(stdout);
+        run_control(control_reference,false,mode,cpu_mode);run_control(control_candidate,true,mode,cpu_mode);
+        const auto& a=control_reference;const auto& b=control_candidate;
+        if(std::memcmp(&a.cpu,&b.cpu,sizeof a.cpu)||std::memcmp(a.bytes,b.bytes,sizeof ram)||
+                a.count!=b.count||std::memcmp(a.writes,b.writes,a.count*sizeof history[0]))std::abort();
+        for(unsigned i=0;i<2;++i)if(!equal(a.packet[i],b.packet[i])||a.source[i]!=b.source[i])std::abort();
+        if(!equal(a.gte,b.gte)||a.gte_source!=b.gte_source||!b.gte.flags)std::abort();
+        if(mode<4u && (!b.packet[1].flags || b.source[1]!=921))std::abort();
+        if(mode==4u && (b.packet[1].value!=0x000c0009u || !b.callbacks || a.callbacks!=b.callbacks))std::abort();
+        if(mode==3u && (a.observed_precise!=b.observed_precise||a.observed_sp!=b.observed_sp||
+                (cpu_mode && (!b.observed_precise||b.observed_sp!=double((int32_t)(b.cpu.gpr[29]-24u))+.25))))std::abort();
+        if(mode<3u) {
+            // Two frame ALUs disappear. The already-qualified incoming ADDIU
+            // receipt also replaces the geometry +1 hook: full4 -> selected1.
+            if(a.alu!=4u || b.alu!=1u || b.loads+1!=a.loads || b.stores+1!=a.stores || b.sp_precise) {
+                std::fprintf(stderr,"FAIL geometry-frame CPU%d mode%u ALU%llu/%llu LOAD%llu/%llu STORE%llu/%llu SPprecise%d\n",
+                    cpu_mode,mode,(unsigned long long)a.alu,(unsigned long long)b.alu,
+                    (unsigned long long)a.loads,(unsigned long long)b.loads,
+                    (unsigned long long)a.stores,(unsigned long long)b.stores,b.sp_precise);
+                std::abort();
+            }
+        } else if(b.alu!=a.alu||b.loads!=a.loads||b.stores!=a.stores||
+                b.sp_precise!=a.sp_precise||(b.sp_precise&&b.sp!=a.sp))std::abort();
+        std::printf("PASS geometry-only frame CPU%d mode%u packets/source/write ordering ALU%llu/%llu\n",
+            cpu_mode,mode,(unsigned long long)a.alu,(unsigned long long)b.alu);
+    }
+}
+#endif
 static void region_products() {
 #if defined(PSX_TEST_PGXP_REGIONS_REMAINING)
     for(unsigned mode:{2u,4u}) {
@@ -536,6 +792,13 @@ int main(int argc,char** argv) {
 #endif
 #if defined(PSX_TEST_PGXP_REGIONS)
     region_products();
+#if defined(PSX_TEST_GEOMETRY_CONTROL)
+    control_products();
+    retained_partial_store_products();
+#if defined(PSX_TEST_GEOMETRY_SCRATCH)
+    scratch_products();
+#endif
+#endif
 #endif
 #if !defined(PSX_TEST_PGXP_REGIONS_REMAINING)
     std::puts("PASS:38 generated GTE/CPU/memory/packet+74precision/lineage products+ordered write/store records (aliases,stale sources,partial/delayed loads)");

@@ -721,11 +721,36 @@ static void operation_note_owned_store(uint32_t address,uint32_t value,uint32_t 
 #endif
 
 extern "C" void pgxp_write_owned(uint32_t addr, uint32_t value, uint32_t width) {
-#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+#if (defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS) || \
+    (defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS)
     if (!g_pgxp_active || (width != 1 && width != 2 && width != 4)) return;
+#if defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && \
+    !(defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS)
+    // Geometry-demand stores end only an EXISTING receipt. Do not allocate or
+    // maintain a parallel plain-word shadow for ordinary nongeometry writes.
+    // A retained geometry STORE publishes its source after the real write.
+    if(width==4u && !(addr&3u)) {
+        const PGXPValue* old=pgxp_ptr(addr);
+        if(old && old->gen==s_gen)pv_kill(pgxp_ptr_w(addr));
+        return;
+    }
+    for(uint32_t i=0;i<width;++i) {
+        const PGXPValue* old=pgxp_ptr(addr+i);
+        if(!old || old->gen!=s_gen)continue;
+        PGXPValue* dst=pgxp_ptr_w(addr+i);
+        const uint32_t shift=((addr+i)&3u)*8u;
+        dst->value=(dst->value&~(0xffu<<shift))|(((value>>(8u*i))&0xffu)<<shift);
+        const uint16_t half=((addr+i)&2u)?(PGXP_F_VY|PGXP_F_DY):(PGXP_F_VX|PGXP_F_DX);
+        dst->flags&=(uint16_t)~(half|PGXP_F_VZ|PGXP_F_PROJECTION|PGXP_F_UNCLAMPED);
+        dst->z=0;source_set(dst,0);
+    }
+    return;
+#endif
     if (width == 4 && !(addr & 3u)) {
         if (PGXPValue *dst = pgxp_ptr_w(addr)) pv_reset(dst, value);
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
         operation_note_owned_store(addr,value,width);
+#endif
         return;
     }
     /* Host writers can be unaligned too. End every actually touched half,
@@ -741,7 +766,9 @@ extern "C" void pgxp_write_owned(uint32_t addr, uint32_t value, uint32_t width) 
         dst->z = 0;
         source_set(dst, 0);
     }
+#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
     operation_note_owned_store(addr,value,width);
+#endif
 #else
     (void)addr; (void)value; (void)width;
 #endif

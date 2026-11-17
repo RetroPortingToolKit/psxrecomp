@@ -95,6 +95,26 @@ def add_region_program(base,words):
     # Contiguous after the child JR/delay: NOP padding previously let discovery
     # create an overlapping alias host, which cannot qualify a private entry.
     words += [0x2694ffff,0x3c088000,0x25087000,0x1e80fffc,0,0x03e00008,0]
+    # Same balanced SP/RA scaffold, with real MFC2/arithmetic/memory packet
+    # outputs. Its explicit contract leaves the existing opaque-observer cases
+    # above canonical; this is not a relaxation of their full-receipt checks.
+    words += [0x27bdffe8,0xafbf0010,0x48087000,0x01004821,0x25290001,
+              0xac890000,0x8caa0000,0,0xac8a0004,0x8fbf0010,0,
+              0x03e00008,0x27bd0018]
+    # Retained typed hooks run after the ACTUAL generated native write boundary.
+    # Cover SH's untouched half and every SWL/SWR byte lane, including the
+    # normalized full-word cases. No hand-written unaligned store substitute.
+    words += [0xa4880000,0x03e00008,0,  # 80010860 SH
+              0xa8880000,0x03e00008,0,  # 8001086C SWL
+              0xb8880000,0x03e00008,0]  # 80010878 SWR
+    # Actual scratch-index shape plus an opaque incoming GPR overwrite. The
+    # normal route never takes the DIV-fault BREAK, but that genuine opaque
+    # path must retain the complete SP/RA contract independently of EA work.
+    words += [0x27bdffe8,0x3c0e1f80,0xafbf0010,0x91c202b4,0x48037000,
+              0x10000001,0,0x00021080,0x004e1021,0x00408821,0xc8460000,
+              0xe8860004,0x02007021,0x91c202b4,0x48037000,0x00021080,
+              0x004e1021,0xc8460000,0xe88e0000,0xe8860008,0x10600005,0,
+              0x8fbf0010,0,0x03e00008,0x27bd0018,0x0007000d] # 80010884
     return base,words
 
 
@@ -107,6 +127,8 @@ def main():
                     help='Retain generated sources, objects and executable for a focused diagnosis')
     ap.add_argument('--compile-only', action='store_true', help='prepare the exact unit executable without rerunning qualified products')
     ap.add_argument('--reuse-passed-source', type=Path, help='O0 only: verify unchanged passed bodies and run remaining region cases')
+    ap.add_argument('--geometry-scratch', action='store_true', help='affected certified EA/sink/clobber/IRQ products')
+    ap.add_argument('--geometry-control', action='store_true', help='existing regions products plus certified geometry-only control-frame outputs')
     ap.add_argument('--regions', action='store_true', help='actual private CFG/owner/clock/opaque-entry products')
     ap.add_argument('--tail-compile', action='store_true', help='O0 regions only: additionally compile the same candidate with the supported native-tail profile')
     ap.add_argument('--runtime-root', type=Path, default=ROOT, help='verified production headers/project root for test-only fixture worktree')
@@ -114,6 +136,8 @@ def main():
     ap.add_argument('--opt', choices=('0','2'), default='2')
     ap.add_argument('--operations', action='store_true', help='qualify guarded whole integer operations and write ownership')
     a = ap.parse_args()
+    if a.geometry_scratch and not a.geometry_control:ap.error('--geometry-scratch requires --geometry-control')
+    if a.geometry_control and not a.regions:ap.error('--geometry-control requires --regions')
     if a.tail_compile and (not a.regions or a.opt!='0'):
         ap.error('--tail-compile is the single supported-profile O0 regions compile check')
     if a.reuse_passed_source and (not a.regions or a.opt!='0'):
@@ -131,7 +155,7 @@ def main():
         for offset, value in ((0x10, base), (0x18, base), (0x1C, 4*len(words))):
             struct.pack_into('<I', header, offset, value)
         exe = work / 'flow.psx'; exe.write_bytes(header + struct.pack('<%dI' % len(words), *words))
-        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n'+('0x80010700\n0x80010800\n0x80010810\n' if a.regions else ''), encoding='utf-8')
+        seeds = work / 'seeds.txt'; seeds.write_text('0x80010000\n0x80010100\n0x80010200\n0x80010300\n0x80010400\n0x80010500\n0x80010600\n'+('0x80010700\n0x80010800\n0x80010810\n0x8001082C\n0x80010860\n0x8001086C\n0x80010878\n0x80010884\n' if a.regions else ''), encoding='utf-8')
         out = work / 'generated'
         generate=[a.recompiler, exe, '--seeds', seeds, '--out-dir', out, '--project-root', a.runtime_root]
         if a.regions:
@@ -140,7 +164,9 @@ def main():
                 'entry_pc="0x80010000"\nload_address="0x80010000"\nstack_base="0x801FFFF0"\n'
                 +'text_size="0x%X"\n'%(len(words)*4)+
                 '[recompiler]\nseeds="seeds.txt"\nout_dir="generated"\nmod_function_entry_funcs=["0x80010700","0x80010800","0x80010810"]\n'
-                'mod_instruction_sites=["0x80010804"]\n',encoding='utf-8')
+                'mod_instruction_sites=["0x80010804"]\n'+
+                ('geometry_control_frames={"0x8001082C"="fixture_geometry_control_allowed"'+(',"0x80010884"="fixture_geometry_control_allowed"' if a.geometry_scratch else '')+'}\n' if a.geometry_control else '')+
+                ('geometry_scratch_frames=["0x80010884"]\n' if a.geometry_scratch else ''),encoding='utf-8')
             generate+=['--ws-config',config]
         run(generate, verbose=False)
         sources = sorted(out.glob('*_full*.c'))
@@ -209,6 +235,28 @@ def main():
                 assert re.search(r'0x'+word+r'[^\n]*precision-demand: native integer definition',private)
                 assert 'PGXP_ALU(0x'+word+'u' in main_body.split('/* precision-demand-regions:',1)[0]
             assert 'psx_pgxp_region_add_immediates' in text
+            if a.geometry_control:
+                control=body('8001082C').split('/* precision-demand-regions:',1)[1]
+                for hook in ('PGXP_ALU(0x27BDFFE8','PGXP_ALU(0x27BD0018',
+                             'PGXP_STORE(0xAFBF0010','PGXP_LOAD(0x8FBF0010'):
+                    assert hook not in control
+                assert control.count('precision-demand: geometry-dead control frame')==4
+                assert 'PGXP_COP2' in control and 'PGXP_STORE' in control and 'PGXP_LOAD' in control
+                for address,word in [('80010860','A4880000'),('8001086C','A8880000'),('80010878','B8880000')]:
+                    assert 'PGXP_STORE(0x'+word+'u' in body(address)
+
+            if a.geometry_scratch:
+                scratch=body('80010884').split('/* precision-demand-regions:',1)[1]
+                assert 'fixture_geometry_control_allowed' in body('80010884')
+                assert 'geometry-dead control frame' not in scratch # BREAK proof stays opaque
+                assert 'PGXP_STORE(0xAFBF0010' in scratch and 'PGXP_LOAD(0x8FBF0010' in scratch
+                for pc in ('80010890','800108A0','800108A4'):
+                    line=next(line for line in scratch.splitlines() if '0x'+pc+':' in line)
+                    assert 'native integer definition' in line and 'PGXP_' not in line
+                assert 'PGXP_LOAD(0x91C202B4' in scratch # second chain follows opaque t6 overwrite
+                assert 'operand-only scratch/GTE boundary' in scratch
+
+
             charge=re.search(r'psx_native_span_charge\((\d+)u\)',main_body)
             assert charge and 'precision_block_80010700:' in main_body and 'psx_block_edge_materialize' in main_body
             assert 'psx_precision_block_edge_materialize' not in text
@@ -231,6 +279,8 @@ def main():
             common += ['-DPSX_TEST_PGXP_REGIONS=1','-DPSX_ENABLE_BLOCK_CYCLES=1','-DPSX_OBSERVATION_TIME=1',
                        '-DPSX_NATIVE_STATIC_CALLS=1','-DPSX_NATIVE_TAIL_CHAINS=0','-DPSX_HAS_GAME_DISPATCH',
                        '-fno-unwind-tables','-fno-asynchronous-unwind-tables','-I',str(work)]
+        if a.geometry_control:common+=['-DPSX_TEST_GEOMETRY_CONTROL=1']
+        if a.geometry_scratch:common+=['-DPSX_TEST_GEOMETRY_SCRATCH=1']
         if a.reuse_passed_source:common+=['-DPSX_TEST_PGXP_REGIONS_REMAINING=1']
         objects = []
         for selected, name in ((0, 'reference'), (1, 'candidate')):
@@ -277,7 +327,7 @@ def main():
             (a.cxx, ROOT/'runtime/tests/pgxp_test_mod_memory.cpp', 'mod-memory'),
             (a.cxx, ROOT/'runtime/tests/pgxp_dataflow_fixture.cpp', 'fixture')):
             obj = work/(name+'.o')
-            run([compiler, *common, '-DPSX_PGXP_DATAFLOW='+str(0 if a.regions else 1), '-DPSX_PGXP_OPERATIONS='+str(int(a.operations)), '-c', source, '-o', obj]); objects.append(obj)
+            run([compiler, *common, '-DPSX_PGXP_DATAFLOW='+str(0 if a.regions else 1), '-DPSX_PGXP_OPERATIONS='+str(int(a.operations)), '-DPSX_PGXP_DEMAND_REGIONS='+str(int(a.regions)), '-c', source, '-o', obj]); objects.append(obj)
         if a.regions:
             obj=work/'actual-owner.o'
             run([a.cc,*common,'-c',ROOT/'recompiler/tests/test_static_dispatch_owner.c','-o',obj])
@@ -288,14 +338,41 @@ def main():
             start=clock.index('void psx_gte_read(CPUState* cpu, uint32_t rt) {')
             end=clock.index('\n}',start)+2
             source=work/'actual-gte-read.c'
-            source.write_text('#include "cpu_state.h"\n#include "psx_cycles.h"\n'+clock[start:end]+'\n',encoding='utf-8')
+            timing=clock[start:end]
+            if a.geometry_scratch:
+                start=clock.index('void psx_gte_stall(CPUState* cpu) {')
+                end=clock.index('\n}',start)+2
+                timing+='\n'+clock[start:end]
+            source.write_text('#include "cpu_state.h"\n#include "psx_cycles.h"\n'+timing+'\n',encoding='utf-8')
             obj=work/'actual-gte-read.o'
             run([a.cc,*common,'-c',source,'-o',obj]);objects.append(obj)
+        if a.geometry_control:
+            # Execute the real maintained host/DLL write bridge, not a success
+            # stub or a second precision/invalidation representation.
+            memory=(a.runtime_root/'runtime/src/memory.c').read_text(encoding='utf-8')
+            start=memory.index('void psx_direct_precision_write(')
+            end=memory.index('\n}',start)+2
+            source=work/'actual-direct-precision-write.c'
+            source.write_text('#include "psx_direct_memory.h"\n#include "pgxp.h"\n'+memory[start:end]+'\n',encoding='utf-8')
+            obj=work/'actual-direct-precision-write.o'
+            run([a.cc,*common,'-DPSX_PGXP_DEMAND_REGIONS=1','-c',source,'-o',obj]);objects.append(obj)
+        if a.geometry_scratch:
+            # Actual ordinary SWC2 precision publication. The selected closure
+            # excludes render/replay sandboxes; no replay behavior is claimed.
+            gte=(a.runtime_root/'runtime/src/gte.cpp').read_text(encoding='utf-8')
+            start=gte.index('extern "C" void gte_precision_store_word(')
+            end=gte.index('\n}',start)+2
+            source=work/'actual-gte-precision-store.cpp'
+            source.write_text('#include "pgxp.h"\nstatic int s_gte_replay_sandbox=0;\n'+gte[start:end]+'\n',encoding='utf-8')
+            obj=work/'actual-gte-precision-store.o'
+            run([a.cxx,*common,'-c',source,'-o',obj]);objects.append(obj)
         defined, undefined = nm_symbols(objects)
         provided = library_symbols(a.cc)
         stubs = {s for s in undefined-defined-provided if not s.startswith('__')}
-        if any('pgxp_operation' in s or 'pgxp_write_owned' in s or s=='psx_hr_bus_callbacks' or 'pgxp_region_' in s or 'block_edge_materialize' in s or s in ('psx_observation_sample','psx_observation_edge','psx_slice_block_impl','psx_advance_cycles_slow','fixture_regions_owner','fixture_regions_dispatch','psx_gte_read','psx_game_text_native_ok') for s in stubs):
+        if any('pgxp_operation' in s or 'pgxp_write_owned' in s or s=='psx_hr_bus_callbacks' or 'pgxp_region_' in s or 'block_edge_materialize' in s or s in ('psx_observation_sample','psx_observation_edge','psx_slice_block_impl','psx_advance_cycles_slow','fixture_regions_owner','fixture_regions_dispatch','psx_gte_read','psx_game_text_native_ok','psx_direct_precision_write') for s in stubs):
             raise RuntimeError('candidate precision implementation is missing; cannot substitute a linker seam')
+        if a.geometry_scratch and stubs & {'psx_gte_stall','gte_precision_store_word'}:
+            raise RuntimeError('real scratch GTE timing/publication provider missing')
         result_exe = work/('products.exe' if os.name == 'nt' else 'products')
         for _ in range(20):
             write_stubs(work/'stubs.c', stubs)

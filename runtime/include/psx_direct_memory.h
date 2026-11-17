@@ -273,7 +273,8 @@ static inline void psx_direct_observe_store(uint32_t addr, const uint8_t *p,
 #ifdef PSX_OVERLAY_DLL_BUILD
     g_psx_overlay_memory_view->record_write(phys, old_value, value, (uint8_t)width);
 #else
-#if defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS
+#if (defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS) || \
+    (defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS)
     psx_direct_precision_write(phys, old_value, value, (uint8_t)width);
 #else
     debug_server_trace_write_check(phys, old_value, value, (uint8_t)width);

@@ -87,7 +87,31 @@ static void affine_address_receipts() {
         }
     }
 }
+static void geometry_control_ownership() {
+#if defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS
+    for(int mode:{0,1}) {
+        pgxp_set_enabled(1);pgxp_set_cpu_mode(mode);pgxp_set_source_tracking(1);
+        seed(Address,Packed,8*65536+16384);
+        CHECK(pgxp_tag_word_source(Address,Packed,918));
+        const auto untouched=capture(Address,Packed);
+        seed(Other,Packed,8*65536+32768);
+        CHECK(pgxp_tag_word_source(Other,Packed,919));
+        // Identical RA bits at another KSEG/mirror spelling must still end the
+        // overwritten word's geometry/source lifetime, not validate it as live.
+        pgxp_write_owned(0xa0202000u,Packed,4);
+        const auto killed=capture(Other,Packed);
+        CHECK(!killed.flags && pgxp_load_source(Other,Packed)==0);
+        check_attributes(untouched,capture(Address,Packed));
+        CPUState cpu{};cpu.gpr[29]=0x8001ff00;cpu.gpr[31]=0x80009000;
+        CHECK(pgxp_native_scalar_gpr(&cpu,29,double((int32_t)cpu.gpr[29])+.25,1));
+        pgxp_native_clobber(&cpu,0xa0000000u,0);
+        double value=0;CHECK(!pgxp_native_gpr_scalar(29,cpu.gpr[29],&value));
+        check_attributes(untouched,capture(Address,Packed));
+    }
+#endif
+}
 int main() {
+    geometry_control_ownership();
     pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_projection_tracking(1);
     seed(Address,Packed,(8<<16)+16384);
     PGXPProjection projection{12.5f,18.25f,2.0f,0.125f};
