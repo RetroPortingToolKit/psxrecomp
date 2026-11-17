@@ -2,8 +2,8 @@
 
 No retail media required. Arguments: a C compiler and a private output folder.
 
-A data read on audio-only media must answer stat|error and 40h for every
-Setmode byte, the CDDA bit included. A disc with any data track keeps the data
+Audio-only media answers stat|error and 40h when Setmode.CDDA is disabled.
+CDDA-enabled reads retain their transfer path. Mixed-mode discs keep the data
 path in every mode, and no disc keeps the plain error.
 """
 from pathlib import Path
@@ -16,7 +16,6 @@ if marker in source:
     start = source.index(marker)
     end = source.index('\nstatic void exec_command(uint8_t cmd) {', start)
     helper = source[start:end]
-    assert 'mode_reg' not in helper, 'audio-disc rejection must not depend on the transfer mode'
 cases = []
 for case in ['    case 0x06: /* ReadN */', '    case 0x1B: /* ReadS */']:
     start = source.index(case)
@@ -44,11 +43,14 @@ int main(void) {
   const int commands[] = {0x06, 0x1B};
   int bad = 0;
   for (unsigned i = 0; i < 2; ++i) {
-    /* 1-track and 12-track audio-only media: every mode byte errors. */
+    /* Audio-only media: bit 0 selects error40 or the existing read path. */
     for (int n = 1; n <= 12; n += 11) for (int mode = 0; mode < 256; ++mode) {
       track_count = n; data_track = 0; present = 1; mode_reg = (uint8_t)mode;
       count = irq = reads = 0; execute((uint8_t)commands[i]);
-      if (!(reads == 0 && irq == 5 && count == 2 && bytes[0] == 3 && bytes[1] == 0x40)) {
+      int ok = (mode & 1)
+          ? (reads == 1 && irq == 3 && count == 1 && bytes[0] == 2)
+          : (reads == 0 && irq == 5 && count == 2 && bytes[0] == 3 && bytes[1] == 0x40);
+      if (!ok) {
         if (!bad++) printf("FAIL: command %02X on a %d-track audio disc, mode %02X: "
                            "read started=%d irq=%d bytes=%d\n", commands[i], n, mode, reads, irq, count);
       }
@@ -68,7 +70,7 @@ int main(void) {
     }
   }
   if (bad) { printf("%d cases failed\n", bad); return 1; }
-  puts("PASS: production ReadN/ReadS audio-disc errors, all mode bytes, mixed-mode and no-disc controls");
+  puts("PASS: production ReadN/ReadS CDDA mode, audio-disc errors, mixed-mode and no-disc controls");
   return 0;
 }
 '''
