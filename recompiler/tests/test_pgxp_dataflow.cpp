@@ -7,7 +7,35 @@ using namespace PSXRecomp;
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr,"FAIL line%d: %s\n",__LINE__,#c);std::abort(); } } while(0)
 static uint32_t i(unsigned op,unsigned rs,unsigned rt,unsigned imm=0) {return op<<26|rs<<21|rt<<16|imm;}
 static uint32_t r(unsigned rs,unsigned rt,unsigned rd,unsigned fn,unsigned sh=0) {return rs<<21|rt<<16|rd<<11|sh<<6|fn;}
+// Pure CFG proofs use the normal C++ exception/unwind profile, not the
+// runtime receipt fixture. Keep these assertions separate from memory effects.
+static void geometry_control_demand() {
+    using namespace PSXRecomp;
+    constexpr uint64_t all=((UINT64_C(1)<<34)-1u)&~UINT64_C(1);
+    constexpr uint64_t control=(UINT64_C(1)<<29)|(UINT64_C(1)<<31);
+    const std::vector<PgxpFlowBlock> blocks={
+        {0x1000,{{0x1000,0x27bdffe8},{0x1004,0xafbf0010},
+                 {0x1008,0x48087000},{0x100c,0xac880000}}, {0x1010}},
+        {0x1010,{{0x1010,0x0c000800}}, {0x1018},true},
+        {0x1018,{{0x1018,0x8fbf0010},{0x101c,0},
+                 {0x1020,0x03e00008},{0x1024,0x27bd0018}}, {},true}};
+    const auto frame=pgxp_control_frame(blocks,0x1000);
+    CHECK(frame.valid && frame.bytes==24 && frame.offset==16);
+    const auto demand=pgxp_geometry_demand(blocks,0x1000,all&~control,{{0x2000,all&~control}});
+    for(auto pc:frame.sites())CHECK(demand.dead.count(pc));
+    CHECK(!demand.dead.count(0x1008) && !demand.dead.count(0x100c)); // GTE -> packet
+    // Unknown callees and actual SP-as-coordinate/opaque observers are roots.
+    const auto unknown=pgxp_geometry_demand(blocks,0x1000,all&~control,{});
+    CHECK(!unknown.dead.count(0x1000));
+    auto escaped=blocks;escaped[0].instructions[2].word=0x489d4800; // MTC2 SP,IR1
+    CHECK(!pgxp_control_frame(escaped,0x1000).valid);
+    auto observed=blocks;observed[0].instructions[0].opaque=true;
+    CHECK(!pgxp_control_frame(observed,0x1000).valid);
+    auto unbalanced=blocks;unbalanced[2].instructions.back().word=0x27bd0014;
+    CHECK(!pgxp_control_frame(unbalanced,0x1000).valid);
+}
 int main() {
+    geometry_control_demand();
     // GTE -> split halves -> arithmetic -> repack -> memory: every precision
     // dependency remains, including an in-place destination/source alias.
     PgxpFlowBlock geometry{0,{{0,0x48087000},{4,r(0,8,9,3,16)},
