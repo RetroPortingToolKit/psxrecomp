@@ -35,6 +35,8 @@ uint32_t g_ra_tw_latched, g_ra_tw_site, g_ra_tw_pc, g_ra_tw_prev_ra;
 uint32_t g_ra_tw_frame, g_ra_tw_in_exc, g_ra_tw_sp;
 uint32_t g_present_slow_count;
 int      g_present_vsync_disabled;
+uint32_t psx_present_slow_count(void) { return g_present_slow_count; }
+int psx_present_vsync_disabled(void) { return g_present_vsync_disabled; }
 uint8_t *g_psx_ram;
 uint64_t g_psx_bail_first, g_psx_bail_resolved, g_psx_bail_flattened;
 uint64_t g_psx_bail_anomaly;
