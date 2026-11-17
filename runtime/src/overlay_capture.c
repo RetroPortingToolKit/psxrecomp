@@ -1322,7 +1322,7 @@ int overlay_capture_test_provider_pending(void) {
 }
 /* Runs the history copy and returns its failure text ("" on success). */
 const char *overlay_capture_test_copy_file(const char *src, const char *dst) {
-    s_commit_failure[0] = ' ';
+    s_commit_failure[0] = '\0';
     (void)capture_copy_file(src, dst);
     return s_commit_failure;
 }
