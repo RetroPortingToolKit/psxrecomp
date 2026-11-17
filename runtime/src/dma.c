@@ -1096,7 +1096,7 @@ static void hold_cpu_for_gpu_linked_list(void) {
     uint32_t steps = 0;
     PSX_HR_GPU_HOLD_BEGIN();
     while (gpu_linked_list.active && ((channels[2].chcr >> 24) & 1u) &&
-           channel_enabled(2)) {
+           channel_enabled(2) && gpu_linked_list.nodes_processed < 0x80000u) {
         const uint32_t moved = gpu_linked_list.total_words;
         if((s_host_draw[0].bytes || s_host_draw[1].bytes) &&
            dma_host_draw_drain(&gpu_linked_list,s_host_draw,&gpu_ll_ops,NULL)) {
