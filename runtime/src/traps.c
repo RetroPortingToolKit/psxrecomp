@@ -1039,7 +1039,9 @@ static int psx_change_thread_in_handler(CPUState* cpu, uint32_t target_tcb) {
     uint32_t save = current_tcb + 8u;
     uint32_t cause = cpu->cop0[13];
     psx_save_context_to_tcb(cpu, current_tcb, cpu->pc + 4u);            /* 1, 2 */
-    cpu->write_word(save + 144u, (cause & ~0x7Cu) | (8u << 2));         /* Sys */
+    /* This handler's ordinary SYSCALL is a fresh exception, not the
+     * interrupted thread's branch-delay exception. */
+    cpu->write_word(save + 144u, (cause & ~(0x80000000u | 0x7Cu)) | (8u << 2));
     cpu->write_word(save + 2u * 4u, 1u);                                /* 3: v0 */
     psx_set_current_tcb(cpu, target_tcb);                               /* 3 */
     psx_note_changethread_in_handler_switch();
