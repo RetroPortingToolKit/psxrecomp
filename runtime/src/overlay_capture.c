@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <errno.h>
 #include <time.h>
 #include "psx_sdl.h"
 #ifdef _WIN32
@@ -537,6 +538,40 @@ static int write_json_snapshot(const char *path, uint32_t bw,
     }
 }
 
+/* Which call of a commit failed, and with what code, for the commit's error
+ * line. "additive capture history write failed" and "latest capture write
+ * failed" named a file and nothing else, so a run could not say whether the
+ * copy or the rename failed, or why. Written and read by
+ * capture_commit_temp under s_commit_mutex. Diagnostic text only: nothing
+ * branches on it, and the retry of a failed commit is unchanged. */
+static char s_commit_failure[200];
+
+/* A C library call failed: errno and, on Windows, the system's own code for
+ * the same failure (5 access denied, 32 sharing violation, ...). */
+static void capture_note_crt_failure(const char *call)
+{
+#ifdef _WIN32
+    snprintf(s_commit_failure, sizeof(s_commit_failure),
+             "%s: errno %d (%s), Windows error %lu", call, errno, strerror(errno),
+             (unsigned long)_doserrno);
+#else
+    snprintf(s_commit_failure, sizeof(s_commit_failure),
+             "%s: errno %d (%s)", call, errno, strerror(errno));
+#endif
+}
+
+/* atomic_replace_file failed: MoveFileExA on Windows, rename elsewhere. */
+static void capture_note_replace_failure(const char *call)
+{
+#ifdef _WIN32
+    snprintf(s_commit_failure, sizeof(s_commit_failure),
+             "%s: Windows error %lu", call, (unsigned long)GetLastError());
+#else
+    snprintf(s_commit_failure, sizeof(s_commit_failure),
+             "%s: errno %d (%s)", call, errno, strerror(errno));
+#endif
+}
+
 static int capture_copy_file(const char *src, const char *dst)
 {
     FILE *in = fopen(src, "rb");
@@ -544,15 +579,32 @@ static int capture_copy_file(const char *src, const char *dst)
     unsigned char buf[65536];
     size_t n;
     int ok = 1;
-    if (!in) return 0;
+    if (!in) { capture_note_crt_failure("open the snapshot to copy it"); return 0; }
     out = fopen(dst, "wb");
-    if (!out) { fclose(in); return 0; }
-    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
-        if (fwrite(buf, 1, n, out) != n) { ok = 0; break; }
+    if (!out) {
+        capture_note_crt_failure("create the history temp file");
+        fclose(in);
+        return 0;
     }
-    if (ferror(in)) ok = 0;
-    if (ok && (fflush(out) != 0 || CAPTURE_FSYNC(out) != 0)) ok = 0;
-    if (fclose(out) != 0) ok = 0;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            capture_note_crt_failure("write the history temp file");
+            ok = 0;
+            break;
+        }
+    }
+    if (ferror(in)) {
+        if (ok) capture_note_crt_failure("read the snapshot to copy it");
+        ok = 0;
+    }
+    if (ok && (fflush(out) != 0 || CAPTURE_FSYNC(out) != 0)) {
+        capture_note_crt_failure("flush the history temp file");
+        ok = 0;
+    }
+    if (fclose(out) != 0) {
+        if (ok) capture_note_crt_failure("close the history temp file");
+        ok = 0;
+    }
     fclose(in);
     if (!ok) remove(dst);
     return ok;
@@ -786,14 +838,18 @@ static uint64_t capture_commit_temp(const char *temp_path, const char *reason,
     } else {
         snprintf(contribution_tmp, sizeof(contribution_tmp), "%s.%lu.%llu.tmp",
                  contribution, CAPTURE_PID(), (unsigned long long)sequence);
-        if (capture_copy_file(temp_path, contribution_tmp) &&
-            atomic_replace_file(contribution_tmp, contribution)) {
-            history_ok = 1;
-        } else {
+        s_commit_failure[0] = '\0';
+        if (capture_copy_file(temp_path, contribution_tmp)) {
+            if (atomic_replace_file(contribution_tmp, contribution))
+                history_ok = 1;
+            else
+                capture_note_replace_failure("rename the history temp file into place");
+        }
+        if (!history_ok) {
             remove(contribution_tmp);
             fprintf(stderr,
-                "psxrecomp: ERROR: additive capture history write failed: %s\n",
-                contribution);
+                "psxrecomp: ERROR: additive capture history write failed: %s [%s]\n",
+                contribution, s_commit_failure);
         }
     }
     /* Snapshots may be formatted concurrently, so only the newest snapshot is
@@ -803,9 +859,10 @@ static uint64_t capture_commit_temp(const char *temp_path, const char *reason,
         base_ok = atomic_replace_file(temp_path, s_capture_path);
         if (base_ok) s_latest_commit_seq = sequence;
         else {
+            capture_note_replace_failure("replace the latest file");
             remove(temp_path);
-            fprintf(stderr, "psxrecomp: ERROR: latest capture write failed: %s\n",
-                    s_capture_path);
+            fprintf(stderr, "psxrecomp: ERROR: latest capture write failed: %s [%s]\n",
+                    s_capture_path, s_commit_failure);
         }
     } else {
         remove(temp_path);
@@ -1147,6 +1204,12 @@ unsigned overlay_capture_test_write_attempts(void) {
 }
 int overlay_capture_test_provider_pending(void) {
     return s_autocap_provider_sig_pending != 0;
+}
+/* Runs the history copy and returns its failure text ("" on success). */
+const char *overlay_capture_test_copy_file(const char *src, const char *dst) {
+    s_commit_failure[0] = ' ';
+    (void)capture_copy_file(src, dst);
+    return s_commit_failure;
 }
 #endif
 
