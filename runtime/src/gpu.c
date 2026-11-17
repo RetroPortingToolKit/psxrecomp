@@ -29,6 +29,7 @@
 #include "gte_nclip_stats.h"
 #include "event_ring.h"
 #include "psx_video_timing.h"
+#include "interrupts.h"
 #include "color_lut.h"
 #include "mod_runtime.h"
 #include "mod_plugins.h"
@@ -4393,8 +4394,20 @@ uint32_t gpu_read_gpustat(void) {
     /* Bits 29-30: DMA direction */
     stat |= (dma_direction & 3) << 29;
 
-    /* Bit 31: LCF — drawing even/odd lines in interlace mode */
-    stat |= (lcf & 1) << 31;
+    /* Bit 31: LCF, drawing even/odd lines in interlace mode. It reads 0 in
+     * vertical blanking. This uses the whole-field clock; reading it advances
+     * no time. */
+    uint32_t line_bit = lcf & 1u;
+    if (vertical_interlace && vres) {
+        const uint32_t lines = video_mode ? 314u : 263u;
+        const uint32_t start = v_display_y1 < lines ? v_display_y1 : lines;
+        const uint32_t end = v_display_y2 < lines ? v_display_y2 : lines;
+        const uint32_t active = end > start ? end - start : 0u;
+        const uint64_t phase = interrupts_get_cycles_since_vblank();
+        if (phase * lines < (uint64_t)(lines - active) * g_psx_vblank_cycles)
+            line_bit = 0;
+    }
+    stat |= line_bit << 31;
 
     return stat;
 }
