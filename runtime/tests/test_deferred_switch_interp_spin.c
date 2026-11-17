@@ -68,7 +68,7 @@ int psx_dispatch_game_compiled(CPUState *cpu, uint32_t addr) { (void)cpu; (void)
 /* The deferred switch: pending until a site-0 poll takes it. */
 static int s_switch_pending;
 static unsigned s_site0_polls, s_pump_checks;
-int psx_defer_switch_pending(void) { return s_switch_pending; }
+int psx_deferred_switch_is_pending(void) { return s_switch_pending; }
 int psx_get_in_exception(void) { return 0; }
 void psx_check_interrupts(CPUState *cpu) { (void)cpu; ++s_pump_checks; }
 void psx_check_interrupts_at(CPUState *cpu, uint32_t resume_pc) {

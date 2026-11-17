@@ -978,8 +978,8 @@ static int dirty_ram_pump_boundary(CPUState *cpu, uint32_t committed_pc, int sit
      * honors the switch. Only site 1 surfaces; other pump sites expose
      * candidate PCs whose CPUState may not be materialized. */
     if (site == 1) {
-        extern int psx_defer_switch_pending(void);
-        if (psx_defer_switch_pending() && !psx_get_in_exception())
+        extern int psx_deferred_switch_is_pending(void);
+        if (psx_deferred_switch_is_pending() && !psx_get_in_exception())
             return 1;
     }
     return 0;
@@ -3394,8 +3394,8 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
              * deferred in-exception switch is pending so a thread spinning in
              * one local-flow run can still be switched away (see
              * dirty_ram_pump_boundary site 1, which brings it back here). */
-            extern int psx_defer_switch_pending(void);
-            int defer_pending = psx_defer_switch_pending() && !psx_get_in_exception();
+            extern int psx_deferred_switch_is_pending(void);
+            int defer_pending = psx_deferred_switch_is_pending() && !psx_get_in_exception();
             if (deliverable || defer_pending || (++s_interp_entry_poll & 0x3Fu) == 0) {
                 cpu->pc = pc;
                 s_last_dirty_irq_pump_insns = g_dirty_ram_insns_run;

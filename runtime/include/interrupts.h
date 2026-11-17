@@ -110,7 +110,7 @@ uint32_t cycles_to_next_event(void);
 /* Query whether we are currently inside an exception handler dispatch. */
 int psx_get_in_exception(void);
 /* Nonzero while an in-exception thread switch waits for a site-0 poll. */
-int psx_defer_switch_pending(void);
+int psx_deferred_switch_is_pending(void);
 
 /* Most recent block-leader IRQ-check guest PC / compiled resume latch.
  * Used by the post-savestate freeze probe (vblank-time "where was the game"). */
