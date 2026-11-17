@@ -545,6 +545,11 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_file_create_new.py"
                 --cc "${CMAKE_C_COMPILER}")
         endif()
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            add_test(NAME dma_otc_start_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dma_otc_start.py"
+                --cc "${CMAKE_C_COMPILER}")
+        endif()
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
             add_test(NAME resolved_pad_guard_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_resolved_pad_guard.py"
