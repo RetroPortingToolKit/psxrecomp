@@ -60,6 +60,8 @@ struct CPUState;
 void psx_pgxp_load  (struct CPUState *cpu, uint32_t instr, uint32_t addr, uint32_t value);
 void psx_pgxp_store (struct CPUState *cpu, uint32_t instr, uint32_t addr, uint32_t value);
 /* Complete compiler-owned GPR receipts at an actual precision/observer boundary. */
+/* Existing native output ownership, also used by generated control frames. */
+void pgxp_native_clobber(struct CPUState *cpu, uint32_t gpr_mask, uint32_t gte_mask);
 void psx_pgxp_region_materialize(struct CPUState *cpu, uint32_t mask,
     uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1);
 /* Compiler-authored final affine receipts, not an instruction replay stream.
