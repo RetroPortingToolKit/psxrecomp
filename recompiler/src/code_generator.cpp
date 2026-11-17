@@ -272,7 +272,7 @@ std::string CodeGenerator::emit_interrupt_check(uint32_t resume_pc,
         std::string out=indent+"{ const uint32_t _region_pc=cpu->pc;\n";
         out+=indent+fmt::format("if(psx_block_edge_materialize(cpu,0x{:08X}u,{})) {{\n",runtime_pc(resume_pc),region_materializer(precision_region_state_));
         out+=indent+"    if(g_psx_call_bail || cpu->pc!=_region_pc) return;\n";
-        out+=indent+fmt::format("    goto canonical_block_{:08X};\n",resume_pc);
+        out+=indent+fmt::format("    {}_canonical(cpu,0x{:08X}u); return;\n",precision_region_owner_,runtime_pc(resume_pc));
         out+=indent+"} }\n";
         if(any)out+=indent+region_materializer(normalize)+"(cpu); /* incompatible precision join */\n";
         return out;
@@ -2330,7 +2330,7 @@ std::string CodeGenerator::translate_basic_block(
         for(uint32_t a=block.start_addr;a<=end;a+=4u)if(auto w=exe_.read_word(a))charge+=psx_native_instr_cycles(*w,runtime_pc(a));
         ss<<config_.indent<<fmt::format("if(PSX_DEBUG_BLOCK_INTEREST(0x{:08X}u) || g_psx_precise_slice || psx_native_span_charge_observable({}u)) {{\n",runtime_pc(block.start_addr),charge);
         ss<<config_.indent<<"    "<<region_materializer(precision_region_state_)<<"(cpu);\n";
-        ss<<config_.indent<<fmt::format("    goto canonical_block_{:08X};\n",block.start_addr)<<config_.indent<<"}\n";
+        ss<<config_.indent<<fmt::format("    {}_canonical(cpu,0x{:08X}u); return;\n",precision_region_owner_,runtime_pc(block.start_addr))<<config_.indent<<"}\n";
     }
     ss << "#ifndef PSX_NO_DEBUG_TOOLS\n";
     ss << config_.indent
@@ -3457,8 +3457,8 @@ GeneratedFunction CodeGenerator::generate_function(
         for(uint32_t pc:cfg.block_order)private_blocks+="\n"+translate_basic_block(cfg.blocks.at(pc),cfg);
         private_fallthrough_receipt=region_flush();
         precision_region_body_=false;
-        // Private labels remain under this exact native owner. Canonical escapes
-        // skip consumed function hooks AND the edge already serviced above.
+        // Private labels remain under this exact native owner. Cold helper
+        // entries skip consumed function hooks AND the already-serviced edge.
         for(size_t at=0;(at=private_blocks.find("block_",at))!=std::string::npos;) {
             const bool label=at+14u<=private_blocks.size() &&
                 private_blocks.substr(at+6u,8u).find_first_not_of("0123456789ABCDEF")==std::string::npos;
@@ -3468,6 +3468,18 @@ GeneratedFunction CodeGenerator::generate_function(
             } else {private_blocks.insert(at,"precision_");at+=24;}
         }
     }
+
+    std::string canonical_blocks;
+    if(regions) {
+        // The cold owner has an explicit block entry argument, just like an
+        // alias body. Reuse that maintained CPS policy: publish a JAL target
+        // back to the flat owner instead of promising an incompatible musttail.
+        const bool saved_tail_signature=native_tail_signature_;
+        native_tail_signature_=false;
+        for(uint32_t pc:cfg.block_order)canonical_blocks+="\n"+translate_basic_block(cfg.blocks.at(pc),cfg);
+        native_tail_signature_=saved_tail_signature;
+    }
+    const std::string region_condition="defined(PSX_PGXP) && PSX_PGXP && defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_COSIM) && !defined(PSX_OVERLAY_DLL_BUILD)";
 
     // FAITHFUL RE-ENTRY — every basic-block leader is a dispatchable continuation
     // (MMX6 boot-wedge class B, resume PC 0x8005B07C). psx_check_interrupts_at is
@@ -3490,7 +3502,8 @@ GeneratedFunction CodeGenerator::generate_function(
     }
 
     std::stringstream body_ss;
-    const bool native_tail_scope = blocks_ss.str().find("goto psx_native_tail_transfer;") != std::string::npos;
+    const bool native_tail_scope = blocks_ss.str().find("goto psx_native_tail_transfer;") != std::string::npos ||
+        private_blocks.find("goto psx_native_tail_transfer;") != std::string::npos;
     body_ss << "{\n";
     if (native_tail_scope) {
         body_ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n"
@@ -3535,9 +3548,12 @@ GeneratedFunction CodeGenerator::generate_function(
             if (!seen.insert(c).second) continue;
             // The key is the PC the trampoline hands back (cpu->pc), so it
             // is a runtime PC; the label is the compile identity (§5.2).
-            if(regions && precision_region_plan_.roots.count(c) && cfg.blocks.count(c)) {
-                body_ss<<"#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_COSIM) && !defined(PSX_OVERLAY_DLL_BUILD)\n";
-                body_ss<<config_.indent<<fmt::format("        case 0x{:08X}u: goto precision_block_{:08X};\n",runtime_pc(c),c);
+            if(regions) {
+                body_ss<<"#if "<<region_condition<<"\n";
+                if(precision_region_plan_.roots.count(c) && cfg.blocks.count(c))
+                    body_ss<<config_.indent<<fmt::format("        case 0x{:08X}u: goto precision_block_{:08X};\n",runtime_pc(c),c);
+                else
+                    body_ss<<config_.indent<<fmt::format("        case 0x{:08X}u: {}_canonical(cpu,_cont); return;\n",runtime_pc(c),precision_region_owner_);
                 body_ss<<"#else\n";
             }
             if (partial_block_cycle_count(c, cfg) != 0) {
@@ -3548,7 +3564,7 @@ GeneratedFunction CodeGenerator::generate_function(
                 body_ss << config_.indent
                         << fmt::format("        case 0x{:08X}u: goto block_{:08X};\n", runtime_pc(c), c);
             }
-            if(regions && precision_region_plan_.roots.count(c) && cfg.blocks.count(c))body_ss<<"#endif\n";
+            if(regions)body_ss<<"#endif\n";
             cps_continuation_owner_[c] = func.start_addr;
         }
         if (config_.overlay_mode) {
@@ -3640,8 +3656,8 @@ GeneratedFunction CodeGenerator::generate_function(
                               func.start_addr, func.size, cfg.blocks.size());
     }
 
-    if(regions)body_ss<<"#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_COSIM) && !defined(PSX_OVERLAY_DLL_BUILD)\n"
-        <<config_.indent<<fmt::format("goto precision_block_{:08X};\n",func.start_addr)<<"#endif\n";
+    if(regions)body_ss<<"#if "<<region_condition<<"\n"
+        <<config_.indent<<fmt::format("goto precision_block_{:08X};\n",func.start_addr)<<"#else\n";
     body_ss << blocks_ss.str();
     const size_t canonical_suffix_at=body_ss.str().size();
 
@@ -3682,9 +3698,9 @@ GeneratedFunction CodeGenerator::generate_function(
         }
     }
     body_ss << "    ;  /* label compatibility: C requires a statement after the last label */\n";
+    const std::string canonical_suffix=body_ss.str().substr(canonical_suffix_at);
     if(regions) {
-        const std::string canonical_suffix=body_ss.str().substr(canonical_suffix_at);
-        body_ss<<"    return;\n#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_COSIM) && !defined(PSX_OVERLAY_DLL_BUILD)\n";
+        body_ss<<"    return;\n#endif\n#if "<<region_condition<<"\n";
         body_ss<<"    /* precision-demand-regions: "<<precision_region_plan_.definitions<<" integer definitions; canonical opaque entries retained */\n    {\n"<<private_blocks<<private_fallthrough_receipt<<canonical_suffix<<"    }\n#endif\n";
     }
     if (native_tail_scope) {
@@ -3710,9 +3726,23 @@ GeneratedFunction CodeGenerator::generate_function(
     }
 
     if(regions) {
-        annotation_prefix+="#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_COSIM) && !defined(PSX_OVERLAY_DLL_BUILD)\n";
+        annotation_prefix+="#if "+region_condition+"\n";
         for(const auto& [name,text]:precision_region_materializers_)annotation_prefix+=text;
-        annotation_prefix+="#endif\n";
+        // Keep the full-precision CFG out of the hot native host owner. The
+        // public function retains its one cleanup scope and all entry hooks;
+        // this helper may only be called after those hooks/edges were consumed.
+        annotation_prefix+="#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 9\n__attribute__((noipa,cold))\n#elif defined(__GNUC__) || defined(__clang__)\n__attribute__((noinline,cold))\n#elif defined(_MSC_VER)\n__declspec(noinline)\n#endif\n";
+        annotation_prefix+=fmt::format("static void {}_canonical(CPUState *cpu,uint32_t entry) {{\n    switch(entry) {{\n",precision_region_owner_);
+        std::set<uint32_t> entries(cps_cur_continuations_.begin(),cps_cur_continuations_.end());
+        entries.insert(func.start_addr);
+        for(uint32_t pc:entries) {
+            annotation_prefix+=fmt::format("    case 0x{:08X}u:\n",runtime_pc(pc));
+            if(partial_block_cycle_count(pc,cfg)!=0)
+                annotation_prefix+=emit_mid_block_cycle_charge(pc,cfg,"        ");
+            annotation_prefix+=fmt::format("        goto block_{:08X};\n",pc);
+        }
+        annotation_prefix+="    default: cpu->pc=entry; return; /* retain an unsupported nonlocal PC */\n    }\n";
+        annotation_prefix+=canonical_blocks+canonical_suffix+"}\n#endif\n";
     }
     result.full_code = annotation_prefix + result.signature + "\n" + result.body;
     result.line_count = std::count(result.full_code.begin(), result.full_code.end(), '\n');

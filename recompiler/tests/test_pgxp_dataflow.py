@@ -108,11 +108,14 @@ def main():
     ap.add_argument('--compile-only', action='store_true', help='prepare the exact unit executable without rerunning qualified products')
     ap.add_argument('--reuse-passed-source', type=Path, help='O0 only: verify unchanged passed bodies and run remaining region cases')
     ap.add_argument('--regions', action='store_true', help='actual private CFG/owner/clock/opaque-entry products')
+    ap.add_argument('--tail-compile', action='store_true', help='O0 regions only: additionally compile the same candidate with the supported native-tail profile')
     ap.add_argument('--runtime-root', type=Path, default=ROOT, help='verified production headers/project root for test-only fixture worktree')
     ap.add_argument('--dispatch', type=Path, help='already verified actual normal BIOS dispatch for owner extraction')
     ap.add_argument('--opt', choices=('0','2'), default='2')
     ap.add_argument('--operations', action='store_true', help='qualify guarded whole integer operations and write ownership')
     a = ap.parse_args()
+    if a.tail_compile and (not a.regions or a.opt!='0'):
+        ap.error('--tail-compile is the single supported-profile O0 regions compile check')
     if a.reuse_passed_source and (not a.regions or a.opt!='0'):
         ap.error('--reuse-passed-source is only for remaining O0 region products')
     with (nullcontext(str(a.work_dir)) if a.work_dir else
@@ -237,7 +240,36 @@ def main():
                               else 'flow_'+name+'_'+symbol) for symbol in sorted(names))
             c.write_text(aliases+text, encoding='utf-8')
             obj = work / (name+'.o')
-            run([a.cc, *common, '-DPSX_PGXP_DATAFLOW='+str(0 if a.regions else selected), '-DPSX_PGXP_DEMAND_REGIONS='+str(int(a.regions and selected)), '-DPSX_PGXP_OPERATIONS='+str(int(a.operations and selected)), '-c', c, '-o', obj])
+            selection = ['-DPSX_PGXP_DATAFLOW='+str(0 if a.regions else selected),
+                         '-DPSX_PGXP_DEMAND_REGIONS='+str(int(a.regions and selected)),
+                         '-DPSX_PGXP_OPERATIONS='+str(int(a.operations and selected))]
+            if a.regions:
+                # Inspect the actual selected C, not mutually-exclusive source
+                # text: the native compiler must see only its private CFG.
+                pp = run([a.cc, *common, *selection, '-E', '-P', c], verbose=False).stdout
+                owner_name = 'flow_'+name+'_func_80010700'
+                definition = re.search(r'\bvoid '+owner_name+r'\(\s*CPUState\s*\*\s*cpu\s*\)\s*\{', pp)
+                assert definition
+                compiled = function('static '+pp[definition.start():], owner_name)
+                if selected:
+                    cold = function(pp, 'func_80010700_precision_canonical')
+                    assert 'precision_block_80010700:' in compiled
+                    assert not re.search(r'(?m)^block_[0-9A-F]{8}:', compiled)
+                    assert 'block_80010700:' in cold and 'precision_block_' not in cold
+                    assert 'case 0x80010700u:' in cold and 'case 0x80010730u:' in cold
+                    assert '_psx_native_tail_body' not in cold and 'musttail' not in cold
+                    assert not any(x in cold for x in ('psx_mod_function_entry(',
+                        'psx_mod_try_function_replacement(', 'psx_cyc_bb_defer_begin('))
+                    (work/'selected-owner-proof.c').write_text(cold+'\n'+compiled, encoding='utf-8')
+                else:
+                    assert 'block_80010700:' in compiled and 'precision_block_' not in compiled
+                print('Actual preprocessed '+('native/cold split' if selected else 'portable full-PGXP')+' owner contract PASS', flush=True)
+            run([a.cc, *common, *selection, '-c', c, '-o', obj])
+            if a.tail_compile and selected:
+                tail = [x for x in common if not x.startswith('-DPSX_NATIVE_TAIL_CHAINS=')]
+                run([a.cc, *tail, *selection, '-DPSX_NATIVE_TAIL_CHAINS=1',
+                     '-c', c, '-o', work/'candidate-tail1-compile.o'])
+                print('Same emitted native owner compiles under supported TAIL1; portable TAIL0 products remain the runtime gate', flush=True)
             objects.append(obj)
         for compiler, source, name in (
             (a.cc, ROOT/'runtime/src/psx_ram_geometry.c', 'ram'),
