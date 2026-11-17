@@ -261,6 +261,14 @@ static uint64_t s_cd_probe_pause_count, s_cd_probe_pause_cycles;
 static uint64_t s_cd_probe_seek_count, s_cd_probe_seek_cycles;
 static uint64_t s_cd_probe_motor_count, s_cd_probe_motor_cycles;
 static uint64_t s_cd_probe_stop_count, s_cd_probe_stop_cycles;
+/* Read streams that ended before their first sector. A CD library that keeps
+ * restarting a read that never delivers shows up as a long run of them.
+ * Diagnostics only: nothing reads these to decide anything, and they are not
+ * part of a save state. s_cd_stream_open_seq is the sector record count when
+ * the open stream started, or UINT64_MAX with none open. */
+static uint64_t s_cd_stream_open_seq = UINT64_MAX;
+static uint32_t s_cd_stream_starts, s_cd_silent_reads, s_cd_silent_run, s_cd_silent_run_max;
+static void cd_stream_account_end(int delivered);
 
 static void cd_timing_note_intc(void);
 static uint8_t filter_file;
@@ -1684,6 +1692,9 @@ static void start_read_stream(uint8_t cmd) {
     s_cd_probe_read_start_cycles += (uint64_t)read_delay;
     s_cd_timing_next_due = psx_cycle_count + (uint64_t)read_delay;
     s_cd_timing_stream_starts++;
+    cd_stream_account_end(0);              /* a read started over an open one */
+    s_cd_stream_open_seq = s_cd_timing_total;
+    s_cd_stream_starts++;
     reading = 1;
     /* ENIGMA checks Read before polling GetlocL for a voice line's end, and gives up on
      * the line after 10 NOT READY answers. Those can all land inside one seek, and then
@@ -1723,7 +1734,28 @@ static void start_read_stream(uint8_t cmd) {
     }
 }
 
+/* The open read stream, if any, has ended: by a Pause, a Stop, a seek, the
+ * end of an XA file, or the next read start. It is silent when no sector
+ * record was begun since it started and the caller delivered none. */
+static void cd_stream_account_end(int delivered) {
+    if (s_cd_stream_open_seq == UINT64_MAX) return;
+    if (!delivered && s_cd_timing_total == s_cd_stream_open_seq) {
+        s_cd_silent_reads++;
+        if (++s_cd_silent_run > s_cd_silent_run_max) s_cd_silent_run_max = s_cd_silent_run;
+    } else {
+        s_cd_silent_run = 0;
+    }
+    s_cd_stream_open_seq = UINT64_MAX;
+}
+
+void cdrom_silent_read_stats(uint32_t *starts, uint32_t *silent, uint32_t *longest_run) {
+    if (starts) *starts = s_cd_stream_starts;
+    if (silent) *silent = s_cd_silent_reads;
+    if (longest_run) *longest_run = s_cd_silent_run_max;
+}
+
 static void stop_read_stream(void) {
+    cd_stream_account_end(0);
     reading = 0;
     read_cmd = 0;
     read_delay = 0;
@@ -3409,6 +3441,7 @@ int cdrom_resident_complete_read(uint32_t lba, uint32_t sectors,
     if (!commit(context)) return 0;
     delivery = classify_raw_sector(raw, 1);
     delivery.data_delivered = 1;
+    cd_stream_account_end(1);              /* the resident sectors were read */
     stop_read_stream();
     clear_sector_buffer();
     s_ring_read = s_ring_write = (int)(sectors % CDROM_NUM_SECTOR_BUFFERS);

@@ -591,6 +591,19 @@ void psx_crash_trace_dump(const char *reason, void *seh_info) {
         append_str(buf, sizeof(buf), &pos, "},\n");
     }
 
+    /* CD read streams that ended before their first sector: a long run means
+     * the game restarts a read that never delivers. */
+    {
+        extern void cdrom_silent_read_stats(uint32_t *starts, uint32_t *silent,
+                                            uint32_t *longest_run);
+        uint32_t starts = 0, silent = 0, longest_run = 0;
+        cdrom_silent_read_stats(&starts, &silent, &longest_run);
+        append_fmt(buf, sizeof(buf), &pos,
+                   "  \"cdrom\": {\"read_starts\": %u, \"silent_reads\": %u, "
+                   "\"silent_run_max\": %u},\n",
+                   starts, silent, longest_run);
+    }
+
     /* Host overlay-DLL / resim gate at FAIL-FAST. Distinguishes "CD DMA never
      * finished" from "rollback froze registration mid-splash load". */
     {
