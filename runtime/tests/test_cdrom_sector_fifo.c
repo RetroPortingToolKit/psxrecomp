@@ -323,13 +323,14 @@ static void snapshot_setloc_and_paused_head(void) {
     CHECK(cdrom_snapshot_read(wire,size) && !setloc_pending);
     exec_command(0x1B);ack();
     CHECK(msf_to_lba(read_min,read_sec,read_sect)==151);
-    wire[size-1]=2;CHECK(!cdrom_snapshot_validate(wire,size));
+    wire[size-1-CDROM_SNAP_CDF5_BYTES]=2;CHECK(!cdrom_snapshot_validate(wire,size));
     /* CDF2 states remain readable and retain the paused drive position. */
     exec_command(0x09);ack();
     PstW writer;pst_w_init(&writer,wire,size);
-    CHECK(cdrom_snap_emit(&writer,1) && writer.written==size-6);
+    const uint32_t cdf2=size-CDROM_SNAP_CDF5_BYTES-CDROM_SNAP_CDF4_BYTES;
+    CHECK(cdrom_snap_emit(&writer,1) && writer.written==cdf2);
     read_sec=9;
-    CHECK(cdrom_snapshot_read(wire,size-6));
+    CHECK(cdrom_snapshot_read(wire,cdf2));
     exec_command(0x06);
     CHECK(msf_to_lba(read_min,read_sec,read_sect)==151);
     free(wire);
@@ -381,6 +382,29 @@ static void absolute_observation_deadlines(void) {
     puts("PASS actual CD response/CDDA/lid/held-pending absolute deadlines");
 }
 
+/* The CD audio volume matrix survives a load; CDF4 states keep the live one. */
+static void snapshot_cd_volume(void) {
+    static const uint8_t pending[2][2]={{0x82,0x01},{0x02,0x7F}};
+    static const uint8_t applied[2][2]={{0x82,0x00},{0x00,0x82}};
+    static const uint8_t identity[2][2]={{0x80,0x00},{0x00,0x80}};
+    setup();
+    memcpy(cd_pending_vol,pending,4); memcpy(cd_decode_vol,applied,4);
+    const uint32_t size=cdrom_snapshot_bytes();
+    uint8_t* wire=malloc(size); CHECK(wire);
+    cdrom_snapshot_write(wire);
+    memcpy(cd_pending_vol,identity,4); memcpy(cd_decode_vol,identity,4);
+    CHECK(cdrom_snapshot_read(wire,size));
+    CHECK(!memcmp(cd_pending_vol,pending,4) && !memcmp(cd_decode_vol,applied,4));
+    wire[size-CDROM_SNAP_CDF5_BYTES]^=1; CHECK(!cdrom_snapshot_validate(wire,size));
+    PstW writer; pst_w_init(&writer,wire,size);
+    CHECK(cdrom_snap_emit(&writer,2) && writer.written==size-CDROM_SNAP_CDF5_BYTES);
+    memcpy(cd_decode_vol,identity,4);
+    CHECK(cdrom_snapshot_read(wire,size-CDROM_SNAP_CDF5_BYTES));
+    CHECK(!memcmp(cd_decode_vol,identity,4) && !memcmp(cd_pending_vol,pending,4));
+    memcpy(cd_pending_vol,identity,4);
+    free(wire);
+}
+
 int main(void) {
     absolute_observation_deadlines();
     resident_header_cursor_and_restore();
@@ -395,6 +419,7 @@ int main(void) {
     snapshot_between_request_and_dma();
     snapshot_pending_deadline();
     snapshot_stream_identity();
+    snapshot_cd_volume();
     puts("PASS: CD FIFO latching, pending IRQ, DMA continuation, and state compatibility");
     return 0;
 }

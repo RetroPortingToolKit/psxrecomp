@@ -2742,6 +2742,9 @@ if(BUILD_TESTING)
         add_test(NAME replay_observation_compare_test
                  COMMAND ${Python3_EXECUTABLE} -B
                          ${PSXRECOMP_ROOT}/tools/tasreplays/test_stream_compare.py)
+        add_test(NAME checkpoint_tools_test
+                 COMMAND ${Python3_EXECUTABLE} -B
+                         ${PSXRECOMP_ROOT}/tools/tasreplays/test_checkpoint_tools.py)
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC
            AND NOT CMAKE_CROSSCOMPILING)
             add_test(NAME audio_trace_pcm_guard_test

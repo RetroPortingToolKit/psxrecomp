@@ -45,6 +45,10 @@ static void set_env(const char *name, const char *value) {
 static int resync_moves_clock;
 void psx_cycles_resync_after_restore(CPUState *cpu) { (void)cpu; if (resync_moves_clock) ++psx_cycle_count; }
 void interrupts_resync_after_restore(void) {}
+/* The scheduler double: a start that resumes arms the restored PC. */
+static int arm_calls;
+static uint32_t armed_pc;
+int psx_scheduler_arm_resume(uint32_t pc) { ++arm_calls; armed_pc = pc; return 1; }
 
 /* Card 1 inserted, card 2 empty. */
 static uint8_t card[2][PSX_TAS_STATEIO_CARD_BYTES];
@@ -70,6 +74,8 @@ static void seed(CPUState *cpu) {
     memset(&fixture_irq_timing, 0, sizeof fixture_irq_timing);
     fixture_irq_timing.cooldown_until = 987654000u;
     fixture_irq_timing.sio_seq_seen = 9;
+    fixture_timer_counter[1] = 0x0777u;
+    fixture_timer_counter[2] = 0x1234u;
     for (uint32_t i = 0; i < PSX_MEMORY_CONTROL_WORDS; i++) fixture_memctrl[i] = 0x1F000000u + i;
     for (size_t i = 0; i < sizeof card[0]; i++) card[0][i] = (uint8_t)(i ^ 0x5Au);
 }
@@ -81,6 +87,7 @@ static void scramble(CPUState *cpu) {
     fixture_return_tcb = 0;
     memset(&fixture_irq_timing, 0, sizeof fixture_irq_timing);
     memset(fixture_memctrl, 0, sizeof fixture_memctrl);
+    memset(fixture_timer_counter, 0, sizeof fixture_timer_counter);
     s_frame_count = 0;
 }
 
@@ -155,6 +162,14 @@ int main(void) {
     check(fixture_return_tcb == TCB_BASE + 0xC0u && fixture_irq_timing.cooldown_until == 987654000u &&
           fixture_memctrl[3] == 0x1F000003u, "the resume sections are restored");
 
+    /* A start with a resume request resumes and arms the scheduler at the
+     * restored PC, so the first dispatch does not reload a thread context. */
+    scramble(&cpu);
+    set_env("PSX_TAS_RESUME_STATE", state);
+    check(tas_checkpoint_start(&cpu) == 0 && cpu.pc == want.pc, "a start resumes the checkpoint");
+    check(arm_calls == 1 && armed_pc == want.pc, "the start arms the scheduler at the restored PC");
+    set_env("PSX_TAS_RESUME_STATE", NULL);
+
     /* Refusals. */
     card[0][100] ^= 1;
     check(refused_before_load(&cpu, state, "card 1 differs"), "a changed card is refused before loading");
@@ -187,6 +202,9 @@ int main(void) {
     set_env("PSX_TAS_PERTURB_RESTORE", "sched");
     check(resume(&cpu, state, reason) && fixture_return_tcb != TCB_BASE + 0xC0u,
           "a sched perturbation changes the restored TCB");
+    set_env("PSX_TAS_PERTURB_RESTORE", "timer2");
+    check(resume(&cpu, state, reason) && fixture_timer_counter[2] == 0x1235u &&
+          fixture_timer_counter[1] == 0x0777u, "a timer2 perturbation changes only counter 2");
     set_env("PSX_TAS_PERTURB_RESTORE", NULL);
 
     for (unsigned i = 0; i < sizeof files / sizeof files[0]; i++) remove(files[i]);
