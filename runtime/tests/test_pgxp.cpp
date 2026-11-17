@@ -109,6 +109,70 @@ static int lookup(uint32_t addr, uint32_t word, int32_t ix, int32_t iy,
 }
 
 int main(void) {
+    /* Presentation lineage works while correction is off and carries only
+     * explicit source IDs, including two vertices at the same position. */
+    pgxp_set_enabled(0);
+    CHECK(pgxp_set_source_tracking(1));
+    pgxp_gte_push_sxy(X16, Y16, SZ3, PACKED);
+    CHECK(pgxp_tag_gte_source(2, PACKED, 101));
+    psx_pgxp_cop2(nullptr, SWC2(14), PACKED, ADDR_A);
+    pgxp_gte_push_sxy(X16, Y16, SZ3, PACKED);
+    CHECK(pgxp_tag_gte_source(2, PACKED, 202));
+    psx_pgxp_cop2(nullptr, SWC2(14), PACKED, ADDR_B);
+    CHECK(pgxp_load_source(ADDR_A, PACKED) == 101);
+    CHECK(pgxp_load_source(ADDR_B, PACKED) == 202);
+    CHECK(pgxp_load_source(ADDR_A + 4, PACKED) == 0);
+    CHECK(pgxp_load_source(ADDR_A, PACKED ^ 1) == 0);
+    CHECK(!pgxp_tag_gte_source(2, PACKED ^ 1, 303));
+    psx_pgxp_load(nullptr, LW(1, 2), ADDR_A, PACKED);
+    psx_pgxp_alu(nullptr, OR(2, 0, 2), PACKED, PACKED, 0);
+    psx_pgxp_alu(nullptr, OR(2, 0, 3), PACKED, PACKED, 0);
+    psx_pgxp_store(nullptr, SW(1, 3), ADDR_B, PACKED);
+    CHECK(pgxp_load_source(ADDR_B, PACKED) == 101);
+    pgxp_checkpoint_begin();
+    pgxp_invalidate_word(ADDR_B);
+    CHECK(pgxp_load_source(ADDR_B, PACKED) == 0);
+    pgxp_checkpoint_rollback();
+    CHECK(pgxp_load_source(ADDR_B, PACKED) == 101);
+    // Even an unchanged partial write loses the whole-vertex provenance.
+    psx_pgxp_store(nullptr, SH(1, 3), ADDR_B, PACKED);
+    CHECK(pgxp_load_source(ADDR_B, PACKED) == 0);
+    psx_pgxp_alu(nullptr, ADDIU(2, 3, 1), PACKED + 1, PACKED, 0);
+    psx_pgxp_store(nullptr, SW(1, 3), ADDR_B, PACKED + 1);
+    CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == 0);
+    // Explicit derivations need not acquire unrelated precision or guessed
+    // provenance from another word with the same packed position.
+    CHECK(pgxp_tag_word_source(ADDR_B, PACKED + 1, 404));
+    CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == 404);
+    CHECK(pgxp_load_source(ADDR_B + 4, PACKED + 1) == 0);
+    psx_pgxp_load(nullptr, LW(1, 4), ADDR_B, PACKED + 1);
+    psx_pgxp_store(nullptr, SW(1, 4), ADDR_A, PACKED + 1);
+    CHECK(pgxp_load_source(ADDR_A, PACKED + 1) == 404);
+    CHECK(!pgxp_tag_word_source(ADDR_B + 1, PACKED + 1, 505));
+    pgxp_suppress_begin();
+    CHECK(!pgxp_tag_word_source(ADDR_B, PACKED + 1, 505));
+    pgxp_suppress_end();
+    pgxp_invalidate_word(ADDR_A);
+    CHECK(pgxp_load_source(ADDR_A, PACKED + 1) == 0);
+    // A descriptor lifetime witness uses this same exact-word transport.
+    // An untracked rewrite invalidates it even when the guest value agrees.
+    const uint64_t life = UINT64_C(0x8000000000000001);
+    CHECK(pgxp_tag_word_source(ADDR_B, PACKED + 1, life));
+    pgxp_checkpoint_begin();
+    CHECK(pgxp_tag_word_source(ADDR_B, PACKED + 1, life + 1));
+    CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == life + 1);
+    pgxp_checkpoint_rollback();
+    CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == life);
+    pgxp_invalidate_word(ADDR_B);
+    CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == 0);
+    pgxp_gte_push_sxy(X16, Y16, SZ3, PACKED);
+    psx_pgxp_cop2(nullptr, SWC2(14), PACKED, ADDR_A);
+    CHECK(pgxp_load_source(ADDR_A, PACKED) == 0);
+    CHECK(!pgxp_enabled());
+    uint32_t native_sxy[3] = {PACKED, PACKED, PACKED}; int64_t cross = 0;
+    CHECK(!pgxp_gte_nclip_precise(native_sxy, &cross));
+    pgxp_set_source_tracking(0);
+    CHECK(!pgxp_active());
     pgxp_set_enabled(1);
     pgxp_set_tolerance(-1.0f);
     pgxp_set_cpu_mode(0);
@@ -1053,6 +1117,51 @@ int main(void) {
         CHECK(pgxp_debug_shadow(0, TBL + 0x60, &lv, &value, &flags, &sx, &sy, &sz));
         CHECK((flags & 1u) == 0);
         pgxp_set_tolerance(-1.0f);
+    }
+
+    /* A same-value plain overwrite must end a previous vertex/source,
+     * including aliases, checkpoint scopes and suppressed replay. Run this
+     * fixture with both the full-hook and coalesced build selections. */
+    {
+        CPUState *cpu = nullptr;
+        pgxp_set_enabled(1);
+        pgxp_set_cpu_mode(1);
+        pgxp_set_source_tracking(1);
+        pgxp_invalidate_all();
+        pgxp_gte_push_sxy(98304, 0, 100, 1u);
+        CHECK(pgxp_tag_gte_source(2, 1u, 919));
+        psx_pgxp_cop2(cpu, MFC2(5, 14), 1u, 0);
+        PGXP_PLAIN_ALU(5u, ADDIU(0, 5, 1), 1u, 0u, 1u);
+        PGXP_PLAIN_ALU(5u, ADDIU(5, 5, 1), 2u, 1u, 1u);
+        PGXP_PLAIN_ALU(5u, ADDIU(5, 5, -1), 1u, 2u, UINT32_MAX);
+        psx_pgxp_store(cpu, SW(17, 5), ADDR_A, 1u);
+        CHECK(pgxp_load_source(ADDR_A, 1u) == 0);
+        int live; uint32_t word, flags; int32_t x, y; uint16_t z;
+        CHECK(pgxp_debug_shadow(1, 5, &live, &word, &flags, &x, &y, &z));
+        CHECK(live && word == 1u && flags == 0);
+        PGXP_PLAIN_ALU(6u, ADDIU(0, 6, 9), 9u, 0u, 9u);
+        pgxp_checkpoint_begin();
+        PGXP_PLAIN_ALU(6u, ADDIU(6, 6, 1), 10u, 9u, 1u);
+        pgxp_checkpoint_rollback();
+        CHECK(pgxp_debug_shadow(1, 6, &live, &word, &flags, &x, &y, &z));
+        CHECK(live && word == 9u && flags == 0);
+        PGXP_PLAIN_ALU(6u, ADDIU(0, 6, 12), 12u, 0u, 12u);
+        pgxp_suppress_begin();
+        PGXP_PLAIN_ALU(6u, ADDIU(0, 6, 99), 99u, 0u, 99u);
+        pgxp_suppress_end();
+        CHECK(pgxp_debug_shadow(1, 6, &live, &word, &flags, &x, &y, &z));
+        CHECK(live && word == 12u && flags == 0);
+        // A full ALU consumer must see the last captured write, independent
+        // of any later architectural deferred-load writeback.
+        PGXP_PLAIN_ALU(6u, ADDIU(0, 6, 0), 0u, 0u, 0u);
+        psx_pgxp_alu(cpu, SLL(6, 7, 16), 0u, 0u, 16u);
+        CHECK(pgxp_debug_shadow(1, 7, &live, &word, &flags, &x, &y, &z));
+        CHECK(live && flags == 1u); // full shift semantics create exact zero X
+        PGXP_PLAIN_ALU(6u, ADDIU(0, 6, 7), 7u, 0u, 7u);
+        pgxp_invalidate_all();
+        CHECK(pgxp_debug_shadow(1, 6, &live, &word, &flags, &x, &y, &z));
+        CHECK(!live);
+        pgxp_set_source_tracking(0);
     }
 
     /* --- stats sanity: dataflow hits were counted --- */

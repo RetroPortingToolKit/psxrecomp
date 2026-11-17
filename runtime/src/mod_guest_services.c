@@ -177,6 +177,28 @@ int psx_mod_spu_private_voice_volume(unsigned slot,uint16_t left,uint16_t right)
 }
 uint32_t psx_mod_spu_private_voice_active(void) {return spu_private_voice_active();}
 
+int psx_mod_spu_private_voice_claim(uint64_t owner,uint32_t mask) {
+    if (psx_mod_host_output_scope()) return 0;
+    return spu_private_voice_claim(owner,mask);
+}
+int psx_mod_spu_private_voice_release(uint64_t owner,uint32_t mask) {
+    if (psx_mod_host_output_scope()) return 0;
+    return spu_private_voice_release(owner,mask);
+}
+uint64_t psx_mod_spu_private_voice_owner(unsigned slot) {return spu_private_voice_owner(slot);}
+int psx_mod_spu_private_voice_play_owned(uint64_t owner,unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode) {
+    if (psx_mod_host_output_scope()) return 0;
+    return spu_private_voice_play_owned(owner,slot,bank,regs,mode);
+}
+int psx_mod_spu_private_voice_stop_owned(uint64_t owner,uint32_t mask) {
+    if (psx_mod_host_output_scope()) return 0;
+    return spu_private_voice_stop_owned(owner,mask);
+}
+int psx_mod_spu_private_voice_volume_owned(uint64_t owner,unsigned slot,uint16_t left,uint16_t right) {
+    if (psx_mod_host_output_scope()) return 0;
+    return spu_private_voice_volume_owned(owner,slot,left,right);
+}
+
 int psx_mod_spu_upload(uint32_t spu_address, uint32_t guest_source,
                        uint32_t bytes, int stop_after) {
     if (psx_mod_host_output_scope()) return 0;

@@ -874,6 +874,24 @@ def audit(game_toml, recompiler, cache, inventory, output, static_dispatch=None,
     return json.loads(output.read_text())
 
 
+def release_project_root(game_toml):
+    """Keep a discoverable game-local BIOS, otherwise use this framework.
+
+    Overlay compilers receive --ws-config, not a primary --config. That side
+    config does not load recompiler.bios_config, so an arbitrary config folder
+    cannot override compile_overlays' valid framework BIOS lookup root.
+    Match the compiler's direct/one-level-vendored profile discovery so existing
+    game-local custom profiles retain exactly their previous precedence.
+    """
+    root = Path(game_toml).resolve().parent
+    if (root / 'bios/SCPH1001.toml').is_file():
+        return root
+    if any((child / 'bios/SCPH1001.toml').is_file()
+           for child in root.iterdir() if child.is_dir()):
+        return root
+    return FRAMEWORK
+
+
 def build(inventory, game_toml, recompiler, work, gcc, workers, project_root=None, cps=False, flavor=0):
     """Independent recipe builds cannot nominate entries in sibling images."""
     cache = work / 'cache'
@@ -1203,8 +1221,8 @@ def run():
         import tomllib
         require(tomllib.loads(runtime_config.read_text(encoding='utf-8-sig'))['game']['id'] == inventory['game_id'],
                 'Runtime config/game mismatch')
-        cache = build(inventory, runtime_config, recompiler, work, args.gcc, args.workers, config.parent,
-                      args.cps, flavor)
+        cache = build(inventory, runtime_config, recompiler, work, args.gcc, args.workers,
+                      release_project_root(config), args.cps, flavor)
         receipt = audit(runtime_config, recompiler, cache, work / 'runtime-input-inventory.json', work / 'audit.json',
                         flavor=flavor)
         receipt['profile_sha256'] = inventory['profile_sha256']

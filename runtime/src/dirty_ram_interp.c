@@ -24,10 +24,12 @@
  */
 
 #include "dirty_ram_interp.h"
+#include "psx_static_calls.h"
 #include "cpu_state.h"
 #include "debug_server.h"
 #include "interrupts.h"
 #include "psx_cycles.h"
+#include "psx_cycle_freeze.h"
 #include "psx_icache.h"
 #include "psx_instr_cost.h"  /* psx_instr_base_cycles — single-source cycle cost */
 #include "psx_memory.h"
@@ -1448,6 +1450,24 @@ int dirty_ram_xprobe_json(char *out, int cap) {
  * In the BIOS-only build psx_dispatch_game_compiled does not exist, and the
  * two callers below are themselves gated behind the same macro. */
 #ifdef PSX_HAS_GAME_DISPATCH
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+static void native_tail_before_entry(void);
+#endif
+static int run_compiled_game_entry(CPUState *cpu, uint32_t target) {
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+    native_tail_before_entry();
+#endif
+    g_mixed_depth++;
+    ls_func_enter(target, cpu);
+    int prev_phase = g_exec_phase;
+    g_exec_phase = 3;
+    int r = psx_dispatch_game_compiled(cpu, target);
+    g_exec_phase = prev_phase;
+    ls_func_exit(target, cpu, r);
+    g_mixed_depth--;
+    return r;
+}
+
 static int interp_enter_compiled(CPUState *cpu, uint32_t target) {
     if (target == 0x8001A954u) site_note(&g_site_interp);
     /* Decline when the target page no longer matches the static game image.
@@ -1460,15 +1480,7 @@ static int interp_enter_compiled(CPUState *cpu, uint32_t target) {
         g_psx_call_bail = 1;
         return 1;
     }
-    g_mixed_depth++;
-    ls_func_enter(target, cpu);
-    int prev_phase = g_exec_phase;
-    g_exec_phase = 3;
-    int r = psx_dispatch_game_compiled(cpu, target);
-    g_exec_phase = prev_phase;
-    ls_func_exit(target, cpu, r);
-    g_mixed_depth--;
-    return r;
+    return run_compiled_game_entry(cpu, target);
 }
 #endif /* PSX_HAS_GAME_DISPATCH */
 
@@ -2671,57 +2683,8 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
  * PSX_RECURSION_LIMIT. One-shot. NOT a fix — the upstream bogus-pointer divergence
  * still needs the oracle; this converts a hard crash into a catchable, diagnosed
  * bail (Rule 15: make the failure observable). */
-int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
-    extern int g_psx_dispatch_depth;
-    extern void psx_fatal_halt(const char *reason);
-    /* `addr` is architectural: the interpreter runs at exactly this PC, so a
-     * retail RAM-mirror PC (0x807xxxxx) keeps its own $ra/EPC while fetch_word
-     * and the dirty/overlay page checks fold it to the bytes it executes
-     * (psx_memory.h: CODE vs BYTES identity). Never canonicalize it here. */
-#ifndef PSX_NO_DEBUG_TOOLS
-    /* A0/B0/C0 kernel-vector stubs are runtime-written, so calls to them
-     * land HERE, not in the static dispatcher — which meant the bioscall
-     * ring (debug_server_trace_dispatch) never saw a single vector call on
-     * a BIOS whose stubs stay dirty (OpenBIOS bring-up: ring total 0 while
-     * the guest hammered B0). Feed the same observer from this path. */
-    {
-        uint32_t vphys = addr & 0x1FFFFFFFu;
-        if (vphys == 0xA0u || vphys == 0xB0u || vphys == 0xC0u) {
-            extern void debug_server_trace_dispatch(uint32_t func_addr);
-            debug_server_trace_dispatch(vphys);
-        }
-    }
-#endif
-    static int  s_rec_guard = 0;
-    static int  s_rec_limit = 0;
-    if (s_rec_limit == 0) {
-        const char *e = getenv("PSX_RECURSION_LIMIT");
-        s_rec_limit = (e && *e) ? atoi(e) : 256;
-        if (s_rec_limit < 32) s_rec_limit = 32;
-    }
-    if (!s_rec_guard && g_psx_dispatch_depth > s_rec_limit) {
-        s_rec_guard = 1;   /* one-shot: first trip wins the report */
-        psx_fatal_halt("dispatch recursion guard tripped — runaway self-call "
-                       "(see dispatch_depth + dirty_block cycle for the recursing PC)");
-    }
-    /* Game-start detection for the dirty-RAM interpreter path.
-     * When dispatch_count == 0 (all code runs interpreted), the native
-     * dispatch path's fntrace_record() never fires, so widescreen/mouselook/
-     * CD-speed-switch are never engaged.  This one-shot check closes the gap
-     * with the SAME semantics as the native path: latch only on the exact
-     * game entry PC.  A broader match (any phys >= 0x10000) fires during
-     * BIOS boot — the shell/kernel run relocated RAM code above 0x10000 —
-     * and the handoff's baseline/scratch clears then corrupt the boot
-     * (observed: MoH SLUS-00974 garbage-jump/VBLANK-wedge, 2026-08-06). */
-    fntrace_maybe_mark_game_started(cpu, addr);
-    if (addr == 0x8001A954u)      site_note(&g_site_dd954);   /* loop head re-dispatch */
-    else if (addr == 0x80046264u) site_note(&g_site_dd264);   /* loop tail re-dispatch */
-    int prev = g_dirty_interp_active;
-    g_dirty_interp_active = 1;
-    int prev_phase = g_exec_phase;
-    g_exec_phase = 1;
-    int r = dirty_ram_dispatch_inner(cpu, addr, stop_addr);
-
+static int dirty_ram_finish_dispatch(CPUState *cpu, uint32_t addr,
+                                     int r, int prev, int prev_phase) {
     /* pc=0 producer tripwire: the dirty path reported "handled" yet published a
      * null PC — the abnormal-exit source we're hunting (MMX6 boot wedge). Latch
      * full context the first time; count every occurrence. */
@@ -2785,6 +2748,60 @@ int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
     g_dirty_interp_active = prev;
     g_exec_phase = prev_phase;
     return r;
+}
+
+int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
+    extern int g_psx_dispatch_depth;
+    extern void psx_fatal_halt(const char *reason);
+    /* `addr` is architectural: the interpreter runs at exactly this PC, so a
+     * retail RAM-mirror PC (0x807xxxxx) keeps its own $ra/EPC while fetch_word
+     * and the dirty/overlay page checks fold it to the bytes it executes
+     * (psx_memory.h: CODE vs BYTES identity). Never canonicalize it here. */
+#ifndef PSX_NO_DEBUG_TOOLS
+    /* A0/B0/C0 kernel-vector stubs are runtime-written, so calls to them
+     * land HERE, not in the static dispatcher — which meant the bioscall
+     * ring (debug_server_trace_dispatch) never saw a single vector call on
+     * a BIOS whose stubs stay dirty (OpenBIOS bring-up: ring total 0 while
+     * the guest hammered B0). Feed the same observer from this path. */
+    {
+        uint32_t vphys = addr & 0x1FFFFFFFu;
+        if (vphys == 0xA0u || vphys == 0xB0u || vphys == 0xC0u) {
+            extern void debug_server_trace_dispatch(uint32_t func_addr);
+            debug_server_trace_dispatch(vphys);
+        }
+    }
+#endif
+    static int  s_rec_guard = 0;
+    static int  s_rec_limit = 0;
+    if (s_rec_limit == 0) {
+        const char *e = getenv("PSX_RECURSION_LIMIT");
+        s_rec_limit = (e && *e) ? atoi(e) : 256;
+        if (s_rec_limit < 32) s_rec_limit = 32;
+    }
+    if (!s_rec_guard && g_psx_dispatch_depth > s_rec_limit) {
+        s_rec_guard = 1;   /* one-shot: first trip wins the report */
+        psx_fatal_halt("dispatch recursion guard tripped — runaway self-call "
+                       "(see dispatch_depth + dirty_block cycle for the recursing PC)");
+    }
+    /* Game-start detection for the dirty-RAM interpreter path.
+     * When dispatch_count == 0 (all code runs interpreted), the native
+     * dispatch path's fntrace_record() never fires, so widescreen/mouselook/
+     * CD-speed-switch are never engaged.  This one-shot check closes the gap
+     * with the SAME semantics as the native path: latch only on the exact
+     * game entry PC.  A broader match (any phys >= 0x10000) fires during
+     * BIOS boot — the shell/kernel run relocated RAM code above 0x10000 —
+     * and the handoff's baseline/scratch clears then corrupt the boot
+     * (observed: MoH SLUS-00974 garbage-jump/VBLANK-wedge, 2026-08-06). */
+    fntrace_maybe_mark_game_started(cpu, addr);
+    if (addr == 0x8001A954u)      site_note(&g_site_dd954);   /* loop head re-dispatch */
+    else if (addr == 0x80046264u) site_note(&g_site_dd264);   /* loop tail re-dispatch */
+    int prev = g_dirty_interp_active;
+    g_dirty_interp_active = 1;
+    int prev_phase = g_exec_phase;
+    g_exec_phase = 1;
+    int r = dirty_ram_dispatch_inner(cpu, addr, stop_addr);
+
+    return dirty_ram_finish_dispatch(cpu, addr, r, prev, prev_phase);
 }
 
 void dirty_ram_span_get(uint32_t *lo, uint32_t *hi) {
@@ -3115,6 +3132,157 @@ int psx_slice_block_impl(CPUState *cpu, uint32_t block_addr, uint32_t bcyc, int 
     return 1;
 }
 
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+/* Values, never pointers into an owner/body stack frame. Nested owners save
+ * and replace the scope; only an outer stop-free owner can enable it. */
+typedef struct {
+    CPUState *cpu;
+    PsxNativeTailHooks hooks;
+    PsxNativeTailBody body;
+    uint32_t entry;
+    int enabled, finish, outer_active, outer_phase;
+} PsxNativeTailScope;
+static PsxNativeTailScope s_native_tail;
+static int s_native_tail_entry_pending;
+static void native_tail_before_entry(void) {
+    /* All native handoffs consume a fresh owner permission. A longjmp, legacy
+     * BIOS owner, interpreter or module cannot inherit an abandoned scope. */
+    if (!s_native_tail_entry_pending) s_native_tail.enabled = 0;
+    s_native_tail_entry_pending = 0;
+}
+static int native_tail_observers_active(void);
+#endif
+
+/* A static transfer can enter its native body without the BIOS-table miss,
+ * overlay discovery and interpreter-routing layers. The generated flat owner
+ * has already run every mod/BIOS/override hook and retains all stop/return/RFE
+ * processing after this call. No host call graph mirrors guest recursion. */
+int dirty_ram_dispatch_game_direct(CPUState *cpu, uint32_t addr) {
+#if defined(PSX_HAS_GAME_DISPATCH) && defined(PSX_NATIVE_STATIC_CALLS) && PSX_NATIVE_STATIC_CALLS
+    extern int g_psx_dispatch_depth;
+    if (!cpu || !fntrace_is_game_started() || g_precise_mode ||
+        g_ls_replay_active || g_psx_dispatch_depth != 1 ||
+        psx_get_in_exception() || span_forced(addr & 0x1FFFFFFFu)) return 0;
+    if (!psx_game_text_native_ok(addr)) {
+        psx_static_call_note_entry(0);
+        return 0;
+    }
+#ifndef PSX_NO_DEBUG_TOOLS
+    xprobe_event(cpu->gpr[31], XOP_DD, XSITE_DD, addr, 0u,
+                 cpu->gpr[29], cpu->gpr[31], 0);
+#endif
+    if (addr == 0x8001A954u)      site_note(&g_site_dd954);
+    else if (addr == 0x80046264u) site_note(&g_site_dd264);
+    int prev = g_dirty_interp_active;
+    g_dirty_interp_active = 1;
+    int prev_phase = g_exec_phase;
+    g_exec_phase = 1;
+    const int handled = run_compiled_game_entry(cpu, addr);
+    psx_static_call_note_entry(handled);
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+    if (s_native_tail.enabled && s_native_tail.cpu == cpu) {
+        addr = s_native_tail.entry;
+        if (!s_native_tail.finish) {
+            g_dirty_interp_active = prev; g_exec_phase = prev_phase;
+            return handled;
+        }
+    }
+#endif
+    return dirty_ram_finish_dispatch(cpu, addr, handled, prev, prev_phase);
+#else
+    (void)cpu; (void)addr;
+    return 0;
+#endif
+}
+
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+int dirty_ram_dispatch_game_chain(CPUState *cpu, uint32_t addr, int allowed,
+                                 PsxNativeTailHooks hooks) {
+    const PsxNativeTailScope saved = s_native_tail;
+    s_native_tail.cpu = cpu;
+    s_native_tail.hooks = hooks;
+    s_native_tail.body = NULL;
+    s_native_tail.entry = addr;
+    s_native_tail.enabled = allowed && hooks != NULL;
+    s_native_tail.finish = 1;
+    s_native_tail.outer_active = g_dirty_interp_active;
+    s_native_tail.outer_phase = g_exec_phase;
+    s_native_tail_entry_pending = 1;
+    const int result = dirty_ram_dispatch_game_direct(cpu, addr);
+    s_native_tail_entry_pending = 0;
+    s_native_tail = saved;
+    return result;
+}
+
+void psx_native_tail_note_body(CPUState *cpu, PsxNativeTailBody body) {
+    if (s_native_tail.enabled && s_native_tail.cpu == cpu) s_native_tail.body = body;
+}
+
+int psx_native_tail_prepare(CPUState *cpu, uint32_t target,
+                            PsxNativeTailBody caller, PsxNativeTailBody body) {
+    extern int g_psx_dispatch_depth; /* g_ds_recording uses psx_cyc.h's volatile declaration */
+    /* A raw host call into a generated function is not a CPS transfer from
+     * this owner. Match its actual dispatched body, never a return address. */
+    if (!s_native_tail.enabled || s_native_tail.cpu != cpu ||
+        s_native_tail.body != caller || !cpu || cpu->pc != target ||
+        g_psx_dispatch_depth != 1 || g_mixed_depth != 1 ||
+        g_precise_mode || g_ls_replay_active || g_psx_guest_time_frozen || g_ds_recording ||
+        g_psx_call_bail || psx_get_in_exception() || native_tail_observers_active() ||
+        g_psx_cyc_local_acc || span_forced(target & 0x1FFFFFFFu) ||
+        g_dirty_ram_insns_run - s_last_dirty_irq_pump_insns >= 4096u)
+        return 0;
+    /* This is the old post-body boundary. Any RFE/nonlocal escape still owns
+     * the transfer; the new path cannot carry it into a callee. */
+    const uint64_t gap = g_dirty_ram_insns_run - s_last_dirty_irq_pump_insns;
+    if (gap > g_dirty_pump_max_gap_insns) g_dirty_pump_max_gap_insns = gap;
+    psx_rfe_escape_check(cpu);
+    const int active = g_dirty_interp_active, phase = g_exec_phase;
+    g_dirty_interp_active = s_native_tail.outer_active;
+    g_exec_phase = s_native_tail.outer_phase;
+    s_native_tail.entry = target;
+    s_native_tail.finish = 1;
+    const PsxNativeTailScope scope = s_native_tail;
+    const int handled = scope.hooks(cpu, target);
+    /* A nested owner may have disabled/replaced its own permission. Its C
+     * return restores this still-live stop-free owner's value-only scope. */
+    s_native_tail = scope;
+    int ready = 0;
+    if (handled) s_native_tail.finish = 0;
+    if (!handled) {
+        if (fntrace_is_game_started() && !g_precise_mode && !g_ls_replay_active &&
+            !psx_get_in_exception() && !span_forced(target & 0x1FFFFFFFu) &&
+            !native_tail_observers_active() && !g_ds_recording) {
+            if (psx_game_text_native_ok(target)) {
+#ifndef PSX_NO_DEBUG_TOOLS
+                xprobe_event(cpu->gpr[31], XOP_DD, XSITE_DD, target, 0u,
+                             cpu->gpr[29], cpu->gpr[31], 0);
+#endif
+                if (target == 0x8001A954u) site_note(&g_site_dd954);
+                else if (target == 0x80046264u) site_note(&g_site_dd264);
+                g_dirty_interp_active = 1;
+                g_exec_phase = 3;
+                ready = psx_game_native_tail_enter(cpu, target, body);
+            } else psx_static_call_note_entry(0);
+        }
+        if (!ready) {
+            /* Hooks may have replaced the code. Use the live-byte backend
+             * in this same logical entry; do not repeat side-effecting hooks. */
+            const int enabled = s_native_tail.enabled;
+            s_native_tail.enabled = 0;
+            dirty_ram_dispatch(cpu, target, 0);
+            s_native_tail.enabled = enabled;
+            s_native_tail.finish = 0;
+        } else {
+            if (ready == 1) s_native_tail.body = body;
+            psx_static_call_note_entry(1);
+        }
+    }
+    g_dirty_interp_active = active;
+    g_exec_phase = phase;
+    return ready == 1 ? 1 : -1;
+}
+#endif
+
 static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
     /* phys = CODE identity (segment-stripped PC: compiled-body and overlay
      * lookups, per-PC telemetry). ram_phys = BYTE identity (the live-geometry
@@ -3152,17 +3320,8 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
      * native-safe. Dirty overlay pages and pages whose text bytes diverged from
      * the original EXE image fall through to interpret the live RAM bytes. */
     if (!forced && psx_game_text_native_ok(addr)) {
-        g_mixed_depth++;
-        {
-            ls_func_enter(addr, cpu);
-            int prev_phase = g_exec_phase;
-            g_exec_phase = 3;
-            int _gc = psx_dispatch_game_compiled(cpu, addr);
-            g_exec_phase = prev_phase;
-            ls_func_exit(addr, cpu, _gc);
-            g_mixed_depth--;
-            if (_gc) return 1;
-        }
+        int _gc = run_compiled_game_entry(cpu, addr);
+        if (_gc) return 1;
         clean_game_text_miss = psx_game_address_in_text(addr) ? 1 : 0;
     } else if (!forced && psx_game_address_in_text(addr)) {
         /* RAM at a game-text address diverged from the static EXE image
@@ -3838,6 +3997,10 @@ int g_ls_mode = 0;
 int g_ls_replay_active = 0;
 int g_ls_suppress_record = 0;
 
+/* Host-generated block observers read this single conservative owner word.
+ * Watch bits belong to debug_server.c; only this file changes the LS bit. */
+volatile uint32_t g_psx_debug_block_interest = 0;
+
 static uint32_t s_ls_frame_lo = 0, s_ls_frame_hi = 0;   /* hi==0 => disabled */
 
 typedef struct { uint8_t is_write, size; uint32_t addr, val; } ls_op_t;
@@ -3897,7 +4060,20 @@ static struct {
 static ls_op_t s_lsf_div_trace[48];
 static int     s_lsf_div_trace_n = 0, s_lsf_div_idx = 0;
 
-void ls_set_window(uint32_t lo, uint32_t hi) { s_ls_frame_lo = lo; s_ls_frame_hi = hi; }
+static void ls_debug_block_interest_refresh(void) {
+    /* Keep a configured block window admitted even beyond its last frame:
+     * the first outside-window leader must perform the original cleanup. */
+    uint32_t interest = g_psx_debug_block_interest & ~PSX_DEBUG_BLOCK_LOCKSTEP;
+    if (s_ls_frame_hi != 0 || s_lsf_active)
+        interest |= PSX_DEBUG_BLOCK_LOCKSTEP;
+    g_psx_debug_block_interest = interest;
+}
+
+void ls_set_window(uint32_t lo, uint32_t hi) {
+    s_ls_frame_lo = lo;
+    s_ls_frame_hi = hi;
+    ls_debug_block_interest_refresh();
+}
 void ls_set_record_only(int on) { s_ls_record_only = on; }
 void ls_func_set_window(uint32_t lo, uint32_t hi) { s_lsf_frame_lo = lo; s_lsf_frame_hi = hi; }
 void ls_func_set_record_only(int on) { s_lsf_record_only = on; }
@@ -4236,6 +4412,13 @@ static void lsf_replay_and_compare(CPUState *native_post, uint32_t frame,
     lsf_compare_regs(&rep, native_post, frame, entry_pc, steps);
 }
 
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+static int native_tail_observers_active(void) {
+    return g_ls_mode || s_ls_frame_hi || s_lsf_frame_hi || s_ls_shadow_owner ||
+           s_lsf_active || s_ls_prev_valid;
+}
+#endif
+
 void ls_func_enter(uint32_t entry_pc, CPUState *cpu) {
     if (s_lsf_frame_hi == 0 || s_lsf_div.found || !cpu) return;
     if (g_ls_replay_active || g_ls_mode != 0 || s_lsf_active) {
@@ -4259,6 +4442,7 @@ void ls_func_enter(uint32_t entry_pc, CPUState *cpu) {
     s_lsf_frame = frame;
     s_lsf_saw_irq = 0;
     s_lsf_active = 1;
+    ls_debug_block_interest_refresh();
     s_lsf_recording = 0;
 }
 
@@ -4267,12 +4451,14 @@ void ls_func_exit(uint32_t entry_pc, CPUState *cpu, int handled) {
     if (s_lsf_dispatch_entry != entry_pc) {
         g_ls_mode = 0;
         s_lsf_active = 0;
+        ls_debug_block_interest_refresh();
         s_lsf_recording = 0;
         s_lsf_div.skipped_conflict++;
         return;
     }
     g_ls_mode = 0;
     s_lsf_active = 0;
+    ls_debug_block_interest_refresh();
     if (!s_lsf_recording) {
         s_lsf_div.skipped_unhandled++;
         return;

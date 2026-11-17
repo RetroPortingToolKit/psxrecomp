@@ -191,16 +191,12 @@ bool FullFunctionEmitter::emit_function(
         return e == nullptr || e[0] != '0';
     }();
     auto emit_irq_check = [](uint32_t resume_pc, const std::string& indent = "    ") {
-        return std::string("#ifdef PSX_ENABLE_BLOCK_CYCLES\n") + indent +
-               "psx_cyc_bb_defer_flush();\n#endif\n" + indent +
-               fmt::format("psx_check_interrupts_at(cpu, 0x{:08X}u);\n",
-                           bios_runtime_pc(resume_pc));
+        return indent + fmt::format("PSX_BLOCK_EDGE(cpu, 0x{:08X}u);\n",
+                                    bios_runtime_pc(resume_pc));
     };
     auto emit_irq_check_expr = [](const std::string& resume_pc_expr,
                                   const std::string& indent = "    ") {
-        return std::string("#ifdef PSX_ENABLE_BLOCK_CYCLES\n") + indent +
-               "psx_cyc_bb_defer_flush();\n#endif\n" + indent +
-               fmt::format("psx_check_interrupts_at(cpu, {});\n", resume_pc_expr);
+        return indent + fmt::format("PSX_BLOCK_EDGE(cpu, {});\n", resume_pc_expr);
     };
     auto emit_cosim_instr = [](uint32_t pc, const std::string& indent = "    ") {
         return "#ifdef PSX_COSIM\n" + indent +
@@ -913,10 +909,7 @@ bool FullFunctionEmitter::emit_function(
                 "     * of this range, dispatch into RAM so its own instructions run;\n"
                 "     * otherwise fall through to the statically compiled ROM code. */\n"
                 "    if ({}) {{\n"
-                "#ifdef PSX_ENABLE_BLOCK_CYCLES\n"
-                "        psx_cyc_bb_defer_flush();\n"
-                "#endif\n"
-                "        psx_check_interrupts_at(cpu, 0x{:08X}u);\n"
+                "        PSX_BLOCK_EDGE(cpu, 0x{:08X}u);\n"
                 "        cpu->pc = 0x{:08X}u; return;\n"
                 "    }}\n",
                 addr, slot->ram_addr, slot->hi(), resume_ram,
@@ -944,7 +937,7 @@ bool FullFunctionEmitter::emit_function(
             // space the entry hook + cyc_watch use — relocated kernel funcs
             // (ROM 0x1FC10000+) run at RAM 0x500+, so the raw ROM addr would
             // never match a RAM anchor.
-            out += fmt::format("    debug_server_cyc_observe(0x{:08X}u);\n",
+            out += fmt::format("    PSX_DEBUG_BLOCK_OBSERVE(0x{:08X}u);\n",
                                normalize_address(addr));
             out += "#endif\n";
             // First-divergence co-sim oracle (COSIM_ORACLE.md): lean block-leader hook.
@@ -1823,6 +1816,7 @@ void FullFunctionEmitter::emit_dispatch(
     // backend ABI come from the runtime headers rather than being
     // re-declared here, so they cannot drift from what the runtime reads.
     out += "#include \"psx_bios_backend.h\"\n";
+    out += "#include \"psx_static_calls.h\"\n";
     out += "#include \"psx_segment_miss.h\"\n";
     out += "#include <stdint.h>\n";
     out += "#include <stdio.h>\n";
@@ -1857,6 +1851,9 @@ void FullFunctionEmitter::emit_dispatch(
     out += "extern int (*g_psx_func_override_hook)(CPUState* cpu, uint32_t phys);\n\n";
     out += "#ifdef PSX_HAS_GAME_DISPATCH\n";
     out += "extern int psx_game_address_in_text(uint32_t addr);\n";
+    out += "#ifndef PSX_BIOS_MODULE_BUILD\n";
+    out += "extern int dirty_ram_dispatch_game_direct(CPUState*, uint32_t);\n";
+    out += "#endif\n";
     out += "#endif\n\n";
 
     // Forward declarations for all emitted functions.
@@ -2258,12 +2255,58 @@ void FullFunctionEmitter::emit_dispatch(
     // wrote, in its body's segment.
     out += "static void psx_dispatch_check_return_boundary(CPUState* cpu, uint32_t stop_addr) {\n";
     out += "    if (stop_addr != 0u) {\n";
-    out += "        psx_check_interrupts_at(cpu, stop_addr);\n";
+    out += "        PSX_BLOCK_EDGE(cpu, stop_addr);\n";
     out += "        if (cpu->pc == stop_addr) cpu->pc = 0;\n";
     out += "    } else {\n";
     out += "        psx_check_interrupts(cpu);\n";
     out += "    }\n";
     out += "}\n\n";
+    // One generated hook sequence serves both the physical owner and tail
+    // entries, including the active image's private byte-guarded BIOS stubs.
+    std::string tail_entry_hooks;
+    tail_entry_hooks += "        fntrace_record(cpu, addr);\n";
+    tail_entry_hooks += "        cpu->pc = 0;\n";
+    tail_entry_hooks += "        int found = 0;\n";
+    tail_entry_hooks += "        if (g_psx_mod_guest_functions)\n";
+    tail_entry_hooks += "            found = psx_mod_dispatch_guest_function(cpu, addr);\n";
+    tail_entry_hooks += "        /* BIOS HLE tier: consult the hook FIRST, on the pre-normalize\n";
+    tail_entry_hooks += "         * physical address. It must see (a) the A0/B0/C0 service vectors\n";
+    tail_entry_hooks += "         * (game thunks jr there with the function number in $t1) and (b)\n";
+    tail_entry_hooks += "         * the shell entry for HLE boot-skip \xE2\x80\x94 the latter lies inside the\n";
+    tail_entry_hooks += "         * game-text/dirty-RAM window, so the check cannot sit after those\n";
+    tail_entry_hooks += "         * backends. Handled (rc 1) \xE2\x87\x92 the service completed against guest\n";
+    tail_entry_hooks += "         * state and the guest resumes at $ra via the trampoline's normal\n";
+    tail_entry_hooks += "         * return/tail contract below. rc 0 \xE2\x87\x92 pure LLE fall-through. */\n";
+        tail_entry_hooks += "        if (!found && g_psx_bios_hle_hook &&\n";
+        tail_entry_hooks += "            g_psx_bios_hle_hook(cpu, addr & 0x1FFFFFFFu)) {\n";
+        tail_entry_hooks += "            cpu->pc = cpu->gpr[31];\n";
+        tail_entry_hooks += "            found = 1;\n";
+        tail_entry_hooks += "        }\n";
+        tail_entry_hooks += "        /* Byte-guarded A0/B0/C0 call-vector tail stubs. */\n";
+        tail_entry_hooks += "        if (!found && psx_bios_try_native_call_stub(cpu, addr))\n";
+        tail_entry_hooks += "            found = 1;\n";
+        tail_entry_hooks += "        /* Function-override tier: AFTER the BIOS tiers (an override\n";
+        tail_entry_hooks += "         * can never shadow a kernel service vector), BEFORE every\n";
+        tail_entry_hooks += "         * game code backend, so one address-keyed hook covers the\n";
+        tail_entry_hooks += "         * static EXE, runtime-loaded overlays and dirty RAM alike.\n";
+        tail_entry_hooks += "         * Handled (rc 1) => the override completed against guest\n";
+        tail_entry_hooks += "         * state; resume at $ra via the trampoline's normal\n";
+        tail_entry_hooks += "         * return/tail contract. rc 0 => fall through untouched. */\n";
+        tail_entry_hooks += "        if (!found && g_psx_func_override_hook &&\n";
+        tail_entry_hooks += "            g_psx_func_override_hook(cpu, addr & 0x1FFFFFFFu)) {\n";
+        tail_entry_hooks += "            cpu->pc = cpu->gpr[31];\n";
+        tail_entry_hooks += "            found = 1;\n";
+        tail_entry_hooks += "        }\n";
+    out += "/* PSX_NATIVE_TAIL_OWNER_V1 */\n";
+    out += "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_BIOS_MODULE_BUILD)\n";
+    out += "extern void fntrace_record_tail(CPUState*, uint32_t);\n";
+    out += "static int psx_dispatch_chain_hooks(CPUState* cpu, uint32_t addr) {\n";
+    std::string chained_hooks = tail_entry_hooks;
+    const auto trace_at = chained_hooks.find("fntrace_record(cpu, addr)");
+    chained_hooks.replace(trace_at, std::string("fntrace_record").size(), "fntrace_record_tail");
+    out += chained_hooks;
+    out += "    return found;\n}\n#endif\n";
+    out += "/* PSX_NATIVE_STATIC_OWNER_V1: all hooks precede static entry. */\n";
     out += "static void psx_dispatch_impl(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {\n";
     out += "    /* Tail-call trampoline: functions signal tail calls by setting\n";
     out += "     * cpu->pc to the target and returning. We loop here to re-dispatch\n";
@@ -2279,41 +2322,21 @@ void FullFunctionEmitter::emit_dispatch(
     out += "        /* Always-on call ring: every iteration counts as a separate\n";
     out += "         * call (initial entry + each tail-call re-dispatch). a0..a3\n";
     out += "         * reflect the args being passed for THIS iteration. */\n";
-    out += "        fntrace_record(cpu, addr);\n";
-    out += "        cpu->pc = 0;\n";
+    out += tail_entry_hooks;
     out += fmt::format("        int lo = 0, hi = {} - 1;\n", total_entries);
-    out += "        int found = 0;\n";
-    out += "        if (g_psx_mod_guest_functions)\n";
-    out += "            found = psx_mod_dispatch_guest_function(cpu, addr);\n";
-    out += "        /* BIOS HLE tier: consult the hook FIRST, on the pre-normalize\n";
-    out += "         * physical address. It must see (a) the A0/B0/C0 service vectors\n";
-    out += "         * (game thunks jr there with the function number in $t1) and (b)\n";
-    out += "         * the shell entry for HLE boot-skip \xE2\x80\x94 the latter lies inside the\n";
-    out += "         * game-text/dirty-RAM window, so the check cannot sit after those\n";
-    out += "         * backends. Handled (rc 1) \xE2\x87\x92 the service completed against guest\n";
-    out += "         * state and the guest resumes at $ra via the trampoline's normal\n";
-    out += "         * return/tail contract below. rc 0 \xE2\x87\x92 pure LLE fall-through. */\n";
-        out += "        if (!found && g_psx_bios_hle_hook &&\n";
-        out += "            g_psx_bios_hle_hook(cpu, addr & 0x1FFFFFFFu)) {\n";
-        out += "            cpu->pc = cpu->gpr[31];\n";
-        out += "            found = 1;\n";
-        out += "        }\n";
-        out += "        /* Byte-guarded A0/B0/C0 call-vector tail stubs. */\n";
-        out += "        if (!found && psx_bios_try_native_call_stub(cpu, addr))\n";
-        out += "            found = 1;\n";
-        out += "        /* Function-override tier: AFTER the BIOS tiers (an override\n";
-        out += "         * can never shadow a kernel service vector), BEFORE every\n";
-        out += "         * game code backend, so one address-keyed hook covers the\n";
-        out += "         * static EXE, runtime-loaded overlays and dirty RAM alike.\n";
-        out += "         * Handled (rc 1) => the override completed against guest\n";
-        out += "         * state; resume at $ra via the trampoline's normal\n";
-        out += "         * return/tail contract. rc 0 => fall through untouched. */\n";
-        out += "        if (!found && g_psx_func_override_hook &&\n";
-        out += "            g_psx_func_override_hook(cpu, addr & 0x1FFFFFFFu)) {\n";
-        out += "            cpu->pc = cpu->gpr[31];\n";
-        out += "            found = 1;\n";
-        out += "        }\n";
     out += "#ifdef PSX_HAS_GAME_DISPATCH\n";
+    out += "#if defined(PSX_NATIVE_STATIC_CALLS) && PSX_NATIVE_STATIC_CALLS && !defined(PSX_BIOS_MODULE_BUILD)\n";
+    out += "        if (!found && psx_game_address_in_text(addr))\n";
+    out += "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS\n";
+    out += "            found = dirty_ram_dispatch_game_chain(cpu, addr, outermost && stop_addr == 0u, psx_dispatch_chain_hooks);\n";
+    out += "#else\n";
+    out += "            found = dirty_ram_dispatch_game_direct(cpu, addr);\n";
+    out += "#endif\n";
+    out += "#endif\n";
+
+    out += "        /* A handled hook/static body has completed this logical entry.\n";
+    out += "         * Classify shell/dirty fallbacks only when a backend is still needed. */\n";
+    out += "        if (!found) {\n";
     out += "        /* Game EXEs can overlap the BIOS shell copy window at\n";
     out += "         * physical 0x30000-0x5AFFF. If the target belongs to the\n";
     out += "         * active game text range, route it through the game/dirty-RAM\n";
@@ -2369,6 +2392,7 @@ void FullFunctionEmitter::emit_dispatch(
     out += "        if (!found && (game_shell_overlap || game_text_in_shell_window ||\n";
     out += "            (psx_game_address_in_text(addr) && dirty_ram_is_dirty(game_phys)))) {\n";
     out += "            found = dirty_ram_dispatch(cpu, addr, stop_addr);\n";
+    out += "        }\n";
     out += "        }\n";
     out += "#endif\n";
     out += "        uint32_t phys = normalize(addr);\n";
@@ -2648,7 +2672,7 @@ EmitStats FullFunctionEmitter::emit(
     full_c += fmt::format("#define psx_dispatch      {}psx_dispatch\n", g_sym_prefix);
     full_c += fmt::format("#define psx_dispatch_call {}psx_dispatch_call\n\n", g_sym_prefix);
     full_c += "#include \"cpu_state.h\"\n\n";
-    full_c += "#include \"psx_native_span.h\"\n\n";
+    full_c += "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n\n";
 
     // Forward declare psx_dispatch, psx_unknown_dispatch, and interrupt check.
     full_c += "extern void psx_dispatch(CPUState* cpu, uint32_t addr);\n";

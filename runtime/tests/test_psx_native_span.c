@@ -7,6 +7,10 @@
 
 static uint8_t ram[PSX_MAIN_RAM_BACKING_BYTES];
 uint8_t *g_psx_ram = ram;
+PSXDirectMemoryStats g_psx_direct_memory_stats;
+PSXMemoryWidthStats g_psx_memory_width_stats;
+uint64_t psx_hr_runtime_fast_loads[3];
+uint64_t psx_hr_bus_callbacks[2][3];
 uint32_t g_psx_ram_mask = PSX_MAIN_RAM_RETAIL_BYTES - 1u;
 int g_ls_mode, g_ls_replay_active, g_event_step_conservative;
 volatile int g_ds_recording;
@@ -24,13 +28,18 @@ void psx_advance_cycles_slow(uint32_t cycles) { psx_cycle_count += cycles; psx_d
 static uint32_t read_word(uint32_t addr) { ++reads; last_addr = addr; return 0xFEDCBA98u; }
 static uint16_t read_half(uint32_t addr) { ++reads; last_addr = addr; return 0xBA98u; }
 static uint8_t read_byte(uint32_t addr) { ++reads; last_addr = addr; return 0x98u; }
+/* Canonical identity seams for the private callback comparison; value
+ * behavior remains the same small bus used throughout this isolated fixture. */
+uint32_t psx_read_word(uint32_t addr) { return read_word(addr); }
+uint16_t psx_read_half(uint32_t addr) { return read_half(addr); }
+uint8_t psx_read_byte(uint32_t addr) { return read_byte(addr); }
 
 int main(void) {
     CPUState cpu;
     memset(&cpu, 0, sizeof cpu);
-    cpu.read_word = read_word;
-    cpu.read_half = read_half;
-    cpu.read_byte = read_byte;
+    cpu.read_word = psx_read_word;
+    cpu.read_half = psx_read_half;
+    cpu.read_byte = psx_read_byte;
     cpu.ld_which_t = 0x20u;
     cpu.read_absorb[1] = 9u;
 #if defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS
@@ -74,6 +83,13 @@ int main(void) {
     CHECK(psx_cyc_load_word(&cpu, PSX_MAIN_RAM_EXPANDED_BYTES - 2u, 2u, 1u) == 0xFEDCBA98u);
     CHECK(reads == 9u);
     g_psx_ram_mask = PSX_MAIN_RAM_RETAIL_BYTES - 1u;
+
+    /* Quiet RAM is still owned by a substituted bus, including effects. */
+    cpu.read_word=read_word;cpu.read_half=read_half;cpu.read_byte=read_byte;
+    CHECK(psx_cyc_load_word(&cpu,0x80000100u,2,0)==0xFEDCBA98u);
+    CHECK(psx_cyc_load_half(&cpu,0xA0200100u,2,0)==0xBA98u);
+    CHECK(psx_cyc_load_byte(&cpu,0x100u,2,0)==0x98u && reads==12u);
+    cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;cpu.read_byte=psx_read_byte;
 
     /* Span charging still drives deadline service and the scale carry. */
     psx_native_span_charge(100u);
