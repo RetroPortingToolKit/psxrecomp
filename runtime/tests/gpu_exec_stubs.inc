@@ -294,6 +294,7 @@ uint32_t debug_guest_sp(void) { return 0; }
 uint8_t *memory_get_ram_ptr(void) { return (uint8_t *)test_ram; }
 
 void gr_init(uint16_t *vram_ptr) { (void)vram_ptr; }
+void gr_display_mode_changed(void) {}
 void gr_set_scale(int scale) { (void)scale; }
 int gr_scale(void) { return 1; }
 void gr_set_texture_filter(int bilinear) { (void)bilinear; }

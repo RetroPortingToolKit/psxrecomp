@@ -10785,6 +10785,7 @@ static const GpuRenderBackend GL_BACKEND = {
     .wide_dump_full = glb_wide_dump_full,
     .set_depth_triangle = glb_set_depth_triangle,
     .wide_feedback_rect = glb_wide_feedback_rect,
+    .display_mode_changed = depth24_upload_policy,
 };
 
 /* ==== Render thread: recording, replay, hand-off ===========================
@@ -11450,6 +11451,13 @@ static int rtb_wide_dump_full(uint32_t *out, int cap, int *ow, int *oh, int base
     return glb_wide_dump_full(out, cap, ow, oh, base_x);
 }
 
+/* A GP1 transition must retire queued render-thread work before it moves
+ * VRAM ownership. */
+static void rtb_display_mode_changed(void) {
+    GL_RT_SYNC("display_mode_changed");
+    depth24_upload_policy();
+}
+
 static const GpuRenderBackend GL_RT_BACKEND = {
     .name = "opengl",
     .init = rtb_init, .set_scale = rtb_set_scale, .scale = rtb_scale,
@@ -11483,6 +11491,7 @@ static const GpuRenderBackend GL_RT_BACKEND = {
     .hd_texture_note = rtb_hd_texture_note,
     .vram_upload_open = rtb_vram_upload_open,
     .wide_feedback_rect = rtb_wide_feedback_rect,
+    .display_mode_changed = rtb_display_mode_changed,
 };
 
 /* ---- replay (render thread) ---------------------------------------------- */
