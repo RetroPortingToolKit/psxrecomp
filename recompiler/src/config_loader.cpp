@@ -3265,7 +3265,7 @@ UserSettings load_user_settings(const fs::path& path) {
         // and supersample are player settings (player_settings.h), read below.
         if (v.contains("window_width")) try_get([&]{
             const auto n = toml::find<int64_t>(v, "window_width");
-            if (n >= 640 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
+            if (n >= 320 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
         });
         // antialiasing, texture_filtering, fmv_filter, crt_filter, scanlines
         // and scanline_strength are no longer player settings: they are the
