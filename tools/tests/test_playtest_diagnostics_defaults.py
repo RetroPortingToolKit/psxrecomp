@@ -81,60 +81,60 @@ class DefaultsTests(unittest.TestCase):
             capture_output=True, text=True,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
-    def test_non_public_enables_only_recording_and_osd(self):
-        for newline in ("\n", "\r\n"):
-            with self.subTest(newline=repr(newline)):
-                source = SOURCE.replace("\n", newline)
-                path = self.stage(source)
-                result = self.run_script(public=False)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                after = path.read_bytes().decode("utf-8")
-                self.assertEqual(defaults(after),
-                                 {"recording": True, "other": False, "osd": True})
-                # Every other byte is untouched.
-                self.assertEqual(after.replace("default_enabled = true", "default_enabled = false"),
-                                 source)
-                self.assertIn('"default_enabled = false" in prose', after)
+    def test_every_channel_records_without_default_overlay(self):
+        for public in (False, True):
+            for newline in ("\n", "\r\n"):
+                with self.subTest(public=public, newline=repr(newline)):
+                    source = SOURCE.replace("\n", newline)
+                    path = self.stage(source)
+                    result = self.run_script(public)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    after = path.read_bytes().decode("utf-8")
+                    self.assertEqual(defaults(after),
+                                     {"recording": True, "other": False, "osd": False})
+                    self.assertEqual(after.replace("default_enabled = true", "default_enabled = false"), source)
 
-    def test_public_keeps_source_bytes(self):
+    def test_saved_off_and_source_bytes_are_not_modified(self):
         path = self.stage(SOURCE)
+        saved = self.mods / "state.toml"
+        choice = 'format_version = 2\n[[feature]]\npackage_id = "fixture.diagnostics"\nid = "recording"\nenabled = false\n'
+        saved.write_text(choice, encoding="utf-8")
+        for public in (True, False):
+            result = self.run_script(public)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(defaults(path.read_text())["recording"])
+            self.assertEqual(saved.read_text(), choice)
+        self.assertFalse(defaults(SOURCE)["recording"])
+
+    def test_existing_input_recording_id_without_overlay(self):
+        source = SOURCE[:SOURCE.index('[[feature]]\nname = "Input Display"')]
+        source = source.replace('id = "recording"', 'id = "input-recording"')
+        path = self.stage(source)
         result = self.run_script(public=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(path.read_text(encoding="utf-8"), SOURCE)
+        self.assertTrue(defaults(path.read_text())["input-recording"])
 
-    def test_public_rejects_source_default_on_or_missing(self):
-        for bad in (SOURCE.replace('name = "Input Recording"\ndefault_enabled = false',
-                                   'name = "Input Recording"\ndefault_enabled = true'),
-                    SOURCE.replace('name = "Input Display"\ndefault_enabled = false\n',
-                                   'name = "Input Display"\n')):
-            with self.subTest(bad=bad):
-                self.stage(bad)
-                result = self.run_script(public=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("default_enabled = false", result.stderr)
-
-    def test_non_public_inserts_missing_default(self):
+    def test_missing_default_is_inserted_per_feature(self):
         path = self.stage(SOURCE.replace('name = "Input Display"\ndefault_enabled = false\n',
                                          'name = "Input Display"\n'))
-        result = self.run_script(public=False)
+        result = self.run_script(public=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(defaults(path.read_text(encoding="utf-8")),
-                         {"recording": True, "other": False, "osd": True})
+        self.assertEqual(defaults(path.read_text()),
+                         {"recording": True, "other": False, "osd": False})
 
     def test_every_staged_version_is_handled(self):
-        first, second = self.stage(SOURCE, "1.0.0"), self.stage(SOURCE, "1.1.0")
-        result = self.run_script(public=False)
+        paths = self.stage(SOURCE, "1.0.0"), self.stage(SOURCE, "1.1.0")
+        result = self.run_script(public=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        for path in (first, second):
-            self.assertTrue(defaults(path.read_text(encoding="utf-8"))["osd"])
+        for path in paths:
+            self.assertEqual(defaults(path.read_text()),
+                             {"recording": True, "other": False, "osd": False})
 
-    def test_missing_feature_or_package_fails(self):
-        self.stage(SOURCE.replace('id = "osd"', 'id = "overlay"'))
-        for public in (False, True):
-            with self.subTest(public=public):
-                result = self.run_script(public)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('id = "osd"', result.stderr)
+    def test_missing_recording_or_package_fails(self):
+        self.stage(SOURCE.replace('id = "recording"', 'id = "unrelated"'))
+        result = self.run_script(public=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("recording feature", result.stderr)
         shutil.rmtree(self.mods)
         self.stage(SOURCE, package="other.diagnostics")
         result = self.run_script(public=False)

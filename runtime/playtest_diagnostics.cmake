@@ -1,16 +1,8 @@
 include_guard(GLOBAL)
 
-# Owner policy (2026-10-19): Playtest Diagnostics ship OFF by default only in
-# public production releases; every other build defaults them ON. The source
-# manifest carries the production default (false). PSX_PUBLIC_RELEASE (defined
-# in runtime.cmake, default OFF) selects the build kind, and the staged copy in
-# <exe-dir>/mods/bundled is edited accordingly after the framework stages the
-# catalog (runtime/psx_playtest_diagnostics_defaults.cmake). Both features stay
-# player-selectable mods in every build.
-#
-# psxrecomp_add_playtest_diagnostics calls this for its MOD_ID. A title that
-# authors its own diagnostics package and recorder calls it directly:
-#   psxrecomp_playtest_diagnostics_defaults(psx-runtime MOD_ID game.diagnostics)
+# Recording is enabled by default in every release channel. The optional
+# display remains elective, and mods/state.toml always owns explicit choices.
+# Source/title packages provide regular visible Mods-page features.
 function(psxrecomp_playtest_diagnostics_defaults target)
     cmake_parse_arguments(DIAG "" "MOD_ID" "" ${ARGN})
     if(DIAG_UNPARSED_ARGUMENTS OR NOT DIAG_MOD_ID MATCHES "^[a-z0-9._-]+$")
@@ -54,16 +46,16 @@ function(psxrecomp_playtest_diagnostics_defaults target)
             VERBATIM)
     endforeach()
     if(_public)
-        message(STATUS "psxrecomp: ${target} public release; ${DIAG_MOD_ID} recording/osd default off")
+        message(STATUS "psxrecomp: ${target} public release; ${DIAG_MOD_ID} recording default on; optional display off")
     else()
-        message(STATUS "psxrecomp: ${target} non-public build; ${DIAG_MOD_ID} recording/osd default on")
+        message(STATUS "psxrecomp: ${target} non-public build; ${DIAG_MOD_ID} recording default on; optional display off")
     endif()
 endfunction()
 
 # One implementation shared by every title; the mod manifest owns its features.
 # Call after psxrecomp_add_game_runtime. This also covers its PGXP sibling.
 function(psxrecomp_add_playtest_diagnostics target)
-    cmake_parse_arguments(DIAG "" "GAME_ID;MOD_ID" "" ${ARGN})
+    cmake_parse_arguments(DIAG "NO_OSD" "GAME_ID;MOD_ID" "" ${ARGN})
     if(DIAG_UNPARSED_ARGUMENTS OR NOT DIAG_GAME_ID MATCHES "^[A-Za-z0-9_-]+$"
        OR NOT DIAG_MOD_ID MATCHES "^[a-z0-9._-]+$")
         message(FATAL_ERROR "playtest diagnostics requires GAME_ID and MOD_ID")
@@ -94,6 +86,10 @@ function(psxrecomp_add_playtest_diagnostics target)
         "PSX_DIAGNOSTIC_GAME_ID=\"${DIAG_GAME_ID}\""
         "PSX_DIAGNOSTIC_MOD_ID=\"${DIAG_MOD_ID}\""
         "PSX_DIAGNOSTIC_BUILD_ID=\"${_identity}\"")
+    if(DIAG_NO_OSD)
+        set_property(SOURCE "${_root}/runtime/src/playtest_diagnostics.cpp" APPEND PROPERTY
+            COMPILE_DEFINITIONS PSX_DIAGNOSTIC_WITH_OSD=0)
+    endif()
     set(_targets ${target})
     if(TARGET ${target}-pgxp)
         list(APPEND _targets ${target}-pgxp)
