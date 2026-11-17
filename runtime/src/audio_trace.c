@@ -1,10 +1,10 @@
 /*
  * audio_trace.c - always-on audio observability rings. See audio_trace.h.
  *
- * Debug-tool builds keep 4 PCM taps x 2^22 stereo frames x 4 bytes = 64 MiB
- * static history, plus a 2^19-entry event ring (16 MiB). Production
- * PSX_NO_DEBUG_TOOLS builds retain counters/events but compile out PCM history
- * storage and WAV dumps.
+ * All normal builds keep 4 PCM taps x 2^22 stereo frames x 4 bytes = 64 MiB
+ * bounded history, plus the existing 2^19-entry event ring (16 MiB).
+ * PSX_DISABLE_AUDIO_PCM_HISTORY is a build-only overhead control; neither
+ * recording nor export requires a client to have been attached.
  */
 #include "audio_trace.h"
 
@@ -13,7 +13,7 @@
 #include <string.h>
 
 /* 2^22 frames @ 44100 ~= 95 s per tap. Power of two so wrap is a mask. */
-#ifndef PSX_NO_DEBUG_TOOLS
+#if !defined(PSX_DISABLE_AUDIO_PCM_HISTORY) || !PSX_DISABLE_AUDIO_PCM_HISTORY
 #define PCM_RING_FRAMES (1u << 22)
 #define PCM_RING_MASK   (PCM_RING_FRAMES - 1u)
 #endif
@@ -27,7 +27,7 @@
 #define AUDIBLE_ABS 256
 
 typedef struct {
-#ifndef PSX_NO_DEBUG_TOOLS
+#if !defined(PSX_DISABLE_AUDIO_PCM_HISTORY) || !PSX_DISABLE_AUDIO_PCM_HISTORY
     int16_t          pcm[PCM_RING_FRAMES * 2];
 #endif
     _Atomic uint64_t head;      /* frames ever written; ring pos = head & MASK */
@@ -101,7 +101,7 @@ void audio_trace_pcm(int tap, const int16_t *stereo, int frames)
     for (int f = 0; f < frames; f++) {
         int16_t l = stereo[f * 2 + 0];
         int16_t r = stereo[f * 2 + 1];
-#ifndef PSX_NO_DEBUG_TOOLS
+#if !defined(PSX_DISABLE_AUDIO_PCM_HISTORY) || !PSX_DISABLE_AUDIO_PCM_HISTORY
         uint32_t pos = (uint32_t)((head + (uint64_t)f) & PCM_RING_MASK);
         t->pcm[pos * 2 + 0] = l;
         t->pcm[pos * 2 + 1] = r;
@@ -192,7 +192,7 @@ uint32_t audio_trace_events_get(AudioTraceEvent *out, uint32_t max)
 
 /* ---- WAV dump --------------------------------------------------------- */
 
-#ifndef PSX_NO_DEBUG_TOOLS
+#if !defined(PSX_DISABLE_AUDIO_PCM_HISTORY) || !PSX_DISABLE_AUDIO_PCM_HISTORY
 static void wav_write_header(FILE *fp, uint32_t data_bytes, uint32_t rate)
 {
     uint8_t h[44];

@@ -1,7 +1,10 @@
 /* latency_ring.c — always-on input->photon latency ring.  See latency_ring.h. */
 
 #include "latency_ring.h"
+#ifndef PSX_LATENCY_RING_TEST
 #include "psx_sdl.h"
+#endif
+#include <stdatomic.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,35 +12,52 @@
 #define LAT_RING_SIZE 4096   /* power of two; ~68s at 60Hz */
 
 typedef struct {
-    uint64_t ts[LAT_STAGE_COUNT];
-    uint64_t frame;
+    _Atomic uint64_t ts[LAT_STAGE_COUNT];
+    _Atomic uint64_t frame;
 } LatSlot;
 
 static LatSlot   s_ring[LAT_RING_SIZE];
-static uint64_t  s_head;            /* number of frames begun (head = s_head-1) */
+static _Atomic uint64_t s_head;     /* number of frames begun (head = s_head-1) */
+static _Thread_local uint64_t s_replay_frame=UINT64_MAX;
 static char      s_backend[16] = "?";
 static int       s_present_mode = 1;
 
+#ifdef PSX_LATENCY_RING_TEST
+extern uint64_t latency_test_ticks;
+static uint64_t qpc(void) { return latency_test_ticks; }
+static double qpc_freq(void) { return 1e6; }
+#else
 static uint64_t qpc(void) { return SDL_GetPerformanceCounter(); }
 static double   qpc_freq(void) {
     double f = (double)SDL_GetPerformanceFrequency();
     return f > 0.0 ? f : 1.0;
 }
+#endif
 
 void latency_ring_frame_begin(void) {
     uint64_t idx = s_head % LAT_RING_SIZE;
     LatSlot *s = &s_ring[idx];
-    memset(s, 0, sizeof(*s));
+    s->frame=UINT64_MAX;
+    for(unsigned i=0;i<LAT_STAGE_COUNT;++i)s->ts[i]=0;
     s->frame = s_head;
     s->ts[LAT_INPUT] = qpc();
     s_head++;
 }
 
 void latency_ring_mark(LatencyStage stage) {
-    if (stage <= LAT_INPUT || stage >= LAT_STAGE_COUNT) return;
-    if (s_head == 0) return;                     /* no frame begun yet */
-    LatSlot *s = &s_ring[(s_head - 1) % LAT_RING_SIZE];
+    (void)latency_ring_mark_frame(s_replay_frame==UINT64_MAX?latency_ring_current_frame():s_replay_frame,stage);
+}
+uint64_t latency_ring_current_frame(void) {
+    const uint64_t head=s_head;return head?head-1:UINT64_MAX;
+}
+void latency_ring_replay_frame(uint64_t frame) {s_replay_frame=frame;}
+int latency_ring_mark_frame(uint64_t frame,LatencyStage stage) {
+    const uint64_t head=s_head;
+    if(stage<=LAT_INPUT || stage>=LAT_STAGE_COUNT || frame>=head || head-frame>LAT_RING_SIZE)return 0;
+    LatSlot *s=&s_ring[frame%LAT_RING_SIZE];
+    if(s->frame!=frame)return 0;
     s->ts[stage] = qpc();
+    return s->frame==frame;
 }
 
 void latency_ring_restamp_input(void) {
@@ -152,9 +172,9 @@ int latency_ring_dump_json(char *buf, int buf_size, int max_frames) {
         if (s->frame != f) continue;
         if (first) { base = s->ts[LAT_INPUT]; first = 0; }
         double ti  = (double)(s->ts[LAT_INPUT]      - base) * inv_us;
-        double tp  = s->ts[LAT_PACED]      ? (double)(s->ts[LAT_PACED]      - base) * inv_us : -1;
-        double tsb = s->ts[LAT_SWAP_BEGIN] ? (double)(s->ts[LAT_SWAP_BEGIN] - base) * inv_us : -1;
-        double tse = s->ts[LAT_SWAP_END]   ? (double)(s->ts[LAT_SWAP_END]   - base) * inv_us : -1;
+        double tp  = s->ts[LAT_PACED]      ? ((double)s->ts[LAT_PACED]      - (double)base) * inv_us : -1;
+        double tsb = s->ts[LAT_SWAP_BEGIN] ? ((double)s->ts[LAT_SWAP_BEGIN] - (double)base) * inv_us : -1;
+        double tse = s->ts[LAT_SWAP_END]   ? ((double)s->ts[LAT_SWAP_END]   - (double)base) * inv_us : -1;
         off += snprintf(buf + off, buf_size - off,
             "%s{\"f\":%llu,\"input\":%.1f,\"paced\":%.1f,\"swap_begin\":%.1f,\"swap_end\":%.1f}",
             (f == start ? "" : ","), (unsigned long long)s->frame, ti, tp, tsb, tse);

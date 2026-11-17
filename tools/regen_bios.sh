@@ -157,6 +157,6 @@ fi
 
 # 3. Record the emitter fingerprint so the build can detect future drift. MUST
 #    match runtime/runtime.cmake's staleness check invocation (same profile arg).
-"$ROOT/tools/bios_emitter_fingerprint.sh" "$PROFILE" > "$OUT/$STEM.emitter.sha"
+"$BASH" "$ROOT/tools/bios_emitter_fingerprint.sh" "$PROFILE" > "$OUT/$STEM.emitter.sha"
 echo "regen_bios: wrote fingerprint $OUT/$STEM.emitter.sha"
 echo "regen_bios: done ($(grep -m1 -o 'Dispatch entries: [0-9]*' "$OUT/${STEM}_dispatch.c" || echo '?'))"
