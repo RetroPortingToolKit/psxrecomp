@@ -32,6 +32,10 @@ void psx_snapshot_host_call_restore(unsigned depth);
 
 void interrupts_init(void);
 
+/* Syscall-to-delivery control. Explicit handler switches must not be deferred. */
+int psx_exception_nest_depth(void);
+void psx_note_changethread_in_handler_switch(void);
+
 /* Save-state restore: re-anchor host-only IRQ pacing after psx_cycle_count is
  * overwritten from a snapshot. Clears absolute-cycle cooldowns / deferred
  * switches that would otherwise strand delivery until the restored clock
