@@ -46,7 +46,7 @@ extern uint8_t *memory_get_ram_ptr(void);
 extern uint8_t *memory_get_scratchpad_ptr(void);
 extern void psx_write_word(uint32_t addr, uint32_t val);
 extern void psx_write_byte(uint32_t addr, uint8_t val);
-extern void dirty_ram_mark_executable_range(uint32_t addr, uint32_t len);
+extern void dirty_ram_mark_executable_range(uint32_t phys, uint32_t len);
 
 /* Unified index space: RAM offsets cover the host backing (the opt-in 8 MB
  * map's unique high banks included), then the scratchpad. */
@@ -403,11 +403,14 @@ static void ds_apply(CPUState* cpu, DsShard* s) {
         if (idx < DS_RAM_BYTES) {
             /* write through the chokepointed byte path so dirty-code tracking,
              * text guard, card traps and cosim all see the stores; then mark
-             * the executable range exactly like the CD-DMA delivery path. */
+             * the executable range exactly like the CD-DMA delivery path.
+             * The mark takes a physical address. For main RAM that is the
+             * index itself (ds_index_of); the KSEG0 address is above the RAM
+             * size and would mark nothing. */
             uint32_t va = 0x80000000u + idx;
             for (uint32_t i = 0; i < len; i++)
                 psx_write_byte(va + i, s->wr_bytes[off + i]);
-            dirty_ram_mark_executable_range(va, len);
+            dirty_ram_mark_executable_range(idx, len);
         } else {
             uint32_t va = 0x1F800000u + (idx - DS_RAM_BYTES);
             for (uint32_t i = 0; i < len; i++)
