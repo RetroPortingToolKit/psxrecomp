@@ -13,6 +13,8 @@ static CPUState machine;
 static int function_entry_active, provider_ready = 1, capture_fails;
 static int capture_calls, load_attempts, quiet_rollbacks, observations;
 static int frontend_restores, cycle_restores, gpu_present_resets, cd_restores, resumes;
+static uint32_t hd_live;
+static size_t hd_blob_size = 8;
 static jmp_buf resumed;
 int g_cosim_dirty_pump_site, g_call_unit_depth, g_psx_dispatch_depth;
 uint32_t g_dirty_safe_resume_pc;
@@ -34,7 +36,14 @@ uint32_t gpu_display_pixel_argb(const GpuDisplayInfo *out,uint32_t x,uint32_t y)
 void host_osd_push(const char *text,int ms) { (void)text; (void)ms; }
 void psx_cycles_resync_after_restore(CPUState *cpu) { assert(cpu==&machine); ++cycle_restores; }
 void cdrom_accelerate_after_savestate(void) { ++cd_restores; }
-void psx_frontend_on_savestate_loaded(void) { ++frontend_restores; }
+void psx_frontend_on_savestate_loaded(void) { ++frontend_restores; hd_live=0; }
+int gpu_hd_textures_residency_save(uint8_t **data,size_t *size) {
+    *data=malloc(hd_blob_size); assert(*data); *size=hd_blob_size;
+    memcpy(*data,&machine.gpr[4],sizeof(uint32_t)); return 1;
+}
+int gpu_hd_textures_residency_load(const uint8_t *data,size_t size) {
+    assert(data && size>=sizeof(uint32_t)); memcpy(&hd_live,data,sizeof(hd_live)); return 1;
+}
 void psx_scheduler_resume_at(uint32_t pc) {
     assert(pc==machine.pc && psx_is_dispatchable(pc)); ++resumes; longjmp(resumed,1);
 }
@@ -94,6 +103,7 @@ int main(void) {
     psx_rewind_configure(123,0x801b0000u);
     assert(psx_rewind_enabled());
     capture(10,101); capture(20,202);
+    assert(s_hd_bytes==16);
     choose_first(); machine.pc=0x80025074u; machine.gpr[4]=303;
     /* The title is ready, but a registered native callback is still live. */
     function_entry_active=1; assert_deferred(); function_entry_active=0;
@@ -112,6 +122,7 @@ int main(void) {
     assert(load_attempts==1 && capture_calls==3 && !quiet_rollbacks && observations==1 && resumes==1);
     assert(frontend_restores==1 && cycle_restores==1 && gpu_present_resets==1 && cd_restores==1);
     assert(s_frame==10 && s_count==1 && !rbe_snap_ring_has(s_ring,20));
+    assert(hd_live==101 && s_hd_bytes==8); /* restore after frontend invalidation */
 
     /* Checked load changes the machine before it discovers a bad resume PC.
      * Rewind must quietly restore its rollback and retain the selected history. */
@@ -121,6 +132,7 @@ int main(void) {
     assert(!s_load_pending && machine.pc==0x80025074u && machine.gpr[4]==303);
     assert(load_attempts==2 && quiet_rollbacks==1 && observations==1 && resumes==1);
     assert(s_count==1 && s_frame==10 && rbe_snap_ring_has(s_ring,10));
+    assert(hd_live==303 && s_hd_bytes==8); /* rejected target preserves live provenance */
     assert(frontend_restores==1 && cycle_restores==1 && gpu_present_resets==1 && cd_restores==1);
     /* Failure to obtain rollback refuses before the target ever applies. */
     machine.gpr[4]=404; choose_first(); capture_fails=1;
@@ -128,7 +140,21 @@ int main(void) {
     assert(machine.pc==0x80025074u && machine.gpr[4]==404);
     assert(load_attempts==2 && quiet_rollbacks==1 && observations==1 && resumes==1);
     assert(s_count==1 && s_frame==10 && rbe_snap_ring_has(s_ring,10));
+    capture_fails=0;
+    /* Replacement at the same tick, normal depth eviction and branching all
+     * retain one owner for each small residency allocation. */
+    capture(10,505); assert(s_count==1 && s_hd_bytes==8);
+    for(uint32_t tick=30;tick<100;++tick)capture(tick,tick);
+    assert(s_count==s_depth && s_hd_bytes==s_depth*8);
+    hd_blob_size=RW_HD_BUDGET/2+1;
+    capture(1000,606); capture(1010,707);
+    assert(s_count==1 && s_ticks[0]==1010 && s_hd_bytes==hd_blob_size);
+    assert(!rbe_snap_ring_has(s_ring,1000) && rbe_snap_ring_count(s_ring)==1);
+    assert(psx_rewind_discard_history()==1 && s_hd_bytes==0 && s_count==0);
+    hd_blob_size=8;
+    capture(1020,808);
     psx_rewind_shutdown();
+    assert(s_hd_bytes==0);
     puts("rewind loads defer live host stacks and quietly undo rejected resume PCs");
     return 0;
 }

@@ -6,6 +6,7 @@
 #include "capture_ring.h"
 #include "cdrom.h"
 #include "gpu.h"
+#include "gpu_hd_textures.h"
 #include "host_keymap.h"
 #include "host_osd.h"
 #include "interrupts.h"
@@ -36,6 +37,9 @@
 #define RW_PANEL_W     640
 #define RW_PANEL_H     176
 #define RW_SLIDE_MS    180u
+/* Upload provenance only, never replacement pixels or high-resolution FBOs.
+ * Under exceptional pack fragmentation, retire the oldest complete points. */
+#define RW_HD_BUDGET   (32u * 1024u * 1024u)
 
 #if defined(PSX_HAS_RBENGINE_SNAP)
 /* Public-domain 8x8 ASCII 32..90 (subset of font8x8_basic). */
@@ -115,6 +119,7 @@ int psx_rewind_title_blocked(void)
 
 void psx_rewind_set_title_blocked(int blocked) { s_title_blocked = blocked ? 1 : 0; }
 uint32_t psx_rewind_snap_count(void) { return 0; }
+uint32_t psx_rewind_hd_residency_bytes(void) { return 0; }
 void psx_rewind_set_depth(uint32_t depth) { (void)depth; }
 void psx_rewind_set_interval(uint32_t interval) { (void)interval; }
 void psx_rewind_set_enabled(int enabled) { (void)enabled; }
@@ -159,6 +164,8 @@ float psx_rewind_slide(void) { return 0.f; }
 typedef struct RwThumb {
     uint32_t tick;
     uint32_t px[RW_THUMB_W * RW_THUMB_H];
+    uint8_t *hd_residency;
+    size_t hd_size;
 } RwThumb;
 
 static int s_enabled = -1;
@@ -179,6 +186,8 @@ static RbeSnapRing *s_ring;
 static RwThumb *s_thumbs;
 static uint32_t *s_ticks;
 static uint32_t s_count;
+static size_t s_hd_bytes;
+uint32_t psx_rewind_hd_residency_bytes(void) { return (uint32_t)s_hd_bytes; }
 static int s_sel;
 
 static int s_open;
@@ -376,9 +385,36 @@ static void capture_thumb(uint32_t *dst)
     }
 }
 
+static void release_hd(RwThumb *thumb)
+{
+    s_hd_bytes -= thumb->hd_size;
+    free(thumb->hd_residency);
+    thumb->hd_residency = NULL;
+    thumb->hd_size = 0;
+}
+
+static void list_clear(void)
+{
+    uint32_t i;
+    for (i = 0; i < s_count; ++i) release_hd(&s_thumbs[i]);
+    s_count = 0;
+}
+
+static void list_drop_oldest(void)
+{
+    if (!s_count) return;
+    (void)rbe_snap_ring_drop_tick(s_ring, s_ticks[0]);
+    release_hd(&s_thumbs[0]);
+    memmove(s_ticks, s_ticks + 1, (s_count - 1u) * sizeof(s_ticks[0]));
+    memmove(s_thumbs, s_thumbs + 1, (s_count - 1u) * sizeof(s_thumbs[0]));
+    s_count--;
+    memset(&s_thumbs[s_count], 0, sizeof(s_thumbs[0]));
+    if (s_sel > 0) s_sel--;
+}
+
 static void list_drop_after(uint32_t tick)
 {
-    uint32_t i, n = 0;
+    uint32_t i, n = 0, old_count = s_count;
     for (i = 0; i < s_count; i++) {
         if (s_ticks[i] <= tick) {
             if (n != i) {
@@ -386,36 +422,42 @@ static void list_drop_after(uint32_t tick)
                 s_thumbs[n] = s_thumbs[i];
             }
             n++;
-        }
+        } else release_hd(&s_thumbs[i]);
     }
+    memset(s_thumbs + n, 0, (old_count - n) * sizeof(s_thumbs[0]));
     s_count = n;
     if (s_sel >= (int)s_count)
         s_sel = s_count ? (int)s_count - 1 : 0;
     s_panel_dirty = 1;
 }
 
-static void list_push(uint32_t tick, const uint32_t *thumb)
+static void list_push(uint32_t tick, const uint32_t *thumb, uint8_t *hd, size_t hd_size)
 {
     uint32_t i;
     for (i = 0; i < s_count; i++) {
         if (s_ticks[i] == tick) {
+            release_hd(&s_thumbs[i]);
             memcpy(s_thumbs[i].px, thumb, sizeof(s_thumbs[i].px));
             s_thumbs[i].tick = tick;
+            s_thumbs[i].hd_residency = hd;
+            s_thumbs[i].hd_size = hd_size;
+            s_hd_bytes += hd_size;
+            while (s_hd_bytes > RW_HD_BUDGET) list_drop_oldest();
             s_panel_dirty = 1;
             return;
         }
     }
     if (s_count >= s_depth) {
-        memmove(s_ticks, s_ticks + 1, (s_count - 1u) * sizeof(s_ticks[0]));
-        memmove(s_thumbs, s_thumbs + 1, (s_count - 1u) * sizeof(s_thumbs[0]));
-        s_count--;
-        if (s_sel > 0)
-            s_sel--;
+        list_drop_oldest();
     }
     s_ticks[s_count] = tick;
     s_thumbs[s_count].tick = tick;
     memcpy(s_thumbs[s_count].px, thumb, sizeof(s_thumbs[0].px));
+    s_thumbs[s_count].hd_residency = hd;
+    s_thumbs[s_count].hd_size = hd_size;
+    s_hd_bytes += hd_size;
     s_count++;
+    while (s_hd_bytes > RW_HD_BUDGET) list_drop_oldest();
     s_sel = (int)s_count - 1;
     s_panel_dirty = 1;
 }
@@ -450,6 +492,7 @@ void psx_rewind_configure(uint32_t bios_checksum, uint32_t entry_pc)
 
 void psx_rewind_shutdown(void)
 {
+    list_clear();
     if (s_ring)
         rbe_snap_ring_destroy(s_ring);
     free(s_thumbs);
@@ -471,7 +514,7 @@ uint32_t psx_rewind_discard_history(void)
     uint32_t dropped = s_count;
     if (!s_configured || !s_ring) return 0;
     rbe_snap_ring_clear(s_ring);
-    s_count = 0;
+    list_clear();
     s_sel = 0;
     s_load_pending = 0;
     s_last_capture_frame = 0xffffffffu;
@@ -519,6 +562,8 @@ static int do_capture(CPUState *cpu, uint32_t resume_pc)
     size_t len = 0;
 #endif
     uint32_t thumb[RW_THUMB_W * RW_THUMB_H];
+    uint8_t *hd = NULL;
+    size_t hd_size = 0;
     CPUState snap;
     uint32_t tick = s_frame;
     uint32_t pc;
@@ -543,7 +588,8 @@ static int do_capture(CPUState *cpu, uint32_t resume_pc)
     }
 #endif
     capture_thumb(thumb);
-    list_push(tick, thumb);
+    (void)gpu_hd_textures_residency_save(&hd, &hd_size);
+    list_push(tick, thumb, hd, hd_size);
     s_last_capture_frame = s_frame;
     s_capture_due = 0;
     return 1;
@@ -555,6 +601,8 @@ static int do_load(CPUState *cpu, uint32_t tick)
     const uint8_t *data;
     uint8_t *rollback = NULL;
     size_t rollback_size = 0;
+    uint8_t *rollback_hd = NULL;
+    size_t rollback_hd_size = 0;
     int loaded;
 
     if (!cpu || !s_ring)
@@ -574,10 +622,15 @@ static int do_load(CPUState *cpu, uint32_t tick)
         free(rollback);
         return 0;
     }
+    (void)gpu_hd_textures_residency_save(&rollback_hd, &rollback_hd_size);
     loaded = boot_state_load_buffer_checked(data, size, s_bios, s_entry, cpu,
                                             resume_pc_ok);
-    if (!loaded)
+    if (!loaded) {
         (void)boot_state_load_buffer_quiet(rollback, rollback_size, s_bios, s_entry, cpu);
+        if (rollback_hd)
+            (void)gpu_hd_textures_residency_load(rollback_hd, rollback_hd_size);
+    }
+    free(rollback_hd);
     free(rollback);
     if (!loaded) return 0;
     rbe_snap_ring_drop_after(s_ring, tick);
@@ -588,6 +641,15 @@ static int do_load(CPUState *cpu, uint32_t tick)
     interrupts_resync_after_restore();
     cdrom_accelerate_after_savestate();
     psx_frontend_on_savestate_loaded();
+    /* The frontend's VRAM restage clears draw tracking. Restore only after
+     * it finishes; the existing API validates both pack and restored VRAM. */
+    for (uint32_t i = 0; i < s_count; ++i) {
+        if (s_ticks[i] == tick && s_thumbs[i].hd_residency) {
+            (void)gpu_hd_textures_residency_load(s_thumbs[i].hd_residency,
+                                               s_thumbs[i].hd_size);
+            break;
+        }
+    }
     host_osd_push("Rewind loaded", 1200);
     psx_scheduler_resume_at(cpu->pc);
     return 1; /* not reached on success */
