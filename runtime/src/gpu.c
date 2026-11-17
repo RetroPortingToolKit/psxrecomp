@@ -3784,8 +3784,8 @@ static uint32_t s_d24_prev_disp_h = 0;  /* last GP1(07h) band height */
 /* Rows the current 24-bit movie has uploaded. A movie session starts on the
  * rising edge of MDEC activity; rows it has not written yet hold whatever an
  * earlier scene left in VRAM and present black instead. Presentation only:
- * guest VRAM and raw scanout are untouched, and the record is not saved in
- * snapshots (a restore shows black rows until the movie uploads them). */
+ * guest VRAM and raw scanout are untouched. Current snapshots retain the row
+ * record so restoring a movie preserves both its pixels and its black bars. */
 static uint8_t s_d24_rows[512];
 static int s_d24_streaming;
 static void depth24_reset_rows(void) {
@@ -4647,7 +4647,8 @@ void gpu_depth24_on_savestate_loaded(void) {
      * Upload span / prev_h were restored from the GPU snap. */
     s_d24_present_hold = 0;
     s_d24_present_skip = 0;
-    depth24_reset_rows();
+    /* Row coverage and its stream latch were restored with the GPU snapshot.
+     * Clearing them here would black out already-restored movie pixels. */
 }
 
 /* ---- Present-time screen-colour LUT (verified-enhancement, opt-in) -------
@@ -8423,6 +8424,14 @@ static int gpu_snap_emit(PstW *w) {
     /* Depth24 present helpers (MotK FMV) — must resume with upload span. */
     WU(s_d24_upload_x1); WI(s_d24_present_hold | 0x200 | (s_d24_present_skip ? 0x100 : 0));
     WU(s_d24_prev_disp_h);
+    WU(s_d24_streaming);
+    /* Pack the presentation row record to keep private checkpoints bounded. */
+    for (unsigned first = 0; first < 512u; first += 32u) {
+        uint32_t rows = 0;
+        for (unsigned bit = 0; bit < 32u; ++bit)
+            rows |= (uint32_t)(s_d24_rows[first + bit] != 0) << bit;
+        WU(rows);
+    }
 #undef WU
 #undef WI
 #undef WH
@@ -8463,6 +8472,14 @@ static int gpu_snap_parse(PstR *r) {
         ? (s_d24_present_hold & 0x100) != 0
         : (s_d24_present_hold & 0x100) || (s_d24_present_hold & 0xFF) > 0;
     s_d24_present_hold &= 0xFF;
+    RU(s_d24_streaming);
+    s_d24_streaming = s_d24_streaming != 0;
+    for (unsigned first = 0; first < 512u; first += 32u) {
+        uint32_t rows;
+        RU(rows);
+        for (unsigned bit = 0; bit < 32u; ++bit)
+            s_d24_rows[first + bit] = (uint8_t)((rows >> bit) & 1u);
+    }
 #undef RU
 #undef RI
 #undef RH
