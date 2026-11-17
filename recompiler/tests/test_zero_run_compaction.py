@@ -70,6 +70,39 @@ def make_psxexe(entry, load, data):
     return bytes(h) + data
 
 
+def canonical_source(src):
+    """Select the normal OPS0/DEMAND0 alternatives, leaving timing directives.
+
+    Raw shards also contain mutually exclusive copies of each block for the
+    optional precision paths. Counting those together does not describe any
+    compiled function. Only these two guards are selected here; the per-word
+    cycle and COSIM text below remains subject to every existing assertion.
+    """
+    stack, kept = [], []
+    for line in src.splitlines(keepends=True):
+        directive = re.match(r"\s*#\s*(if|ifdef|ifndef|else|elif|endif)\b(.*)", line)
+        if directive:
+            kind, condition = directive.groups()
+            if kind in ("if", "ifdef", "ifndef"):
+                precision = kind == "if" and any(flag in condition for flag in (
+                    "PSX_PGXP_OPERATIONS", "PSX_PGXP_DEMAND_REGIONS"))
+                stack.append([precision, precision])  # owned guard, skipped arm
+                if precision:
+                    continue
+            elif kind == "endif":
+                owned, _ = stack.pop()
+                if owned:
+                    continue
+            elif stack[-1][0]:
+                assert kind == "else", "unexpected precision guard elif"
+                stack[-1][1] = not stack[-1][1]
+                continue
+        if not any(skipped for _, skipped in stack):
+            kept.append(line)
+    assert not stack, "unclosed emitted preprocessor guard"
+    return "".join(kept)
+
+
 def generate(recompiler, tmp):
     psx = os.path.join(tmp, "t.psx")
     seeds = os.path.join(tmp, "seeds.txt")
@@ -90,7 +123,7 @@ def generate(recompiler, tmp):
     if not srcs:
         raise SystemExit("no *_full*.c emitted in " + out)
     text = "".join(open(p, encoding="utf-8", newline="").read() for p in srcs)
-    return text.replace("\r\n", "\n")
+    return canonical_source(text.replace("\r\n", "\n"))
 
 
 LOOP = re.compile(
