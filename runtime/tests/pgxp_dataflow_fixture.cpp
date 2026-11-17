@@ -438,6 +438,7 @@ static void retained_partial_store_products() {
     for(int cpu_mode:{0,1})for(unsigned kind=0;kind<3;++kind) {
         const unsigned lanes=kind?4u:2u;
         for(unsigned lane=0;lane<lanes;++lane) {
+            std::printf("RUN retained typed store CPU%d kind%u lane%u\n",cpu_mode,kind,lane);std::fflush(stdout);
             Result result[2]{};
             for(unsigned selected=0;selected<2;++selected) {
                 CPUState cpu{};live_cpu=&cpu;control_active=false;
@@ -489,6 +490,7 @@ static void retained_partial_store_products() {
 }
 static void control_products() {
     for(int cpu_mode:{0,1})for(unsigned mode=0;mode<5;++mode) {
+        std::printf("RUN geometry-only frame CPU%d mode%u\n",cpu_mode,mode);std::fflush(stdout);
         run_control(control_reference,false,mode,cpu_mode);run_control(control_candidate,true,mode,cpu_mode);
         const auto& a=control_reference;const auto& b=control_candidate;
         if(std::memcmp(&a.cpu,&b.cpu,sizeof a.cpu)||std::memcmp(a.bytes,b.bytes,sizeof ram)||
@@ -500,7 +502,15 @@ static void control_products() {
         if(mode==3u && (a.observed_precise!=b.observed_precise||a.observed_sp!=b.observed_sp||
                 (cpu_mode && (!b.observed_precise||b.observed_sp!=double((int32_t)(b.cpu.gpr[29]-24u))+.25))))std::abort();
         if(mode<3u) {
-            if(b.alu+2!=a.alu || b.loads+1!=a.loads || b.stores+1!=a.stores || b.sp_precise)std::abort();
+            // Two frame ALUs disappear. The already-qualified incoming ADDIU
+            // receipt also replaces the geometry +1 hook: full4 -> selected1.
+            if(a.alu!=4u || b.alu!=1u || b.loads+1!=a.loads || b.stores+1!=a.stores || b.sp_precise) {
+                std::fprintf(stderr,"FAIL geometry-frame CPU%d mode%u ALU%llu/%llu LOAD%llu/%llu STORE%llu/%llu SPprecise%d\n",
+                    cpu_mode,mode,(unsigned long long)a.alu,(unsigned long long)b.alu,
+                    (unsigned long long)a.loads,(unsigned long long)b.loads,
+                    (unsigned long long)a.stores,(unsigned long long)b.stores,b.sp_precise);
+                std::abort();
+            }
         } else if(b.alu!=a.alu||b.loads!=a.loads||b.stores!=a.stores||
                 b.sp_precise!=a.sp_precise||(b.sp_precise&&b.sp!=a.sp))std::abort();
         std::printf("PASS geometry-only frame CPU%d mode%u packets/source/write ordering ALU%llu/%llu\n",
