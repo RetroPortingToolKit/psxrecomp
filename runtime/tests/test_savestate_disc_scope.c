@@ -242,6 +242,12 @@ static void disc_change_then_relaunch(CPUState* cpu) {
     CHECK(savestate_read_thumb(2, thumb, SAVESTATE_THUMB_W, SAVESTATE_THUMB_H) &&
           thumb[0] == 0xFF00FF00u);
     CHECK(savestate_slot_disc(5) == 0 && !savestate_slot_exists(5));
+    {
+        char reason[160]; uint8_t* current=NULL; size_t size=0;
+        CHECK(savestate_slot_compatible(2,reason,sizeof(reason)));
+        CHECK(!savestate_read_slot(2,&current,&size)); /* public read stays current-disc */
+        free(current);
+    }
 
     CHECK(load(cpu, 2));
     CHECK(s_begin_calls == 1 && s_end_calls == 1 && s_mounted == 2);
@@ -252,6 +258,25 @@ static void disc_change_then_relaunch(CPUState* cpu) {
     /* What is saved next is named for the disc now in the drive. */
     CHECK(savestate_slot_path(2, path, sizeof(path)) && strstr(path, "_disc2_slot02.pst"));
     unplant(2, 2);
+}
+
+static void nonidentity_program_tokens(CPUState* cpu) {
+    const int tokens[2]={2,4};
+    plant(4,7,T_NEW);
+    launch(1,2);
+    savestate_set_disc_scope(2);
+    savestate_set_disc_roster(tokens,2);
+    CHECK(savestate_slot_disc(7)==4);
+    CHECK(load(cpu,7));
+    CHECK(s_mounted==2 && s_mount_disc==2 && savestate_disc_scope()==4);
+    launch(1,2);
+    savestate_set_disc_scope(2);
+    savestate_set_disc_roster(tokens,2);
+    s_load_result=0;
+    CHECK(!load(cpu,7));
+    CHECK(s_mounted==1 && s_mount_disc==2 && savestate_disc_scope()==2);
+    CHECK(s_rollbacks==1 && s_rewind_discards==0);
+    unplant(4,7);
 }
 
 static void own_disc_wins(CPUState* cpu) {
@@ -344,6 +369,7 @@ int main(int argc, char** argv) {
 
     disc_change_then_relaunch(&cpu);
     own_disc_wins(&cpu);
+    nonidentity_program_tokens(&cpu);
     newest_other_disc();
     refusals_keep_the_disc(&cpu);
     mounted_disc_only();
