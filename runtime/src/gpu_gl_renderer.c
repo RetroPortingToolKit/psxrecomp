@@ -6678,12 +6678,24 @@ int gl_renderer_init_context(SDL_Window *win) {
  * and reported by freeze_heartbeat.c. Defined here because every product
  * build links this renderer, and the GL test harnesses link it without
  * main.cpp. Once tripped, driver vsync stays off. */
-uint32_t g_present_slow_count = 0;     /* presents that blocked >250ms */
-int      g_present_vsync_disabled = 0; /* 1 once self-heal tripped */
+static _Atomic uint32_t s_present_slow_count;
+static _Atomic int s_present_vsync_disabled;
+uint32_t psx_present_slow_count(void) {
+    return atomic_load_explicit(&s_present_slow_count, memory_order_relaxed);
+}
+uint32_t psx_present_note_slow(void) {
+    return atomic_fetch_add_explicit(&s_present_slow_count, 1u, memory_order_relaxed) + 1u;
+}
+int psx_present_vsync_disabled(void) {
+    return atomic_load_explicit(&s_present_vsync_disabled, memory_order_relaxed);
+}
+void psx_present_disable_vsync(void) {
+    atomic_store_explicit(&s_present_vsync_disabled, 1, memory_order_relaxed);
+}
 
 void gl_renderer_set_swap_interval(int interval) {
     GL_RT_SYNC("set_swap_interval");
-    if (g_present_vsync_disabled) interval = 0;
+    if (psx_present_vsync_disabled()) interval = 0;
     s_swap_interval = interval;
     s_pt_interval_gen++;   /* the present thread's context applies it */
     if (s_ctx) {
@@ -10175,10 +10187,9 @@ static void gl_swap_self_heal(Uint64 t0) {
     const Uint64 t1 = SDL_GetPerformanceCounter();
     const Uint64 freq = SDL_GetPerformanceFrequency();
     const Uint64 swap_ms = (t1 >= t0 && freq) ? ((t1 - t0) * 1000u) / freq : 0;
-    if (g_present_vsync_disabled || s_swap_interval == 0 || swap_ms <= 250) return;
-    g_present_slow_count++;
-    if (g_present_slow_count >= 3 && SDL_GL_SetSwapInterval(0) == 0) {
-        g_present_vsync_disabled = 1;
+    if (psx_present_vsync_disabled() || s_swap_interval == 0 || swap_ms <= 250) return;
+    if (psx_present_note_slow() >= 3 && SDL_GL_SetSwapInterval(0) == 0) {
+        psx_present_disable_vsync();
         fprintf(stderr, "psxrecomp: OpenGL swap blocked repeatedly; disabled driver vsync\n");
     }
 }
@@ -10212,7 +10223,7 @@ static void *pt_cb_present(void *user, int slot, void *ready) {
         s_ptp_interval_gen = s_pt_interval_gen;
         /* A context rebind re-applies the interval; keep a tripped
          * self-heal's vsync off. */
-        const int interval = g_present_vsync_disabled ? 0 : s_swap_interval;
+        const int interval = psx_present_vsync_disabled() ? 0 : s_swap_interval;
         if (SDL_GL_SetSwapInterval(interval) != 0 && interval < 0)
             SDL_GL_SetSwapInterval(1);
     }

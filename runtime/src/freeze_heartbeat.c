@@ -3,6 +3,7 @@
 #include "mdec.h"   /* mdec_recently_active: FMV parks the guest in BIOS MDEC code */
 #include "psx_memory.h"
 #include "freeze_heartbeat.h"
+#include "video_telemetry.h"
 #include "freeze_dump_policy.h"
 #include "guest_cycle_profile.h"
 #include "debug_server.h"
@@ -64,11 +65,6 @@ extern uint64_t g_vblank_ack_count;
 extern uint32_t g_ra_tw_latched, g_ra_tw_site, g_ra_tw_pc, g_ra_tw_prev_ra;
 extern uint32_t g_ra_tw_frame, g_ra_tw_in_exc, g_ra_tw_sp;
 
-/* Vsync self-heal counters — defined in main.cpp. Included in the dump
- * so a slow_frames wedge can be attributed to driver present
- * backpressure straight from the JSON. */
-extern uint32_t g_present_slow_count;
-extern int      g_present_vsync_disabled;
 
 /* CPU register file + scratchpad — captured into the heartbeat so a logical
  * hang's exact wedged state survives in the small, user-uploadable file.
@@ -599,8 +595,8 @@ static int freeze_dump_write(long long wall, uint64_t frame, uint64_t cyc,
         (unsigned long long)g_psx_bail_resolved,
         (unsigned long long)g_psx_bail_flattened,
         (unsigned long long)g_psx_bail_anomaly,
-        g_present_slow_count,
-        g_present_vsync_disabled,
+        psx_present_slow_count(),
+        psx_present_vsync_disabled(),
         wedge_kind,
         (wedge_kind == 1) ? "hard_freeze" :
         (wedge_kind == 2) ? "reentry_storm" :
