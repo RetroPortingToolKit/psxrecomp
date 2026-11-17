@@ -61,6 +61,8 @@ static void debug_server_set_fmv_quiet(int quiet){(void)quiet;}
 static void debug_server_wait_if_paused(void){}
 static void debug_server_record_frame(void){++record_calls;++s_frame_count;}
 static void debug_server_check_watchpoints(void){++watch_calls;}
+static unsigned checkpoint_calls;static uint64_t checkpoint_frame;
+static void tas_checkpoint_on_frame(uint64_t frame){++checkpoint_calls;checkpoint_frame=frame;}
 #endif
 static void send_ok(int id){(void)id;strcpy(response,"ok");}
 static void send_err(int id,const char *text){(void)id;snprintf(response,sizeof response,"ERROR:%s",text);}
@@ -161,7 +163,7 @@ int main(void){
 #ifdef PSX_NO_DEBUG_TOOLS
     assert(record_calls==0&&watch_calls==0);
 #else
-    assert(record_calls==3&&watch_calls==3);
+    assert(record_calls==3&&watch_calls==3&&checkpoint_calls==3&&checkpoint_frame==103);
 #endif
     puts("debug input route: P2 timing, isolation, deferred start, clearing and legacy P1 pass");
     return 0;

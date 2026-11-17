@@ -39,6 +39,7 @@
 #include "starvation_ring.h"
 #include "load_accel.h"
 #include "savestate.h"
+#include "tas_checkpoint.h"
 #include "psx_openxr.h"
 #include "atomic_file_write.h"
 #include "openxr_ready_state.h"
@@ -9244,6 +9245,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 #ifndef PSX_NO_DEBUG_TOOLS
     debug_server_record_frame();
     debug_server_check_watchpoints();
+    {
+        extern uint64_t s_frame_count;
+        tas_checkpoint_on_frame(s_frame_count);
+    }
 #else
     extern uint64_t s_frame_count;
     s_frame_count++;
@@ -21718,6 +21723,10 @@ session_reboot:
             }
         }
     }
+#ifndef PSX_NO_DEBUG_TOOLS
+    /* Checkpoint resume (PSX_TAS_RESUME_STATE): a refused state ends the run. */
+    if (const int tas_status = tas_checkpoint_start(&cpu)) return tas_status;
+#endif
     /* Netplay: refresh RB bios/entry after savestate_configure (start() ran
      * earlier with zeros); guest also sandboxes .pst/.mcd under saves/netplay/. */
     psx_netplay_bind_guest_saves();
