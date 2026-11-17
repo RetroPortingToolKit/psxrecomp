@@ -17559,15 +17559,50 @@ const OvlLookRow* ovl_look_row(int setting) {
         return nullptr;
     return &rows[setting - PSX_MENU_SESSION_INTERNAL_RESOLUTION];
 }
+// Catalog shape is fixed for a session. Publish capabilities on the main
+// thread rather than traversing mutable mod state from the provider thread.
+std::atomic<bool> g_ovl_look_available[PSX_MENU_SESSION_DITHERING + 1];
+void ovl_look_catalog_snapshot(void) {
+    for (auto& available : g_ovl_look_available) available = false;
+    const auto* mods = PSXRecompV4::mod_runtime_launcher_provider();
+    if (!mods || !mods->feature_count || !mods->feature_get) return;
+    for (int setting=PSX_MENU_SESSION_INTERNAL_RESOLUTION;
+         setting<=PSX_MENU_SESSION_TEXTURE_FILTERING; ++setting) {
+        const OvlLookRow* row=ovl_look_row(setting);
+        if (!row || !row->p) continue;
+        for (int i=0; i<mods->feature_count(mods->ctx); ++i) {
+            RecompLauncherCModFeature feature{};
+            if (!mods->feature_get(mods->ctx,i,&feature) ||
+                !feature.package_id || !feature.id ||
+                std::strcmp(feature.package_id,row->p) || std::strcmp(feature.id,row->f)) continue;
+            if (!row->o) { g_ovl_look_available[setting]=true; break; }
+            if (!mods->feature_option_get) break;
+            for (int j=0; j<feature.option_count; ++j) {
+                RecompLauncherCModOption option{};
+                if (mods->feature_option_get(mods->ctx,row->p,row->f,j,&option) &&
+                    option.id && !std::strcmp(option.id,row->o)) {
+                    g_ovl_look_available[setting]=true;
+                    break;
+                }
+            }
+            break;
+        }
+    }
+}
+bool ovl_look_catalog_available(int setting) {
+    const OvlLookRow* row=ovl_look_row(setting);
+    return !row || !row->p || g_ovl_look_available[setting].load();
+}
 std::atomic<int> g_ovl_look_posted[PSX_MENU_SESSION_DITHERING + 1];
 std::atomic<bool> g_ovl_look_posted_init{false};
 void ovl_look_posted_reset(void) {
+    ovl_look_catalog_snapshot();
     for (auto& v : g_ovl_look_posted) v = -1;
     g_ovl_look_posted_init = true;
 }
 std::atomic<int> g_ovl_sess_aa{-1}, g_ovl_sess_dither{-1};
 int ovl_look_get(int setting, int* out) {
-    if (!g_ovl_look_posted_init) ovl_look_posted_reset();
+    if (!g_ovl_look_posted_init || !ovl_look_catalog_available(setting)) return 0;
     const int posted = g_ovl_look_posted[setting].load();
     if (posted >= 0) { *out = posted; return 1; }
     switch (setting) {
@@ -17587,7 +17622,7 @@ int ovl_look_get(int setting, int* out) {
     return 1;
 }
 int ovl_look_set(int setting, int value) {
-    if (!g_ovl_look_posted_init) ovl_look_posted_reset();
+    if (!g_ovl_look_posted_init || !ovl_look_catalog_available(setting)) return 0;
     int rc = 1;
     switch (setting) {
     case PSX_MENU_SESSION_ANTIALIASING:
@@ -17644,6 +17679,7 @@ int ovl_window_scale_now(void) {
     return std::max(1, std::min(4, (w + 160) / 320));
 }
 int mh_session_enabled(int setting) {
+    if (!ovl_look_catalog_available(setting)) return 0;
     switch (setting) {
     case PSX_MENU_SESSION_WINDOW_SCALE: return sdl_window && s_window_fullscreen.mode == 0;
     case PSX_MENU_SESSION_VOLUME: return 1;
