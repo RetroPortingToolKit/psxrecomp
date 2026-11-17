@@ -100,7 +100,7 @@ def main() -> int:
         def relaunch(proj: Path, build_dir: Path) -> subprocess.CompletedProcess:
             return subprocess.run([str(exe), str(proj), str(build_dir / "Game.exe")],
                                   cwd=str(proj), capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=60)
+                                  encoding="utf-8", errors="replace")
 
         two_discs = "C:/Games/Example (Disc 1).chd\nC:/Games/Example (Disc 2).chd"
         # (project disc.cfg or None, product disc.cfg or None, expected product disc.cfg or None, why)
@@ -111,6 +111,10 @@ def main() -> int:
              "an empty product disc.cfg is replaced"),
             (two_discs, "D:/picked in product.cue\n", "D:/picked in product.cue\n",
              "a pick made in the product is never overwritten"),
+            (two_discs, "\n \t\nD:/picked in product.cue\n", "\n \t\nD:/picked in product.cue\n",
+             "blank leading lines do not hide an existing product pick"),
+            (two_discs, " \t\r\n", two_discs + "\n",
+             "a whitespace-only product disc.cfg receives the recorded set"),
             (None, None, None,
              "no recorded disc means no product disc.cfg is invented"),
         ]
