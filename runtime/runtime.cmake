@@ -133,9 +133,8 @@ endif()
 option(PSX_LOBBY_DEV_LIST "Lobby browser ignores game_version (dev testing only)" OFF)
 # Release channel (public | playtest | empty = dev) and the PSX_PUBLIC_RELEASE
 # it derives: the one build-level notion of a public production release. Today
-# PSX_PUBLIC_RELEASE selects Playtest Diagnostics defaults
-# (runtime/playtest_diagnostics.cmake): OFF stages them default-on, ON keeps
-# the source manifests' default-off. See runtime/psx_release_channel.cmake.
+# Diagnostics recording defaults on in every channel, with explicit saved
+# choices preserved. See runtime/playtest_diagnostics.cmake.
 include("${CMAKE_CURRENT_LIST_DIR}/psx_release_channel.cmake")
 set(PSX_SDL_BACKEND "SDL3" CACHE STRING "SDL backend (SDL3 or SDL2)")
 set_property(CACHE PSX_SDL_BACKEND PROPERTY STRINGS SDL3 SDL2)

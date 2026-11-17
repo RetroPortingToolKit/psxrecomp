@@ -203,6 +203,27 @@ int main(int argc,char **argv) {
     std::filesystem::create_directories(PSXRecompV4::mod_runtime_root());
     {std::ofstream state(PSXRecompV4::mod_runtime_root()/"state.toml");state<<"format_version = 2\n";}
     {std::ofstream settings(std::filesystem::path(application_root)/"settings.toml");settings<<"[video]\n";}
+#if !PSX_DIAGNOSTIC_WITH_OSD
+    {
+    // Existing recording-only title IDs need no unavailable display callback.
+    CHECK(activation && vblank && savestate && session_reset);
+    CHECK(!osd_activation && !osd_vblank);
+    env("PSX_DIAGNOSTIC_REPLAY", "");env("PSX_DIAGNOSTIC_BASELINE", "");
+    reset_machine();session_reset();recording_activation();
+    const auto recording_reads=ram_reads;
+    run_frames(0,200);recording.flush();telemetry.flush();
+    CHECK(!recording_failed && recording.is_open() && !sources[0] && !sources[1]);
+    CHECK(ram_reads-recording_reads==200*DigestWords);
+    CHECK(shown[0].empty() && shown[1].empty());
+    recording.close();telemetry.close();
+    const auto session=newest_session();CHECK(!session.empty());
+    const auto text=slurp(session/"inputs.csv");
+    size_t rows=0;for(size_t at=0;(at=text.find("\nN ",at))!=std::string::npos;++at)++rows;
+    CHECK(rows==200 && text.find("# psxrecomp-input-v2\n# execution ")==0);
+    session_reset();CHECK(!recording.is_open() && !telemetry.is_open());
+    std::puts("recording-only shared provider checks passed");return 0;
+    }
+#endif
     CHECK(activation && vblank && savestate && osd_activation && osd_vblank && session_reset);
 
     // Display-only plans invoke their own callback: accepted input changes
