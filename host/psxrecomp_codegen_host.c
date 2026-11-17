@@ -4,6 +4,7 @@
 
 #include "psx_bios_known_images.h"
 
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1900,9 +1901,17 @@ static void sync_project_disc_cfg_to_product(const char* near_exe) {
         return;
     f = fopen(dst, "rb");
     if (f) {
-        int c = fgetc(f);
+        int c, has_content = 0;
+        while ((c = fgetc(f)) != EOF) {
+            if (!isspace((unsigned char)c)) {
+                has_content = 1;
+                break;
+            }
+        }
+        /* A read error is not evidence that the player's file is empty. */
+        if (ferror(f)) has_content = 1;
         fclose(f);
-        if (c != EOF && c != '\n' && c != '\r')
+        if (has_content)
             return;
     }
     f = fopen(src, "rb");
