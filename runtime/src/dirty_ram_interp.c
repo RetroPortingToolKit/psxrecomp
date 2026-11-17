@@ -1528,6 +1528,10 @@ static int exec_one(CPUState *cpu, uint32_t pc, uint32_t *next_pc_out) {
     return exec_one_fetched(cpu, pc, fetch_word(pc & 0x1FFFFFFFu), next_pc_out);
 }
 
+/* Set while exec_delay_slot runs its instruction. A BREAK there keeps the
+ * fatal exit: EPC and Cause.BD would have to name the branch. */
+static int s_in_delay_slot = 0;
+
 /* Forward: helper for delay-slot execution on jumps/branches. */
 static void exec_delay_slot(CPUState *cpu, uint32_t pc) {
     /* Delay-slot instruction at pc must NOT be a control transfer.
@@ -1549,7 +1553,10 @@ static void exec_delay_slot(CPUState *cpu, uint32_t pc) {
         return;
     }
     uint32_t dummy_next = 0;
+    const int outer_slot = s_in_delay_slot;
+    s_in_delay_slot = 1;
     (void)exec_one_fetched(cpu, pc, insn, &dummy_next);
+    s_in_delay_slot = outer_slot;
     g_dirty_ram_insns_run++;
     /* CYCLE MODEL: the delay-slot instruction is a real retired R3000A instruction
      * and is charged its own per-instruction interlock INSIDE exec_one (top-of-fn
@@ -1929,9 +1936,17 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             cpu->pc = pc;
             psx_syscall(cpu, (insn >> 6) & 0xFFFFFu);
             return (cpu->pc != 0);
-        case 0x0D: /* BREAK */
+        case 0x0D: { /* BREAK */
+            /* The guest's own vector handles it when the guest installed one
+             * (psx_break_vector.h); otherwise the fatal report. */
+            extern int psx_break_enter_guest_vector(CPUState *cpu, uint32_t pc);
+            if (!s_in_delay_slot) {
+                dirty_ram_ld_delay_flush(cpu);   /* pipeline drains on exception entry */
+                if (psx_break_enter_guest_vector(cpu, pc)) return 1;
+            }
             psx_break(cpu, (insn >> 6) & 0xFFFFFu, pc);
             return 1;
+        }
         case 0x0F: /* SYNC */
             return 0;
         case 0x10: /* MFHI */

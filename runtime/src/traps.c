@@ -19,6 +19,7 @@
 #include "psx_fiber.h"   /* cross-platform fibers (Win32 fibers / POSIX ucontext) */
 #include "psx_scheduler.h" /* deterministic TCB scheduler carve-out (scaffolding) */
 #include "parity_trace.h"  /* general two-process control-flow parity ring */
+#include "psx_break_vector.h"
 
 /* RAM reader adapter for the parity trace (cpu->read_word takes only addr). */
 static uint32_t traps_parity_rw(void* ctx, uint32_t addr) {
@@ -1254,6 +1255,32 @@ void psx_break(CPUState* cpu, uint32_t code, uint32_t pc) {
     trap_crash(buf);
     fprintf(stderr, "%s\n", buf); fflush(stderr);
     exit(1);
+}
+
+/* An interpreted BREAK enters the guest's own exception vector when the guest
+ * owns it (psx_break_vector.h). Returns 0 when the caller must take psx_break.
+ *
+ * The run report states how often the vector was entered and where first
+ * (crash_trace.c), so a run that later hangs in the guest's handler leaves a
+ * trace. */
+static uint32_t s_break_guest_count, s_break_guest_first_pc, s_break_guest_first_code;
+
+int psx_break_enter_guest_vector(CPUState* cpu, uint32_t pc) {
+    if (!psx_break_vector_enter(cpu, pc, psx_get_in_exception()))
+        return 0;
+    if (s_break_guest_count == 0u) {
+        s_break_guest_first_pc = pc;
+        s_break_guest_first_code = (cpu->read_word(pc) >> 6) & 0xFFFFFu;
+    }
+    if (s_break_guest_count != 0xFFFFFFFFu) s_break_guest_count++;
+    return 1;
+}
+
+/* out[0] entries, out[1] the first BREAK's PC, out[2] its 20-bit code. */
+void psx_break_guest_vector_stats(uint32_t out[3]) {
+    out[0] = s_break_guest_count;
+    out[1] = s_break_guest_first_pc;
+    out[2] = s_break_guest_first_code;
 }
 
 void psx_arith_overflow(CPUState* cpu) {
