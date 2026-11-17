@@ -309,6 +309,20 @@ Without a lobby start (LAN or Direct IP):
 Sim authority: pad **slot 0** is the session host (`START`, state transfer).
 Guests rearrange among seats **1..N−1**.
 
+**Build and game match.** A LAN / Direct IP room has no lobby server, so
+the host makes the server's two checks itself. The guest's JOIN ends with
+its lobby version and then its lobby game name (`[game] name`, the name
+online rooms are listed under), after the BIOS CRC line. The host refuses
+another version with `MOTK1 ERR version_mismatch` and another game name with
+`MOTK1 ERR game_mismatch` (`runtime/src/netplay_lan_version.c`); both
+players then see the reason on the launcher's status line. A missing
+version counts as `dev`, as on the server. A guest that sends no game line
+(a build from before the check) is refused on any host, so two different
+titles are never seated together. The same-machine room file
+`netplay_lan_lobby.txt` sits beside the exe; it is offered and joined only
+when the game name it records is this title's, because the programs of a
+multi-program set share that folder.
+
 **When the start fails.** A LAN host listens on the room's UDP
 port (7777 by default; the browser scans 7777 to 7808), a guest on a port the
 system picks, and a command-line start on the `--net-bind` address. When the
