@@ -139,6 +139,45 @@ static uint32_t     s_shard_skipped    = 0;   /* last run */
 static uint32_t     s_shard_fail_total = 0;   /* accumulated across all runs */
 static int          s_shard_result_seen = 0;  /* did we parse a result line? */
 
+/* ---- What the run report says about the compile runs ----------------------
+ *
+ * The counters above and the output tail leave the process only through the
+ * debug server, and a product has none. A unit the compiler rejects runs
+ * interpreted, and nothing in a build's evidence said so: every build looked
+ * clean while clang refused overlay units on Windows. So the same facts are
+ * kept for the run report (autocompile_report_json), for the whole start:
+ *
+ *   - the unit counts of every finished run, summed;
+ *   - every "SHARD FAIL [class] ..." line counted as it arrives, so a run the
+ *     exit timer cuts short still shows its failures;
+ *   - per failure class the first such line, and for a compile failure the
+ *     compiler's first error line (it is printed above the SHARD FAIL line,
+ *     under "COMPILE ERROR").
+ *
+ * All of it is bounded: AC_FAIL_CLASS_MAX classes, AC_FAIL_TEXT_MAX bytes of
+ * each line, AC_REPORT_TAIL_MAX bytes of output. Nothing here changes what is
+ * compiled, loaded or retried. */
+#define AC_FAIL_CLASS_MAX   8
+#define AC_FAIL_TEXT_MAX    240
+#define AC_REPORT_TAIL_MAX  2000
+typedef struct {
+    char     name[32];
+    unsigned count;
+    char     first[AC_FAIL_TEXT_MAX];        /* the first SHARD FAIL line */
+    char     first_error[AC_FAIL_TEXT_MAX];  /* the compiler's line, or "" */
+} AcFailClass;
+static AcFailClass  s_fail_class[AC_FAIL_CLASS_MAX];
+static unsigned     s_fail_class_count = 0;
+static unsigned     s_fail_lines = 0;            /* SHARD FAIL lines, all runs */
+static unsigned     s_fail_lines_unclassed = 0;  /* of them, in classes past the bound */
+static uint32_t     s_units_ok_total = 0;        /* finished runs, summed */
+static uint32_t     s_units_skipped_total = 0;
+static uint32_t     s_runs_with_result = 0;      /* finished runs that printed a result line */
+static uint32_t     s_runs_stopped_at_quit = 0;  /* runs a normal quit stopped */
+/* The compiler's error line that belongs to the next SHARD FAIL line. */
+static char         s_pending_error[AC_FAIL_TEXT_MAX];
+static int          s_after_compile_error = 0;
+
 /* ---- Degraded-state channel (portable; read by autocompile_status_json) ----
  *
  * Every warning in this file goes to stdout, and the shipped runtime links
@@ -331,6 +370,88 @@ static int shard_result_line_locked(const char *line) {
     return 1;
 }
 
+static void fail_text_copy(char *dst, const char *src) {
+    while (*src == ' ' || *src == '\t') src++;
+    snprintf(dst, AC_FAIL_TEXT_MAX, "%s", src);
+}
+
+/* One complete line of the driver's output, for the run report. The driver
+ * (tools/compile_overlays.py) prints, for a unit the compiler rejects:
+ *     COMPILE ERROR (exit 1):
+ *   <the compiler's own lines>
+ *     FAILED
+ *     SHARD FAIL [compile] <unit>: gcc/tcc compile failed (see COMPILE ERROR above)
+ * and for every other failure only the SHARD FAIL line, with its class. */
+static void compile_report_line_locked(const char *line) {
+    const char *t = line;
+    while (*t == ' ' || *t == '\t') t++;
+    if (strncmp(t, "SHARD FAIL [", 12) == 0) {
+        const char *cls = t + 12;
+        const char *end = strchr(cls, ']');
+        if (!end || end == cls) return;
+        size_t n = (size_t)(end - cls);
+        if (n >= sizeof(s_fail_class[0].name)) n = sizeof(s_fail_class[0].name) - 1;
+        s_fail_lines++;
+        AcFailClass *hit = NULL;
+        for (unsigned i = 0; i < s_fail_class_count; i++) {
+            if (strlen(s_fail_class[i].name) == n &&
+                memcmp(s_fail_class[i].name, cls, n) == 0) {
+                hit = &s_fail_class[i];
+                break;
+            }
+        }
+        if (hit) {
+            hit->count++;
+        } else if (s_fail_class_count < AC_FAIL_CLASS_MAX) {
+            hit = &s_fail_class[s_fail_class_count++];
+            memcpy(hit->name, cls, n);
+            hit->name[n] = '\0';
+            hit->count = 1;
+            fail_text_copy(hit->first, t);
+            snprintf(hit->first_error, sizeof(hit->first_error), "%s",
+                     s_pending_error);
+            /* Once per class per start, on stderr, so a headless log shows
+             * it. The run report carries the same two lines and the counts. */
+            fprintf(stderr,
+                    "psxrecomp: overlay compile: a unit failed and runs "
+                    "interpreted: %s%s%s\n",
+                    hit->first, hit->first_error[0] ? " | " : "",
+                    hit->first_error);
+        } else {
+            if (!s_fail_lines_unclassed)
+                fprintf(stderr,
+                        "psxrecomp: overlay compile: more than %d failure "
+                        "classes; later classes are counted, not named\n",
+                        AC_FAIL_CLASS_MAX);
+            s_fail_lines_unclassed++;
+        }
+        s_pending_error[0] = '\0';
+        s_after_compile_error = 0;
+        return;
+    }
+    if (strncmp(t, "COMPILE ERROR", 13) == 0 ||
+        strncmp(t, "TCC COMPILE ERROR", 17) == 0) {
+        s_after_compile_error = 1;
+        s_pending_error[0] = '\0';
+        /* "COMPILE ERROR: <text>" says it on the same line. "COMPILE ERROR
+         * (exit N):" is followed by the compiler's own output. */
+        const char *colon = strchr(t, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (*colon) fail_text_copy(s_pending_error, colon);
+        }
+        return;
+    }
+    if (s_after_compile_error && *t) {
+        /* Keep the first line; prefer the first one that says "error" (a
+         * compiler opens with "In file included from ..." as often as not). */
+        if (!s_pending_error[0] ||
+            (!strstr(s_pending_error, "error") && strstr(t, "error")))
+            fail_text_copy(s_pending_error, t);
+    }
+}
+
 /* Per-platform: Windows also queues PSX_SHARD_PUBLISHED paths for the
  * incremental publisher; POSIX only records the result counts and lets the
  * batch-end rescan load what the run wrote. Both run under the output lock. */
@@ -366,10 +487,12 @@ static void publish_parse_locked(const char *buf, int n) {
         if (c == '\r') continue;
         if (c == '\n') {
             s_child_line[s_child_line_len] = '\0';
-            if (s_child_line_overflow)
+            if (s_child_line_overflow) {
                 s_publish_parse_fail_run++;
-            else
+            } else {
+                compile_report_line_locked(s_child_line);
                 child_line_locked();
+            }
             s_child_line_len = 0;
             s_child_line_overflow = 0;
         } else if (s_child_line_len < (int)sizeof(s_child_line) - 1) {
@@ -1147,6 +1270,8 @@ static int autocompile_request_impl(void) {
     s_exit_code = -1;
     s_shard_ok = s_shard_fail = s_shard_skipped = 0;
     s_shard_result_seen = 0;
+    s_pending_error[0] = '\0';
+    s_after_compile_error = 0;
     LeaveCriticalSection(&s_out_lock);
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
     HANDLE rd = NULL, wr = NULL;
@@ -1340,6 +1465,8 @@ static int autocompile_request_impl(void) {
     s_out_len = 0;
     s_shard_ok = s_shard_fail = s_shard_skipped = 0;
     s_shard_result_seen = 0;
+    s_pending_error[0] = '\0';
+    s_after_compile_error = 0;
     pthread_mutex_unlock(&s_out_lock);
     __atomic_store_n(&s_exit_code, -1, __ATOMIC_SEQ_CST);
 
@@ -1532,6 +1659,12 @@ void autocompile_poll_main(void) {
         s_shard_result_seen = parse_shard_result();
     if (s_shard_result_seen && s_shard_fail)
         s_shard_fail_total += s_shard_fail;
+    if (s_shard_result_seen) {
+        /* The same once-per-run accounting, for the run report. */
+        s_units_ok_total += s_shard_ok;
+        s_units_skipped_total += s_shard_skipped;
+        s_runs_with_result++;
+    }
     ac_state_store(AC_IDLE);
     /* Direct markers minimize handoff latency, then one idempotent batch-end
      * rescan makes every successfully published artifact visible to additive
@@ -1550,9 +1683,28 @@ void autocompile_poll_main(void) {
         autocompile_note_success();
 }
 
+/* A normal quit stops a compile run that is going and stores the
+ * state idle, and the run report is written after that. Without this the
+ * report hid the stopped run, and a result line the run had already printed
+ * was never added. `state_at_quit` is the state before the kill: running is a
+ * run this quit stopped; done is a run that ended by itself and that the
+ * emulation thread had not accounted yet. Called with the workers joined. */
+static void account_run_at_quit(int state_at_quit) {
+    if (state_at_quit == AC_IDLE) return;
+    if (state_at_quit == AC_RUNNING) s_runs_stopped_at_quit++;
+    if (s_shard_result_seen) {
+        s_shard_fail_total += s_shard_fail;
+        s_units_ok_total += s_shard_ok;
+        s_units_skipped_total += s_shard_skipped;
+        s_runs_with_result++;
+        s_shard_result_seen = 0;
+    }
+}
+
 void autocompile_shutdown(void) {
 #ifdef _WIN32
     if (!s_out_lock_init) return;   /* never configured — nothing to stop */
+    const int state_at_quit = ac_state_load();
     /* Halt the pipeline first so the preparer can never START another
      * LoadLibrary; one already in flight is waited out below (terminating a
      * thread that holds the Windows loader lock can deadlock ExitProcess). */
@@ -1588,14 +1740,17 @@ void autocompile_shutdown(void) {
     /* Both workers are joined and this is the emulation thread, so nothing is
      * preparing or committing: the discard cannot be refused. */
     (void)publish_discard_all();
+    account_run_at_quit(state_at_quit);
     ac_state_store(AC_IDLE);
 #else
     if (!s_out_lock_init) return;   /* never configured — nothing to stop */
+    const int state_at_quit = ac_state_load();
     posix_kill_child_tree();
     if (s_watch_thread_live) {
         pthread_join(s_watch_thread, NULL);
         s_watch_thread_live = 0;
     }
+    account_run_at_quit(state_at_quit);
     ac_state_store(AC_IDLE);
 #endif
 }
@@ -1699,4 +1854,103 @@ int autocompile_status_json(char *out, int cap) {
         (unsigned long long)publish_prepare_total_us,
         (unsigned long long)publish_prepare_max_us,
         (unsigned long long)publish_prepare_last_us, tail);
+}
+
+/* The compile results of this start, for the run report. One JSON
+ * object, always complete: "{}" when `cap` cannot hold it.
+ *
+ * The run report is also written from a crash handler and from atexit, so
+ * this must not wait: it takes the output lock only if it is free. Without the
+ * lock the copy can be torn (a line half replaced); it is still bounded and
+ * terminated, and "consistent" says 0. */
+int autocompile_report_json(char *out, int cap) {
+    static const char *names[] = { "idle", "running", "done", "?" };
+    AcFailClass classes[AC_FAIL_CLASS_MAX];
+    char tail_raw[AC_REPORT_TAIL_MAX + 1];
+    char esc[AC_FAIL_TEXT_MAX * 6 + 16];
+    char tail_esc[AC_REPORT_TAIL_MAX * 6 + 16];
+    unsigned class_count, fail_lines, unclassed, ok, failed, skipped, results;
+    int tail_len = 0, locked = 0, o = 0;
+    if (!out || cap < 3) return 0;
+
+    if (s_out_lock_init) {
+#ifdef _WIN32
+        locked = TryEnterCriticalSection(&s_out_lock) ? 1 : 0;
+#else
+        locked = pthread_mutex_trylock(&s_out_lock) == 0;
+#endif
+    }
+    memcpy(classes, s_fail_class, sizeof(classes));
+    class_count = s_fail_class_count;
+    fail_lines = s_fail_lines;
+    unclassed = s_fail_lines_unclassed;
+    ok = s_units_ok_total;
+    failed = s_shard_fail_total;
+    skipped = s_units_skipped_total;
+    results = s_runs_with_result;
+    const int state = ac_state_load();
+    if (state != AC_IDLE && s_shard_result_seen) {
+        /* A run that printed its result line and was not accounted yet (the
+         * start ended first): count it here, once. */
+        ok += s_shard_ok;
+        failed += s_shard_fail;
+        skipped += s_shard_skipped;
+        results++;
+    }
+    {
+        int len = s_out_len;
+        if (len < 0) len = 0;
+        if (len > AC_OUT_CAP) len = AC_OUT_CAP;
+        tail_len = len < AC_REPORT_TAIL_MAX ? len : AC_REPORT_TAIL_MAX;
+        memcpy(tail_raw, s_out + (len - tail_len), (size_t)tail_len);
+        tail_raw[tail_len] = '\0';
+    }
+    if (locked) {
+#ifdef _WIN32
+        LeaveCriticalSection(&s_out_lock);
+#else
+        pthread_mutex_unlock(&s_out_lock);
+#endif
+    }
+    if (class_count > AC_FAIL_CLASS_MAX) class_count = AC_FAIL_CLASS_MAX;
+
+    o = snprintf(out, (size_t)cap,
+        "{\"configured\":%d,\"consistent\":%d,\"state\":\"%s\","
+        "\"runs\":%u,\"runs_failed\":%u,\"runs_with_result\":%u,"
+        "\"units_attempted\":%u,\"units_compiled\":%u,\"units_failed\":%u,"
+        "\"units_skipped\":%u,\"fail_lines\":%u,\"runs_stopped_at_quit\":%u,"
+        "\"failure_classes_max\":%d,\"failure_text_max\":%d,"
+        "\"fail_lines_in_unnamed_classes\":%u,\"failure_classes\":[",
+        autocompile_configured(), (locked || !s_out_lock_init) ? 1 : 0,
+        names[state & 3], s_runs, s_fails, results,
+        ok + failed, ok, failed, skipped, fail_lines, s_runs_stopped_at_quit,
+        AC_FAIL_CLASS_MAX, AC_FAIL_TEXT_MAX - 1, unclassed);
+    for (unsigned i = 0; i < class_count && o > 0 && o < cap; i++) {
+        AcFailClass *c = &classes[i];
+        c->name[sizeof(c->name) - 1] = '\0';
+        c->first[sizeof(c->first) - 1] = '\0';
+        c->first_error[sizeof(c->first_error) - 1] = '\0';
+        json_escape_into(esc, (int)sizeof(esc), c->name, (int)strlen(c->name));
+        o += snprintf(out + o, (size_t)(cap - o), "%s{\"class\":\"%s\",\"count\":%u,",
+                      i ? "," : "", esc, c->count);
+        if (o >= cap) break;
+        json_escape_into(esc, (int)sizeof(esc), c->first, (int)strlen(c->first));
+        o += snprintf(out + o, (size_t)(cap - o), "\"first\":\"%s\",", esc);
+        if (o >= cap) break;
+        json_escape_into(esc, (int)sizeof(esc), c->first_error,
+                         (int)strlen(c->first_error));
+        o += snprintf(out + o, (size_t)(cap - o), "\"first_error\":\"%s\"}", esc);
+    }
+    if (o > 0 && o < cap) {
+        json_escape_into(tail_esc, (int)sizeof(tail_esc), tail_raw, tail_len);
+        o += snprintf(out + o, (size_t)(cap - o),
+                      "],\"output_tail_max\":%d,\"output_tail\":\"%s\"}",
+                      AC_REPORT_TAIL_MAX, tail_esc);
+    }
+    if (o <= 0 || o >= cap) {
+        /* Too small for the whole object: say nothing rather than half of it. */
+        snprintf(out, (size_t)cap, "{}");
+        return 2;
+    }
+    return o;
 }
