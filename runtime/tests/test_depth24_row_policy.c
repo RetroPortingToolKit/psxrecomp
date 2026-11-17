@@ -17,9 +17,9 @@
  * image stays visible; movie rows not uploaded present black; uploaded rows
  * keep their RGB bytes; a still-to-movie edge drops the old record; uploads
  * wrap at physical row 512; a 24-bit depth change drops the record; the
- * first upload counts even before any present saw MDEC start; a save-state
- * load drops the record whatever the prior activity was; guest VRAM is never
- * changed. The record is presentation state only and is not serialized.
+ * first upload counts even before any present saw MDEC start; a current GPU
+ * snapshot preserves valid and invalid rows despite different live coverage;
+ * guest VRAM is never changed. The wire data fits the private checkpoint.
  */
 #include <assert.h>
 #include <stdint.h>
@@ -94,16 +94,24 @@ int main(void) {
     upload(20, 1);
     check(20, GRAY, "first upload counts before a present saw MDEC start");
 
+    /* Use the actual GPU wire snapshot and frontend load notification.
+     * The current snapshot keeps partial coverage, not the later live rows. */
+    uint8_t snapshot[sizeof s_pass_regs];
+    uint32_t snapshot_size = gpu_snapshot_bytes();
+    assert(snapshot_size <= sizeof snapshot);
+    gpu_snapshot_write(snapshot);
     for (int prior = 0; prior < 2; prior++) {
         test_streaming = 1;
         upload(0, 512);
         test_streaming = prior;
-        check(20, GRAY, "every row uploaded before the load");
+        check(21, GRAY, "later live rows are visible before restore");
+        assert(gpu_snapshot_read(snapshot, snapshot_size));
         gpu_depth24_on_savestate_loaded();
         test_streaming = 1;
-        check(20, BLACK, "save-state load drops the record");
-        upload(20, 1);
-        check(20, GRAY, "upload after the load is visible");
+        check(20, GRAY, "restore keeps an already-uploaded movie row");
+        check(21, BLACK, "restore keeps an unuploaded movie row black");
+        upload(21, 1);
+        check(21, GRAY, "new upload after restore remains visible");
     }
 
     test_streaming = 0;
