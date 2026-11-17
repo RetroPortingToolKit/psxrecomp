@@ -665,6 +665,13 @@ int savestate_slot_disc(int slot) {
 
 /* The disc whose files a read of this slot uses: the state the slot shows,
  * or the mounted disc when the slot is empty. */
+/* Roster values are whole-set naming tokens in local image order (#906). */
+static int local_disc_for_token(int token) {
+    for (int i=0; i<s_disc_roster_count; ++i)
+        if (s_disc_roster[i]==token) return i+1;
+    return 0;
+}
+
 static int slot_view_disc(int slot) {
     const int disc = savestate_slot_disc(slot);
     return disc >= 1 ? disc : s_disc_number;
@@ -751,6 +758,8 @@ int savestate_read_thumb(int slot, uint32_t* out_argb, int out_w, int out_h) {
     return 1;
 }
 
+static int read_slot_for_disc(int slot, int disc, uint8_t** data_out, size_t* size_out);
+
 int savestate_slot_compatible(int slot, char* reason, size_t reason_cap) {
     uint8_t* data = NULL;
     size_t size = 0;
@@ -762,7 +771,7 @@ int savestate_slot_compatible(int slot, char* reason, size_t reason_cap) {
             snprintf(reason, reason_cap, "not_configured");
         return 0;
     }
-    if (!savestate_read_slot(slot, &data, &size) || !data) {
+    if (!read_slot_for_disc(slot, slot_view_disc(slot), &data, &size) || !data) {
         if (reason && reason_cap)
             snprintf(reason, reason_cap, "missing");
         return 0;
@@ -787,7 +796,7 @@ static int state_file_header_ok(const char* path) {
                                    reason, sizeof(reason));
 }
 
-int savestate_read_slot(int slot, uint8_t** data_out, size_t* size_out) {
+static int read_slot_for_disc(int slot, int disc, uint8_t** data_out, size_t* size_out) {
     char path[600];
     FILE* f;
     long sz;
@@ -795,7 +804,7 @@ int savestate_read_slot(int slot, uint8_t** data_out, size_t* size_out) {
     if (!data_out || !size_out) return 0;
     *data_out = NULL;
     *size_out = 0;
-    if (!savestate_slot_path(slot, path, sizeof(path))) return 0;
+    if (!slot_file_path(slot, disc, "pst", path, sizeof(path))) return 0;
     f = fopen(path, "rb");
     if (!f) return 0;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
@@ -814,6 +823,11 @@ int savestate_read_slot(int slot, uint8_t** data_out, size_t* size_out) {
     *data_out = buf;
     *size_out = (size_t)sz;
     return 1;
+}
+
+/* Replay/netplay callers read the mounted disc, independently of menu lookup. */
+int savestate_read_slot(int slot, uint8_t** data_out, size_t* size_out) {
+    return read_slot_for_disc(slot,s_disc_number,data_out,size_out);
 }
 
 int savestate_write_slot(int slot, const void* data, size_t size) {
@@ -1187,7 +1201,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
             } else if (!state_file_header_ok(path)) {
                 fprintf(stderr, "savestate: slot %d (disc %d) is not a state of this build\n",
                         slot, state_disc);
-            } else if (!cdrom_disc_restore_begin(state_disc)) {
+            } else if (!cdrom_disc_restore_begin(local_disc_for_token(state_disc))) {
                 snprintf(refusal, sizeof(refusal),
                          "This state needs disc %d, which could not be mounted",
                          state_disc);
