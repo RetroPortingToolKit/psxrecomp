@@ -2347,6 +2347,32 @@ if(BUILD_TESTING)
     target_include_directories(freeze_dump_policy_test PRIVATE src)
     add_test(NAME freeze_dump_policy_test COMMAND freeze_dump_policy_test)
 
+    # The heartbeat unit itself, one sample per call, with the production
+    # dump policy. Each scenario writes psx_freeze_heartbeat.json and its
+    # dumps into the working directory, so each has a directory of its own.
+    add_executable(freeze_heartbeat_wedge_test
+        tests/test_freeze_heartbeat_wedge.c
+        src/freeze_dump_policy.c
+        src/psx_ram_geometry.c)
+    target_include_directories(freeze_heartbeat_wedge_test PRIVATE include src)
+    if(WIN32)
+        target_link_libraries(freeze_heartbeat_wedge_test PRIVATE dbghelp)
+    else()
+        find_package(Threads REQUIRED)
+        target_link_libraries(freeze_heartbeat_wedge_test PRIVATE
+            Threads::Threads ${CMAKE_DL_LIBS})
+    endif()
+    foreach(_scenario IN ITEMS
+            spin-ends-only spin-wait-ends spin-real spin-video
+            spin-pause-restarts)
+        file(MAKE_DIRECTORY
+            ${CMAKE_CURRENT_BINARY_DIR}/freeze_heartbeat_wedge_scratch/${_scenario})
+        add_test(NAME freeze_heartbeat_wedge_${_scenario}
+                 COMMAND freeze_heartbeat_wedge_test ${_scenario}
+                 WORKING_DIRECTORY
+                     ${CMAKE_CURRENT_BINARY_DIR}/freeze_heartbeat_wedge_scratch/${_scenario})
+    endforeach()
+
     add_executable(presentation_scene_test
         tests/test_presentation_scene.c src/presentation_scene.c)
     target_include_directories(presentation_scene_test PRIVATE include)
