@@ -1,25 +1,7 @@
-# Build-time step over one STAGED Playtest Diagnostics package.
-#
-# Owner policy (2026-10-19): Playtest Diagnostics (input recording + OSD) ship
-# OFF by default only in public production releases. Every other build (dev
-# trees, playtest/pre-release packages) defaults them ON. The feature stays a
-# player-selectable mod either way.
-#
-# Source manifests carry the production default (false). This script runs
-# right after the framework stages the mod catalog into <exe-dir>/mods/bundled
-# and edits only that staged copy:
-#
-#   PSX_PUBLIC_RELEASE=0  set default_enabled = true for features recording/osd
-#   PSX_PUBLIC_RELEASE=1  require they are explicitly default_enabled = false
-#
-# Inputs (-D):
-#   PSX_MODS_DIR         <exe-dir>/mods
-#   PSX_DIAGNOSTICS_ID   package id, e.g. jerseydevil.diagnostics
-#   PSX_PUBLIC_RELEASE   0 or 1
-#   PSX_LABEL            target name for messages (optional)
-#
-# Line-oriented on purpose: the manifests are flat [[table]] TOML, and a
-# string-level rewrite keeps every other byte (comments, ordering) intact.
+# Defaults for the staged diagnostics catalog only. Recording starts enabled
+# in every release channel; an explicitly saved Mods choice still wins.
+# The optional display is off by default so original game menus stay intact.
+# This script never edits mods/state.toml or any player settings.
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_required PSX_MODS_DIR PSX_DIAGNOSTICS_ID PSX_PUBLIC_RELEASE)
@@ -59,7 +41,7 @@ function(_psx_diag_block blk out_blk seen_var)
     if(blk MATCHES "\n[ \t]*id[ \t]*=[ \t]*\"([^\"]*)\"")
         set(_id "${CMAKE_MATCH_1}")
     endif()
-    if(NOT _id STREQUAL "recording" AND NOT _id STREQUAL "osd")
+    if(NOT _id STREQUAL "recording" AND NOT _id STREQUAL "input-recording" AND NOT _id STREQUAL "osd")
         set(${out_blk} "${blk}" PARENT_SCOPE)
         return()
     endif()
@@ -70,23 +52,20 @@ function(_psx_diag_block blk out_blk seen_var)
         set(_def_match TRUE)
         set(_value "${CMAKE_MATCH_1}")
     endif()
-    if(_public)
-        if(NOT _value STREQUAL "false")
-            message(FATAL_ERROR
-                "[${PSX_LABEL}] ${_manifest}: feature '${_id}' must say "
-                "default_enabled = false in the source manifest; public releases "
-                "ship Playtest Diagnostics off by default (found '${_value}').")
-        endif()
-    elseif(_def_match)
+    set(_wanted true)
+    if(_id STREQUAL "osd")
+        set(_wanted false)
+    endif()
+    if(_def_match)
         string(REGEX REPLACE "\n([ \t]*)default_enabled[ \t]*=[ \t]*[A-Za-z]+"
-               "\n\\1default_enabled = true" blk "${blk}")
+               "\n\\1default_enabled = ${_wanted}" blk "${blk}")
     else()
         # No explicit default: insert one directly under the table header.
         string(FIND "${blk}" "\n" _nl)
         math(EXPR _after "${_nl} + 1")
         string(SUBSTRING "${blk}" 0 ${_after} _head)
         string(SUBSTRING "${blk}" ${_after} -1 _tail)
-        set(blk "${_head}default_enabled = true\n${_tail}")
+        set(blk "${_head}default_enabled = ${_wanted}\n${_tail}")
     endif()
     set(${out_blk} "${blk}" PARENT_SCOPE)
     set(${seen_var} "${_seen}" PARENT_SCOPE)
@@ -119,14 +98,9 @@ foreach(_manifest IN LISTS _manifests)
     _psx_diag_block("${_blk}" _blk _seen)
     string(APPEND _out "${_blk}")
 
-    foreach(_feature recording osd)
-        list(FIND _seen "${_feature}" _found)
-        if(_found EQUAL -1)
-            message(FATAL_ERROR
-                "[${PSX_LABEL}] ${_manifest} has no [[feature]] id = \"${_feature}\"; "
-                "Playtest Diagnostics needs both recording and osd features.")
-        endif()
-    endforeach()
+    if(NOT "recording" IN_LIST _seen AND NOT "input-recording" IN_LIST _seen)
+        message(FATAL_ERROR "[${PSX_LABEL}] ${_manifest} needs a visible recording feature")
+    endif()
 
     file(READ "${_manifest}" _before)
     if(NOT _out STREQUAL _before)
@@ -149,9 +123,5 @@ foreach(_manifest IN LISTS _manifests)
         string(REPLACE "@" "@_psx_at@" _out "${_out}")
         file(CONFIGURE OUTPUT "${_manifest}" CONTENT "${_out}" @ONLY NEWLINE_STYLE ${_newline})
     endif()
-    if(_public)
-        message(STATUS "[${PSX_LABEL}] ${PSX_DIAGNOSTICS_ID}: ${_mode}, recording/osd default_enabled = false")
-    else()
-        message(STATUS "[${PSX_LABEL}] ${PSX_DIAGNOSTICS_ID}: ${_mode}, recording/osd default_enabled = true")
-    endif()
+    message(STATUS "[${PSX_LABEL}] ${PSX_DIAGNOSTICS_ID}: ${_mode}, recording default on; optional display off")
 endforeach()

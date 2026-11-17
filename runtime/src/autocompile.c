@@ -46,6 +46,8 @@ static char s_cwd[512];
  * the loader's READ location, regardless of what the configured command says. */
 static char s_cache_dir[512];
 static char s_captures[512];
+static int s_session_interpreted;
+int autocompile_session_interpreted_sealed(void) { return s_session_interpreted; }
 #ifdef _WIN32
 #include "autocompile_child_env.h"
 #endif
@@ -990,6 +992,7 @@ static void autocompile_check_path_args(void) {
 #endif /* _WIN32 */
 
 void autocompile_configure(const char *cmd, const char *cwd) {
+    if (s_session_interpreted) return;
     if (cmd && strlen(cmd) >= sizeof(s_cmd)) {
         /* Loud, and off: a truncated command line fails argparse on every retry
          * with an error that never mentions the real cause. */
@@ -1039,12 +1042,33 @@ void autocompile_configure(const char *cmd, const char *cwd) {
 }
 
 void autocompile_set_cache_paths(const char *cache_dir, const char *captures) {
+    if (s_session_interpreted) return;
     snprintf(s_cache_dir, sizeof(s_cache_dir), "%s", cache_dir ? cache_dir : "");
     snprintf(s_captures,  sizeof(s_captures),  "%s", captures  ? captures  : "");
 }
 
-int autocompile_configured(void) { return s_cmd[0] != '\0'; }
+int autocompile_configured(void) { return !s_session_interpreted && s_cmd[0] != '\0'; }
 int autocompile_busy(void)       { return ac_state_load() != AC_IDLE; }
+
+int autocompile_session_set_interpreted(int sealed) {
+    if (!!sealed == s_session_interpreted) return 1;
+    if (ac_state_load() != AC_IDLE) return 0;
+#ifdef _WIN32
+    if (s_prepare_thread || s_watch_thread || s_proc || s_job) return 0;
+    if (s_out_lock_init) {
+        EnterCriticalSection(&s_out_lock);
+        int pending = s_publish_raw_head || s_publish_ready_head ||
+                      s_publish_preparing || s_publish_commit_active;
+        if (!pending) s_session_interpreted = sealed != 0;
+        LeaveCriticalSection(&s_out_lock);
+        return !pending;
+    }
+#else
+    if (s_watch_thread_live || s_child) return 0;
+#endif
+    s_session_interpreted = sealed != 0;
+    return 1;
+}
 
 /* Probe PATH for a real C compiler (gcc/cc/clang). A configured command STRING
  * (autocompile_configured) is not enough: the shipped game.toml always carries
@@ -1093,6 +1117,7 @@ int autocompile_request(void) {
 }
 
 static int autocompile_request_impl(void) {
+    if (s_session_interpreted) return 0;
     /* DONE owns an unconsumed cache rescan/result. Only the emulation-thread
      * poll may return it to IDLE; never overwrite it with another child. */
     if (!autocompile_configured() || ac_state_load() != AC_IDLE) return 0;
@@ -1415,6 +1440,7 @@ static int parse_shard_result(void) {
 }
 
 void autocompile_poll_main(void) {
+    if (s_session_interpreted) return;
     /* Drain at most one atomic publication per frame. The producer only sends
      * mapped-but-uninitialized images; callback wiring, validation, and
      * candidate registration remain single-threaded here. */

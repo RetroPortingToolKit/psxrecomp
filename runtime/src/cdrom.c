@@ -3134,6 +3134,46 @@ uint32_t cdrom_cycles_to_irq(uint32_t i_mask) {
     return best;
 }
 
+uint32_t cdrom_cycles_to_internal_event(void) {
+    uint32_t best = UINT32_MAX;
+    /* A presented, latched response is stable until a guest acknowledgement;
+     * it is not a new one-cycle event for the entire held interval. */
+    if (cdrom_irq_mask_matches_reason(irq_enable, irq_flag) &&
+        !cdrom_intc_request_latched) {
+        const int rem = irq_present_rem_cycles();
+        best = rem > 0 ? (uint32_t)rem : 1u;
+    }
+    if (pending.pending && (psx_cycle_count < pending.due_cyc || irq_flag == 0)) {
+        const uint32_t d = psx_cycle_count < pending.due_cyc
+                         ? (uint32_t)cycles_until_due(pending.due_cyc) : 1u;
+        if (d < best) best = d;
+    }
+    if (pending_present_due) {
+        const uint32_t d = psx_cycle_count < pending_present_due
+                         ? (uint32_t)cycles_until_due(pending_present_due) : 1u;
+        if (d < best) best = d;
+    }
+    if (reading && !warm_route_consumer_blocked()) {
+        /* The existing optional accelerated route explicitly freezes the
+         * drive countdown while its bounded consumer hold is accumulating. */
+        const uint32_t d = accelerated_consumer_blocked() &&
+                           s_accel_block_accum < authentic_sector_period()
+                         ? (uint32_t)(authentic_sector_period() - s_accel_block_accum)
+                         : read_delay > 0 ? (uint32_t)read_delay : 1u;
+        if (d < best) best = d;
+    }
+    if (cdda_playing) {
+        const uint32_t d = cdda_delay > 0 ? (uint32_t)cdda_delay : 1u;
+        if (d < best) best = d;
+    }
+    if (s_lid.physical_open && !s_lid_irq_pending) {
+        const uint64_t rem = s_lid.close_due > psx_cycle_count
+                           ? s_lid.close_due - psx_cycle_count : 1u;
+        if (rem < best) best = (uint32_t)rem;
+    }
+    return best;
+}
+
 void cdrom_advance(uint32_t cycles) {
     /* Presentation hold is absolute (cdrom_irq_present_due); refresh checks
      * it. Note: do NOT freeze CD during rollback Replay. MotK FMV skip resim

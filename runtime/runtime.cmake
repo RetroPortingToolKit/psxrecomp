@@ -17,14 +17,24 @@ set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
 include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_execution_profile.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_native_cpu_spans.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_direct_guest_memory.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_observation_time.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_capture_jobs.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_native_idle_wait.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_present_images.cmake")
+option(PSX_HEADROOM_COUNTERS "Keep bounded per-frame cost counters in all builds" ON)
 include("${PSXRECOMP_ROOT}/cmake/psx_host_pacing.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_resident_preparation.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_openbios_read_job.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_media_jobs.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_frame_submission.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_block_audio.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_static_calls.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_precision_slices.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_pgxp_dataflow.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_precision_operations.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_sha256_file.cmake")
+option(PSX_REQUIRED_HOST_PROFILES "Candidate required pre-guest host-profile admission" OFF)
 include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
@@ -133,9 +143,8 @@ endif()
 option(PSX_LOBBY_DEV_LIST "Lobby browser ignores game_version (dev testing only)" OFF)
 # Release channel (public | playtest | empty = dev) and the PSX_PUBLIC_RELEASE
 # it derives: the one build-level notion of a public production release. Today
-# PSX_PUBLIC_RELEASE selects Playtest Diagnostics defaults
-# (runtime/playtest_diagnostics.cmake): OFF stages them default-on, ON keeps
-# the source manifests' default-off. See runtime/psx_release_channel.cmake.
+# Diagnostics recording defaults on in every channel, with explicit saved
+# choices preserved. See runtime/playtest_diagnostics.cmake.
 include("${CMAKE_CURRENT_LIST_DIR}/psx_release_channel.cmake")
 set(PSX_SDL_BACKEND "SDL3" CACHE STRING "SDL backend (SDL3 or SDL2)")
 set_property(CACHE PSX_SDL_BACKEND PROPERTY STRINGS SDL3 SDL2)
@@ -397,7 +406,6 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/gpu_render.c
     ${PSXRECOMP_ROOT}/runtime/src/render_thread.c
     ${PSXRECOMP_ROOT}/runtime/src/present_thread.c
-    ${PSXRECOMP_ROOT}/runtime/src/frame_gen.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_gl_renderer.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_fmv_hd.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_lle.c
@@ -423,14 +431,19 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/interrupts.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_video_timing.c
     ${PSXRECOMP_ROOT}/runtime/src/frame_pacing.c
-    ${PSXRECOMP_ROOT}/runtime/src/frame_interpolation.c
+    ${PSXRECOMP_ROOT}/runtime/src/presentation_scene.c
+    ${PSXRECOMP_ROOT}/runtime/src/presentation_draw.c
     ${PSXRECOMP_ROOT}/runtime/src/render_pass.c
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_plan.c
-    ${PSXRECOMP_ROOT}/runtime/src/render_pass_motion.c
-    ${PSXRECOMP_ROOT}/runtime/src/render_pass_projection.cpp
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_frame.c
     ${PSXRECOMP_ROOT}/runtime/src/dynamic_resolution.c
     ${PSXRECOMP_ROOT}/runtime/src/host_time.c
+    ${PSXRECOMP_ROOT}/runtime/src/netplay_host_profile.c
+    ${PSXRECOMP_ROOT}/runtime/src/netplay_host_gate.c
+    ${PSXRECOMP_ROOT}/runtime/src/netplay_host_cpu_sdl3.c
+    ${PSXRECOMP_ROOT}/runtime/src/host_executable_identity.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/host_fp_environment.c
+    ${PSXRECOMP_ROOT}/runtime/src/host_session_nonce.c
     ${PSXRECOMP_ROOT}/runtime/src/game_mode.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_fiber.c
     ${PSXRECOMP_ROOT}/runtime/src/sio.c
@@ -438,6 +451,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/debug_server.c
     ${PSXRECOMP_ROOT}/runtime/src/host_sampler.c
     ${PSXRECOMP_ROOT}/runtime/src/host_span_ring.c
+    ${PSXRECOMP_ROOT}/runtime/src/headroom_counters.c
     ${PSXRECOMP_ROOT}/runtime/src/debug_trace_ranges.c
     ${PSXRECOMP_ROOT}/runtime/src/dirty_ram_interp.c
     ${PSXRECOMP_ROOT}/runtime/src/draw_distance.c
@@ -1716,6 +1730,9 @@ function(psxrecomp_add_runtime_target target)
         endif()
     endif()
     psxrecomp_windows_manifest(${target})
+    if(NOT PSX_HEADROOM_COUNTERS)
+        target_compile_definitions(${target} PRIVATE PSX_DISABLE_HEADROOM_COUNTERS=1)
+    endif()
     psxrecomp_sha256_file(${target})
     set(_execution_contract
         "${PSXRECOMP_ROOT}/runtime/src/gte.cpp"
@@ -1723,8 +1740,7 @@ function(psxrecomp_add_runtime_target target)
         "${PSXRECOMP_ROOT}/runtime/include/hle_gte.h"
         "${PSXRECOMP_ROOT}/runtime/include/cpu_state.h"
         "${PSXRECOMP_ROOT}/runtime/include/gte.h"
-        "${PSXRECOMP_ROOT}/runtime/include/pgxp.h"
-        "${PSXRECOMP_ROOT}/runtime/include/render_pass_projection.h")
+        "${PSXRECOMP_ROOT}/runtime/include/pgxp.h")
     if(PSXRT_ORACLE)
         psxrecomp_execution_profile(${target} PROFILE REFERENCE CONTRACT_FILES ${_execution_contract})
     else()
@@ -1735,8 +1751,49 @@ function(psxrecomp_add_runtime_target target)
     psxrecomp_host_pacing(${target})
     psxrecomp_resident_preparation(${target})
     psxrecomp_native_cpu_spans(${target} ${PSXRT_GAME_GENERATED_FULL_C})
+    psxrecomp_direct_guest_memory(${target} ${PSXRT_GAME_GENERATED_FULL_C})
+    psxrecomp_observation_time(${target}
+        GENERATED_SOURCES ${PSXRT_GAME_GENERATED_FULL_C}
+        WAIT_SITES ${PSXRT_NATIVE_IDLE_WAIT_SITES})
     psxrecomp_openbios_read_job(${target})
     psxrecomp_media_jobs(${target})
+    psxrecomp_frame_submission(${target})
+    psxrecomp_block_audio(${target})
+    psxrecomp_static_calls(${target} "${PSXRT_GAME_GENERATED_DISPATCH_C}")
+    psxrecomp_precision_slices(${target})
+    set(_pgxp_flow_generated ${PSXRT_GAME_GENERATED_FULL_C})
+    # Older titles pass only their primary shard above and the other generated
+    # game bodies through EXTRAS_SOURCES. Validate those shards as well.
+    foreach(_extra IN LISTS PSXRT_EXTRAS_SOURCES)
+        if(_extra MATCHES "_full(_[0-9]+)?[.]c$")
+            list(APPEND _pgxp_flow_generated "${_extra}")
+        endif()
+    endforeach()
+    psxrecomp_pgxp_dataflow(${target} GENERATED_SOURCES ${_pgxp_flow_generated})
+    psxrecomp_precision_operations(${target} GENERATED_SOURCES ${_pgxp_flow_generated})
+    target_compile_definitions(${target} PRIVATE PSX_REQUIRED_HOST_PROFILES=$<BOOL:${PSX_REQUIRED_HOST_PROFILES}>)
+    if(PSX_REQUIRED_HOST_PROFILES)
+        set(_host_required 1)
+    else()
+        set(_host_required 0)
+    endif()
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/host-profile/${target}")
+    set(_host_policy_source "${CMAKE_CURRENT_BINARY_DIR}/host-profile/${target}/selected.c")
+    file(CONFIGURE OUTPUT "${_host_policy_source}" CONTENT
+        "const unsigned psx_build_required_host_profiles = ${_host_required}u;\n" @ONLY)
+    psxrecomp_add_implementation(${target}
+        NAME host-profile-admission CONTRACT immutable-host-catalog-${_host_required}-v1
+        HLE_SOURCES "${_host_policy_source}" LLE_SOURCES "${_host_policy_source}"
+        CONTRACT_FILES "${PSXRECOMP_ROOT}/runtime/include/netplay_host_startup.hpp"
+                       "${PSXRECOMP_ROOT}/runtime/src/netplay_host_profile.c"
+                       "${PSXRECOMP_ROOT}/runtime/src/netplay_host_gate.c"
+                       "${PSXRECOMP_ROOT}/runtime/src/netplay_host_cpu_sdl3.c"
+                       "${PSXRECOMP_ROOT}/runtime/src/host_executable_identity.cpp"
+                       "${PSXRECOMP_ROOT}/runtime/src/host_fp_environment.c"
+                       "${PSXRECOMP_ROOT}/runtime/src/host_session_nonce.c")
+    if(WIN32)
+        target_link_libraries(${target} PRIVATE bcrypt)
+    endif()
     psxrecomp_capture_jobs(${target})
     # audio_trace.c uses C11 atomics. Make the runtime's actual language
     # requirement explicit instead of relying on a parent project's global

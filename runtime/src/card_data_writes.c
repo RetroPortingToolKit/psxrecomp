@@ -9,7 +9,7 @@ extern uint32_t g_debug_last_store_pc;
 
 /* "Armed" byte from the most recent SIO_RX_DATA read inside a card
  * data phase. The next matching RAM write captures it. */
-static volatile int      s_armed = 0;
+volatile int g_card_data_write_armed = 0;
 static uint8_t           s_armed_value = 0;
 static uint16_t          s_armed_state = 0;
 static uint8_t           s_armed_idx   = 0;
@@ -27,11 +27,11 @@ void card_data_writes_arm(uint8_t value, uint16_t mc_state,
     s_armed_state = mc_state;
     s_armed_idx   = mc_data_idx;
     s_armed_slot  = slot;
-    s_armed = 1;
+    g_card_data_write_armed = 1;
 }
 
 int card_data_writes_check(uint32_t phys, uint32_t value, uint8_t width) {
-    if (!s_armed) return 0;
+    if (!g_card_data_write_armed) return 0;
     /* Match on the byte value zero-extended. For width==1, compare bottom
      * byte. For wider, compare bottom byte of stored value. */
     uint8_t low = (uint8_t)(value & 0xFF);
@@ -50,7 +50,7 @@ int card_data_writes_check(uint32_t phys, uint32_t value, uint8_t width) {
     e->slot                 = s_armed_slot;
     s_head = (s_head + 1) % CARD_DATA_WRITES_CAP;
 
-    s_armed = 0;
+    g_card_data_write_armed = 0;
     return 1;
 }
 
@@ -69,5 +69,5 @@ void card_data_writes_reset(void) {
     memset(s_ring, 0, sizeof(s_ring));
     s_seq = 0;
     s_head = 0;
-    s_armed = 0;
+    g_card_data_write_armed = 0;
 }

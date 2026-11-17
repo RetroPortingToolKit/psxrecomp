@@ -1,9 +1,12 @@
 #include "pgxp.h"
 #include "pgxp_hooks.h"
 #include "mod_memory.h"
+#include "cpu_state.h"
+#include "../../recompiler/src/pgxp_demand_regions.h"
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <stdexcept>
 
 extern "C" int gte_geometry_correction_lookup(uint32_t,int32_t*,int32_t*) {return 0;}
 extern "C" int gte_geometry_correction_lookup_probe(uint32_t,int32_t*,int32_t*) {return 0;}
@@ -26,9 +29,90 @@ static void seed(uint32_t address,uint32_t packed,int32_t x) {
 static void check_attributes(const PGXPWordShadow& a,const PGXPWordShadow& b) {
     CHECK(a.valid==b.valid && a.value==b.value && a.address==b.address);
     CHECK(a.x16==b.x16 && a.y16==b.y16 && a.z==b.z && a.flags==b.flags);
-    CHECK(!std::memcmp(&a.projection,&b.projection,sizeof a.projection));
+    CHECK(!(a.flags&PGXP_F_PROJECTION)||!std::memcmp(&a.projection,&b.projection,sizeof a.projection));
+}
+static void affine_address_receipts() {
+    struct Case {uint32_t value;int16_t first;unsigned kind;};
+    const Case cases[]={{0x8001ff00u,-24,0},{0x80010008u,-24,0},
+        {0x8001fff8u,24,0},{0x7ffffff8u,24,1},{0x8001ff00u,-24,1},
+        {0x8001ff00u,-24,2},{0x8001ff00u,-24,3},{0x8001ff00u,-24,4}};
+    struct Result {PGXPWordShadow word;uint64_t source;double scalar;int precise;};
+    for(const auto& c:cases) {
+        Result reference[2]{};
+        for(unsigned selected=0;selected<2;++selected) {
+            CPUState cpu{};cpu.gpr[29]=c.value;pgxp_invalidate_all();
+            const uint32_t receipt_value=c.kind==3?c.value^0x10001u:c.value;
+            pgxp_gte_push_sxy((int32_t)(int16_t)receipt_value*65536+16384,
+                (int32_t)(int16_t)(receipt_value>>16)*65536+32768,300,receipt_value);
+            pgxp_store_gte_reg(Address,15);
+            if(c.kind==2)pgxp_invalidate_word(Address); // source-only, no XY flags
+            CHECK(pgxp_tag_word_source(Address,receipt_value,991));
+            psx_pgxp_load(&cpu,0x8c1d0000u,Address,receipt_value);
+            if(c.kind==1)CHECK(pgxp_native_scalar_gpr(&cpu,29,double((int32_t)c.value)+.25,1));
+            for(unsigned step=0;step<2;++step) {
+                // A real same-word observer replaces the incoming scalar between
+                // halves of the pair; no cached entry receipt may resurrect it.
+                if(step && c.kind==4)CHECK(pgxp_native_scalar_gpr(&cpu,29,double((int32_t)cpu.gpr[29])+.75,1));
+                const int16_t imm=step?(int16_t)-c.first:c.first;
+                const uint32_t before=cpu.gpr[29];cpu.gpr[29]+=uint32_t((int32_t)imm);
+                PGXPHookStats old{},now{};pgxp_get_hook_stats(&old);
+                if(selected) {const PSXPGXPRegionAdd add{29,29,imm};psx_pgxp_region_add_immediates(&cpu,&add,1);}
+                else psx_pgxp_alu(&cpu,0x27bd0000u|(uint16_t)imm,cpu.gpr[29],before,uint32_t((int32_t)imm));
+                pgxp_get_hook_stats(&now);CHECK(now.alu-old.alu==(selected?0u:1u));
+                psx_pgxp_store(&cpu,0xac1d0000u,Other,cpu.gpr[29]);
+                Result got{};got.word=capture(Other,cpu.gpr[29]);got.source=pgxp_load_source(Other,cpu.gpr[29]);
+                got.precise=pgxp_native_gpr_scalar(29,cpu.gpr[29],&got.scalar);
+                if(!selected)reference[step]=got;
+                else {check_attributes(reference[step].word,got.word);CHECK(reference[step].source==got.source);
+                    CHECK(reference[step].precise==got.precise);if(got.precise)CHECK(reference[step].scalar==got.scalar);}
+            }
+        }
+    }
+    // A later destination can alias an earlier incoming source. Snapshot both
+    // before publishing in destination order (r3 before r5).
+    PGXPWordShadow expected[2]{};
+    for(unsigned selected=0;selected<2;++selected) {
+        CPUState cpu{};pgxp_invalidate_all();cpu.gpr[3]=0x000c0020u;cpu.gpr[4]=0x000c0008u;
+        for(unsigned r:{3u,4u}) {
+            seed(Address,cpu.gpr[r],((int32_t)(int16_t)cpu.gpr[r])*65536+16384);
+            psx_pgxp_load(&cpu,0x8c000000u|(r<<16),Address,cpu.gpr[r]);
+        }
+        cpu.gpr[5]=cpu.gpr[3]+24;
+        if(!selected)psx_pgxp_alu(&cpu,0x24650018u,cpu.gpr[5],cpu.gpr[3],24);
+        cpu.gpr[3]=cpu.gpr[4]-24;
+        if(!selected)psx_pgxp_alu(&cpu,0x2483ffe8u,cpu.gpr[3],cpu.gpr[4],uint32_t(-24));
+        if(selected) {const PSXPGXPRegionAdd adds[]={{3,4,-24},{5,3,24}};psx_pgxp_region_add_immediates(&cpu,adds,2);}
+        for(unsigned i=0;i<2;++i) {
+            const unsigned r=i?5u:3u;psx_pgxp_store(&cpu,0xac000000u|(r<<16),Other,cpu.gpr[r]);
+            if(!selected)expected[i]=capture(Other,cpu.gpr[r]);else check_attributes(expected[i],capture(Other,cpu.gpr[r]));
+        }
+    }
+}
+static void geometry_control_ownership() {
+#if defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS
+    for(int mode:{0,1}) {
+        pgxp_set_enabled(1);pgxp_set_cpu_mode(mode);pgxp_set_source_tracking(1);
+        seed(Address,Packed,8*65536+16384);
+        CHECK(pgxp_tag_word_source(Address,Packed,918));
+        const auto untouched=capture(Address,Packed);
+        seed(Other,Packed,8*65536+32768);
+        CHECK(pgxp_tag_word_source(Other,Packed,919));
+        // Identical RA bits at another KSEG/mirror spelling must still end the
+        // overwritten word's geometry/source lifetime, not validate it as live.
+        pgxp_write_owned(0xa0202000u,Packed,4);
+        const auto killed=capture(Other,Packed);
+        CHECK(!killed.flags && pgxp_load_source(Other,Packed)==0);
+        check_attributes(untouched,capture(Address,Packed));
+        CPUState cpu{};cpu.gpr[29]=0x8001ff00;cpu.gpr[31]=0x80009000;
+        CHECK(pgxp_native_scalar_gpr(&cpu,29,double((int32_t)cpu.gpr[29])+.25,1));
+        pgxp_native_clobber(&cpu,0xa0000000u,0);
+        double value=0;CHECK(!pgxp_native_gpr_scalar(29,cpu.gpr[29],&value));
+        check_attributes(untouched,capture(Address,Packed));
+    }
+#endif
 }
 int main() {
+    geometry_control_ownership();
     pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_projection_tracking(1);
     seed(Address,Packed,(8<<16)+16384);
     PGXPProjection projection{12.5f,18.25f,2.0f,0.125f};
@@ -213,6 +297,373 @@ int main() {
     check_attributes(flagged, capture(Arena, Flagged));
     pgxp_invalidate_all();
     CHECK(!pgxp_store_flagged_gte_sxy(Arena, 14, Packed, Flagged));
+    // A native packet producer captures the old source words before any guest
+    // writes, then republishes the same receipts after aliases are overwritten.
+    pgxp_set_source_tracking(1);
+    seed(Address, Packed, (8 << 16) + 16384);
+    CHECK(pgxp_tag_word_source(Address, Packed, 101));
+    pgxp_gte_set_projection(&projection); pgxp_store_gte_reg(Address, 15);
+    CHECK(pgxp_tag_word_source(Address, Packed, 101));
+    seed(Other, Packed, (8 << 16) + 49152);
+    CHECK(pgxp_tag_word_source(Other, Packed, 202));
+    const uint32_t inputs[2] = {Address, Other}, words[2] = {Packed, Packed};
+    const uint32_t swapped[2] = {Other, Address};
+    PGXPNativeWord receipts[2]{};
+    CHECK(pgxp_native_capture_words(inputs, words, receipts, 2));
+    CHECK(receipts[0].source == 101 && receipts[1].source == 202);
+    const auto first_native = receipts[0].word, second_native = receipts[1].word;
+    pgxp_invalidate_word(Address); pgxp_invalidate_word(Other); // guest overwrites
+    uint32_t native_pc = 0x80012340u, store_cap = 0;
+    uint64_t native_frame = 77;
+    const PGXPStoreRecord *stores = nullptr;
+    pgxp_set_trace_sources(&native_pc, &native_frame);
+    const auto stores_before = pgxp_store_ring(&stores, &store_cap);
+    CHECK(pgxp_native_publish_words(swapped, receipts, 2));
+    CHECK(pgxp_store_ring(&stores, &store_cap) == stores_before + 2);
+    for (unsigned i = 0; i < 2; ++i) {
+        const auto &record = stores[(stores_before + i) % store_cap];
+        CHECK(record.op == PGXP_STORE_NATIVE_WORD && record.reg == 0xFFu);
+        CHECK(record.pc == native_pc && record.frame == native_frame);
+        CHECK(record.addr == swapped[i] && record.value == Packed);
+        CHECK(record.src_live && record.src_flags == receipts[i].word.flags);
+        CHECK(record.dst_flags == receipts[i].word.flags);
+        CHECK(record.dst_x16 == receipts[i].word.x16 && record.dst_y16 == receipts[i].word.y16);
+    }
+    pgxp_set_trace_sources(nullptr, nullptr);
+    auto expect_first = first_native; expect_first.address = Other & 0x1FFFFFFFu;
+    auto expect_second = second_native; expect_second.address = Address & 0x1FFFFFFFu;
+    check_attributes(expect_first, capture(Other, Packed));
+    check_attributes(expect_second, capture(Address, Packed));
+    CHECK(pgxp_load_source(Other, Packed) == 101);
+    CHECK(pgxp_load_source(Address, Packed) == 202);
+    CHECK(!pgxp_native_import_sxy(15, &receipts[0])); // FIFO push is caller-owned
+    CHECK(pgxp_native_import_sxy(14, &receipts[0]));
+    psx_pgxp_cop2(nullptr, 0xE82F0000u, Packed, Address + 16); // swc2 SXYP
+    CHECK(pgxp_load_source(Address + 16, Packed) == 101);
+    auto imported = first_native; imported.address = (Address + 16) & 0x1FFFFFFFu;
+    check_attributes(imported, capture(Address + 16, Packed));
+
+    pgxp_checkpoint_begin();
+    CHECK(pgxp_native_publish_words(inputs, receipts, 2));
+    CHECK(pgxp_load_source(Address, Packed) == 101);
+    pgxp_checkpoint_rollback();
+    check_attributes(expect_second, capture(Address, Packed));
+    CHECK(pgxp_load_source(Address, Packed) == 202);
+    pgxp_suppress_begin();
+    CHECK(pgxp_native_publish_words(inputs, receipts, 2));
+    CHECK(pgxp_native_import_sxy(14, &receipts[1]));
+    pgxp_suppress_end();
+    check_attributes(expect_second, capture(Address, Packed));
+    CHECK(pgxp_load_source(Address, Packed) == 202);
+
+    const uint32_t bad_destinations[2] = {Address, 0x1F801814u};
+    CHECK(!pgxp_native_publish_words(bad_destinations, receipts, 2));
+    check_attributes(expect_second, capture(Address, Packed)); // atomic refusal
+    auto bad_receipt = receipts[0]; bad_receipt.word.address |= 1;
+    CHECK(!pgxp_native_publish_words(inputs, &bad_receipt, 1));
+    CHECK(!pgxp_native_capture_words(inputs, words, receipts, 5));
+    CHECK(!pgxp_native_capture_words(nullptr, words, receipts, 1));
+
+    // Validation is part of consuming the input words. A changed X ends only
+    // that half/depth/lineage; the still-matching precise Y survives exactly as
+    // it does through the ordinary hooked load/store path.
+    const uint32_t partial_value[1] = {Packed ^ 1u};
+    PGXPNativeWord partial{};
+    CHECK(pgxp_native_capture_words(inputs, partial_value, &partial, 1));
+    CHECK(partial.word.valid && !(partial.word.flags & 1u) && (partial.word.flags & 2u));
+    CHECK(partial.source == 0);
+
+    // Restore the previously captured full vertex before the clobber case.
+    CHECK(pgxp_native_publish_words(inputs, &receipts[1], 1));
+    CPUState machine{};
+    machine.gpr[7] = Packed;
+    psx_pgxp_plain_values[7] = 99;
+    psx_pgxp_plain_mask |= 1u << 7;
+    CHECK(!pgxp_native_import_gpr(0, &receipts[0]));
+    CHECK(!pgxp_native_import_gpr(32, &receipts[0]));
+    CHECK(pgxp_native_import_gpr(7, &receipts[0]));
+    CHECK(!(psx_pgxp_plain_mask & (1u << 7)));
+    psx_pgxp_store(&machine, 0xAC270000u, Address + 32, Packed); // sw a3,0(at)
+    auto imported_gpr = first_native; imported_gpr.address = (Address + 32) & 0x1FFFFFFFu;
+    check_attributes(imported_gpr, capture(Address + 32, Packed));
+    CHECK(pgxp_load_source(Address + 32, Packed) == 101);
+    machine.gpr[5] = Packed;
+    psx_pgxp_cop2(&machine, 0x48057000u, Packed, 0); // mfc2 a1,SXY2
+    psx_pgxp_plain_values[5] = 99;
+    psx_pgxp_plain_mask |= 1u << 5;
+    machine.gte_data[16] = 123;
+    pgxp_native_clobber(&machine, 1u << 5, (1u << 14) | (1u << 16));
+    CHECK(!(psx_pgxp_plain_mask & (1u << 5)));
+    int live; uint32_t value, flags; int32_t sx, sy; uint16_t sz;
+    CHECK(pgxp_debug_shadow(1, 5, &live, &value, &flags, &sx, &sy, &sz));
+    CHECK(live && value == Packed && flags == 0);
+    CHECK(pgxp_debug_shadow(2, 16, &live, &value, &flags, &sx, &sy, &sz));
+    CHECK(live && value == 123 && flags == 0);
+    psx_pgxp_cop2(nullptr, 0xE82F0000u, Packed, Address + 16);
+    check_attributes(imported, capture(Address + 16, Packed)); // clobber excludes FIFO
+
+    pgxp_invalidate_all();
+    seed(Address, Packed, (8 << 16) + 32768);
+    const auto new_generation = capture(Address, Packed);
+    CHECK(!pgxp_native_publish_words(inputs, receipts, 2));
+    CHECK(!pgxp_native_import_sxy(14, &receipts[0]));
+    check_attributes(new_generation, capture(Address, Packed));
+    // Disabled native clobbers follow the same active gate as full hooks:
+    // do not revive generation-invalid shadows merely by resetting a slot.
+    pgxp_set_source_tracking(0); pgxp_set_enabled(0);
+    machine.gpr[5] = Packed; machine.gte_data[16] = 321;
+    pgxp_native_clobber(&machine, 1u << 5, 1u << 16);
+    CHECK(pgxp_debug_shadow(1, 5, &live, &value, &flags, &sx, &sy, &sz) && !live);
+    CHECK(pgxp_debug_shadow(2, 16, &live, &value, &flags, &sx, &sy, &sz) && !live);
+    // Source-only recording is active even with visual precision disabled.
+    CHECK(pgxp_set_source_tracking(1));
+    CHECK(pgxp_tag_word_source(Address, Packed, 919));
+    psx_pgxp_load(&machine, 0x8C250000u, Address, Packed); // lw a1,0(at)
+    pgxp_suppress_begin(); machine.gpr[5] = Packed ^ 1u;
+    pgxp_native_clobber(&machine, 1u << 5, 0);
+    pgxp_suppress_end(); machine.gpr[5] = Packed;
+    psx_pgxp_store(&machine, 0xAC250000u, Other, Packed);
+    CHECK(pgxp_load_source(Other, Packed) == 919); // suppression preserves lineage
+    pgxp_native_clobber(&machine, 1u << 5, 1u << 16);
+    psx_pgxp_store(&machine, 0xAC250000u, Other, Packed);
+    CHECK(pgxp_load_source(Other, Packed) == 0); // active native overwrite ends it
+    CHECK(pgxp_debug_shadow(2, 16, &live, &value, &flags, &sx, &sy, &sz));
+    CHECK(live && value == 321 && flags == 0);
+    // A native constant output is a known-exact packed word, rather than a
+    // shadowless value. Match the maintained LUI/ORI result at a real store.
+    pgxp_set_enabled(1); pgxp_set_cpu_mode(1);
+    for (uint32_t constant : {0x01000401u, 0x8000FFFFu}) {
+        machine.gpr[3] = constant;
+        psx_pgxp_alu(&machine, 0x3C030000u, constant & 0xFFFF0000u, 0, 0);
+        psx_pgxp_alu(&machine, 0x34630000u | (constant & 65535u), constant,
+                     constant & 0xFFFF0000u, constant & 65535u);
+        psx_pgxp_store(&machine, 0xAC230000u, Other, constant);
+        const auto expected_exact = capture(Other, constant);
+        psx_pgxp_plain_values[3] = Packed;
+        psx_pgxp_plain_mask |= 1u << 3;
+        pgxp_native_exact_gpr(&machine, (1u << 3) | 1u);
+        CHECK(!(psx_pgxp_plain_mask & (1u << 3)));
+        psx_pgxp_store(&machine, 0xAC230000u, Other, constant);
+        check_attributes(expected_exact, capture(Other, constant));
+        CHECK(pgxp_load_source(Other, constant) == 0);
+    }
+    pgxp_set_source_tracking(0); pgxp_set_enabled(0);
+    pgxp_native_exact_gpr(&machine, 1u << 3);
+    CHECK(pgxp_debug_shadow(1, 3, &live, &value, &flags, &sx, &sy, &sz) && !live);
+    CHECK(pgxp_set_source_tracking(1));
+    CHECK(pgxp_tag_word_source(Address, Packed, 919));
+    psx_pgxp_load(&machine, 0x8C230000u, Address, Packed);
+    machine.gpr[3] = Packed;
+    pgxp_suppress_begin(); pgxp_native_exact_gpr(&machine, 1u << 3); pgxp_suppress_end();
+    psx_pgxp_store(&machine, 0xAC230000u, Other, Packed);
+    CHECK(pgxp_load_source(Other, Packed) == 919);
+    pgxp_native_exact_gpr(&machine, 1u << 3);
+    psx_pgxp_store(&machine, 0xAC230000u, Other, Packed);
+    CHECK(pgxp_load_source(Other, Packed) == 0);
+    pgxp_set_enabled(1);pgxp_set_cpu_mode(1);
+    seed(Address,Packed,(8<<16)+24576);CHECK(pgxp_tag_word_source(Address,Packed,819));
+    PGXPNativeWord control_word{};
+    CHECK(pgxp_native_capture_words(inputs,&Packed,&control_word,1));
+    const auto before_exact_query=capture(Address,Packed);
+    PGXPNativeWord half_receipt{};
+    CHECK(pgxp_native_capture_half(Address,uint16_t(Packed),0,&half_receipt));
+    CHECK(half_receipt.word.value==uint16_t(Packed));
+    CHECK(half_receipt.word.flags==PGXP_F_VXY&&half_receipt.word.x16==before_exact_query.x16&&half_receipt.word.y16==0);
+    CHECK(half_receipt.source==0);
+    // LH ends the GPR full scalar. MTC2 keeps its packed half receipt, not
+    // a newly fabricated full scalar, including a same-integer later MFC2.
+    CHECK(pgxp_native_scalar_data(9,8,99.75,1));
+    CHECK(pgxp_native_import_data(9,&half_receipt));
+    CHECK(pgxp_debug_shadow(2,9,&live,&value,&flags,&sx,&sy,&sz));
+    CHECK(live&&value==8&&flags==PGXP_F_VXY&&sx==before_exact_query.x16&&sy==0&&sz==0);
+    double typed_scalar=0;
+    CHECK(!pgxp_native_gte_scalar(9,8,&typed_scalar));
+    machine.gpr[5]=8;psx_pgxp_cop2(&machine,0x48054800u,8,0); // MFC2 a1,IR1
+    psx_pgxp_store(&machine,0xAC250000u,Other,8);
+    CHECK(capture(Other,8).x16==before_exact_query.x16);
+    CHECK(pgxp_native_scalar_data(9,8,99.75,1));
+    pgxp_suppress_begin();CHECK(pgxp_native_import_data(9,&half_receipt));pgxp_suppress_end();
+    CHECK(pgxp_native_gte_scalar(9,8,&typed_scalar)&&typed_scalar==99.75);
+    CHECK(pgxp_native_import_data(9,&half_receipt));
+    CHECK(!pgxp_native_import_data(12,&half_receipt));
+    CHECK(!pgxp_native_import_data(32,&half_receipt));
+    CHECK(pgxp_native_import_data(6,&control_word));machine.gte_data[6]=Packed;
+    psx_pgxp_cop2(&machine,0xE8060000u,Packed,Other);
+    CHECK(pgxp_load_source(Other,Packed)==819);
+    const uint32_t half_destination=Other;
+    CHECK(pgxp_native_publish_words(&half_destination,&half_receipt,1));
+    const auto native_half=capture(Other,uint16_t(Packed));
+    psx_pgxp_load(&machine,0x94250000u,Address,uint16_t(Packed));
+    psx_pgxp_store(&machine,0xAC250000u,Other,uint16_t(Packed));
+    check_attributes(native_half,capture(Other,uint16_t(Packed)));
+    CHECK(pgxp_native_capture_half(Address+2,uint16_t(Packed>>16),1,&half_receipt));
+    CHECK(half_receipt.word.value==(uint32_t)(int32_t)(int16_t)(Packed>>16));
+    CHECK(!pgxp_native_capture_half(Address+1,0,0,&half_receipt));
+    // A half input leaves even stale metadata in the other half untouched.
+    CHECK(pgxp_native_capture_half(Address+2,uint16_t(Packed>>16)^1u,0,&half_receipt));
+    CHECK(!(half_receipt.word.flags&PGXP_F_VX));
+    check_attributes(before_exact_query,capture(Address,Packed));
+    CHECK(!pgxp_native_word_exact(Address,Packed));
+    CHECK(pgxp_native_word_exact(Address,Packed^0x00010001u)); // both carried halves mismatch
+    check_attributes(before_exact_query,capture(Address,Packed));
+    CHECK(pgxp_load_source(Address,Packed)==819);
+    CHECK(!pgxp_native_import_control(32,&control_word));
+    CHECK(pgxp_native_import_control(8,&control_word));
+    machine.gpr[5]=Packed;
+    psx_pgxp_cop2(&machine,0x48454000u,Packed,0); // CFC2 a1,control8
+    psx_pgxp_store(&machine,0xAC250000u,Other,Packed);
+    auto expected_control=control_word.word;expected_control.address=Other&0x1FFFFFFFu;
+    check_attributes(expected_control,capture(Other,Packed));
+    CHECK(pgxp_load_source(Other,Packed)==819);
+    machine.gpr[5]=8;
+    CHECK(pgxp_native_scalar_gpr(&machine,5,8.375,1));
+    psx_pgxp_store(&machine,0xAC250000u,Other,8);
+    const auto scalar_output=capture(Other,8);
+    CHECK(scalar_output.valid&&scalar_output.flags==PGXP_F_VXY&&scalar_output.x16==(8<<16)+24576);
+    CHECK(pgxp_load_source(Other,8)==0);
+    psx_pgxp_cop2(&machine,0x48854800u,8,0); // MTC2 a1,IR1: maintained scalar input
+    double native_scalar=-1;
+    CHECK(pgxp_native_gte_scalar(9,8,&native_scalar)&&native_scalar==8.375);
+    CHECK(!pgxp_native_gte_scalar(9,9,&native_scalar)&&native_scalar==8.375);
+    CHECK(pgxp_native_gpr_scalar(5,8,&native_scalar)&&native_scalar==8.375);
+    CHECK(!pgxp_native_gpr_scalar(5,9,&native_scalar)&&native_scalar==8.375);
+    machine.gpr[5]=100000000u;CHECK(pgxp_native_scalar_gpr(&machine,5,100000000.5,1));
+    CHECK(pgxp_native_gpr_scalar(5,machine.gpr[5],&native_scalar)&&native_scalar==100000000.5);
+    CHECK(pgxp_native_scalar_data(9,301,301.5,1));
+    CHECK(pgxp_native_gte_scalar(9,301,&native_scalar)&&native_scalar==301.5);
+    CHECK(!pgxp_native_gte_scalar(9,302,&native_scalar));
+    CHECK(pgxp_native_scalar_data(9,301,301.0,0));
+    CHECK(!pgxp_native_gte_scalar(9,301,&native_scalar));
+    CHECK(!pgxp_native_scalar_data(14,Packed,0,0)); // FIFO belongs to the vertex boundary
+    pgxp_suppress_begin();CHECK(pgxp_native_scalar_data(9,302,302.5,1));pgxp_suppress_end();
+    CHECK(!pgxp_native_gte_scalar(9,302,&native_scalar));
+    machine.lo=7;CHECK(pgxp_native_scalar_gpr(&machine,33,7.75,1));
+    machine.gpr[5]=7;psx_pgxp_alu(&machine,0x00002812u,7,7,0); // MFLO a1
+    psx_pgxp_store(&machine,0xAC250000u,Other,7);
+    CHECK(capture(Other,7).x16==(7<<16)+49152);
+    CHECK(!pgxp_native_word_exact(Other,7));
+    machine.gpr[5]=7;CHECK(pgxp_native_scalar_gpr(&machine,5,7.0,1));
+    psx_pgxp_store(&machine,0xAC250000u,Other,7);CHECK(pgxp_native_word_exact(Other,7));
+    CHECK(!pgxp_native_scalar_gpr(&machine,0,0,0));
+    CHECK(!pgxp_native_scalar_gpr(&machine,34,0,0));
+    // Actual native packet regression: a high-half store cannot turn unknown
+    // low RAM bits into a validated whole word. Retain the same stale-half
+    // state as the maintained SH, then compare both cold and tracked outputs.
+    pgxp_invalidate_all();
+    constexpr uint32_t HalfReference=Other+64,HalfNative=Other+68;
+    PGXPNativeWord half_source{};
+    CHECK(pgxp_native_capture_half(Address,0x4567,0,&half_source));
+    machine.gpr[5]=0x4567;psx_pgxp_load(&machine,0x94250000u,Address,0x4567);
+    psx_pgxp_store(&machine,0xA4250000u,HalfReference+2,0x4567);
+    CHECK(pgxp_native_publish_half(HalfNative+2,&half_source,0,0));
+    CHECK(!capture(HalfReference,0x45670007u).valid);
+    CHECK(!capture(HalfNative,0x45670007u).valid);
+    auto expected_half=capture(HalfReference,0x45670000u);
+    auto actual_half=capture(HalfNative,0x45670000u);actual_half.address=expected_half.address;
+    check_attributes(expected_half,actual_half);
+    seed(Address,Packed,(8<<16)+24576);
+    seed(HalfReference,Packed,(8<<16)+16384);seed(HalfNative,Packed,(8<<16)+16384);
+    CHECK(pgxp_tag_word_source(HalfReference,Packed,917));CHECK(pgxp_tag_word_source(HalfNative,Packed,918));
+    CHECK(pgxp_native_capture_half(Address,8,0,&half_source));
+    machine.gpr[5]=8;psx_pgxp_load(&machine,0x94250000u,Address,8);
+    psx_pgxp_store(&machine,0xA4250000u,HalfReference,8);
+    CHECK(pgxp_native_publish_half(HalfNative,&half_source,0,0));
+    expected_half=capture(HalfReference,Packed);actual_half=capture(HalfNative,Packed);actual_half.address=expected_half.address;
+    check_attributes(expected_half,actual_half);
+    CHECK(actual_half.flags==PGXP_F_VXY&&actual_half.x16==(8<<16)+24576&&actual_half.y16==(12<<16)+32768);
+    CHECK(pgxp_load_source(HalfNative,Packed)==0);
+    half_source.word.value=7;half_source.word.flags=0;
+    machine.gpr[5]=7;CHECK(pgxp_native_scalar_gpr(&machine,5,7.75,1));
+    psx_pgxp_store(&machine,0xA4250000u,HalfReference,7);
+    CHECK(pgxp_native_publish_half(HalfNative,&half_source,7.75,1));
+    expected_half=capture(HalfReference,0x000C0007u);actual_half=capture(HalfNative,0x000C0007u);actual_half.address=expected_half.address;
+    check_attributes(expected_half,actual_half);CHECK(actual_half.x16==(7<<16)+49152);
+    const auto before_partial=capture(HalfNative,0x000C0007u);
+    pgxp_checkpoint_begin();CHECK(pgxp_native_publish_half(HalfNative+2,&half_source,7.75,1));pgxp_checkpoint_rollback();
+    check_attributes(before_partial,capture(HalfNative,0x000C0007u));
+    pgxp_suppress_begin();CHECK(pgxp_native_publish_half(HalfNative,&half_source,0,0));pgxp_suppress_end();
+    check_attributes(before_partial,capture(HalfNative,0x000C0007u));
+    CHECK(!pgxp_native_publish_half(HalfNative+1,&half_source,0,0));
+    CHECK(!pgxp_native_publish_half(0x1F801814u,&half_source,0,0));
+    pgxp_set_enabled(0);CHECK(pgxp_set_source_tracking(1));
+    CHECK(pgxp_native_capture_half(Address,7,0,&half_source));
+    CHECK(pgxp_tag_word_source(HalfNative,Packed,919));
+    CHECK(pgxp_native_publish_half(HalfNative,&half_source,0,0));
+    CHECK(pgxp_load_source(HalfNative,0x000C0007u)==0);
+    // Retired ABI entry points must fail loudly even when PGXP itself is off.
+    // Ordinary word/geometry/source and current demand receipts remain below.
+    for(int enabled:{0,1})for(bool begin:{false,true}) {
+        pgxp_set_enabled(enabled);CPUState cpu{};bool rejected=false;
+        try {
+            if(begin)(void)psx_pgxp_operation_begin(&cpu,0,0,nullptr,0,0,0,0);
+            else psx_pgxp_operation_end(&cpu,0,0,0,0,0);
+        } catch(const std::logic_error& error) {
+            rejected=std::strstr(error.what(),"PSX_PGXP_OPERATIONS") &&
+                     std::strstr(error.what(),"DEPRECATED");
+        }
+        CHECK(rejected);
+    }
+
+    // Compare actual canonical instruction results with compiler receipts in
+    // both CPU modes, including equal-word overwrite of existing source/scalar.
+    for(int mode=0;mode<2;++mode) {
+        pgxp_set_enabled(1);pgxp_set_cpu_mode(mode);pgxp_set_source_tracking(1);
+        affine_address_receipts();
+        PSXRecomp::PgxpRegionState abstract{};
+        struct Step {uint32_t word,left,right,value;};
+        const Step steps[]={
+            {0x3c038000u,0,0x8000u,0x80000000u},
+            {0x24631234u,0x80000000u,0x1234u,0x80001234u},
+            {0x34630080u,0x80001234u,0x80u,0x800012b4u},
+            {0x28630010u,0x800012b4u,0x10u,1u},
+            {0x24630002u,1u,2u,3u},
+            {0x3c038000u,0,0x8000u,0x80000000u},
+            {0x34637000u,0x80000000u,0x7000u,0x80007000u},
+            {0x24632000u,0x80007000u,0x2000u,0x80009000u}, // unsigned no-carry, signed low crosses
+            {0x3c038000u,0,0x8000u,0x80000000u},
+            {0x34638000u,0x80000000u,0x8000u,0x80008000u},
+            {0x2463ffffu,0x80008000u,0xffffffffu,0x80007fffu}, // unsigned no-borrow
+        };
+        for(const auto& step:steps) {
+            unsigned dst=0;PSXRecomp::PgxpRegionValue recipe;
+            CHECK(PSXRecomp::pgxp_region_definition(step.word,abstract,dst,recipe));
+            const uint32_t bit=1u<<dst;CPUState state{};state.gpr[dst]=step.value;
+            if((step.word>>26)==15) {
+                seed(Other,step.value,(8<<16)+32768);
+                CHECK(pgxp_tag_word_source(Other,step.value,991));
+                psx_pgxp_load(&state,0x8c030000u,Other,step.value);
+            } else if((step.word>>26)==10)
+                CHECK(pgxp_native_scalar_gpr(&state,dst,double(step.value)+.25,1));
+            psx_pgxp_alu(&state,step.word,step.value,step.left,step.right);
+            psx_pgxp_store(&state,0xac030000u,Other,step.value);
+            const auto expected=capture(Other,step.value);
+            double canonical_scalar=0,actual_scalar=0;
+            const int had_scalar=pgxp_native_gpr_scalar(dst,step.value,&canonical_scalar);
+            CHECK(pgxp_native_scalar_gpr(&state,dst,double(step.value)+.25,1));
+            psx_pgxp_region_materialize(&state,bit,
+                (recipe.flags[0]&1)?bit:0,(recipe.flags[0]&2)?bit:0,
+                (recipe.flags[1]&1)?bit:0,(recipe.flags[1]&2)?bit:0);
+            psx_pgxp_store(&state,0xac030000u,Other,step.value);
+            check_attributes(expected,capture(Other,step.value));
+            CHECK(pgxp_load_source(Other,step.value)==0);
+            CHECK(pgxp_native_gpr_scalar(dst,step.value,&actual_scalar)==had_scalar);
+            if(had_scalar)CHECK(canonical_scalar==actual_scalar);
+            abstract[dst]=recipe;
+        }
+        // Unknown/source/scalar-bearing input is retained as a full incoming
+        // affine receipt, never declared plain from its integer consumers.
+        unsigned dst;PSXRecomp::PgxpRegionValue recipe;PSXRecomp::PgxpRegionState unknown{};
+        CHECK(PSXRecomp::pgxp_region_definition(0x24630004u,unknown,dst,recipe));
+        CHECK(recipe.incoming_add && recipe.source==3 && recipe.addend==4);
+        unknown[3]=recipe;
+        CHECK(!PSXRecomp::pgxp_region_definition(0x24630004u,unknown,dst,recipe)); // dependent rounding/carry stays canonical
+        unknown={};
+        CHECK(!PSXRecomp::pgxp_region_definition(0x00641821u,unknown,dst,recipe));
+        // An exact low scalar can become a fractional DIV/MULT input later.
+        unknown[3].known=unknown[3].constant=true;unknown[3].value=7;
+        unknown[3].flags[0]=unknown[3].flags[1]=3;
+        CHECK(!PSXRecomp::pgxp_region_definition(0x24630004u,unknown,dst,recipe));
+    }
     gpu_bytes = 0; // pages retained on the host are not guest allocations
     CHECK(!pgxp_capture_word_shadow(Arena, Packed, &refused));
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");

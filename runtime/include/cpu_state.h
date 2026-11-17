@@ -13,6 +13,7 @@
 #define PSXRECOMP_CPU_STATE_H
 
 #include <stdint.h>
+#include "headroom_counters.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -88,6 +89,27 @@ static inline void psx_store_cycle_barrier(void) { overlay_flush_cycles(); }
 #else
 static inline void psx_store_cycle_barrier(void) { }
 #endif
+
+/* Generated stores keep one portable callback contract. Native span builds
+ * may replace these macros after the shared declarations have been included. */
+void psx_write_word(uint32_t addr, uint32_t value);
+void psx_write_half(uint32_t addr, uint16_t value);
+void psx_write_byte(uint32_t addr, uint8_t value);
+static inline void psx_bus_store_word(CPUState *cpu,uint32_t addr,uint32_t value) {
+    PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_word,psx_write_word,1u,4u);
+    cpu->write_word(addr,value);
+}
+static inline void psx_bus_store_half(CPUState *cpu,uint32_t addr,uint16_t value) {
+    PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_half,psx_write_half,1u,2u);
+    cpu->write_half(addr,value);
+}
+static inline void psx_bus_store_byte(CPUState *cpu,uint32_t addr,uint8_t value) {
+    PSX_HR_CUSTOM_BUS_CALLBACK(cpu->write_byte,psx_write_byte,1u,1u);
+    cpu->write_byte(addr,value);
+}
+#define PSX_STORE_WORD(cpu, addr, value) psx_bus_store_word((cpu), (addr), (value))
+#define PSX_STORE_HALF(cpu, addr, value) psx_bus_store_half((cpu), (addr), (value))
+#define PSX_STORE_BYTE(cpu, addr, value) psx_bus_store_byte((cpu), (addr), (value))
 
 /* Faithful exception-return (fix B) — defined in runtime/src/interrupts.c. The
  * interrupted-thread resume PC is the REAL guest PC, stored in COP0.EPC and (by the
@@ -221,11 +243,6 @@ extern void     gte_precision_tracking_set(int enabled);
  * unchanged — this is a visual-only enhancement, default off. */
 extern void     gte_geometry_correction_set(int enabled);
 extern int      gte_geometry_correction_enabled(void);
-/* Frame generation's vertex sources (gte.cpp): 0 = unknown. */
-extern void     gte_fg_source_set(int enabled);
-extern int      gte_fg_source_enabled(void);
-typedef struct GteFgSrc { uint32_t id, ra; int32_t p[3], h; } GteFgSrc;
-extern int      gte_fg_source_lookup(uint32_t packed, GteFgSrc out[2]);
 /* Corrected vertices consumed since the last gte_geometry_correction_set —
  * the "is this actually doing anything on this title" counter. */
 extern uint32_t gte_geometry_correction_hits(void);
@@ -382,6 +399,65 @@ static inline void debug_server_log_call_entry(uint32_t func_addr) {
 #ifdef __cplusplus
 }
 #endif
+#endif
+
+/* Generated debug block leaders always publish the current physical PC for
+ * late guest-PC profiling. Only real observer owners enter the maintained
+ * callback. Ownership is published by watch/lockstep transitions on the emulation
+ * thread; g_ls_mode alone cannot admit the first lockstep leader. These bits are
+ * host-only: old/generated DLLs retain the public callback fallback. */
+enum {
+    PSX_DEBUG_BLOCK_CYCLE = 1u,
+    PSX_DEBUG_BLOCK_PC = 2u,
+    PSX_DEBUG_BLOCK_LOCKSTEP = 4u
+};
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern volatile uint32_t g_psx_debug_block_interest;
+#ifndef PSX_NO_DEBUG_TOOLS
+void debug_server_cyc_observe(uint32_t block_leader_phys);
+#ifndef PSX_OVERLAY_DLL_BUILD
+extern volatile uint32_t g_psx_last_block;
+#if defined(__GNUC__) || defined(__clang__)
+static inline __attribute__((always_inline)) int psx_debug_block_interest(uint32_t pc) {
+#elif defined(_MSC_VER)
+static __forceinline int psx_debug_block_interest(uint32_t pc) {
+#else
+static inline int psx_debug_block_interest(uint32_t pc) {
+#endif
+    const uint32_t phys = pc & 0x1FFFFFFFu;
+    return g_psx_debug_block_interest ||
+        phys == 0x0006AB3Cu || phys == 0x0006AAF0u ||
+        phys == 0x0006ACFCu || phys == 0x0006AD08u || phys == 0x00069CC4u;
+}
+#define PSX_DEBUG_BLOCK_INTEREST(pc) psx_debug_block_interest(pc)
+#if defined(__GNUC__) || defined(__clang__)
+static inline __attribute__((always_inline)) void psx_debug_block_observe(uint32_t pc) {
+#elif defined(_MSC_VER)
+static __forceinline void psx_debug_block_observe(uint32_t pc) {
+#else
+static inline void psx_debug_block_observe(uint32_t pc) {
+#endif
+    uint32_t phys = pc & 0x1FFFFFFFu;
+    g_psx_last_block = phys;
+    /* The five address adapters have effects without an armed watch. With
+     * emitted literal PCs their comparisons fold away at ordinary leaders. */
+    if (PSX_DEBUG_BLOCK_INTEREST(phys))
+        debug_server_cyc_observe(phys);
+}
+#define PSX_DEBUG_BLOCK_OBSERVE(pc) psx_debug_block_observe(pc)
+#else
+/* No imported host-interest view is required by the overlay ABI. */
+#define PSX_DEBUG_BLOCK_INTEREST(pc) ((void)(pc), 1)
+#define PSX_DEBUG_BLOCK_OBSERVE(pc) debug_server_cyc_observe(pc)
+#endif
+#else
+#define PSX_DEBUG_BLOCK_INTEREST(pc) 0
+#define PSX_DEBUG_BLOCK_OBSERVE(pc) ((void)0)
+#endif
+#ifdef __cplusplus
+}
 #endif
 
 #endif /* PSXRECOMP_CPU_STATE_H */

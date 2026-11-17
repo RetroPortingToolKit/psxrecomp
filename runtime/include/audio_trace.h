@@ -120,9 +120,7 @@ uint32_t audio_trace_events_get(AudioTraceEvent *out, uint32_t max);
 /* Write a tap slice as a stereo s16 WAV at the tap's rate. start=-1,count=0
  * dumps the whole currently-buffered ring. `start`/`count` are absolute frame
  * indices on the tap's production timeline. Returns frames written, or -1 on
- * error (unwritable path / empty ring / slice already evicted). In
- * PSX_NO_DEBUG_TOOLS production builds, PCM history is not present and this
- * returns -1 without creating/opening `path`. */
+ * error (unwritable path / empty ring / slice already evicted). Normal Release and debug builds both retain the same bounded PCM history. */
 int64_t audio_trace_dump_wav(int tap, const char *path,
                              int64_t start, uint64_t count);
 
