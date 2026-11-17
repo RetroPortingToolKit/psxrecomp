@@ -1554,6 +1554,26 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME depth24_present_hold_exec_test COMMAND depth24_present_hold_exec_test)
 
+    # Depth24 movie row record: rows the current movie has not uploaded since
+    # MDEC activity began present black; stills, depth changes and save-state
+    # loads behave as documented in the test header.
+    add_executable(depth24_row_policy_test
+        tests/test_depth24_row_policy.c
+        src/psx_video_timing.c
+        src/gpu_timeline.c)
+    target_include_directories(depth24_row_policy_test PRIVATE include src)
+    if(MINGW)
+        target_compile_options(depth24_row_policy_test PRIVATE -flto)
+        target_link_options(depth24_row_policy_test PRIVATE -flto)
+    endif()
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(depth24_row_policy_test PRIVATE
+            -ffunction-sections -fdata-sections)
+        target_link_options(depth24_row_policy_test PRIVATE
+            $<IF:$<PLATFORM_ID:Darwin>,-Wl$<COMMA>-dead_strip,-Wl$<COMMA>--gc-sections>)
+    endif()
+    add_test(NAME depth24_row_policy_test COMMAND depth24_row_policy_test)
+
     add_executable(ws_view_anchor_test tests/test_ws_view_anchor.c)
     add_executable(ws_view_anchor_gpu_test tests/test_ws_view_anchor_gpu.c
         src/psx_video_timing.c
