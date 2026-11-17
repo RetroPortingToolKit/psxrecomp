@@ -69,6 +69,20 @@ extern uint32_t g_psx_mod_guest_functions;
 int psx_mod_register_instruction_plugin(const char* id, uint32_t address,
                                          uint32_t expected, PSXModFunctionEntryCallback callback);
 void psx_mod_instruction(struct CPUState* cpu, uint32_t address, uint32_t instruction);
+/* Native whole operations must preserve required instruction observations as
+ * well as mutations. This reports any active instruction/address adapter; a
+ * caller that skips the original instruction can conservatively refuse it. */
+int psx_mod_instruction_range_has_hook(uint32_t begin, uint32_t end);
+/* A whole operation may explicitly implement a known adapter's semantic
+ * event. Recognition is exact (PC, instruction and callback); read-only is
+ * not a blanket exemption. Address adapters and every other hook still refuse.
+ * This query invokes nothing and does not alter the active hook registry. */
+typedef struct PSXModNativeInstructionAdapter {
+    uint32_t address, expected;
+    PSXModFunctionEntryCallback callback;
+} PSXModNativeInstructionAdapter;
+int psx_mod_instruction_range_has_unhandled_hook(uint32_t begin, uint32_t end,
+    const PSXModNativeInstructionAdapter *handled, uint32_t count);
 extern uint32_t g_psx_mod_instruction_hooks;
 /* Redirect one audited load/store's effective address without changing its
  * base register, destination, data, branch state or timing. Registration and
@@ -325,6 +339,14 @@ int psx_mod_spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t re
 void psx_mod_spu_private_voice_stop(uint32_t mask);
 int psx_mod_spu_private_voice_volume(unsigned slot,uint16_t left,uint16_t right);
 uint32_t psx_mod_spu_private_voice_active(void);
+/* Stable caller-owned reservations; see spu.h for the all-or-none lifetime
+ * contract. Owner0 is invalid here and remains the unreserved legacy route. */
+int psx_mod_spu_private_voice_claim(uint64_t owner,uint32_t mask);
+int psx_mod_spu_private_voice_release(uint64_t owner,uint32_t mask);
+uint64_t psx_mod_spu_private_voice_owner(unsigned slot);
+int psx_mod_spu_private_voice_play_owned(uint64_t owner,unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode);
+int psx_mod_spu_private_voice_stop_owned(uint64_t owner,uint32_t mask);
+int psx_mod_spu_private_voice_volume_owned(uint64_t owner,unsigned slot,uint16_t left,uint16_t right);
 /* PsyQ LoadImage completed synchronously: texture-cache flush, GP0 A0h
  * rectangle copy of w*h 16-bit pixels from guest RAM (provenance attributed
  * per word), then GP1(04h) DMA direction CPU->GP0 for uploads the library
@@ -677,14 +699,9 @@ int psx_mod_set_internal_resolution(uint32_t target_lines);
  */
 int psx_mod_set_native_vblank_rate(uint32_t frames_per_second);
 
-/*
- * Enable presentation-only frame interpolation while leaving guest VBlank,
- * game logic, timers, and audio at their stock cadence. The OpenGL presenter
- * temporally blends completed guest frames at the requested output rate on its
- * owning render thread/context. It does not derive motion vectors or generate
- * true intermediate object positions.
- * A value of zero follows the measured host-display refresh rate.
- */
+/* Retired temporal-blend APIs. All return 0 without modifying renderer,
+ * VSync, guest pacing or presentation state. Old packages must remove their
+ * interpolation feature; these IDs do not select the fresh scene renderer. */
 int psx_mod_set_frame_interpolation(uint32_t frames_per_second);
 /*
  * Choose how the OpenGL presenter combines completed frames. Linear is a

@@ -54,6 +54,15 @@ void code_provider_init(const char *cfg_backend, int gcc_configured);
  * NULL — defaults to the gcc provider before code_provider_init() runs. */
 const CodeProvider *code_provider_active(void);
 
+/* Fixed interpreted-overlay session policy. Startup: owner/emulation thread,
+ * cache initialization joined, autocompile_shutdown joined/discarded, before
+ * first guest cycle/overlay dispatch. Busy/late returns0 without policy change.
+ * End only after guest/fiber execution has stopped. Never unloads native code
+ * or changes offline preferences; compiled main and trusted plugins remain. */
+int code_provider_session_seal_interpreted(void);
+int code_provider_session_end_interpreted(void);
+int code_provider_session_interpreted_sealed(void);
+
 #ifdef __cplusplus
 }
 #endif

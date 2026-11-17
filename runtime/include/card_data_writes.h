@@ -49,6 +49,8 @@ typedef struct {
 /* Called from sio_read(0x1F801040) inside the MC_READ_DATA..READ_END
  * window. Records the byte we just delivered to BIOS so the next
  * matching RAM write can be tagged. */
+/* The inline CPU writer uses this exact maintained gate, never a cache. */
+extern volatile int g_card_data_write_armed;
 void card_data_writes_arm(uint8_t value, uint16_t mc_state,
                           uint8_t mc_data_idx, uint8_t slot);
 

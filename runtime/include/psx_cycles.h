@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "headroom_counters.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,6 +18,14 @@ extern uint64_t psx_cycle_count;
 extern uint64_t psx_next_service_cycle; /* absolute; 0 = dirty / recompute */
 extern int      psx_in_device_service;  /* re-entrancy guard */
 extern int      g_event_step_conservative;
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+extern int g_psx_guest_time_frozen;
+extern uint64_t psx_next_cycle_sample;
+void psx_observation_sample(void);
+/* Explicit device observation (MMIO, native waits, frame/IRQ, SPU input). */
+void psx_devices_observe(void);
+void psx_devices_refresh_observation_deadline(void);
+#endif
 
 /* Diagnostic replay clock: advance the CPU-visible guest clock without
  * servicing devices, then restore the authoritative live clock afterward.
@@ -36,7 +45,16 @@ void     psx_icache_shadow_abort(void);
  * guest-cycle position and force a deadline recompute. memory.c calls
  * this at the top of every device-MMIO read/write. */
 void psx_devices_mmio_sync(void);
+/* Addressed CPU MMIO barrier; reference retains the full-device service. */
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+void psx_devices_mmio_sync_at(uint32_t addr, int write);
+#else
+static inline void psx_devices_mmio_sync_at(uint32_t addr, int write) {
+    (void)addr; (void)write; psx_devices_mmio_sync();
+}
+#endif
 void psx_devices_service_to_now(void);
+void psx_devices_service_to_now_cause(unsigned request);
 
 /* Rare/slow advance path (COSIM, conservative 1-cycle stepping, lockstep). */
 void psx_advance_cycles_slow(uint32_t cycles);
@@ -131,8 +149,14 @@ static inline uint32_t psx_gcs_session_profile(uint32_t scale, int batch) {
     if (scale <= 1u) return 0u;
     return 0x6C000000u | (batch ? 0x00800000u : 0u) | scale;
 }
+static inline uint64_t psx_gcs_charge_total(uint32_t cycles, uint32_t recip, uint32_t frac) {
+    return (uint64_t)cycles * recip + frac;
+}
+static inline uint32_t psx_gcs_scaled_charge(uint32_t cycles, uint32_t recip, uint32_t frac) {
+    return (uint32_t)(psx_gcs_charge_total(cycles, recip, frac) >> 16);
+}
 static inline uint32_t psx_gcs_scale(uint32_t cpu_cycles) {
-    uint64_t t = (uint64_t)cpu_cycles * g_psx_gcs_recip_q16 + g_psx_gcs_frac;
+    uint64_t t = psx_gcs_charge_total(cpu_cycles, g_psx_gcs_recip_q16, g_psx_gcs_frac);
     g_psx_gcs_frac = (uint32_t)(t & 0xFFFFu);
     return (uint32_t)(t >> 16);
 }
@@ -171,11 +195,16 @@ static inline void psx_advance_cycles(uint32_t cycles) {
         else {
             /* Extreme: publish b first, then continue with cycles. */
             psx_cycle_count += (uint64_t)b;
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+            if (!psx_in_device_service && psx_cycle_count >= psx_next_cycle_sample)
+                psx_observation_sample();
+#else
             if (!psx_in_device_service &&
                 (psx_next_service_cycle == 0u ||
                  psx_cycle_count >= psx_next_service_cycle)) {
                 psx_devices_service_to_now();
             }
+#endif
         }
     }
 #endif
@@ -185,9 +214,17 @@ static inline void psx_advance_cycles(uint32_t cycles) {
     return;
 #else
 #if defined(__GNUC__) || defined(__clang__)
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    if (__builtin_expect(g_ls_replay_active | g_psx_guest_time_frozen | g_event_step_conservative, 0)) {
+#else
     if (__builtin_expect(g_ls_replay_active | g_event_step_conservative, 0)) {
+#endif
+#else
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    if (g_ls_replay_active || g_psx_guest_time_frozen || g_event_step_conservative) {
 #else
     if (g_ls_replay_active || g_event_step_conservative) {
+#endif
 #endif
         psx_advance_cycles_slow(cycles);
         return;
@@ -197,10 +234,14 @@ static inline void psx_advance_cycles(uint32_t cycles) {
         return;
     }
     psx_cycle_count += (uint64_t)cycles;
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    if (psx_cycle_count >= psx_next_cycle_sample) psx_observation_sample();
+#else
     if (psx_next_service_cycle == 0u ||
         psx_cycle_count >= psx_next_service_cycle) {
         psx_devices_service_to_now();
     }
+#endif
 #endif
 }
 #endif
@@ -293,6 +334,8 @@ extern uint64_t g_plp_adv_calls;
 extern uint32_t g_plp_adv_max_chunk;
 extern uint64_t g_plp_adv_sum;
 extern uint64_t g_plp_svc_calls;
+/* Always-on service count for matched observation-time qualification. */
+extern uint64_t psx_device_service_calls;
 
 /* Save-state restore: re-anchor the deadline device model after psx_cycle_count
  * is overwritten from a snapshot. Pass the live CPU so GTE/muldiv completion

@@ -21,7 +21,6 @@
 #include "gpu.h"
 #include "gpu_hd_textures.h"
 #include "psx_memory.h"
-#include "render_pass_projection.h"
 #include "psx_sha256.h"
 #include "psx_sha256_file.h"
 #include "cpu_state.h"
@@ -3459,7 +3458,6 @@ extern "C" void mod_runtime_activate_plugins(void) {
     for (auto& pending : function_override_plugins()) pending.armed = false;
     s.ticket_ready = false;
     psx_mod_set_disc_request_provider(nullptr);
-    psx_projection_reset_session();
     gpu_ws_set_native_scene_predicate(nullptr);
     psx_ram_reset_size_request();
     psx_mod_clear_function_replacements();
@@ -4099,6 +4097,47 @@ extern "C" void psx_mod_instruction(CPUState* cpu, uint32_t address, uint32_t in
         if (cpu->pc != pc) std::abort();
         cpu->gpr[0] = 0;
     }
+}
+
+extern "C" int psx_mod_instruction_range_has_hook(uint32_t begin, uint32_t end) {
+    using namespace PSXRecompV4;
+    if (!g_psx_mod_instruction_hooks || mod_plan_hooks_parked()) return 0;
+    if (begin >= 0xC0000000u || end <= begin || end > 0xC0000000u) return 1;
+    const uint32_t low = function_entry_key(begin);
+    const uint64_t high = uint64_t(low) + (end - begin);
+    if (high > 0x20000000u) return 1;
+    const auto& hooks = active_instruction_hooks();
+    auto it = std::lower_bound(hooks.begin(), hooks.end(), low,
+                              [](const auto& h, uint32_t k) { return h.key < k; });
+    for (; it != hooks.end() && it->key < high; ++it)
+        if (it->callback || it->memory_address) return 1;
+    return 0;
+}
+
+extern "C" int psx_mod_instruction_range_has_unhandled_hook(uint32_t begin, uint32_t end,
+    const PSXModNativeInstructionAdapter *handled, uint32_t count) {
+    using namespace PSXRecompV4;
+    if (!g_psx_mod_instruction_hooks || mod_plan_hooks_parked()) return 0;
+    if (begin >= 0xC0000000u || end <= begin || end > 0xC0000000u ||
+        (count && !handled)) return 1;
+    const uint32_t low = function_entry_key(begin);
+    const uint64_t high = uint64_t(low) + (end - begin);
+    if (high > 0x20000000u) return 1;
+    const auto& hooks = active_instruction_hooks();
+    auto it = std::lower_bound(hooks.begin(), hooks.end(), low,
+                              [](const auto& h, uint32_t k) { return h.key < k; });
+    for (; it != hooks.end() && it->key < high; ++it) {
+        if (it->memory_address) return 1;
+        if (!it->callback) continue;
+        bool matched = false;
+        for (uint32_t i = 0; i < count; ++i)
+            if (handled[i].address < 0xC0000000u && handled[i].callback &&
+                function_entry_key(handled[i].address) == it->key &&
+                handled[i].expected == it->expected && handled[i].callback == it->callback)
+                matched = true;
+        if (!matched) return 1;
+    }
+    return 0;
 }
 
 extern "C" int psx_mod_register_memory_address_plugin(const char* id, uint32_t pc,

@@ -21,6 +21,8 @@
 extern "C" {
 #endif
 
+struct CPUState;
+
 /* --- lifecycle / configuration ------------------------------------------ */
 
 /* Master arm. Allocates the RAM shadow lazily; fails closed (stays disabled)
@@ -155,6 +157,7 @@ void pgxp_invalidate_all(void);
  * belong to a different sub-pixel projection, so drop the shadow of the
  * touched RAM / scratchpad word by provenance, not by value (memory.c). */
 void pgxp_invalidate_word(uint32_t addr);
+#include "pgxp_operation.h"
 
 /* Counted suppression bracket for speculative native-validation passes and
  * the GTE replay sandbox: hooks and producers no-op inside it. */
@@ -183,6 +186,20 @@ void pgxp_gte_set_projection(const PGXPProjection *projection);
 int pgxp_load_projection(uint32_t addr, uint32_t packed, PGXPProjection *out);
 int pgxp_get_gte_projection(uint32_t index, uint32_t packed, PGXPProjection *out);
 
+/* Explicit producer lineage, transported only by intact word copies. Tokens
+ * name host-owned source vertices; they are never inferred from position,
+ * depth, caller or matching values. Arithmetic and partial/untracked writes
+ * discard them. This transport can run with precision correction disabled.
+ * Changing its mode invalidates history; restore/reset must do so as well. */
+int pgxp_set_source_tracking(int enabled);
+int pgxp_tag_gte_source(uint32_t index, uint32_t expected, uint64_t token);
+uint64_t pgxp_load_source(uint32_t address, uint32_t expected);
+/* A trusted producer may bind an explicitly derived vertex after its original
+ * writer completed. expected MUST be the current RAM/scratchpad word, read by
+ * the caller. No correspondence is inferred. A missing/stale precision shadow
+ * becomes a known word without precision; an intact shadow keeps its data. */
+int pgxp_tag_word_source(uint32_t address, uint32_t expected, uint64_t token);
+
 /* Current SXY FIFO shadow (index 0..3 selects GTE data regs 12..15).
  * Returns nonzero when the shadow is live and carries X/Y precision. */
 int pgxp_get_gte_sxy(uint32_t index, int32_t *x16, int32_t *y16);
@@ -210,7 +227,7 @@ enum {
  *               unknown (immediate GP0 writes) — skips the dataflow tier.
  *   packet_word the actual word (validation key).
  *   int_x/int_y the natively parsed 11-bit positions (pre-draw-offset).
- * On DATAFLOW/FALLBACK, *x16/*y16 hold the sub-pixel position (16.16, same
+ * On DATAFLOW/FALLBACK, *x16 and *y16 hold the sub-pixel position (16.16, same
  * coordinate space as the packet halves); *sz is the projected depth or 0.
  * Safeguards applied here: the integer part must match the native parse
  * (truncation agreement; a bounded window under preserve-projection) and the
@@ -278,6 +295,14 @@ typedef struct PGXPStats {
 } PGXPStats;
 
 void pgxp_get_stats(PGXPStats *out);
+/* Active instruction hooks only; inactive/suppressed calls are not counted. */
+typedef struct PGXPHookStats {
+    uint64_t alu, load, store, cop2, muldiv, plain_batches, plain_registers;
+    uint64_t native_words_captured, native_words_published;
+    uint64_t native_sxy_imports, native_clobbers, native_gpr_imports;
+    uint64_t operations, operation_refusals, operation_alu, operation_loads, operation_stores;
+} PGXPHookStats;
+void pgxp_get_hook_stats(PGXPHookStats *out);
 /* Count one geometry-corrected triangle with `precise` (0..3) precise
  * vertices. */
 void pgxp_note_triangle(int precise);
@@ -333,6 +358,14 @@ void pgxp_projective_scope_end(PGXPProjectiveScope *scope);
  * to the sandbox's current generation. This never promotes an older timeline's
  * stale metadata. All restores, including clearing a shadow, are journaled.
  * Receipts are runtime-only host data: do not persist them in game saves. */
+/* The maintained half/projection attributes, also used by native geometry.
+ * Derived halves accept guest arithmetic's rounding window; unclamped values
+ * describe an intact projected word and must not be repacked as independent halves. */
+enum {
+    PGXP_F_VX=1u<<0, PGXP_F_VY=1u<<1, PGXP_F_VZ=1u<<2,
+    PGXP_F_PROJECTION=1u<<3, PGXP_F_DX=1u<<4, PGXP_F_DY=1u<<5,
+    PGXP_F_UNCLAMPED=1u<<6, PGXP_F_VXY=PGXP_F_VX|PGXP_F_VY
+};
 typedef struct PGXPWordShadow {
     uint32_t address, value, source_generation, valid;
     int32_t x16, y16;
@@ -351,6 +384,77 @@ int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected, const PGXPWordSha
  * Rollback restores the destination's previous metadata. */
 int pgxp_restore_relocated_word_shadow(uint32_t destination, uint32_t expected,
                                        const PGXPWordShadow *in);
+
+/* Whole native geometry operations transport vertex metadata at their input
+ * and output boundaries, without simulating their internal CPU instructions.
+ * A receipt is the existing validated word shadow plus optional lineage. It
+ * is transient host state, never a serialized guest representation.
+ *
+ * Capture ALL source words before any potentially aliasing guest writes. Write
+ * the packet with the maintained memory helpers, then publish its receipts.
+ * Publishing accepts only the current precision generation and journals the
+ * previous destinations in a render checkpoint. At most four words form one
+ * atomic batch. Suppressed passes leave the live metadata untouched. */
+typedef struct PGXPNativeWord {
+    PGXPWordShadow word;
+    uint64_t source;
+} PGXPNativeWord;
+int pgxp_native_capture_words(const uint32_t *addresses, const uint32_t *values,
+                              PGXPNativeWord *out, uint32_t count);
+/* One logical LH/LHU input. Unlike a word load it neither validates nor ends
+ * the unconsumed half of the source word. address is the actual half address;
+ * the receipt holds the extended value and its known upper half. */
+int pgxp_native_capture_half(uint32_t address, uint16_t value, int sign_extend,
+                             PGXPNativeWord *out);
+int pgxp_native_publish_words(const uint32_t *destinations,
+                              const PGXPNativeWord *words, uint32_t count);
+/* One logical SH after the maintained memory write. Preserve the unwritten
+ * half exactly, including stale bits; never validate it against live RAM.
+ * The receipt describes the source expression; an optional full scalar is
+ * materialized with the same rounding window as an ordinary hooked SH. */
+int pgxp_native_publish_half(uint32_t address, const PGXPNativeWord *word,
+                             double scalar, int tracked_scalar);
+/* The caller has already materialized the GPR word. r0 is refused. */
+int pgxp_native_import_gpr(uint32_t reg, const PGXPNativeWord *word);
+/* The caller has already written the corresponding SXY register word. */
+int pgxp_native_import_sxy(uint32_t reg, const PGXPNativeWord *word);
+/* End precision belonging to registers the native operation owns. Values must
+ * already be materialized in cpu; r0 is ignored, SXY FIFO writes are excluded.
+ * Pending plain-ALU writes are committed before the clobber, so cannot later
+ * resurrect metadata. A GTE mask may name only ordinary data registers. */
+void pgxp_native_clobber(struct CPUState *cpu, uint32_t gpr_mask, uint32_t gte_mask);
+/* Publish known-exact packed integer outputs of a whole native operation.
+ * Unlike clobber, both signed halves are exact (the LUI/constant-construction
+ * contract). This ends prior scalar/source lineage even when bits are equal;
+ * it does not claim that a guest instruction constructed the native output. */
+void pgxp_native_exact_gpr(struct CPUState *cpu, uint32_t gpr_mask);
+/* Native geometry can compose a packed matrix word directly from validated
+ * vertex halves. Its receipt uses the current generation, clears whole-source
+ * lineage when parents differ, and carries the computed half values. */
+int pgxp_native_import_control(uint32_t reg, const PGXPNativeWord *word);
+/* One ordinary MTC2 input whose source is a typed word/half receipt rather
+ * than a full scalar register. Preserve packed halves and source; end a prior
+ * data-register scalar. SXY/FIFO writes use import_sxy instead. */
+int pgxp_native_import_data(uint32_t reg, const PGXPNativeWord *word);
+/* Publish a full scalar result owned by a native operation. reg32/33 name
+ * HI/LO; other slots are GPRs. The CPU value is already materialized. tracked
+ * is an explicit input-provenance result, never inferred from equal integers.
+ * Half/source metadata is ended; a later scalar-to-half consumer validates it. */
+int pgxp_native_scalar_gpr(struct CPUState *cpu, uint32_t reg, double precise, int tracked);
+/* Inspect a caller-live scalar without consuming or changing its register.
+ * Equal integer values alone are not evidence that a scalar is untracked. */
+int pgxp_native_gpr_scalar(uint32_t reg, uint32_t expected, double *precise);
+/* A logical native GTE input/output with scalar precision and no packed-half
+ * lineage. value is the transferred word before the GTE register's masking. */
+int pgxp_native_scalar_data(uint32_t reg, uint32_t value, double precise, int tracked);
+/* Read a full scalar produced by a maintained native GTE command. The actual
+ * integer result must match; untracked output stays untracked. */
+int pgxp_native_gte_scalar(uint32_t reg, uint32_t expected, double *precise);
+/* Side-effect-free admission predicate for an integer-only native input.
+ * Untracked/bit-mismatched halves do not carry the current value; matching
+ * halves must be exact integers. Full-word projection values are refused.
+ * No shadow is validated, invalidated or promoted by this query. */
+int pgxp_native_word_exact(uint32_t address, uint32_t expected);
 
 /* Refused precise-word lookups, newest at (seq - 1) % cap (TCP pgxp_miss_ring). */
 enum {
@@ -424,16 +528,19 @@ uint64_t pgxp_tri_ring(const PGXPTriRecord **ring, uint32_t *cap);
  * RAM or scratchpad, with the storing PC, the source register's shadow state
  * and the shadow the destination word holds afterwards. Walking a packet
  * word's provenance backwards (store PC -> source register -> the load that
- * filled it) is how a precision loss is pinned to one instruction. */
+ * filled it) is how a precision loss is pinned to one instruction. Native word
+ * publication uses opcode/reg 0xFF and the operation's PC breadcrumb; it does
+ * not claim that a CPU register held the transported receipt. */
 #define PGXP_STORE_RING_CAP 262144u
+#define PGXP_STORE_NATIVE_WORD 0xFFu
 typedef struct PGXPStoreRecord {
     uint64_t seq;
     uint32_t frame;
     uint32_t pc;            /* g_debug_last_store_pc of the store           */
     uint32_t addr;          /* guest address written                        */
     uint32_t value;         /* the value stored (half / byte for SH / SB)   */
-    uint8_t  op;            /* primary opcode (0x2B SW, 0x29 SH, 0x3A SWC2) */
-    uint8_t  reg;           /* source GPR (or GTE data register for SWC2)   */
+    uint8_t  op;            /* primary opcode, or PGXP_STORE_NATIVE_WORD   */
+    uint8_t  reg;           /* GPR, GTE data register (SWC2), or 0xFF      */
     uint8_t  src_live;      /* source shadow belongs to this generation     */
     uint8_t  pad;
     uint16_t src_flags;     /* source shadow flags (1 X, 2 Y, 4 Z)          */
