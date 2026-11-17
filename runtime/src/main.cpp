@@ -22070,7 +22070,8 @@ soft_return_lobby:
         ls.widescreen_hud = ls.widescreen;
         ls.enable_audio = 1;
         ls.audio_freq = g_audio_freq;  /* fixed; the Sample rate row is hidden */
-            ls.window_width = g_video_win_w;
+        ls.volume = host_volume_get();
+        ls.window_width = g_video_win_w;
         ls.renderer = g_video_renderer;
         if (ls.renderer < 0 || ls.renderer > (vulkan_offered ? 2 : 1))
             ls.renderer = PSXRecompV4::DEFAULT_VIDEO_RENDERER;
