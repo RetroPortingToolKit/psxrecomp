@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <csetjmp>
 #if defined(PSX_TEST_PGXP_REGIONS)
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -34,6 +35,7 @@ static CPUState *live_cpu;
 #if defined(PSX_TEST_GEOMETRY_CONTROL)
 static bool control_active,control_observer,partial_active;
 static int control_scratch_mode=-1;static unsigned control_scratch_irq;
+static std::jmp_buf control_scratch_escape;
 static void control_watch(CPUState*,uint32_t,uint32_t);
 #endif
 static uint64_t frame_count;
@@ -179,7 +181,12 @@ extern "C" void psx_observation_edge(CPUState* cpu,uint32_t pc,int) {
         cpu->gpr[14]=0x80023800u;
         if(!pgxp_native_scalar_gpr(cpu,14,double((int32_t)cpu->gpr[14])+.625,1))std::abort();
         psx_next_service_cycle=UINT64_MAX;
-        if(control_scratch_mode==7){cpu->pc=0x80055500u;cpu->gpr[2]=0x55aau;g_psx_call_bail=1;}
+        if(control_scratch_mode==7) {
+            cpu->pc=0x80055500u;cpu->gpr[2]=0x55aau;g_psx_call_bail=1;
+            // The maintained nonlocal scheduler/thread transfer never returns
+            // to an old compiled frame (interrupts.c uses longjmp too).
+            std::longjmp(control_scratch_escape,1);
+        }
         return;
     }
 #endif
@@ -398,7 +405,10 @@ struct ControlProduct {
 static ControlProduct control_reference,control_candidate;
 static uint32_t control_reader(uint32_t address) {++callback_reads;return psx_read_word(address)+(address==Input?1u:0u);}
 static void run_control(ControlProduct& out,bool selected,unsigned mode,int cpu_mode,bool scratch_case=false) {
-    CPUState cpu{};live_cpu=region_cpu=&cpu;std::memset(ram,0,sizeof ram);history_count=0;
+    // Nonlocal context transfer must not make an automatic CPU object
+    // indeterminate across setjmp/longjmp. Both arms own this same reset storage.
+    static CPUState control_cpu;control_cpu=CPUState{};CPUState& cpu=control_cpu;
+    live_cpu=region_cpu=&cpu;std::memset(ram,0,sizeof ram);history_count=0;
     cpu.read_word=psx_read_word;cpu.read_half=psx_read_half;cpu.read_byte=psx_read_byte;
     cpu.write_word=psx_write_word;cpu.write_half=psx_write_half;cpu.write_byte=psx_write_byte;
     cpu.gpr[29]=0x8001ff00u;cpu.gpr[31]=0x80009000u;
@@ -439,8 +449,10 @@ static void run_control(ControlProduct& out,bool selected,unsigned mode,int cpu_
     psx_defer_switch_pending=g_psx_savestate_pending=psx_observation_wait_active=0;i_stat=i_mask=0;
     history_count=0;callback_reads=0;region_observed_sp_precise=0;region_observed_sp_scalar=0;
     control_active=true;PGXPHookStats before{},after{};pgxp_get_hook_stats(&before);
-    if(scratch_case) {if(selected)flow_candidate_func_80010884(&cpu);else flow_reference_func_80010884(&cpu);}
-    else {if(selected)flow_candidate_func_8001082C(&cpu);else flow_reference_func_8001082C(&cpu);}
+    if(!scratch_case || mode!=7u || setjmp(control_scratch_escape)==0) {
+        if(scratch_case) {if(selected)flow_candidate_func_80010884(&cpu);else flow_reference_func_80010884(&cpu);}
+        else {if(selected)flow_candidate_func_8001082C(&cpu);else flow_reference_func_8001082C(&cpu);}
+    }
     pgxp_get_hook_stats(&after);control_active=false;
     out.cpu=cpu;std::memcpy(out.bytes,ram,sizeof ram);out.count=history_count;
     out.cycles=psx_cycle_count;out.frac=g_psx_gcs_frac;out.saved_address=0;
