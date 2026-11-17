@@ -1491,6 +1491,7 @@ if(BUILD_TESTING)
                 fmv_quiet_guards
                 fps_telemetry_opt_in
                 hybrid_dev_any_input
+                netplay_boot_mode_wiring
                 launcher_pad_mode_wiring
                 netplay_start_failure_wiring
                 jalr_link_register_guards

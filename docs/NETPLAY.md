@@ -417,6 +417,25 @@ Generate & rebuild / prepare flows should point at the **`.cue`**, not a lone
 `.bin`. See [`config_schema.md`](config_schema.md) and the release checklist in
 [`GAME_PROJECT_SETUP.md`](GAME_PROJECT_SETUP.md).
 
+## BIOS boot mode
+
+The peers of a match must boot the BIOS the same way. Offline, the boot mode
+is the player's choice: `[runtime] bios_hle`, `bios_hle_keep_intro` and
+`fast_boot` come from the game's `game.toml`, then the player's
+`settings.toml`, then the launcher. A match takes all three from the game's
+`game.toml`, which both peers of one build share. A player who had chosen
+otherwise sees "Netplay: this match uses the game's own BIOS setting." at the
+start of the match; the choice is not changed and applies again offline.
+
+Before this, two peers that differed started a match (the boot digest at tick
+0 is the same in both modes) and the cores forked for good at sim 22. A
+`settings.toml` written by an older build of the game was enough.
+
+`PSX_BIOS_HLE` and `PSX_BIOS_HLE_KEEP_INTRO` stay test overrides on top of
+this rule. Set them on both peers. Two different builds of a game can still
+differ; nothing compares the mode between the peers. A mod netplay profile
+with `skip_bios_intro` still replaces the mode after this rule.
+
 ---
 
 ## Related product pieces
