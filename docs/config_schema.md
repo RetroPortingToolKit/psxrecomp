@@ -725,8 +725,8 @@ buffer_ms = 60
 `buffer_ms` accepts 30–500 milliseconds and defaults to 180. Lower values
 reduce audible input-to-sound delay, but leave less reserve for frames where a
 game temporarily produces no audio and can therefore crackle on affected
-titles. This is deliberately a per-game developer choice; it is not read from
-the player's `settings.toml`.
+titles. The title supplies the default; the General Settings audio-buffer
+preference can override it in the player's `settings.toml`.
 
 ## Video Block
 
@@ -749,12 +749,21 @@ Vulkan after validating their visuals and stability.
 
 These `[video]` / `[audio]` keys are the title's **baseline**: what a player
 sees and hears with the matching built-in mod at Game default (or off, except
-Internal Resolution, whose disabled state is native 1x). They are not player
-settings any more (no `settings.toml` key, no launcher Settings row, no
-in-game menu row); a player changes them through the framework's built-in
-mods on the Mods page, whose "Game default" option values keep the baseline
+Internal Resolution, whose disabled state is native 1x). A player changes these
+through the framework's built-in mods, whose "Game default" option values keep the baseline
 (`runtime/include/host_enhancements.h`, docs/MOD_PACKAGES.md "Built-in host
 enhancements"):
+
+The paired compact Settings UI also exposes the existing built-in resolution
+and image-filtering controls. Explicit player vertex/perspective preferences
+(`[video] geometry_correction`, `perspective_texturing` in `settings.toml`, on
+the launcher's PGXP page) can override those PGXP visual choices independently
+of the mod's CPU/culling options. The Display page's Automatic resolution
+section keeps `dynamic_resolution`, `dynamic_resolution_min`,
+`match_display_max_lines`, `supersample` and `supersample_disable_at_lines` in
+`settings.toml`; they replace the title's baseline under the Internal
+Resolution mod. See [Player Settings](PLAYER_SETTINGS.md) for persistence and
+presets.
 
 | `game.toml` key | Built-in mod (option) |
 |---|---|
@@ -771,20 +780,21 @@ Local rewind has no `game.toml` key; it is the Rewind mod
 
 A `settings.toml` written before this change may still carry `antialiasing`,
 `texture_filtering`, `fmv_filter`, `crt_filter`, `scanlines`,
-`scanline_strength`, `geometry_correction`, `perspective_texturing`, `rewind`,
-`rewind_depth`, `rewind_interval`, `supersampling`, `internal_resolution`,
-`supersample`, `dynamic_resolution`, `dynamic_resolution_min`, `[audio]
+`scanline_strength`, `rewind`,
+`rewind_depth`, `rewind_interval`, `supersampling`, `internal_resolution`, `[audio]
 spu_hq`, `[audio] frequency` or the `quality_*` keys. They are ignored, never
-an error, and the next save drops them (an empty `[audio]` table included).
+an error, and the next save drops them. Current volume and buffer preferences
+remain supported.
 
 **Audio sample rate.** The host audio device opens at the runtime's built-in
 rate (44.1 kHz, the SPU's own). It is not a player setting: the launcher has no
 Sample rate row for PSX and `settings.toml` has no `[audio] frequency`. Volume
 stays a launcher setting.
 
-**Graphics presets were removed.** A `game.toml` that still has a `[quality]`
+**Legacy title quality tables were removed.** A `game.toml` that still has a `[quality]`
 table (`[quality.low]` .. `[quality.ultra]`) fails to load with an error naming
-the table; delete it. No title shipped one.
+the table; delete it. No title shipped one. The player-facing Faithful / Best
+choices use current built-in features and preferences, not this legacy table.
 
 ### Internal resolution (`internal_resolution`, `supersampling`)
 

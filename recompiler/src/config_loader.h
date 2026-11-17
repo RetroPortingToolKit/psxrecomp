@@ -1575,6 +1575,7 @@ inline uint32_t ws_cull_clip_edge_width(const GameConfig& c) {
 struct UserSettings {
     // Host master volume, independent of the emulated audio hardware.
     bool has_volume = false; int volume = 100;
+    std::map<std::string,std::string> extra_player_settings;
     // Set when the file existed but failed to parse as TOML: every field below
     // is defaults and the caller must warn loudly — silently dropping a user's
     // hand-edited settings looks like the settings "don't work", and a later
@@ -1645,6 +1646,8 @@ struct UserSettings {
     bool has_netplay_lobby_url = false; std::string netplay_lobby_url;
     bool has_aspect_ratio   = false; int  aspect_num     = 4; // display aspect W:H
                                      int  aspect_den     = 3; // (4:3 = native)
+    // Preserved legacy field; no ordinary runtime consumer. No GUI checkbox
+    // until an implemented adaptive-view behavior is available.
     bool has_adaptive_view  = false; bool adaptive_view  = false;
     // Local rewind (on/off, buffer depth, interval) is the built-in Rewind
     // mod (psx.feature.rewind); the old [video] rewind keys are ignored. Its
@@ -1726,6 +1729,8 @@ struct UserSettings {
     // settings.toml [localization].language.
     bool has_language = false; std::string language = "en";
 
+    // Preserved authoring stubs. These three fields have no runtime consumer
+    // and are deliberately not presented as working player controls.
     bool has_parappa_timing_mode = false; std::string parappa_timing_mode = "stock";
     bool has_parappa_timing_extra_early = false; int parappa_timing_extra_early = 0;
     bool has_parappa_timing_extra_late = false; int parappa_timing_extra_late = 0;
