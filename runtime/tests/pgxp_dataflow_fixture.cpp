@@ -142,7 +142,10 @@ static void region_receipt(CPUState* cpu,unsigned reg,uint32_t flags) {
 }
 extern "C" void psx_observation_sample(void) {
     ++region_sample;
-    region_receipt(region_cpu,8,3);region_receipt(region_cpu,9,0);
+    // mode1 takes the ORI path: changing the low GPU field invalidates X,
+    // while the unchanged high half retains Y. The reference arm proves this.
+    if(region_mode!=1u||region_cpu->gpr[8]!=0x80007080u)std::abort();
+    region_receipt(region_cpu,8,2);region_receipt(region_cpu,9,0);
     region_sp_receipt(region_cpu);
     // This callback keeps the integer word but replaces the live scalar. A
     // later affine receipt must consume this state, not its old entry snapshot.
