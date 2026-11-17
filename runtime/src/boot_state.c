@@ -35,6 +35,11 @@
 #  include <time.h>
 #endif
 
+/* boot_state_write_file_atomic() and boot_state_replace_file(). Included here
+ * rather than built as its own source so every target that compiles or
+ * includes boot_state.c gets them without another source in its list. */
+#include "boot_state_replace.inc"
+
 static double boot_state_mono_ms(void) {
 #if defined(_WIN32)
     static LARGE_INTEGER freq;

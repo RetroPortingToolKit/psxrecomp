@@ -9,6 +9,7 @@
  *     leave the previous file byte for byte and remove the temporary.
  * Usage: test_boot_state_replace [work-folder]; default is the current folder. */
 #include "boot_state.h"
+#include "boot_state_replace.inc"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

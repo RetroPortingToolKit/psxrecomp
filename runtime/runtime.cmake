@@ -451,7 +451,6 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/parity_trace.c
     ${PSXRECOMP_ROOT}/runtime/src/device_trace.c
     ${PSXRECOMP_ROOT}/runtime/src/boot_state.c
-    ${PSXRECOMP_ROOT}/runtime/src/boot_state_replace.c
     ${PSXRECOMP_ROOT}/runtime/src/netplay_snap_ring.c
     ${PSXRECOMP_ROOT}/runtime/src/netplay_state_digest.c
     ${PSXRECOMP_ROOT}/runtime/src/netplay_input_hist.c

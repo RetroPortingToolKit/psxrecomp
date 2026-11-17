@@ -1,7 +1,8 @@
-/* boot_state_replace.c - write a state file without losing the previous one.
+/* boot_state_replace.inc - write a state file without losing the previous one.
  *
- * Kept apart from boot_state.c so the overwrite and failure behaviour can be
- * tested without linking the whole serializer.
+ * Included by boot_state.c, never built on its own. Kept in its own file so
+ * test_boot_state_replace.c can include just this part and test the overwrite
+ * and failure behaviour without the whole serializer.
  *
  * A save writes `<path>.tmp` first and moves it over `path` only when every
  * byte was written and the file closed cleanly. Any failure removes the
