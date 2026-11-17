@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guard that the run report's "interp_detail" object gets its data (PS1B-391).
+"""Guard that the run report's "interp_detail" object gets its data.
 
 runtime/tests/test_interp_report.c proves the builder: given tables, it writes
 the 32 hottest interpreted addresses with their place, the text guard's fields
@@ -74,5 +74,9 @@ for needle in (
 ):
     assert needle in block, f"the report writer no longer has: {needle}"
 assert "runtime/src/interp_report.c" in SOURCES, "runtime.cmake must build interp_report.c"
+MAIN = (ROOT / "runtime" / "src" / "main.cpp").read_text(encoding="utf-8")
+FNTRACE = (ROOT / "runtime" / "src" / "fntrace.c").read_text(encoding="utf-8")
+assert "g_fntrace_game_load_hook = dirty_ram_pc_table_game_load;" in MAIN, "main.cpp installs the game-load hook"
+assert FNTRACE.count("g_fntrace_game_load_hook();") == 2, "game entry and a restore across it both run the hook"
 
 print("interp_report wiring: 14 public miss exits, 10 reasons, writer and source list OK")

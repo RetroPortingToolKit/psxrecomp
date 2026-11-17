@@ -86,8 +86,8 @@ The interpreter keeps one row per block entry address it ran. `addresses` is
 the number of rows with hits; `by_place` sums them per place. `hottest` lists the
 `hottest_max` rows with the most hits, the hottest first.
 
-`addresses`, `by_place` and `hottest` count what ran after game entry
-(PS1B-513). Before that, with a real BIOS intro (`fast_boot` false and the
+`addresses`, `by_place` and `hottest` count what ran after game entry.
+Before that, with a real BIOS intro (`fast_boot` false and the
 BIOS run as recompiled code, not by the HLE boot), the BIOS shell runs from RAM
 0x30000 and up. Its addresses lie inside the game's text or overlay range, so a
 place decided from the game's ranges called them the game's: on the EU BIOS

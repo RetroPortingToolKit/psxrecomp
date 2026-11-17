@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guard that the BIOS-phase line reads the table at game entry (PS1B-105).
+"""Guard that the BIOS-phase line reads the table at game entry.
 
 runtime/tests/test_bios_phase_report.c proves the module: given a per-address
 table it sums the interpreted dispatches by place and writes the line, and the

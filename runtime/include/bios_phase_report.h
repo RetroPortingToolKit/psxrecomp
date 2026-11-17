@@ -1,4 +1,4 @@
-/* bios_phase_report.h — what the interpreter ran before game entry (PS1B-105).
+/* bios_phase_report.h — what the interpreter ran before game entry.
  *
  * With a real BIOS intro (fast_boot false, the BIOS run as recompiled code)
  * the BIOS runs before the game: the kernel, then the shell, which

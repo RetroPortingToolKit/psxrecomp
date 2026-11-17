@@ -1,4 +1,4 @@
-/* interp_report.h — the run report's "interp_detail" object (PS1B-391).
+/* interp_report.h — the run report's "interp_detail" object.
  *
  * A release product has no debug server. Its run report gave one number for
  * interpreted dispatches above the kernel window and could not say which
@@ -39,7 +39,7 @@ enum {
 /* The places of an address, in the report's order: kernel, text, overlay. */
 #define PSX_INTERP_PLACES 3
 
-/* What the interpreter ran before the game was entered (PS1B-513).
+/* What the interpreter ran before the game was entered.
  *
  * The place of an address is decided from the game's text range. Code that
  * ran before the game's boot executable was loaded is not the game's: with a
@@ -97,7 +97,8 @@ void psx_interp_preload_counters(PsxInterpPreload *pre,
 uint64_t psx_interp_after_entry(uint64_t total, uint64_t preload, int game_started);
 
 /* The runtime's own table (dirty_ram_interp.c): dirty_ram_pc_table_game_load
- * runs psx_interp_preload_close on it at game entry (fntrace.c), and
+ * runs psx_interp_preload_close on it at game entry (fntrace.c calls it
+ * through g_fntrace_game_load_hook, set in main.cpp), and
  * dirty_ram_pc_table_preload copies the sums for the run report. */
 void dirty_ram_pc_table_game_load(void);
 void dirty_ram_pc_table_preload(PsxInterpPreload *out);

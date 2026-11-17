@@ -99,6 +99,11 @@ void fntrace_restore_game_started(int started);
 void fntrace_mark_game_started(CPUState* cpu);
 /* Host-only report before game entry moves interpreter rows. */
 extern void (*g_fntrace_game_entry_hook)(void);
+/* Host-only: runs once when the game is entered, or when a restore moves the
+ * machine from before game entry to after it. main.cpp points it at
+ * dirty_ram_pc_table_game_load; a test that links fntrace.c alone leaves it
+ * null and needs no interpreter. */
+extern void (*g_fntrace_game_load_hook)(void);
 /* Entry-pc-exact latch for the interpreter path: calls
  * fntrace_mark_game_started() only when addr matches the armed game entry
  * (fntrace_set_game_range lo).  No-op before the range is armed and after

@@ -1,4 +1,4 @@
-/* bios_phase_report.c — what the interpreter ran before game entry (PS1B-105).
+/* bios_phase_report.c — what the interpreter ran before game entry.
  * See bios_phase_report.h for the line and what it counts. */
 
 #include "bios_phase_report.h"

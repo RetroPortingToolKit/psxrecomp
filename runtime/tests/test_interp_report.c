@@ -1,5 +1,5 @@
 /*
- * The run report's "interp_detail" object (PS1B-391).
+ * The run report's "interp_detail" object.
  *
  * A release product's report gave one number for interpreted dispatches above
  * the kernel window. This object names the hottest interpreted addresses and
@@ -10,7 +10,7 @@
  *   a full table       the 32 hottest, hottest first, the lower address first among
  *                      equals, each with its place; sums per place; empty slots ignored;
  *   guard and misses   the values it was given, every reason by name;
- *   game entry         (PS1B-513) the rows so far move to preload by place, keep their
+ *   game entry         the rows so far move to preload by place, keep their
  *                      address and lose their counts; by_place and hottest then hold
  *                      only what ran after entry; a second entry adds to the sums;
  *   a small buffer     -1 and no partial object; one byte more than the text fits.
@@ -228,7 +228,7 @@ int main(void)
               "counter subtraction: total equals preload plus after-entry without underflow");
     }
 
-    /* --- game entry (PS1B-513) ------------------------------------------------------ */
+    /* --- game entry ------------------------------------------------------ */
     /* With a real BIOS intro the BIOS shell runs from RAM 0x30000 and up before the
      * game's boot executable is loaded, inside the game's text range. Game entry moves
      * those rows to preload; by_place and hottest then hold only what ran after it. */
@@ -239,8 +239,8 @@ int main(void)
         memset(s_table, 0, sizeof s_table);
         in.kernel_end = 0x00010000u; in.text_lo = 0x00010000u; in.text_hi = 0x000E5800u;
         in.table = s_table; in.table_size = 512;
-        /* Before entry: two BIOS shell blocks in the text range (the counts of the EU
-         * BIOS run of Resident Evil 3), a kernel stub, a BIOS block above the text. */
+        /* Before entry: two BIOS shell blocks in the text range (counts from a real
+         * BIOS run), a kernel stub, a BIOS block above the text. */
         s_table[10].pc = 0x000597E8u; s_table[10].hits = 5133281; s_table[10].insns = 25666405;
         s_table[11].pc = 0x0005981Cu; s_table[11].hits = 5133281; s_table[11].insns = 25666405;
         s_table[11].entry_hits = 2;

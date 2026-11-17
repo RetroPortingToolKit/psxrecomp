@@ -1,5 +1,5 @@
 /*
- * The BIOS phase's interpreted dispatches (PS1B-105).
+ * The BIOS phase's interpreted dispatches.
  *
  * With a real BIOS intro the European shell (SCPH-5552, no shell seeds) runs
  * in the dirty-RAM interpreter, and nothing on stdout said how much: the

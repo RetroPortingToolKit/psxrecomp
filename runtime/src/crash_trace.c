@@ -648,7 +648,7 @@ void psx_crash_trace_dump(const char *reason, void *seh_info) {
             (unsigned long long)psx_interp_after_entry(disp_interp, interp_preload, preload.game_started));
     }
 
-    /* PS1B-391: which addresses ran interpreted, whether the text guard is
+    /* Which addresses ran interpreted, whether the text guard is
      * armed and what it refused, and why the overlay loader had no native
      * unit. The loader's disp_interp is one number; a product has no debug
      * server to ask for more. Everything here is read from counters the

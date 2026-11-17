@@ -765,7 +765,7 @@ void dirty_ram_text_bless(uint32_t phys, const uint8_t *bytes, uint32_t len) {
 
 uint64_t dirty_ram_text_native_blocked(void) { return g_text_native_blocked; }
 uint32_t dirty_ram_text_diverged_pages(void) { return g_text_diverged_pages; }
-/* The reference image's physical range, for the run report (PS1B-391).
+/* The reference image's physical range, for the run report.
  * Returns 0 when the guard is not armed. */
 int dirty_ram_text_image_range(uint32_t *lo, uint32_t *hi) {
     if (lo) *lo = text_ref_lo;
