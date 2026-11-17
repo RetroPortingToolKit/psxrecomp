@@ -343,12 +343,12 @@ static void test_window_width_settings() {
     auto us = PSXRecompV4::load_user_settings(p);
     check(us.has_window_width && us.window_width == 7680,
           "settings.toml window_width accepts 7680 (was capped at 3840)");
-    fs::remove(p);
     us.window_width = 320;
     check(PSXRecompV4::save_user_settings(p, us), "save the live menu's 1x window");
     auto one = PSXRecompV4::load_user_settings(p);
     check(one.has_window_width && one.window_width == 320,
           "the live menu's 1x window survives the next launch");
+    fs::remove(p);
 
 }
 
