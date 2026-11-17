@@ -86,8 +86,10 @@ for name in ('psx_mod_internal_resolution_reset','memcard_set_extension_codec','
  'debug_server_request','psx_mod_set_texture_bank_resolver','psx_mod_set_texture_bank_batching','gpu_ws_set_auto_ui_proportional',
  'psx_mod_set_world_scene_predicate','gpu_ws_set_native_scene_predicate','psx_mod_set_native_wide_projection_correction',
  'psx_mod_set_retained_scene_predicate','psx_mod_set_adaptive_backdrop_preload','psx_mod_set_draw_distance_clamp',
- 'psx_mod_immediate_reset','psx_mod_set_guest_cycle_scale_gate','psx_host_enh_reset','render_pass_reset_session'):
+ 'psx_mod_immediate_reset','psx_mod_set_guest_cycle_scale_gate','render_pass_reset_session'):
  stubs+='template<class... T> static int '+name+'(T...){return 0;}\n'
+# host_enhancements.h declares the real function, which a template stub cannot replace.
+stubs+='extern "C" void psx_host_enh_reset(void){}\n'
 stubs+=reset+'\n'+capabilities+'\n'
 fixture=fixture.replace('int main() {',stubs+'\nint main() {')
 start=fixture.index('    assert(intro && audio==64')
