@@ -3204,7 +3204,7 @@ UserSettings load_user_settings(const fs::path& path) {
         // the next save drops them (docs/config_schema.md).
         if (v.contains("window_width")) try_get([&]{
             const auto n = toml::find<int64_t>(v, "window_width");
-            if (n >= 640 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
+            if (n >= 320 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
         });
         // antialiasing, texture_filtering, fmv_filter, crt_filter, scanlines,
         // scanline_strength, geometry_correction and perspective_texturing
