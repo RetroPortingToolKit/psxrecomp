@@ -996,6 +996,14 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_emitter_stamps.py
                 --cmake ${CMAKE_COMMAND})
+        # tools/bios_emitter_fingerprint.cmake reads its file list from the
+        # psxrecomp-bios target. CMake hands the test that target's own list
+        # of sources, so the script's reading is checked in both directions.
+        add_test(NAME bios_emitter_fingerprint
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_emitter_fingerprint.py
+                --cmake ${CMAKE_COMMAND}
+                --target-sources "$<JOIN:$<TARGET_PROPERTY:psxrecomp-bios,SOURCES>,$<COMMA>>")
         add_test(NAME pgo_rebuild_flow
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pgo_rebuild_flow.py)
