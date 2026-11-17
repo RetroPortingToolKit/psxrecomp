@@ -20180,13 +20180,11 @@ int main(int argc, char** argv) {
             "ignoring the legacy value\n");
         g_turbo_loads_enabled = 0;
     }
-    /* Treat presentation interpolation the same way when a title moves it to
-     * Mods. Both the boolean and target rate are cleared so launcher-less
-     * starts cannot revive an old generic Settings selection. */
-    if (!frame_interpolation_offered &&
-        (g_frame_interpolation || g_frame_interpolation_fps)) {
+    /* Legacy image interpolation is retired. Clear persisted selections before
+     * launcher-less starts as well as before seeding the launcher. */
+    if (g_frame_interpolation || g_frame_interpolation_fps) {
         std::fprintf(stdout,
-            "psxrecomp: Frame interpolation is mod-owned for this title; "
+            "psxrecomp: Legacy frame interpolation is retired; "
             "ignoring the legacy Settings value\n");
         g_frame_interpolation = 0; /* retired legacy presentation */
         g_frame_interpolation_fps = 0;
