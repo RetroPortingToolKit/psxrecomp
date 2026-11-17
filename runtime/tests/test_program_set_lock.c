@@ -19,6 +19,7 @@
 #else
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #define make_dir(p) mkdir((p), 0755)
 #endif
 
@@ -26,21 +27,25 @@ static int s_fails = 0;
 #define CHECK(cond) do { if (!(cond)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #cond); s_fails++; } } while (0)
 
 /* Exit code of `self child dir`, or -1. */
-static int run_child(const char *self, const char *dir)
+static int run_mode(const char *self, const char *dir, const char *mode)
 {
     char cmd[2600];
     int status;
 #if defined(_WIN32)
     /* cmd.exe strips one outer pair of quotes; give it one to strip. */
-    snprintf(cmd, sizeof(cmd), "\"\"%s\" child \"%s\"\"", self, dir);
+    snprintf(cmd, sizeof(cmd), "\"\"%s\" %s \"%s\"\"", self, mode, dir);
     status = system(cmd);
     return status;
 #else
-    snprintf(cmd, sizeof(cmd), "\"%s\" child \"%s\"", self, dir);
+    snprintf(cmd, sizeof(cmd), "\"%s\" %s \"%s\"", self, mode, dir);
     status = system(cmd);
     if (status == -1 || !WIFEXITED(status)) return -1;
     return WEXITSTATUS(status);
 #endif
+}
+
+static int run_child(const char *self, const char *dir) {
+    return run_mode(self,dir,"child");
 }
 
 int main(int argc, char **argv)
@@ -50,6 +55,14 @@ int main(int argc, char **argv)
 
     if (argc == 3 && strcmp(argv[1], "child") == 0)
         return 10 + psx_program_set_lock_acquire(argv[2]);
+
+#ifndef _WIN32
+    if (argc == 3 && strcmp(argv[1], "reexec") == 0) {
+        if (psx_program_set_lock_acquire(argv[2]) != 1) return 2;
+        execl(argv[0],argv[0],"child",argv[2],(char*)NULL);
+        return 3;
+    }
+#endif
 
     make_dir(held);
     make_dir(free_dir);
@@ -67,6 +80,10 @@ int main(int argc, char **argv)
      * when it exits, so the next child gets it again. */
     CHECK(run_child(argv[0], free_dir) == 11);
     CHECK(run_child(argv[0], free_dir) == 11);
+
+#ifndef _WIN32
+    CHECK(run_mode(argv[0],free_dir,"reexec") == 11);
+#endif
 
     /* No folder, or a folder that does not exist: an error, not "held". */
     CHECK(run_child(argv[0], "program-set-lock-test-missing/nowhere") == 9);

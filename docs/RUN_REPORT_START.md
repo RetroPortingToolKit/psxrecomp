@@ -65,3 +65,5 @@ above) open a box when a person started the game. A scripted start gets no
 new box: `--headless`, `PSX_HEADLESS`, `--no-launcher`, `PSX_NO_LAUNCHER`, a
 replay launch, or `[launcher] skip_launcher = true` in `settings.toml`. It
 gets the old line on stderr and one more: `psxrecomp: start refused (<kind>)`.
+
+`program_set_lock` means exclusive access to shared memory cards could not be established; the game refuses safely.

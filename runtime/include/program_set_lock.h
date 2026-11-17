@@ -23,8 +23,8 @@ extern "C" {
  *   1  this process holds it (now, or from an earlier call);
  *   0  another process holds it: refuse to start;
  *  -1  the lock file could not be opened for another reason (read-only
- *      folder, bad path). The caller should carry on: a lock problem must not
- *      stop a player whose folder is otherwise usable. */
+ *      folder, bad path). Refuse safely: exclusive access to the shared cards
+ *      has not been established. */
 int psx_program_set_lock_acquire(const char *saves_dir);
 
 #ifdef __cplusplus

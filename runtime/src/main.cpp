@@ -22368,22 +22368,30 @@ session_reboot:
     }
     /* The programs of a multi-program set share the memory cards. Each keeps
      * them in memory and writes them back, so only one may run at a time
-     * (program_set_lock.h). A lock-file error other than "held" does not stop
-     * the player. Taken once; a session reboot finds it already held by us. */
+     * (program_set_lock.h). Any failure to establish exclusivity refuses
+     * safely. A session reboot finds the lock already held by us. */
     if (!g_program_discs.empty()) {
         std::error_code lock_dir_ec;   /* a first run has no saves folder yet */
         std::filesystem::create_directories(memcard_dir, lock_dir_ec);
     }
-    if (!g_program_discs.empty() &&
-        psx_program_set_lock_acquire(memcard_dir_str.c_str()) == 0) {
-        const unsigned lock_messages = s_player_message_seq;
-        launcher_warning("Already running",
-            "Another program of this game is running from this folder. They "
-            "share the same memory cards, so only one can run at a time.\n\n"
-            "Close the other one, then start this one again.");
-        return refuse_start("already_running", "Already running", "",
-                            lock_messages);
+    if (!g_program_discs.empty()) {
+        const int lock_result=psx_program_set_lock_acquire(memcard_dir_str.c_str());
+        if (lock_result < 0)
+            return refuse_start("program_set_lock", "Memory cards unavailable",
+                "Exclusive access to this game's shared memory cards could not be "
+                "established. Check the saves folder's permissions and try again.",
+                s_player_message_seq);
+        if (lock_result == 0) {
+            const unsigned lock_messages = s_player_message_seq;
+            launcher_warning("Already running",
+                "Another program of this game is running from this folder. They "
+                "share the same memory cards, so only one can run at a time.\n\n"
+                "Close the other one, then start this one again.");
+            return refuse_start("already_running", "Already running", "",
+                                lock_messages);
+        }
     }
+
     {
         std::string mc1 = memcard1_path.string();
         std::string mc2 = memcard2_path.string();
