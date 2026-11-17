@@ -64,7 +64,13 @@ void debug_server_trace_write_check(uint32_t a,uint32_t old,uint32_t v,uint8_t w
     if(actual!=old)std::abort(); // observer still sees the pre-mutation bytes
 #if defined(PSX_TEST_GEOMETRY_CONTROL)
     if(control_active)control_watch(live_cpu,a,old);
-    if(partial_active && pgxp_load_source(a,old)!=901)std::abort();
+    if(partial_active) {
+        // The observer receives the old accessed width. Source receipts are
+        // aligned whole words, including before an SH into the high half.
+        const uint32_t aligned=a&~3u;
+        uint32_t word;std::memcpy(&word,ram+(aligned&0x1fffffu),sizeof word);
+        if(pgxp_load_source(aligned,word)!=901)std::abort();
+    }
 #endif
     history[history_count++]={a,old,v,width,g_debug_last_store_pc,
         live_cpu?live_cpu->gpr[2]:0u,live_cpu?live_cpu->gpr[3]:0u};
@@ -470,7 +476,10 @@ static void retained_partial_store_products() {
                 out.source=pgxp_load_source(destination,out.value);
             }
             const auto& a=result[0];const auto& b=result[1];
-            if(b.write.address!=0x23600u || b.write.old_value!=old_word || b.write.width!=(kind?4u:2u))std::abort();
+            const uint32_t observed_address=0x23600u+(!kind?lane*2u:0u);
+            const uint32_t observed_old=kind?old_word:(old_word>>(lane*16u))&0xffffu;
+            if(b.write.address!=observed_address || b.write.old_value!=observed_old ||
+                    b.write.width!=(kind?4u:2u))std::abort();
             if(a.value!=b.value||!equal(a.word,b.word)||a.source!=b.source||
                     std::memcmp(&a.write,&b.write,sizeof a.write))std::abort();
             if(!kind) {
