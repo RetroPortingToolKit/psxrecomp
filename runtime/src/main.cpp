@@ -3285,11 +3285,11 @@ static void note_mounted_disc_warning(const std::filesystem::path& image,
 }
 
 struct DiscValidation {
+    std::string sbi_warning;   // missing-SBI warning; empty when none applies
     bool opened = false;
     bool has_header = false;
     bool id_matches = false;
     std::string detail;
-    std::string sbi_warning;
 };
 
 static DiscValidation validate_disc_image(const std::filesystem::path& selected_path,
@@ -3306,10 +3306,10 @@ static DiscValidation validate_disc_image(const std::filesystem::path& selected_
                                    /*has_expected_crc*/false, /*compute_crc*/false);
     DiscValidation v;
     v.opened     = id.opened;
+    v.sbi_warning = id.sbi_warning;
     v.has_header = id.has_header;
     v.id_matches = expect.empty() ? true : id.serial_matches;
     v.detail     = id.detail;
-    v.sbi_warning = id.sbi_warning;
     if (id.opened && id.has_header && !v.id_matches && v.detail.empty()) {
         v.detail = "The disc header is readable, but it does not contain the expected game ID " +
                    uppercase_ascii(expect) + " in the early disc metadata.";
