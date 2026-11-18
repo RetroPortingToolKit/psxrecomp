@@ -633,6 +633,8 @@ def main() -> int:
     # Bind the selected CUE basename, not its first track's basename.
     try:
         companion, companion_data = inspect_companion(selected_image, src_size, src_sha1)
+        if companion.get("warning"):
+            print(companion["warning"], file=sys.stderr)
         check_destination(cfg.out_dir / cfg.cue_name, companion_data)
     except CompanionError as exc:
         print(str(exc), file=sys.stderr)

@@ -44,6 +44,10 @@
 #endif
 #include "gpu_timeline.h"
 
+#ifndef PSX_NATIVE_FRAME_SUBMISSION
+#define PSX_NATIVE_FRAME_SUBMISSION 0
+#endif
+
 /* Word-aligned main-RAM offset of a DMA address (MADR / stepped cursor)
  * through the live geometry: retail folds to 2 MiB exactly as the DMAC's
  * 0x1FFFFC decode does; the opt-in 8 MB map addresses its unique high pages. */
@@ -863,6 +867,11 @@ static void start_async_gpu_linked_list(void) {
 extern int psx_get_in_exception(void);
 static DMAGpuHoldEntry s_hold_ring[DMA_GPU_HOLD_RING_CAP];
 static DMAGpuHoldStats s_hold_stats;
+static DMAGpuNativeStats s_native_stats;
+
+void dma_debug_get_gpu_native(DMAGpuNativeStats *out) {
+    if (out) *out = s_native_stats;
+}
 
 static uint64_t hold_host_ticks(void) {
 #ifdef _WIN32
@@ -881,26 +890,8 @@ static uint64_t hold_host_ticks_per_sec(void) {
 #endif
 }
 
-static void hold_cpu_for_gpu_linked_list(void) {
-    if (psx_in_device_service || g_ls_replay_active || g_psx_guest_time_frozen)
-        return;
-    const uint64_t cyc0 = psx_cycle_count;
-    const uint64_t host0 = hold_host_ticks();
-    const uint32_t words0 = gpu_linked_list.total_words;
-    uint32_t steps = 0;
-    while (gpu_linked_list.active && ((channels[2].chcr >> 24) & 1u) &&
-           channel_enabled(2)) {
-        const uint32_t moved = gpu_linked_list.total_words;
-        if((s_host_draw[0].bytes || s_host_draw[1].bytes) &&
-           dma_host_draw_drain(&gpu_linked_list,s_host_draw,&gpu_ll_ops,NULL)) {
-            ++s_host_draw_nodes;s_host_draw_words+=gpu_linked_list.total_words-moved;
-            continue;
-        }
-        psx_advance_cycles(dma_gpu_ll_cycles_to_event(&gpu_linked_list));
-        psx_devices_service_to_now();
-        steps++;
-        if (gpu_linked_list.active && gpu_linked_list.total_words == moved) break;
-    }
+static void record_gpu_hold(uint64_t cyc0, uint64_t host0,
+                            uint32_t words0, uint32_t steps) {
     const uint64_t host_us = (hold_host_ticks() - host0) * 1000000ull /
                              hold_host_ticks_per_sec();
     const int in_exc = psx_get_in_exception() != 0;
@@ -926,6 +917,199 @@ static void hold_cpu_for_gpu_linked_list(void) {
         s_hold_stats.exc_held_cycles += e->held_cycles;
         s_hold_stats.exc_host_us += host_us;
     }
+}
+
+#if PSX_NATIVE_FRAME_SUBMISSION
+typedef struct {
+    uint32_t address, header, offset;
+} NativeGpuNode;
+static NativeGpuNode *s_native_nodes;
+static uint32_t *s_native_words;
+static uint32_t s_native_node_capacity, s_native_word_capacity;
+
+static void *native_list_reserve(void *buffer, uint32_t *capacity,
+                                  uint32_t required, size_t element_size) {
+    if (required <= *capacity) return buffer;
+    uint32_t n = *capacity ? *capacity : 1024u;
+    while (n < required) n *= 2u;
+    if ((size_t)n > SIZE_MAX / element_size) return 0;
+    void *grown = realloc(buffer, (size_t)n * element_size);
+    if (!grown) return 0;
+    *capacity = n;
+    return grown;
+}
+
+/* The resolver folds every address through the live RAM/aperture contract.
+ * Reads are byte assembled, so neither host endian nor alignment is assumed. */
+static uint32_t native_list_read(uint32_t address, const uint8_t *ram) {
+    const uint8_t *p;
+    if (address < PSX_MAIN_RAM_WINDOW_BYTES) p = ram + DMA_RAM_ADDR(address);
+    else {
+        extern const uint8_t *psx_mod_gpu_dma_read_view(uint32_t, uint32_t);
+        p = psx_mod_gpu_dma_read_view(address, 4u);
+        /* resolve_address has already excluded unallocated aperture bytes. */
+        if (!p) p = ram + DMA_RAM_ADDR(address);
+    }
+    return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 |
+           (uint32_t)p[3] << 24;
+}
+
+static int native_list_host_node(uint32_t address, const uint32_t *words,
+                                  uint32_t count) {
+    unsigned slot;
+    for (slot = 0; slot < 2; ++slot)
+        if (s_host_draw[slot].bytes >= 4u && address >= s_host_draw[slot].start &&
+            address - s_host_draw[slot].start <= s_host_draw[slot].bytes - 4u)
+            break;
+    if (slot == 2 || 4u * (count + 1u) >
+        s_host_draw[slot].bytes - (address - s_host_draw[slot].start)) return 0;
+    for (uint32_t i = 0; i < count;) {
+        const uint32_t op = words[i] >> 24;
+        uint32_t n;
+        if (op >= 0xE1u && op <= 0xE6u) n = 1;
+        else if (op >= 0x20u && op <= 0x3Fu) {
+            const uint32_t vertices = (op & 8u) ? 4u : 3u;
+            n = 1u + vertices + ((op & 16u) ? vertices - 1u : 0u) +
+                ((op & 4u) ? vertices : 0u);
+        } else return 0;
+        if (n > count - i) return 0;
+        i += n;
+    }
+    return 1;
+}
+
+static int submit_native_gpu_linked_list(void) {
+    extern int g_ls_mode, g_ram_read_watch_active;
+    extern volatile int g_ds_recording;
+    extern uint8_t *memory_get_ram_ptr(void);
+    /* Non-authoritative replays/frozen passes retain their existing transaction
+     * path. Observing a live operation must not change its simulation model. */
+    if (gpu_linked_list.active || psx_in_device_service || g_ls_replay_active ||
+        g_psx_guest_time_frozen) {
+        s_native_stats.fallbacks++;
+        return 0;
+    }
+    const int observed = g_ls_mode || g_ds_recording || g_ram_read_watch_active;
+    const uint64_t cyc0 = psx_cycle_count, host0 = hold_host_ticks();
+    const uint8_t *ram = memory_get_ram_ptr();
+    const uint32_t head = psx_mod_gpu_dma_resolve_address(channels[2].madr);
+    const uint32_t max_nodes = 0x40000u;
+    uint32_t address = head, node_count = 0, word_count = 0, cycles = 0;
+    uint32_t rank = UINT32_MAX;
+    uint64_t host_nodes = 0, host_words = 0;
+    int terminated = 0;
+    gpu_ws_native_list_begin();
+    while (node_count < max_nodes) {
+        address = psx_mod_gpu_dma_resolve_address(address);
+        const uint32_t header = observed ? gpu_ll_read_word(NULL, address)
+                                          : native_list_read(address, ram);
+        const uint32_t count = header >> 24;
+        NativeGpuNode *nodes = (NativeGpuNode *)native_list_reserve(s_native_nodes,
+            &s_native_node_capacity, node_count + 1u, sizeof *s_native_nodes);
+        if (nodes) s_native_nodes = nodes;
+        uint32_t *words = (uint32_t *)native_list_reserve(s_native_words,
+            &s_native_word_capacity, word_count + count + 1u, sizeof *s_native_words);
+        if (words) s_native_words = words;
+        if (!nodes || !words) {
+            /* Allocation pressure cannot silently select another timing model
+             * on just one peer. No draws/effects have been published yet. */
+            psx_fatal_halt("Native GPU submission allocation failed");
+            return 1;
+        }
+        NativeGpuNode *node = &s_native_nodes[node_count++];
+        node->address = address;
+        node->header = header;
+        node->offset = word_count;
+        if (observed) {
+            for (uint32_t i = 0; i < count; ++i)
+                s_native_words[word_count + i] = gpu_ll_read_word(NULL,
+                    psx_mod_gpu_dma_resolve_address(address + 4u + i * 4u));
+        } else {
+            for (uint32_t i = 0; i < count; ++i) {
+                const uint32_t source = psx_mod_gpu_dma_resolve_address(address + 4u + i * 4u);
+                s_native_words[word_count + i] = native_list_read(source, ram);
+            }
+        }
+        gpu_ws_native_list_node(address, header, s_native_words + word_count);
+        if (native_list_host_node(address, s_native_words + word_count, count)) {
+            host_nodes++;
+            host_words += count + 1u;
+        } else cycles += count + 1u;
+        word_count += count;
+        if (!count) rank = rank == UINT32_MAX ? 0u : rank + 1u;
+        if ((header & 0x00FFFFFFu) == 0x00FFFFFFu) {
+            terminated = 1;
+            break;
+        }
+        address = psx_mod_gpu_dma_resolve_address(header & 0x00FFFFFFu);
+    }
+    gpu_ws_native_list_end();
+    gpu_ws_begin_linked_list();
+    dma_gpu_ll_start(&gpu_linked_list, head, max_nodes);
+    gpu_timeline_note(GTL_LL_START, head, 0);
+    event_ring_record_aux(EV_DMA_SCHED, 2u, channels[2].chcr);
+    gpu_ot_stats.starts++;
+    gpu_ot_start_cycle = cyc0;
+    gpu_ot_polls_this_walk = 0;
+    for (uint32_t i = 0; i < node_count; ++i) {
+        const NativeGpuNode *node = &s_native_nodes[i];
+        gpu_submit_gp0_node(node->address, node->header >> 24,
+                             s_native_words + node->offset);
+    }
+    const NativeGpuNode *last = &s_native_nodes[node_count - 1u];
+    gpu_linked_list.active = 0; /* A device catch-up must not walk it again. */
+    gpu_linked_list.phase = DMA_GPU_LL_PHASE_IDLE;
+    gpu_linked_list.cycles_remaining = 0;
+    gpu_linked_list.current_addr = address;
+    gpu_linked_list.next_addr = last->header & 0x00FFFFFFu;
+    gpu_linked_list.word_count = last->header >> 24;
+    gpu_linked_list.payload_index = gpu_linked_list.word_count;
+    gpu_linked_list.nodes_processed = node_count;
+    gpu_linked_list.total_words = word_count + node_count;
+    gpu_linked_list.empty_rank = rank;
+    gpu_linked_list.hit_limit = (uint8_t)!terminated;
+    gpu_linked_list.emit_node = 1;
+    s_host_draw_nodes += host_nodes;
+    s_host_draw_words += host_words;
+    s_native_stats.lists++;
+    s_native_stats.nodes += node_count;
+    s_native_stats.words += word_count + node_count;
+    if (observed) s_native_stats.observed_words += word_count + node_count;
+    else s_native_stats.direct_words += word_count + node_count;
+    PSX_HR_GPU_HOLD_BEGIN();
+    psx_advance_cycles(cycles);
+    psx_devices_service_to_now_cause(PSX_HR_REQUEST_GPU_HOLD);
+    PSX_HR_GPU_HOLD_END();
+    s_native_stats.service_requests++;
+    gpu_ll_complete(NULL, !terminated);
+    record_gpu_hold(cyc0, host0, 0, cycles ? 1u : 0u);
+    return 1;
+}
+#endif
+
+static void hold_cpu_for_gpu_linked_list(void) {
+    if (psx_in_device_service || g_ls_replay_active || g_psx_guest_time_frozen)
+        return;
+    const uint64_t cyc0 = psx_cycle_count;
+    const uint64_t host0 = hold_host_ticks();
+    const uint32_t words0 = gpu_linked_list.total_words;
+    uint32_t steps = 0;
+    PSX_HR_GPU_HOLD_BEGIN();
+    while (gpu_linked_list.active && ((channels[2].chcr >> 24) & 1u) &&
+           channel_enabled(2) && gpu_linked_list.nodes_processed < 0x80000u) {
+        const uint32_t moved = gpu_linked_list.total_words;
+        if((s_host_draw[0].bytes || s_host_draw[1].bytes) &&
+           dma_host_draw_drain(&gpu_linked_list,s_host_draw,&gpu_ll_ops,NULL)) {
+            ++s_host_draw_nodes;s_host_draw_words+=gpu_linked_list.total_words-moved;
+            continue;
+        }
+        psx_advance_cycles(dma_gpu_ll_cycles_to_event(&gpu_linked_list));
+        psx_devices_service_to_now_cause(PSX_HR_REQUEST_GPU_HOLD);
+        steps++;
+        if (gpu_linked_list.active && gpu_linked_list.total_words == moved) break;
+    }
+    PSX_HR_GPU_HOLD_END();
+    record_gpu_hold(cyc0, host0, words0, steps);
 }
 
 void dma_debug_get_gpu_hold(DMAGpuHoldStats *out_stats,
@@ -1116,6 +1300,10 @@ static void try_execute(int ch) {
     /* Transfer starts when bit 24 (start/busy) is set AND channel is enabled in DPCR */
     if (!((chcr >> 24) & 1)) return;
     if (!channel_enabled(ch)) return;
+    /* PSX-SPX "D#_CHCR": bit 28 is the manual start for SyncMode 0, and OTC
+     * has no DREQ, so channel 6 waits with bit 24 set until bit 28 is set.
+     * The other channels start on bit 24 alone. */
+    if (ch == 6 && !((chcr >> 28) & 1u)) return;
 
     channels[ch].chcr &= ~(1u << 28);
     trace_dma('S', ch, transfer_word_count(ch), dicr, i_stat);
@@ -1141,6 +1329,9 @@ static void try_execute(int ch) {
         case 2:
             if ((channels[2].chcr & 1u) != 0u &&
                 ((channels[2].chcr >> 9) & 3u) == 2u) {
+#if PSX_NATIVE_FRAME_SUBMISSION
+                if (submit_native_gpu_linked_list()) break;
+#endif
                 start_async_gpu_linked_list();
                 /* Render pass: devices never advance in frozen time, so walk
                  * the whole list now. The walk is the same event-driven code,
@@ -1386,6 +1577,13 @@ void dma_advance(uint32_t cycles) {
 }
 
 void dma_init(void) {
+#if PSX_NATIVE_FRAME_SUBMISSION
+    free(s_native_nodes);
+    free(s_native_words);
+    s_native_nodes = NULL;
+    s_native_words = NULL;
+    s_native_node_capacity = s_native_word_capacity = 0;
+#endif
     memset(s_host_draw,0,sizeof(s_host_draw));
     memset(s_host_draw_view,0,sizeof(s_host_draw_view));
     memset(channels, 0, sizeof(channels));

@@ -8,6 +8,10 @@ static int test_dma_active;
 static int test_raw_fail, test_raw_bad_header, test_raw_bad_copy;
 static int test_copy_result = 1, test_copy_calls;
 static uint8_t test_raw_mode = 2, test_submode = 8;
+/* Each open is a distinct handle, so a test can tell which image is mounted. */
+static uintptr_t test_next_handle = 1;
+static int test_open_fail;
+static void* test_last_closed;
 int dma_cdrom_transfer_active(void) { return test_dma_active; }
 void psx_irq_raise(uint32_t bit, uint32_t detail) { (void)detail; i_stat |= bit; }
 int iso_read_raw_sector(void* h, uint32_t lba, uint8_t* out, int size) {
@@ -38,6 +42,24 @@ static void setup(void) {
 }
 static void sector(void);
 static void ack(void);
+static int test_disc_scope;
+
+/* A disc change names later states for the mounted disc: its roster index,
+ * or, for a program of a multi-program set, its position in the whole set. */
+static void disc_select_scope_tokens(void) {
+    const char *const roster[2] = {"discs/Disc 3.cue", "discs/Disc 1.cue"};
+    const int set_positions[2] = {3, 1};
+    setup();
+    cdrom_disc_roster_set(roster, 2, 1);
+    cdrom_disc_scope_tokens_set(NULL, 0);
+    CHECK(cdrom_disc_select(2) && test_disc_scope == 2);
+    CHECK(cdrom_disc_select(1) && test_disc_scope == 1);
+    cdrom_disc_scope_tokens_set(set_positions, 2);
+    CHECK(cdrom_disc_select(2) && test_disc_scope == 1);
+    CHECK(cdrom_disc_select(1) && test_disc_scope == 3);
+    cdrom_disc_scope_tokens_set(NULL, 0);
+    cdrom_disc_roster_set(NULL, 0, 0);
+}
 static void request(void);
 static void drain(unsigned lba, int words);
 static int resident_copy(void* context) {
@@ -323,13 +345,14 @@ static void snapshot_setloc_and_paused_head(void) {
     CHECK(cdrom_snapshot_read(wire,size) && !setloc_pending);
     exec_command(0x1B);ack();
     CHECK(msf_to_lba(read_min,read_sec,read_sect)==151);
-    wire[size-1]=2;CHECK(!cdrom_snapshot_validate(wire,size));
+    wire[size-1-CDROM_SNAP_CDF5_BYTES]=2;CHECK(!cdrom_snapshot_validate(wire,size));
     /* CDF2 states remain readable and retain the paused drive position. */
     exec_command(0x09);ack();
     PstW writer;pst_w_init(&writer,wire,size);
-    CHECK(cdrom_snap_emit(&writer,1) && writer.written==size-6);
+    const uint32_t cdf2=size-CDROM_SNAP_CDF5_BYTES-CDROM_SNAP_CDF4_BYTES;
+    CHECK(cdrom_snap_emit(&writer,1) && writer.written==cdf2);
     read_sec=9;
-    CHECK(cdrom_snapshot_read(wire,size-6));
+    CHECK(cdrom_snapshot_read(wire,cdf2));
     exec_command(0x06);
     CHECK(msf_to_lba(read_min,read_sec,read_sect)==151);
     free(wire);
@@ -354,7 +377,104 @@ static void snapshot_stream_identity(void) {
     CHECK(cdrom_get_stream_start_lba()==-1);
 }
 
+static void absolute_observation_deadlines(void) {
+    setup(); reading = 0; pending.pending = 0; pending_present_due = 0;
+    cdda_playing = 0; cdrom_lid_reset(&s_lid);
+    irq_enable = 7; irq_flag = CDIRQ_ACK; cdrom_intc_request_latched = 1;
+    CHECK(cdrom_cycles_to_internal_event() == UINT32_MAX);
+    cdrom_intc_request_latched = 0;
+    cdrom_irq_present_due = psx_cycle_count + 17;
+    CHECK(cdrom_cycles_to_internal_event() == 17);
+    psx_cycle_count += 17; cdrom_advance(17);
+    CHECK(cdrom_intc_request_latched);
+    CHECK(cdrom_cycles_to_internal_event() == UINT32_MAX);
+    cdda_playing = 1; cdda_delay = 23;
+    CHECK(cdrom_cycles_to_internal_event() == 23);
+    cdda_playing = 0;
+    s_lid.physical_open = 1; s_lid.close_due = psx_cycle_count + 41;
+    CHECK(cdrom_cycles_to_internal_event() == 41);
+    psx_cycle_count += 41; cdrom_advance(41);
+    CHECK(!s_lid.physical_open && cdrom_cycles_to_internal_event() == UINT32_MAX);
+    irq_flag = 0; pending.pending = 1; pending.due_cyc = psx_cycle_count + 31;
+    CHECK(cdrom_cycles_to_internal_event() == 31);
+    psx_cycle_count += 32;
+    CHECK(cdrom_cycles_to_internal_event() == 1);
+    irq_flag = CDIRQ_ACK; /* completed drive work waits for a guest ack */
+    CHECK(cdrom_cycles_to_internal_event() == UINT32_MAX);
+    puts("PASS actual CD response/CDDA/lid/held-pending absolute deadlines");
+}
+
+/* The CD audio volume matrix survives a load; CDF4 states keep the live one. */
+static void snapshot_cd_volume(void) {
+    static const uint8_t pending[2][2]={{0x82,0x01},{0x02,0x7F}};
+    static const uint8_t applied[2][2]={{0x82,0x00},{0x00,0x82}};
+    static const uint8_t identity[2][2]={{0x80,0x00},{0x00,0x80}};
+    setup();
+    memcpy(cd_pending_vol,pending,4); memcpy(cd_decode_vol,applied,4);
+    const uint32_t size=cdrom_snapshot_bytes();
+    uint8_t* wire=malloc(size); CHECK(wire);
+    cdrom_snapshot_write(wire);
+    memcpy(cd_pending_vol,identity,4); memcpy(cd_decode_vol,identity,4);
+    CHECK(cdrom_snapshot_read(wire,size));
+    CHECK(!memcmp(cd_pending_vol,pending,4) && !memcmp(cd_decode_vol,applied,4));
+    wire[size-CDROM_SNAP_CDF5_BYTES]^=1; CHECK(!cdrom_snapshot_validate(wire,size));
+    PstW writer; pst_w_init(&writer,wire,size);
+    CHECK(cdrom_snap_emit(&writer,2) && writer.written==size-CDROM_SNAP_CDF5_BYTES);
+    memcpy(cd_decode_vol,identity,4);
+    CHECK(cdrom_snapshot_read(wire,size-CDROM_SNAP_CDF5_BYTES));
+    CHECK(!memcmp(cd_decode_vol,identity,4) && !memcmp(cd_pending_vol,pending,4));
+    memcpy(cd_pending_vol,identity,4);
+    free(wire);
+}
+
+/* A save-state load mounts another disc of the set without a lid event: the
+ * state restores the drive's own registers. A player's disc change, by
+ * contrast, opens the lid. A refused load puts the previous image back. */
+static void test_open_fail_reset(void) { test_open_fail = 0; }
+static void disc_restore_mount(void) {
+    static const char* roster[] = { "disc1.cue", "disc2.cue" };
+    void *first, *second;
+    uint8_t stat_before;
+    CdromLidState lid_before;
+    int lid_irq_before;
+    setup();
+    test_open_fail_reset();
+    cdrom_disc_roster_set(roster, 2, 1);
+    first = iso_handle;
+    stat_before = stat_reg;
+    lid_before = s_lid;
+    lid_irq_before = s_lid_irq_pending;
+
+    CHECK(cdrom_disc_restore_begin(2));
+    second = iso_handle;
+    CHECK(second && second != first);
+    CHECK(stat_reg == stat_before && !(stat_reg & CDSTAT_SHELL));
+    CHECK(!memcmp(&s_lid, &lid_before, sizeof(s_lid)) && s_lid_irq_pending == lid_irq_before);
+    CHECK(!cdrom_disc_restore_begin(2));            /* one at a time */
+    cdrom_disc_restore_end(0);                       /* refused load */
+    CHECK(iso_handle == first && test_last_closed == second && cdrom_disc_selected() == 1);
+
+    CHECK(cdrom_disc_restore_begin(2));
+    second = iso_handle;
+    cdrom_disc_restore_end(1);                       /* kept */
+    CHECK(iso_handle == second && test_last_closed == first && cdrom_disc_selected() == 2);
+    CHECK(stat_reg == stat_before && s_lid_irq_pending == lid_irq_before);
+
+    CHECK(!cdrom_disc_restore_begin(3));             /* outside the roster */
+    test_open_fail = 1;
+    CHECK(!cdrom_disc_restore_begin(1));             /* image will not open */
+    CHECK(iso_handle == second && cdrom_disc_selected() == 2);
+    test_open_fail_reset();
+    cdrom_disc_restore_end(0);                       /* no begin open: no-op */
+    CHECK(iso_handle == second);
+
+    /* The player's disc change is the path that opens the lid. */
+    CHECK(cdrom_disc_select(1) && (stat_reg & CDSTAT_SHELL));
+    cdrom_disc_roster_set(NULL, 0, 0);
+}
+
 int main(void) {
+    absolute_observation_deadlines();
     resident_header_cursor_and_restore();
     resident_declines_atomically();
     pause_read_resumes_position();
@@ -367,14 +487,17 @@ int main(void) {
     snapshot_between_request_and_dma();
     snapshot_pending_deadline();
     snapshot_stream_identity();
+    snapshot_cd_volume();
+    disc_select_scope_tokens();
+    disc_restore_mount();
     puts("PASS: CD FIFO latching, pending IRQ, DMA continuation, and state compatibility");
     return 0;
 }
 
 void spu_cd_audio_reset(void) {}
 void spu_cd_audio_push(const int16_t* stereo,int frames) {(void)stereo;(void)frames;}
-void* iso_open(const char* p) {(void)p;return (void*)1;}
-void iso_close(void* h) {(void)h;}
+void* iso_open(const char* p) {(void)p;return test_open_fail ? NULL : (void*)(test_next_handle++);}
+void iso_close(void* h) {test_last_closed=h;}
 int iso_has_subq_replacements(void* h) {(void)h;return 0;}
 int iso_read_subq(void* h,uint32_t lba,uint8_t* b,int n,int* v) {(void)h;(void)lba;(void)b;(void)n;*v=0;return 0;}
 int iso_read_cdda_sector(void* h,uint32_t lba,uint8_t* b,int n) {(void)h;(void)lba;memset(b,0,n);return 0;}
@@ -385,9 +508,11 @@ uint32_t iso_cdda_sector_count(void* h) {(void)h;return 1000;}
 int iso_cdda_track_is_audio(void* h,int track) {(void)h;(void)track;return 0;}
 uint32_t iso_sector_count(void* h) {(void)h;return 1000;}
 int iso_track_count(void* h) {(void)h;return 1;}
+int iso_track_is_audio(void* h,int track) {(void)h;(void)track;return 0;}
 void event_ring_record_aux(uint16_t k,uint8_t d,uint32_t a) {(void)k;(void)d;(void)a;}
 void event_ring_record(uint16_t k,uint8_t d) {(void)k;(void)d;}
-void savestate_set_disc_scope(int n) {(void)n;}
+static int test_disc_scope = -1;
+void savestate_set_disc_scope(int n) {test_disc_scope = n;}
 int psx_netplay_cd_bisect_active(void) {return 0;}
 uint32_t psx_netplay_sim_tick(void) {return 0;}
 uint32_t interrupts_get_cycles_since_vblank(void) {return 0;}

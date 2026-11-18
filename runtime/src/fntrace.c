@@ -46,19 +46,28 @@ void fntrace_set_game_range(uint32_t lo, uint32_t hi) {
 }
 
 int fntrace_is_game_started(void) { return s_game_started; }
-void fntrace_restore_game_started(int started) { s_game_started = started != 0; }
+void (*g_fntrace_game_load_hook)(void) = 0;
+
+void fntrace_restore_game_started(int started) {
+    if (started && !s_game_started && g_fntrace_game_load_hook) g_fntrace_game_load_hook();
+    s_game_started = started != 0;
+}
 
 /* Centralised game-start transition.  Idempotent — safe to call from both
  * the dispatcher (fntrace_record) and the generated entry-point function.
  * Performs the complete handoff side effects: dirty-image baseline clear,
  * low-boot scratch clear, CD speed switch, and boot-state capture. */
+void (*g_fntrace_game_entry_hook)(void) = 0;
+
 void fntrace_mark_game_started(CPUState* cpu) {
     if (s_game_started) return;
     s_game_started = 1;
+    if (g_fntrace_game_entry_hook) g_fntrace_game_entry_hook();
     extern void dirty_ram_clear_image_baseline(void);
     extern void memory_clear_low_boot_scratch(void);
     dirty_ram_clear_image_baseline();
     memory_clear_low_boot_scratch();
+    if (g_fntrace_game_load_hook) g_fntrace_game_load_hook();
     cdrom_notify_game_started();
     boot_state_trigger_capture(cpu);
 }
@@ -129,8 +138,14 @@ static uint32_t s_spdom_prev_sp = 0;
  * splash reload loop was invisible without it). Dumped via `disp_ring`. */
 DispTailEntry g_disp_tail[DISP_TAIL_CAP];
 uint64_t      g_disp_tail_seq = 0;
+uint64_t      g_psx_owner_dispatch_count;
 
-void fntrace_record(CPUState* cpu, uint32_t target) {
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+static void fntrace_record_entry(CPUState* cpu, uint32_t target)
+#else
+void fntrace_record(CPUState* cpu, uint32_t target)
+#endif
+{
     /* The BIOS has completed the PS-X EXE load by the time it dispatches the
      * entry point. Apply the validated plan before the first guest instruction. */
     mod_runtime_on_dispatch(target);
@@ -306,6 +321,20 @@ void fntrace_arm_from_env(const char *env_name) {
         p = end;
     }
 }
+
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+void fntrace_record(CPUState* cpu, uint32_t target) {
+    ++g_psx_owner_dispatch_count;
+    fntrace_record_entry(cpu, target);
+}
+
+/* Every logical entry keeps the same history/mod/translation observers. It
+ * simply did not enter a physical owner iteration. */
+void fntrace_record_tail(CPUState* cpu, uint32_t target) {
+    fntrace_record_entry(cpu, target);
+}
+
+#endif
 
 void fntrace_clear(void) {
     g_fntrace_seq = 0;

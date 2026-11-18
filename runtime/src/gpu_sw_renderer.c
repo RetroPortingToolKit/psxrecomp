@@ -382,14 +382,17 @@ static uint16_t texel_fetch(int u, int v, uint16_t texpage,
  * (texel_fetch applies the window instead, which wraps by design). */
 static int g_uv_lim[4] = { 0, 0, 255, 255 };
 
-static uint16_t bl_fetch(int u, int v, uint16_t texpage,
+/* (u, v) is clamped in the 256-texel page of the base texel (bu, bv) before
+ * it wraps: a neighbour past u/v=255 must not wrap to 0 and blend the far
+ * side of the prim, while a prim that runs past 255 keeps its wrapped texels. */
+static uint16_t bl_fetch(int bu, int bv, int u, int v, uint16_t texpage,
                          uint16_t clut_x, uint16_t clut_y) {
-    u &= 0xFF; v &= 0xFF;
     if (!(g_tw_mask_x | g_tw_mask_y)) {
-        if (u < g_uv_lim[0]) u = g_uv_lim[0]; else if (u > g_uv_lim[2]) u = g_uv_lim[2];
-        if (v < g_uv_lim[1]) v = g_uv_lim[1]; else if (v > g_uv_lim[3]) v = g_uv_lim[3];
+        const int pu = bu & ~0xFF, pv = bv & ~0xFF;
+        if (u < pu + g_uv_lim[0]) u = pu + g_uv_lim[0]; else if (u > pu + g_uv_lim[2]) u = pu + g_uv_lim[2];
+        if (v < pv + g_uv_lim[1]) v = pv + g_uv_lim[1]; else if (v > pv + g_uv_lim[3]) v = pv + g_uv_lim[3];
     }
-    return texel_fetch(u, v, texpage, clut_x, clut_y);
+    return texel_fetch(u & 0xFF, v & 0xFF, texpage, clut_x, clut_y);
 }
 
 /* Bilinear texel sample, in RGB space (after the CLUT lookup — never
@@ -414,11 +417,11 @@ static uint16_t texel_fetch_bilinear(float fu, float fv, uint16_t texpage,
     if (fx > 128) fx = 128;
     if (fy > 128) fy = 128;
 
-    uint16_t c00 = bl_fetch(iu, iv, texpage, clut_x, clut_y);
+    uint16_t c00 = bl_fetch(iu, iv, iu, iv, texpage, clut_x, clut_y);
     if (c00 == 0) return 0x0000;
-    uint16_t c10 = bl_fetch(iu + su, iv, texpage, clut_x, clut_y);
-    uint16_t c01 = bl_fetch(iu, iv + sv, texpage, clut_x, clut_y);
-    uint16_t c11 = bl_fetch(iu + su, iv + sv, texpage, clut_x, clut_y);
+    uint16_t c10 = bl_fetch(iu, iv, iu + su, iv, texpage, clut_x, clut_y);
+    uint16_t c01 = bl_fetch(iu, iv, iu, iv + sv, texpage, clut_x, clut_y);
+    uint16_t c11 = bl_fetch(iu, iv, iu + su, iv + sv, texpage, clut_x, clut_y);
 
     int w00 = (c00 ? 1 : 0) * (256 - fx) * (256 - fy);
     int w10 = (c10 ? 1 : 0) * fx * (256 - fy);

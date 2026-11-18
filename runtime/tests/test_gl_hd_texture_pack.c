@@ -327,66 +327,15 @@ static void capture(void) {
 static const uint8_t* sample(int x,int y) { return pixels+(y*64+x)*4; }
 
 static void replacement_pass_scene(void) {
-    if (s_hiw) return; /* Window surfaces deliberately refuse render passes. */
-    uint8_t baseline[sizeof pixels], retained[sizeof pixels];
-    memcpy(baseline,pixels,sizeof pixels);
+    uint8_t baseline[sizeof pixels];memcpy(baseline,pixels,sizeof pixels);
     const uint64_t native=fnv(vram,sizeof vram,0xcbf29ce484222325ull);
-    GpuHdTextureDiag before,after;
-    gpu_hd_textures_get_diag(&before);
-    gl_renderer_set_interpolation(1,120.0,120.0,60.0,2);
+    gl_renderer_set_interpolation(1,120,120,60,2);
     gl_renderer_set_interpolation_source(1);
-    s_interp_valid=2; /* The first real frame has been presented. */
-    s_interp_w=s_interp_h=64;
-    s_interp_source_path=GL_PRES_VRAM;
-    s_pass_verify=1;
-    int opened=gl_renderer_pass_begin(0,0,16,16,1,2,0);
-    check(opened,"replacement draw pass opens under HD authority");
-    if (!opened) {
-        gl_renderer_set_interpolation(0,120.0,120.0,60.0,2);
-        return;
-    }
-    gr_draw_textured_rect(8,4,4,4,0,0,0,0,texture_page); capture();
-    check(sample(32,16)[0]>200 && sample(33,16)[2]>200,
-          "draw inside the pass uses actual red/blue replacement pixels");
-    gpu_hd_textures_get_diag(&after);
-    check(after.applied_draws>before.applied_draws,
-          "pass draw applies a decoded replacement");
-    gl_renderer_pass_end(32768,1);
-    check(gl_renderer_pass_verify_vram() &&
-          fnv(vram,sizeof vram,0xcbf29ce484222325ull)==native,
-          "kept replacement pass restores GPU and native CPU VRAM");
+    check(!gl_renderer_pass_begin(0,0,16,16,1,2,0),"retired replay is refused under HD authority");
+    check(!gl_renderer_interpolation_owns_cadence(),"HD authority cannot enable retired cadence");
     capture();
-    check(memcmp(pixels,baseline,sizeof pixels)==0,
-          "kept replacement pass restores canonical display pixels");
-    PassGen* g=&s_pgen[s_pgen_write];
-    check(g->n==2,"replacement pass retains its subframe");
-    if (g->n==2) {
-        GLint bound=0;
-        glGetIntegerv(GL_TEXTURE_BINDING_2D,&bound);
-        glBindTexture(GL_TEXTURE_2D,s_pgen_tex[s_pgen_write][1]);
-        glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,retained);
-        glBindTexture(GL_TEXTURE_2D,(GLuint)bound);
-        int red=0,blue=0;
-        for(int y=0;y<64;++y) for(int x=32;x<48;++x) {
-            const uint8_t* p=retained+(y*64+x)*4;
-            red+=p[0]>200 && p[1]<20 && p[2]<20;
-            blue+=p[2]>200 && p[0]<20 && p[1]<20;
-        }
-        check(red>0 && blue>0,"retained subframe contains replacement detail");
-    }
-    opened=gl_renderer_pass_begin(0,0,16,16,0,2,0);
-    check(opened,"discarded replacement pass opens");
-    if (opened) {
-        gr_draw_textured_rect(8,8,4,4,0,0,0,0,texture_page);
-        gl_renderer_pass_end(49152,0);
-        check(gl_renderer_pass_verify_vram() && g->n==2 &&
-              fnv(vram,sizeof vram,0xcbf29ce484222325ull)==native,
-              "discarded replacement pass preserves native VRAM and retained frame");
-        capture();
-        check(memcmp(pixels,baseline,sizeof pixels)==0,
-              "discarded replacement pass restores canonical display pixels");
-    }
-    gl_renderer_set_interpolation(0,120.0,120.0,60.0,2);
+    check(memcmp(pixels,baseline,sizeof pixels)==0 && fnv(vram,sizeof vram,0xcbf29ce484222325ull)==native,
+          "refused legacy replay preserves HD and canonical native pixels");
 }
 
 static void composition_scene(const char* root) {
@@ -686,8 +635,8 @@ int main(int argc,char** argv) {
     check(gl_renderer_stereo_unavailable()!=PSX_MOD_RENDER_PASS_READY,"stereo refuses HD authority");
     GpuHdTextureDiag diag; gpu_hd_textures_get_diag(&diag);
     check(diag.applied_draws>0,"replacement diagnostics record actual GL submissions");
-    /* Preserve the established Beetle numeric-key path with source origin
-     * offset, native cutout and native STP authority. */
+    /* Beetle numeric keys retain upload-relative UVs and native STP, but
+     * replacement alpha owns coverage, including over native zero texels. */
     char beetle_root[2048],beetle_png[2304],hashes[2304];
     snprintf(beetle_root,sizeof(beetle_root),"%s/beetle",argv[1]);
     snprintf(hashes,sizeof(hashes),"%s/Hashes.ini",beetle_root);
@@ -698,6 +647,7 @@ int main(int argc,char** argv) {
     for(int y=0;y<16;++y) for(int x=0;x<16;++x) {
         uint8_t* at=beetle_rgba+(y*16+x)*4;
         at[0]=x<4?255:0; at[1]=x>=8?255:0; at[2]=x>=4&&x<8?255:0; at[3]=255;
+        if(y>=12 && x<4) at[3]=0;
     }
     FILE* bf=fopen(beetle_png,"wb"); check(bf!=NULL,"Beetle PNG open");
     if(bf){check(png_write_rgba(bf,beetle_rgba,16,16),"Beetle PNG fixture");fclose(bf);}
@@ -710,8 +660,15 @@ int main(int argc,char** argv) {
     check(sample(16,16)[2]>200 && sample(16,16)[0]<20,"Beetle partial draw keeps upload-relative UV origin");
     check(vram[4*1024+4]==0x83e0 && vram[517]==0x83e0,
           "Beetle image preserves native draw RGB and source STP");
+    gr_fill_rect(0,0,16,16,0x4210);
     gr_draw_textured_rect(8,4,4,4,4,0,0,0,texture_page); capture();
-    check(sample(44,16)[1]>200,"Beetle native transparent zero still cuts out replacement");
+    check(sample(44,16)[1]>200 && sample(44,16)[0]<20,
+          "Beetle opaque replacement fills native transparent holes");
+    check(sample(32,28)[0]>100 && sample(32,28)[0]<160 &&
+          sample(32,28)[1]>100 && sample(32,28)[1]<160,
+          "Beetle replacement alpha cuts out over occupied native texels");
+    check(vram[4*1024+11]==0x4210 && vram[7*1024+8]==0x03e0,
+          "Beetle replacement coverage never changes native VRAM");
     /* Render thread: residency follows the recorded command stream and the
      * render thread's VRAM copy. The emulation thread writes its array and
      * records the overwrite before the first draw has been replayed; that

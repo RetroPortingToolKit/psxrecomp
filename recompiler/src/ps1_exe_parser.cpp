@@ -332,14 +332,27 @@ std::optional<PS1Executable> PS1ExeParser::parse_buffer(
         return std::nullopt;
     }
 
-    // Check file size matches buffer
+    // The header owns the program length. A file shorter than it declares is
+    // truncated and cannot be recompiled. A longer one is normal on disc:
+    // ISO 9660 records and CD-ROM extents are sector-padded (Azure Dreams
+    // SLUS_006.14 is 524288 bytes on disc for a 346112-byte program), and the
+    // BIOS loader reads exactly file_size bytes and ignores the rest. Bound the
+    // input the same way here so first-run setup can feed the boot program
+    // straight from the player's disc instead of a hand-trimmed copy.
     size_t expected_size = 2048 + exe.header.file_size;
-    if (buffer.size() != expected_size) {
+    if (buffer.size() < expected_size) {
         error_msg = fmt::format(
             "File size mismatch: header specifies {} bytes total (2048 + {}), got {}",
             expected_size, exe.header.file_size, buffer.size()
         );
         return std::nullopt;
+    }
+    if (buffer.size() > expected_size) {
+        fmt::print(stderr,
+            "psxrecomp: PS-X EXE is {} bytes on disc; header declares {} (2048 + {}). "
+            "Using the header-declared program length and ignoring {} trailing bytes.\n",
+            buffer.size(), expected_size, exe.header.file_size,
+            buffer.size() - expected_size);
     }
 
     // Copy code data (after header)

@@ -106,6 +106,12 @@ int overlay_loader_dispatch(CPUState *cpu, uint32_t addr);
 void overlay_loader_set_load_freeze(int freeze);
 int  overlay_loader_load_frozen(void);
 
+/* Low-level gates used by code_provider's transactional startup seal. Owner
+ * thread only; cache-init workers must already be joined. Not a live switch. */
+int overlay_loader_session_can_seal_interpreted(void);
+int overlay_loader_session_set_interpreted(int sealed);
+int overlay_loader_session_interpreted_sealed(void);
+
 /* Drop the negative lazy-lookup memo (host-only). Call on snap restore so
  * resim#1 and resim#2 take the same dispatch path. */
 void overlay_loader_clear_lazy_miss(void);

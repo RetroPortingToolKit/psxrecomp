@@ -20,6 +20,25 @@ struct RecompRuntimeUi;
 struct RecompRuntimeUi *psx_runtime_menu_model(void);
 /* The framebuffer menu is available only while no provider is attached. */
 void psx_runtime_menu_set_fallback_enabled(int enabled);
+
+/* Live host settings shown under Display and Audio. The host owns the values;
+ * the menu only reads and writes them through these hooks. */
+enum PsxRuntimeMenuSetting {
+    PSX_MENU_SETTING_FULLSCREEN,   /* 0 windowed, 1 borderless, 2 exclusive */
+    PSX_MENU_SETTING_WINDOW_SCALE, /* 1..4, window width = scale * 320 */
+    PSX_MENU_SETTING_VOLUME,       /* 0..100 */
+    PSX_MENU_SETTING_COUNT
+};
+typedef struct PsxRuntimeMenuHost {
+    void *context;
+    int (*get)(void *context, int setting, int *value_out);
+    int (*set)(void *context, int setting, int value);
+    /* NULL: every setting is enabled. */
+    int (*enabled)(void *context, int setting);
+} PsxRuntimeMenuHost;
+/* Call before psx_runtime_menu_init(); NULL removes the settings. With host
+ * settings the menu exists for every game, not only multi-disc ones. */
+void psx_runtime_menu_set_host(const PsxRuntimeMenuHost *host);
 #ifdef __cplusplus
 }
 #endif

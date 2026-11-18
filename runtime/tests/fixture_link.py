@@ -70,7 +70,8 @@ def write_stubs(path, symbols):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=()):
+def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=(),
+                  fixture_defines=()):
     """Compile runtime/src `modules` and `test_name` at `opt`, link, run."""
     tag = opt.replace("-", "")
     include = str(src_root / "include")
@@ -88,7 +89,8 @@ def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=())
 
     test_o = work / ("fixture" + tag + ".o")
     subprocess.run([cc, "-std=c11", opt, "-Wall", "-Wextra", "-Werror",
-                    "-I", include, "-c", str(here / test_name), "-o", str(test_o)],
+                    "-I", include, *["-D" + d for d in fixture_defines],
+                    "-c", str(here / test_name), "-o", str(test_o)],
                    check=True)
     exe = work / ("fixture" + tag + (".exe" if os.name == "nt" else ""))
     # Include fixture seams before synthesizing stubs. Besides avoiding a
@@ -120,7 +122,8 @@ def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=())
         raise SystemExit("link did not converge for %s" % opt)
 
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PSX_")}
-    run = _run([str(exe)], env=env, timeout=60)
+    run = _run([str(exe)], env=env)
     if run.returncode != 0:
         raise SystemExit("%s: fixture failed (rc=%d)\n%s%s"
                          % (opt, run.returncode, run.stdout, run.stderr))
+    return run.stdout

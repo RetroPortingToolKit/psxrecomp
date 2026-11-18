@@ -12,6 +12,14 @@ static unsigned wedge_priority(uint32_t wedge_kind) {
     }
 }
 
+static void refill_slot(int *consumed, uint32_t *failed_attempts,
+                        uint32_t *refills) {
+    if (!*consumed || *refills >= FREEZE_DUMP_SLOT_REFILLS) return;
+    *consumed = 0;
+    *failed_attempts = 0;
+    (*refills)++;
+}
+
 int freeze_dump_policy_observe(FreezeDumpPolicy *policy, uint32_t wedge_kind,
                                int fatal_active) {
     if (!policy) return 0;
@@ -22,6 +30,7 @@ int freeze_dump_policy_observe(FreezeDumpPolicy *policy, uint32_t wedge_kind,
 
     if (wedge_kind != 0) {
         policy->healthy_ticks = 0;
+        policy->healthy_run_ticks = 0;
         if (policy->in_wedge) {
             /* Only a hard freeze can reserve the second slot during an
              * existing event. Lesser severity changes stay in one incident. */
@@ -43,6 +52,18 @@ int freeze_dump_policy_observe(FreezeDumpPolicy *policy, uint32_t wedge_kind,
 
         policy->suppressed_events++;
         return 0;
+    }
+
+    /* A spent slot comes back after a long healthy interval. The count is
+     * reset by every wedge sample, so the interval starts after the dump. */
+    if (policy->healthy_run_ticks < FREEZE_DUMP_REFILL_HEALTHY_TICKS)
+        policy->healthy_run_ticks++;
+    if (policy->healthy_run_ticks >= FREEZE_DUMP_REFILL_HEALTHY_TICKS) {
+        refill_slot(&policy->ordinary_slot_consumed,
+                    &policy->ordinary_failed_attempts,
+                    &policy->ordinary_refills);
+        refill_slot(&policy->hard_slot_consumed,
+                    &policy->hard_failed_attempts, &policy->hard_refills);
     }
 
     if (!policy->in_wedge) return 0;

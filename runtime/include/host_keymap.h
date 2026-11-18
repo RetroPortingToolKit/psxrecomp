@@ -28,6 +28,8 @@ typedef enum HostKeymapAction {
     HOST_KEYMAP_QUICK_SAVE,       /* default F5; separate from manual slots */
     HOST_KEYMAP_QUICK_LOAD,       /* default Shift+F5 */
     HOST_KEYMAP_ANALOG_MODE,     /* default F3: controller Analog button */
+    HOST_KEYMAP_MOUSE_CAPTURE,   /* default Ctrl+F10; native Mouse capture */
+    HOST_KEYMAP_SWAP_CONTROLLER_PORTS, /* default Ctrl+F6: swap console ports 1 and 2 */
     HOST_KEYMAP_ACTION_COUNT
 } HostKeymapAction;
 

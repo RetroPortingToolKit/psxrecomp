@@ -20,11 +20,11 @@ CALL_SITES = [
     'cached = resolve_persisted_disc_path(cached, exe_dir_from_argv(argv0))',
     ': anchor_on_exe_dir(argv0, std::filesystem::path(line));',
     'settings_bios_storage = anchor_on_exe_dir(argv[0], us.bios_path).string();',
-    'memcard_dir   = anchor_on_exe_dir(argv[0], us.memcard_dir);',
-    'memcard1_path = anchor_on_exe_dir(argv[0], us.memcard1_path);',
-    'memcard2_path = anchor_on_exe_dir(argv[0], us.memcard2_path);',
-    'memcard1_path = anchor_on_exe_dir(argv[0], seed.memcard1_path);',
-    'memcard2_path = anchor_on_exe_dir(argv[0], seed.memcard2_path);',
+    'memcard_dir   = anchor_card_path(argv[0], us.memcard_dir);',
+    'memcard1_path = anchor_card_path(argv[0], us.memcard1_path);',
+    'memcard2_path = anchor_card_path(argv[0], us.memcard2_path);',
+    'memcard1_path = anchor_card_path(argv[0], seed.memcard1_path);',
+    'memcard2_path = anchor_card_path(argv[0], seed.memcard2_path);',
 ]
 
 
@@ -43,7 +43,7 @@ def main():
         assert site in text, 'main.cpp no longer anchors: ' + site
     adapters = []
     for name in ('normalize_disc_path_for_launch', 'resolve_persisted_disc_path',
-                 'anchor_on_exe_dir'):
+                 'anchor_on_exe_dir', 'anchor_card_path'):
         start = text.index('static std::filesystem::path ' + name + '(')
         adapters.append(text[start:text.index('\n}\n', start) + 2])
     config = (root.parent / 'recompiler/src/config_loader.cpp').read_text(encoding='utf-8')
@@ -72,6 +72,8 @@ def main():
 #include "disc_path.h"
 namespace fs = std::filesystem;
 namespace PSXRecompV4 {
+fs::path relative_to_folder(const fs::path& p, const fs::path& folder,
+                            const fs::path& install_root = {});
 ''' + relative_adapter + '''
 }
 static std::filesystem::path exe_dir_from_argv(const char* dir) {
@@ -88,6 +90,7 @@ int main(int argc, char** argv) {
     std::filesystem::path resolved =
         mode == "persisted" ? resolve_persisted_disc_path(path, argv[3])
       : mode == "anchor"    ? anchor_on_exe_dir(argv[3], path)
+      : mode == "card"      ? anchor_card_path(argv[3], path)
       :                       normalize_disc_path_for_launch(path);
     if (mode == "sidecar") {
         write_cached_path(argv[3], "disc.cfg", path);
@@ -141,6 +144,10 @@ int main(int argc, char** argv) {
         check_same('anchor', 'bios/SCPH1001.BIN', product/'bios/SCPH1001.BIN')
         check('anchor', product/'cards', (product/'cards').as_posix())
         check('anchor', '', '')
+        check_same('card', 'cards/card1.mcd', product/'cards/card1.mcd')
+        check('card', '../saves', (base/'saves').as_posix())
+        check('card', product/'cards', (product/'cards').as_posix())
+        check('card', '', '')
         print('persisted paths: disc consumers and sidecar save/reopen '
               '(relative, absolute, empty, missing, CLI cwd, Windows UNC) '
               'and BIOS/memory card (".", relative, absolute, empty) passed')

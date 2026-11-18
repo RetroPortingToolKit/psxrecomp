@@ -45,11 +45,12 @@ void psx_kernel_bless_note_range(uint32_t p,uint32_t n) { (void)p; (void)n; }
 void gte_canonicalize_cpu_state(CPUState* cpu) { cpu->gpr[0]=0; }
 uint32_t interrupts_get_cycles_since_vblank(void) { return 42; }
 void interrupts_set_cycles_since_vblank(uint32_t n) { (void)n; ++device_restores; }
+static uint16_t fixture_timer_counter[3];
 void timers_get_snapshot(uint16_t c[3],uint32_t m[3],uint16_t t[3],int32_t irq[3],uint32_t f[3]) {
-    memset(c,0,6); memset(m,0,12); memset(t,0,6); memset(irq,0,12); memset(f,0,12);
+    memcpy(c,fixture_timer_counter,6); memset(m,0,12); memset(t,0,6); memset(irq,0,12); memset(f,0,12);
 }
 void timers_set_snapshot(const uint16_t c[3],const uint32_t m[3],const uint16_t t[3],const int32_t irq[3],const uint32_t f[3]) {
-    (void)c;(void)m;(void)t;(void)irq;(void)f; ++device_restores;
+    memcpy(fixture_timer_counter,c,6); (void)m;(void)t;(void)irq;(void)f; ++device_restores;
 }
 #define MODULE(name) uint32_t name##_snapshot_bytes(void){return 4;} \
     void name##_snapshot_write(uint8_t* p){memset(p,0,4);} \
@@ -86,6 +87,21 @@ const uint64_t* gpu_vram_dirty_mask(void){return dirty_mask;}
 void gpu_vram_dirty_clear(void){dirty_rows=0;memset(dirty_mask,0,sizeof dirty_mask);}
 void gr_vram_transfer_in(int x,int y,int w,int h,const uint16_t* p){(void)x;(void)y;memcpy(vram,p,(size_t)w*h*2);++device_restores;}
 void gr_vram_transfer_out(int x,int y,int w,int h,uint16_t* p){(void)x;(void)y;memcpy(p,vram,(size_t)w*h*2);}
+/* Checkpoint resume sections: stateful doubles of the four module seams. */
+static DirtyRamLoadDelay fixture_ld;
+static int fixture_ld_from_state;
+static uint32_t fixture_return_tcb;
+static PsxIrqResumeTiming fixture_irq_timing;
+static int fixture_irq_timing_set;
+static uint32_t fixture_memctrl[PSX_MEMORY_CONTROL_WORDS];
+void dirty_ram_ld_delay_save(DirtyRamLoadDelay *o){*o=fixture_ld;}
+void dirty_ram_ld_delay_restore_from_state(const DirtyRamLoadDelay *i){fixture_ld=*i;fixture_ld_from_state=1;}
+uint32_t psx_scheduler_return_tcb(void){return fixture_return_tcb;}
+void psx_scheduler_set_return_tcb(uint32_t t){fixture_return_tcb=t;}
+void interrupts_resume_timing_get(PsxIrqResumeTiming *o){*o=fixture_irq_timing;}
+void interrupts_resume_timing_set(const PsxIrqResumeTiming *i){fixture_irq_timing=*i;fixture_irq_timing_set=1;}
+void memory_control_get(uint32_t o[PSX_MEMORY_CONTROL_WORDS]){memcpy(o,fixture_memctrl,sizeof fixture_memctrl);}
+void memory_control_set(const uint32_t i[PSX_MEMORY_CONTROL_WORDS]){memcpy(fixture_memctrl,i,sizeof fixture_memctrl);}
 
 static void u32(uint8_t* p,uint32_t n){PstW w;pst_w_init(&w,p,4);assert(pst_w_u32(&w,n));}
 static uint32_t read32(const uint8_t* p){PstR r;uint32_t v;pst_r_init(&r,p,4);assert(pst_r_u32(&r,&v));return v;}

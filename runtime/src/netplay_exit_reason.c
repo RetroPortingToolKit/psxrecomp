@@ -160,6 +160,20 @@ void netplay_start_failure_text(int start_rc, int has_netplay,
     }
 }
 
+int netplay_boot_mode_settle(const NetplayBootMode *game, NetplayBootMode *mode)
+{
+    int changed;
+    if (!game || !mode) return 0;
+    /* Compare as on/off: a caller may hand in any non-zero value for on. */
+    changed = (!game->bios_hle != !mode->bios_hle) ||
+              (!game->keep_intro != !mode->keep_intro) ||
+              (!game->fast_boot != !mode->fast_boot);
+    mode->bios_hle   = game->bios_hle ? 1 : 0;
+    mode->keep_intro = game->keep_intro ? 1 : 0;
+    mode->fast_boot  = game->fast_boot ? 1 : 0;
+    return changed;
+}
+
 int netplay_boot_mismatch_final(uint32_t mismatch_since_ms, uint32_t now_ms,
                                 uint32_t grace_ms)
 {

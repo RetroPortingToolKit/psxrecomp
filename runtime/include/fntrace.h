@@ -85,6 +85,9 @@ extern uint64_t      g_disp_tail_seq;
 
 /* Hot path. Called from psx_dispatch on every entry. Inlinable. */
 void fntrace_record(CPUState* cpu, uint32_t target);
+/* Same logical history for an entry that skips the physical owner. */
+void fntrace_record_tail(CPUState* cpu, uint32_t target);
+extern uint64_t g_psx_owner_dispatch_count;
 /* Register the game's text range for one-shot game-start detection.
  * First dispatch into [lo, hi) calls cdrom_notify_game_started(). */
 void fntrace_set_game_range(uint32_t lo, uint32_t hi);
@@ -97,6 +100,13 @@ void fntrace_restore_game_started(int started);
  * Performs dirty-image baseline clear, low-boot scratch clear, CD speed
  * switch, and boot-state capture. */
 void fntrace_mark_game_started(CPUState* cpu);
+/* Host-only report before game entry moves interpreter rows. */
+extern void (*g_fntrace_game_entry_hook)(void);
+/* Host-only: runs once when the game is entered, or when a restore moves the
+ * machine from before game entry to after it. main.cpp points it at
+ * dirty_ram_pc_table_game_load; a test that links fntrace.c alone leaves it
+ * null and needs no interpreter. */
+extern void (*g_fntrace_game_load_hook)(void);
 /* Entry-pc-exact latch for the interpreter path: calls
  * fntrace_mark_game_started() only when addr matches the armed game entry
  * (fntrace_set_game_range lo).  No-op before the range is armed and after

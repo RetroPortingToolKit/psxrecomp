@@ -20,6 +20,9 @@
 #include "debug_bulk_write.h"
 #include "host_launch_timing.h"
 #include "host_sampler.h"
+#include "headroom_counters.h"
+#include "psx_static_calls.h"
+#include "psx_direct_memory.h"
 #include "savestate.h"
 #include "host_span_ring.h"
 #include "guest_cycle_profile.h"
@@ -48,6 +51,8 @@
 #include "gpu_timeline.h"
 #include "gte_nclip_stats.h"
 #include "present_image_ring.h"
+#include "presentation_gpu.h"
+#include <stdatomic.h>
 #include "load_transition_ring.h"
 #include "cdrom.h"
 #include "psx_disc_tray.h"
@@ -133,6 +138,13 @@ extern uint8_t  psx_read_byte(uint32_t addr);
 extern void     psx_write_byte(uint32_t addr, uint8_t val);
 
 /* ---- Server state ---- */
+static void (*s_host_shutdown)(void);
+
+void debug_server_set_shutdown_callback(void (*shutdown)(void))
+{
+    s_host_shutdown = shutdown;
+}
+
 static sock_t s_listen  = SOCK_INVALID;
 static sock_t s_client  = SOCK_INVALID;
 static int    s_port    = DEFAULT_DEBUG_PORT;
@@ -843,10 +855,26 @@ static SregLastEntry *sreg_last_slot(uint32_t tcb)
     return &s_sreg_last[free_idx];
 }
 
+/* Non-focus entries have no retained S-register record. Skip their discarded
+ * TCB reads only when the existing canonical bus has no observer/private owner.
+ * Live LS/DS/read watches, cache isolation and foreign/pending owners retain
+ * the original reads and their effects. This predicate never reads guest RAM. */
+static int sreg_trace_quiet_bus(CPUState *cpu)
+{
+    return cpu->read_word == psx_read_word && cpu->read_half == psx_read_half &&
+        !g_ls_mode && !g_ls_replay_active && !g_ds_recording &&
+        !g_ram_read_watch_active && !g_dma_exec_depth && !g_host_store_depth &&
+        !g_psx_render_pass_active && !g_overlay_flush_pending_cycles &&
+        !(cpu->cop0[12] & 0x10000u) &&
+        (!g_psx_memory_sr_ptr || !(*g_psx_memory_sr_ptr & 0x10000u));
+}
+
 static void sreg_trace_record(uint32_t func_addr)
 {
     CPUState *cpu = debug_cpu_ptr;
     if (!cpu) return;
+    int focus_func = sreg_trace_focus_func(func_addr);
+    if (!focus_func && sreg_trace_quiet_bus(cpu)) return;
 
     uint32_t tcb_ptr_addr = trace_read_word(cpu, 0x00000108u);
     uint32_t tcb = tcb_ptr_addr ? trace_read_word(cpu, tcb_ptr_addr) : 0;
@@ -854,7 +882,6 @@ static void sreg_trace_record(uint32_t func_addr)
     if (tcb == 0 || tcb_phys < 0x0000E000u || tcb_phys >= 0x0000F000u) {
         return;
     }
-    int focus_func = sreg_trace_focus_func(func_addr);
     if (!focus_func) {
         return;
     }
@@ -2232,6 +2259,15 @@ typedef struct {
 } CycWatchEntry;
 static PSX_BSS CycWatchEntry s_cyc_watch_ring[CYC_WATCH_RING_CAP];
 static volatile int s_cyc_watch_armed = 0; /* 1 = recording active */
+static volatile int s_pc_probe_armed = 0;
+
+static void debug_server_watch_interest_refresh(void) {
+    uint32_t interest = g_psx_debug_block_interest &
+                        ~(PSX_DEBUG_BLOCK_CYCLE | PSX_DEBUG_BLOCK_PC);
+    if (s_cyc_watch_armed) interest |= PSX_DEBUG_BLOCK_CYCLE;
+    if (s_pc_probe_armed) interest |= PSX_DEBUG_BLOCK_PC;
+    g_psx_debug_block_interest = interest;
+}
 static uint32_t s_cyc_watch_anchor_phys = 0; /* armed anchor (A / start), masked to phys */
 static uint32_t s_cyc_watch_anchor_raw = 0;  /* armed anchor as supplied (for echo) */
 static uint32_t s_cyc_watch_max_hits = 16;   /* stop after this many hits */
@@ -2288,7 +2324,10 @@ static inline void cyc_watch_observe(uint32_t block_leader_phys)
             e->psx_cycle_count = cyc_now - s_cyc_watch_region_start;  /* Δ(B-A) */
             s_cyc_watch_hits++;
             s_cyc_watch_in_region = 0;
-            if (s_cyc_watch_hits >= s_cyc_watch_max_hits) s_cyc_watch_armed = 0;
+            if (s_cyc_watch_hits >= s_cyc_watch_max_hits) {
+                s_cyc_watch_armed = 0;
+                debug_server_watch_interest_refresh();
+            }
         }
         return;
     }
@@ -2296,6 +2335,7 @@ static inline void cyc_watch_observe(uint32_t block_leader_phys)
     if (block_leader_phys != s_cyc_watch_anchor_phys) return;  /* ── single-anchor ── */
     if (s_cyc_watch_hits >= s_cyc_watch_max_hits) {
         s_cyc_watch_armed = 0;                      /* full: stop sampling */
+        debug_server_watch_interest_refresh();
         return;
     }
     CycWatchEntry *e = &s_cyc_watch_ring[s_cyc_watch_hits];
@@ -2303,7 +2343,10 @@ static inline void cyc_watch_observe(uint32_t block_leader_phys)
     e->pc              = block_leader_phys;
     e->psx_cycle_count = cyc_now;
     s_cyc_watch_hits++;
-    if (s_cyc_watch_hits >= s_cyc_watch_max_hits) s_cyc_watch_armed = 0;
+    if (s_cyc_watch_hits >= s_cyc_watch_max_hits) {
+        s_cyc_watch_armed = 0;
+        debug_server_watch_interest_refresh();
+    }
 }
 
 /* ---- pc_probe: multi-PC block-leader counters + reg samples (default-off) ----
@@ -2337,7 +2380,6 @@ typedef struct {
     uint32_t ot_base;
     uint32_t ot_index;
 } PcProbeSample;
-static volatile int s_pc_probe_armed = 0;
 static int          s_pc_probe_n = 0;
 static PcProbeSlot  s_pc_probe[PC_PROBE_MAX_PCS];
 static PcProbeSample s_pc_probe_samples[PC_PROBE_SAMPLE_CAP];
@@ -2347,6 +2389,7 @@ static uint32_t     s_pc_probe_sample_max = 32;
 static void pc_probe_clear_state(void)
 {
     s_pc_probe_armed = 0;
+    debug_server_watch_interest_refresh();
     s_pc_probe_n = 0;
     s_pc_probe_sample_n = 0;
     memset(s_pc_probe, 0, sizeof(s_pc_probe));
@@ -2698,21 +2741,25 @@ static inline void pc_probe_observe(uint32_t block_leader_phys)
     }
 }
 
+/* Internal cold observers keep their original ordering and live state. */
+#if defined(__GNUC__) || defined(__clang__)
+#define PSX_DEBUG_COLD __attribute__((noinline, cold))
+#elif defined(_MSC_VER)
+#define PSX_DEBUG_COLD __declspec(noinline)
+#else
+#define PSX_DEBUG_COLD
+#endif
+
 /* Exported per-basic-block-leader cycle observer. Emitted by the recompiler at
  * EVERY compiled block leader (under #ifndef PSX_NO_DEBUG_TOOLS, so prod builds
  * emit nothing — zero overhead) so native's cycle observation matches Beetle's
  * (which samples before every instruction). This lets cyc_watch anchor ANY
  * block-leader PC — interior loop tops, prologue exits — not just function
  * entries, which is required for a clean, KNOWN-instruction-sequence ruler.
- * Disarmed cost = one volatile load + return (see cyc_watch_observe). */
-void debug_server_cyc_observe(uint32_t block_leader_phys) {
-#ifdef PSX_NO_DEBUG_TOOLS
-    (void)block_leader_phys;
-    return;
-#else
-    uint32_t phys = block_leader_phys & 0x1FFFFFFFu;
-    g_psx_last_block = phys;
-    if (s_fmv_quiet) return;
+ * New host-generated leaders publish the PC inline and enter here only for
+ * actual observer interest. The public callback remains the conservative
+ * interpreter/older-code/DLL fallback, with the original body and ordering. */
+static PSX_DEBUG_COLD void debug_server_cyc_observe_optional(uint32_t phys) {
     /* ND debug: PSX_ND_WOOD_CLEAR80=1 clears model+184 bit0x80 at the flag-load
      * leader so 0x5CF/'cras' models enter NdIntroWoodBatchSetup's textured path.
      * Fires before lw v1,184(a2) @ AB3C. Default-off. */
@@ -2783,8 +2830,24 @@ void debug_server_cyc_observe(uint32_t block_leader_phys) {
     }
     cyc_watch_observe(phys);
     pc_probe_observe(phys);
-    /* #2 lockstep comparator: per-basic-block compiled-vs-interp check. Self-gates
-     * on the armed frame window; ~free (one branch) when disarmed. */
+}
+
+void debug_server_cyc_observe(uint32_t block_leader_phys) {
+#ifdef PSX_NO_DEBUG_TOOLS
+    (void)block_leader_phys;
+#else
+    uint32_t phys = block_leader_phys & 0x1FFFFFFFu;
+    g_psx_last_block = phys;
+    if (s_fmv_quiet) return;
+    /* These existing address adapters have effects even without an armed
+     * watch. Never skip them based on the watch flags or a guessed title. */
+    if (s_cyc_watch_armed || s_pc_probe_armed ||
+        phys == 0x0006AB3Cu || phys == 0x0006AAF0u ||
+        phys == 0x0006ACFCu || phys == 0x0006AD08u || phys == 0x00069CC4u)
+        debug_server_cyc_observe_optional(phys);
+    /* Lockstep owns private window/function-scope state. g_ls_mode==0 does
+     * NOT mean disarmed: its first leader starts recording. Keep this exact
+     * maintained call (and its own inactive gate), after optional observers. */
     { extern void ls_at_leader(uint32_t, CPUState*); extern CPUState *debug_cpu_ptr;
       ls_at_leader(phys, debug_cpu_ptr); }
 #endif
@@ -4165,12 +4228,13 @@ static const char *thread_kind_name(uint32_t kind)
         case 12: return "fiber_return_restore";
         case 13: return "fiber_dispatch_exit";        /* fiber's psx_dispatch returned, in_exc==0 */
         case 20: return "syscall3_enter";             /* ChangeThread/RFE syscall, in_exc==0 (switch-eligible) */
-        case 24: return "syscall3_enter_in_exc";      /* ChangeThread/RFE syscall, in_exc==1 (forced manual-RFE) */
+        case 24: return "syscall3_enter_in_exc";      /* manual RFE; explicit ChangeThread may move PCB[0] */
         case 26: return "fiber_dispatch_exit_in_exc"; /* fiber's psx_dispatch returned, in_exc==1 */
         case 30: return "inexc_switch_escape";        /* guest moved PCB[0] inside handler -> scheduler escape */
         case 31: return "inexc_switch_defer";
         case 32: return "deferred_switch_escape";
         case 33: return "deferred_switch_stale";
+        case 34: return "syscall3_in_exc_switch";
         default: return "unknown";
     }
 }
@@ -5564,6 +5628,157 @@ static void handle_host_profile(int id, const char *json)
     snprintf(buf + n, cap - n, "]}");
     send_fmt("%s", buf);
     free(buf);
+}
+
+static void handle_hr_counters(int id,const char *json)
+{
+    PsxHeadroomFrame current,row;
+    psx_headroom_totals(&current);
+    const uint64_t seq=psx_headroom_sequence();
+    const uint64_t oldest=seq>PSX_HEADROOM_CAP?seq-PSX_HEADROOM_CAP:0;
+    int count=json_get_int(json,"n",0),frames=json_get_int(json,"frames",0);
+    int requested=json_get_int(json,"from",-1);
+    uint64_t from=requested>=0?(uint64_t)requested:oldest;
+    if(frames>0){count=frames;from=seq>(uint64_t)frames?seq-(uint64_t)frames:0;}
+    if(count<0)count=0;if(count>128)count=128;
+    if(from<oldest)from=oldest;if(from>seq)from=seq;
+    if((uint64_t)count>seq-from)count=(int)(seq-from);
+    const size_t cap=16384u+(size_t)count*(PSX_HR_COUNT*24u+192u);
+    char *out=(char *)malloc(cap);if(!out){send_err(id,"alloc failed");return;}
+    size_t n=(size_t)snprintf(out,cap,"{\"id\":%d,\"ok\":true,\"schema\":1,\"enabled\":%s,"
+        "\"frame\":%llu,\"cycles\":%llu,\"seq\":%llu,\"oldest\":%llu,\"capacity\":%u,"
+        "\"history_from\":%llu,\"history_next\":%llu,\"history_limit\":128,",
+        id,psx_headroom_enabled()?"true":"false",(unsigned long long)current.frame,
+        (unsigned long long)current.cycles,(unsigned long long)seq,(unsigned long long)oldest,
+        PSX_HEADROOM_CAP,(unsigned long long)from,(unsigned long long)(from+count));
+    for(unsigned i=0;i<PSX_HR_COUNT;++i)
+        n+=(size_t)snprintf(out+n,cap-n,"\"%s\":%llu,",psx_headroom_field_names[i],
+            (unsigned long long)current.values[i]);
+    n+=(size_t)snprintf(out+n,cap-n,"\"memory_supported\":%s,\"canonical_memory_supported\":true,\"coverage\":{"
+        "\"memory\":\"legacy12 generated-site totals; canonical/inline widths are disjoint value paths; callback dispatch widths are separate work\","
+        "\"memory_widths\":\"native inline RAM/scratch, canonical psx_read/write helper entries, legacy runtime fast RAM; u8/u16/u32\","
+        "\"callback_widths\":\"maintained CPU store macros and native-span/overlay fallback dispatches share host history; u8/u16/u32, backing region opaque; forwarding dispatch and canonical helper work are separate, not additive accesses\","
+        "\"helper_sources\":\"CPU, BIOS, interpreter, host and device callers of canonical helpers; observer/replay entries count even if substituted/refused\","
+        "\"callers\":\"schema2 host samples carry last-entered guest function and exception; group helper time by guest operation\","
+        "\"gpu_hold\":\"explicit drains and implicit catch-up inside synchronous GPU hold; implicit count is a subset\","
+        "\"deadline\":\"earliest advertised at service entry; ties keep scheduler priority\","
+        "\"block_edges\":\"logical IRQ observations; native excludes frozen/replay\"},"
+        "\"excluded\":[\"untraced raw peeks\",\"direct host/device buffer access\"],"
+        "\"missing\":[\"private callback calls outside maintained CPU bus helpers\"],"
+        "\"fields\":[",
+#if defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS
+        "true"
+#else
+        "false"
+#endif
+        );
+    for(unsigned i=0;i<PSX_HR_COUNT;++i)
+        n+=(size_t)snprintf(out+n,cap-n,"%s\"%s\"",i?",":"",psx_headroom_field_names[i]);
+    n+=(size_t)snprintf(out+n,cap-n,"],\"history\":[");
+    for(int i=0;i<count;++i) {
+        if(!psx_headroom_get(from+(uint64_t)i,&row))break;
+        n+=(size_t)snprintf(out+n,cap-n,"%s{\"seq\":%llu,\"frame\":%llu,\"cycles\":%llu,"
+            "\"resets\":[\"0x%llX\",\"0x%llX\"],\"counts\":[",i?",":"",
+            (unsigned long long)row.seq,(unsigned long long)row.frame,(unsigned long long)row.cycles,
+            (unsigned long long)row.resets[0],(unsigned long long)row.resets[1]);
+        for(unsigned k=0;k<PSX_HR_COUNT;++k)
+            n+=(size_t)snprintf(out+n,cap-n,"%s%llu",k?",":"",(unsigned long long)row.values[k]);
+        n+=(size_t)snprintf(out+n,cap-n,"]}");
+    }
+    snprintf(out+n,cap-n,"]}");send_fmt("%s",out);free(out);
+}
+
+static void handle_static_call_stats(int id, const char *json)
+{
+    (void)json;
+    extern uint64_t g_disp_tail_seq, g_psx_owner_dispatch_count;
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+    const uint64_t owner_iterations = g_psx_owner_dispatch_count;
+#else
+    const uint64_t owner_iterations = g_disp_tail_seq;
+#endif
+    PsxStaticCallStats stats;
+    psx_static_call_get_stats(&stats);
+    send_fmt("{\"id\":%d,\"ok\":true,\"validity_queries\":%llu,"
+             "\"validity_hits\":%llu,\"validity_verifies\":%llu,"
+             "\"fast_entries\":%llu,\"fast_misses\":%llu,\"text_memcmp_calls\":%llu,\"dispatch_iterations\":%llu}",
+             id, (unsigned long long)stats.validity_queries,
+             (unsigned long long)stats.validity_hits,
+             (unsigned long long)stats.validity_verifies,
+             (unsigned long long)stats.fast_entries,
+             (unsigned long long)stats.fast_misses,
+             (unsigned long long)dirty_ram_text_compare_calls(),
+             (unsigned long long)owner_iterations);
+}
+
+static void handle_direct_memory_stats(int id, const char *json)
+{
+    (void)json;
+    PSXDirectMemoryStats stats;
+    psx_direct_memory_get_stats(&stats);
+    send_fmt("{\"id\":%d,\"ok\":true,\"scope\":\"generated-native-span-accesses\",\"widths\":\"byte-half-word\","
+             "\"load_inline_ram\":%llu,"
+             "\"load_inline_scratch\":%llu,"
+             "\"load_helper_ram\":%llu,"
+             "\"load_helper_scratch\":%llu,"
+             "\"load_helper_mmio\":%llu,"
+             "\"load_helper_other\":%llu,"
+             "\"store_inline_ram\":%llu,"
+             "\"store_inline_scratch\":%llu,"
+             "\"store_helper_ram\":%llu,"
+             "\"store_helper_scratch\":%llu,"
+             "\"store_helper_mmio\":%llu,"
+             "\"store_helper_other\":%llu}",
+             id,
+             (unsigned long long)stats.load_inline_ram,
+             (unsigned long long)stats.load_inline_scratch,
+             (unsigned long long)stats.load_helper_ram,
+             (unsigned long long)stats.load_helper_scratch,
+             (unsigned long long)stats.load_helper_mmio,
+             (unsigned long long)stats.load_helper_other,
+             (unsigned long long)stats.store_inline_ram,
+             (unsigned long long)stats.store_inline_scratch,
+             (unsigned long long)stats.store_helper_ram,
+             (unsigned long long)stats.store_helper_scratch,
+             (unsigned long long)stats.store_helper_mmio,
+             (unsigned long long)stats.store_helper_other);
+}
+
+/* Raw form of the existing host-profile history. Schema 2 is portable little
+ * endian: rva:u64, frame:u32, in_pass:u32, guest_pc:u32, flags:u32. */
+static void handle_hr_profile_dump(int id, const char *json)
+{
+    char path[512];
+    if (!json_get_str(json, "path", path, sizeof path)) { send_err(id, "missing path"); return; }
+    const int frame_lo = json_get_int(json, "frame_lo", -1);
+    const int frame_hi = json_get_int(json, "frame_hi", -1);
+    const uint64_t seq = host_sampler_seq();
+    const uint64_t oldest = seq > HOST_SAMPLER_CAP ? seq - HOST_SAMPLER_CAP : 0;
+    FILE *file = fopen(path, "wb");
+    if (!file) { send_err(id, "open failed"); return; }
+    uint64_t written = 0;
+    for (uint64_t i = oldest; i < seq; ++i) {
+        HostSample sample;
+        if (!host_sampler_get(i, &sample)) continue;
+        if (frame_lo >= 0 && sample.frame < (uint32_t)frame_lo) continue;
+        if (frame_hi >= 0 && sample.frame > (uint32_t)frame_hi) continue;
+        uint8_t bytes[24];
+        for (unsigned j = 0; j < 8; ++j) bytes[j] = (uint8_t)(sample.rva >> (j * 8));
+        const uint32_t words[4] = { sample.frame, sample.in_pass, sample.guest_pc, sample.flags };
+        for (unsigned word = 0; word < 4; ++word)
+            for (unsigned j = 0; j < 4; ++j)
+                bytes[8 + word * 4 + j] = (uint8_t)(words[word] >> (j * 8));
+        if (fwrite(bytes, sizeof bytes, 1, file) != 1) {
+            fclose(file); send_err(id, "write failed"); return;
+        }
+        ++written;
+    }
+    if (fclose(file) != 0) { send_err(id, "close failed"); return; }
+    send_fmt("{\"id\":%d,\"ok\":true,\"supported\":%d,\"schema\":2,"
+             "\"record_bytes\":24,\"guest_pc_kind\":\"last_entered_function\","
+             "\"image_base\":\"0x%llX\",\"seq\":%llu,\"written\":%llu}",
+             id, host_sampler_supported(), (unsigned long long)host_sampler_image_base(),
+             (unsigned long long)seq, (unsigned long long)written);
 }
 
 /* host_span_ring / frame_wall_ring - always-on wall-time rings (host_span_ring.h).
@@ -7119,6 +7334,8 @@ static void handle_mc_status(int id, const char *json)
 static void handle_spu_status(int id, const char *json)
 {
     (void)json;
+    extern uint64_t g_spu_render_blocks, g_spu_sample_deadline_queries;
+    extern uint64_t g_spu_sample_service_checks, g_spu_sample_service_pumps;
     SpuDebugInfo info;
     spu_debug_info(&info);
     /* The DSP-fidelity state (issue #103: SPU IRQ, reverb, noise, sweeps) lives
@@ -7134,6 +7351,8 @@ static void handle_spu_status(int id, const char *json)
              "\"cd_l\":%d,\"cd_r\":%d,"
              "\"key_on_count\":%u,"
              "\"render_frames\":%llu,\"nonzero_frames\":%llu,"
+             "\"render_blocks\":%llu,\"sample_queries\":%llu,"
+             "\"sample_checks\":%llu,\"sample_pumps\":%llu,"
              "\"last_peak\":%d,\"peak\":%d,"
              "\"cd_frames\":%u,\"cd_push_frames\":%llu,"
              "\"cd_overflow_frames\":%llu,\"cd_underflow_frames\":%llu,"
@@ -7155,6 +7374,10 @@ static void handle_spu_status(int id, const char *json)
              info.key_on_count,
              (unsigned long long)info.render_frames,
              (unsigned long long)info.nonzero_frames,
+             (unsigned long long)g_spu_render_blocks,
+             (unsigned long long)g_spu_sample_deadline_queries,
+             (unsigned long long)g_spu_sample_service_checks,
+             (unsigned long long)g_spu_sample_service_pumps,
              info.last_peak,
              info.peak,
              info.cd_frames,
@@ -8345,11 +8568,12 @@ static void handle_rewind_status(int id, const char *json)
 {
     (void)json;
     send_fmt("{\"id\":%d,\"ok\":true,\"enabled\":%s,\"open\":%s,"
-             "\"title_blocked\":%s,\"snaps\":%u}\n",
+             "\"title_blocked\":%s,\"snaps\":%u,\"hd_residency_bytes\":%u}\n",
              id, psx_rewind_enabled() ? "true" : "false",
              psx_rewind_is_open() ? "true" : "false",
              psx_rewind_title_blocked() ? "true" : "false",
-             (unsigned)psx_rewind_snap_count());
+             (unsigned)psx_rewind_snap_count(),
+             (unsigned)psx_rewind_hd_residency_bytes());
 }
 
 static void handle_overlay_status(int id, const char *json)
@@ -10436,69 +10660,7 @@ static void handle_overlay_image(int id, const char *json)
  * display geometry of that frame, and the PNG is decoded from it with the
  * same scanout decode as screenshot_file — so 480-line interlaced displays
  * and depth24 (FMV) frames are served whole, not cropped or refused. */
-#define DISP_RING_CAP   64    /* full-VRAM entries are 1MB each; ~1s of
-                               * lookback for exact-frame forensics */
-/* The entire 1024x512 raw VRAM as the renderer sees it at this frame (GL: FBO
- * truth; SW and depth24: CPU truth), so an offline client can micro-cosim ANY
- * prim of the frame — rasterize it from the GP0 ring against the exact
- * same-frame texels/CLUTs — and attribute a bad pixel to sampling vs content.
- * Streamed texture pages and palette cycling make later peeks worthless; only
- * a same-frame capture is evidence. */
-typedef struct {
-    uint32_t frame;
-    uint8_t  valid;
-    GpuDisplayInfo di;            /* display geometry/depth at capture */
-    uint16_t *vram;               /* full 1024x512 */
-} DispRingEntry;
-static PSX_BSS DispRingEntry s_disp_ring[DISP_RING_CAP];
-/* Capture mark state (debug_server_capture_mark / capture_mark). */
-static int      s_capture_frozen = 0;
-static uint64_t s_capture_mark_frame = 0;
-static uint64_t s_capture_mark_count = 0;
-static char     s_capture_wide_path[512];
-static int      s_capture_wide_ok = 0;
-static uint16_t     *s_disp_ring_px = NULL;   /* one block for all entries */
-
-static void disp_ring_capture(void)
-{
-    /* Full-VRAM GL readback is intentionally expensive and can perturb the
-     * performance issue being measured. Keep the forensic ring default-on, but
-     * allow a controlled acceptance run to disable continuous capture while
-     * retaining the TCP server and one-shot screenshot command. */
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *e = getenv("PSX_DISPLAY_RING");
-        enabled = (!e || !*e || *e != '0') ? 1 : 0;
-    }
-    if (!enabled || s_capture_frozen) return;
-    if (!s_disp_ring_px) {
-        size_t vram = (size_t)1024 * 512;
-        s_disp_ring_px = (uint16_t *)malloc(DISP_RING_CAP * vram * sizeof(uint16_t));
-        if (!s_disp_ring_px) return;
-        for (int i = 0; i < DISP_RING_CAP; i++)
-            s_disp_ring[i].vram = s_disp_ring_px + (size_t)i * vram;
-    }
-    DispRingEntry *e = &s_disp_ring[(uint32_t)(s_frame_count % DISP_RING_CAP)];
-    e->frame = (uint32_t)s_frame_count;
-    e->valid = 0;
-    GpuDisplayInfo di;
-    gpu_get_display_info(&di);
-    if (di.disabled || di.width == 0 || di.height == 0) return;
-    gpu_timeline_note(GTL_DISP_CAPTURE, 0, di.display_x | (di.display_y << 16));
-    e->di = di;
-    /* GPU-side truth when the GL raster pipeline is live; CPU VRAM otherwise
-     * (the software backend's authoritative surface). depth24 always reads
-     * the CPU mirror: packed RGB888 MDEC bytes live there, not in the FBO
-     * (see screenshot_file). Runs on the present thread, where the GL context
-     * is current. Deferred: with the render thread on, the readback is
-     * recorded at this point of the command stream and filled in by the
-     * render thread (ring readers sync first). */
-    if (di.depth24 || !gl_renderer_fbo_peek_deferred(0, 0, 1024, 512, e->vram)) {
-        const uint16_t *v = gpu_get_vram();
-        memcpy(e->vram, v, (size_t)1024 * 512 * sizeof(uint16_t));
-    }
-    e->valid = 1;
-}
+#include "display_history.inc"
 
 /* Dump an entry's full-VRAM capture as a raw little-endian u16 blob
  * (1024x512 row-major). */
@@ -10516,6 +10678,7 @@ static void handle_display_ring_aux(int id, const char *json)
     if (!e->valid || e->frame != (uint32_t)f) {
         send_err(id, "frame not in display ring"); return;
     }
+    if (!disp_ring_materialize(e)) { send_err(id,"history readback failed"); return; }
     FILE *fp = fopen(path, "wb");
     if (!fp) { send_err(id, "cannot open file"); return; }
     size_t n1 = fwrite(e->vram, sizeof(uint16_t), (size_t)1024 * 512, fp);
@@ -10556,6 +10719,7 @@ static void handle_display_ring_get(int id, const char *json)
     if (!e->valid || e->frame != (uint32_t)f) {
         send_err(id, "frame not in display ring"); return;
     }
+    if (!disp_ring_materialize(e)) { send_err(id,"history readback failed"); return; }
     /* Same clamp and scanout decode as screenshot_file, against this frame's
      * VRAM snapshot. */
     uint32_t w = e->di.width;  if (w > 640) w = 640;
@@ -11598,7 +11762,7 @@ extern uint64_t gl_renderer_pres_total(void);
 
 static void handle_gl_present_ring(int id, const char *json)
 {
-    static const char *path_name[6] = { "vram", "wide", "cpu", "blank", "interp", "stereo" };
+    static const char *path_name[7] = { "vram", "wide", "cpu", "blank", "interp", "stereo", "geometry" };
     int n = json_get_int(json, "n", 300);
     if (n < 1) n = 1;
     if (n > 4096) n = 4096;
@@ -11617,7 +11781,7 @@ static void handle_gl_present_ring(int id, const char *json)
         pos += snprintf(buf + pos, bufsz - pos,
                         "%s[%llu,%u,\"%s\",%u,[%d,%d,%d,%d],[%d,%d,%d,%d],[%u,%u,%u],%u,[%u,%u,%u,%u]]",
                         first ? "" : ",", (unsigned long long)s, e.frame,
-                        e.path < 6 ? path_name[e.path] : "?", e.t_ms,
+                        e.path < 7 ? path_name[e.path] : "?", e.t_ms,
                         e.dx, e.dy, e.w, e.h, e.lx, e.ly, e.lw, e.lh,
                         e.px_r, e.px_g, e.px_b, e.glerr,
                         e.src_r, e.src_g, e.src_b, e.src_valid);
@@ -11920,7 +12084,7 @@ static inline int is_card_critical_addr(uint32_t phys) {
             * (slot 0 — the success event) and HwCARD-NEW invisible. */
            (phys >= 0x0000E028u && phys < 0x0000E0ECu);
 }
-static void card_trace_record(uint32_t phys, uint32_t old_val, uint32_t new_val, uint8_t width) {
+static PSX_DEBUG_COLD void card_trace_record(uint32_t phys, uint32_t old_val, uint32_t new_val, uint8_t width) {
     uint64_t seq = s_card_trace_seq++;
     CardTraceEntry *e = &s_card_trace[seq & (CARD_TRACE_CAP - 1u)];
     e->seq = seq; e->phys = phys; e->old_val = old_val; e->new_val = new_val;
@@ -11970,17 +12134,88 @@ static void handle_card_trace_dump(int id, const char *json)
     free(out);
 }
 
+/* Derived optional-write routing, owned by the same emulation-thread range
+ * configuration as the recorders. No guest data or event is cached here.
+ * RAM covers every supported backing size; scratch has one conservative page.
+ * Unrepresented addresses retain the old exact scanning path. */
+#define DEBUG_WRITE_INTEREST_SHIFT 12u
+#define DEBUG_WRITE_INTEREST_RAM_PAGES ((8u * 1024u * 1024u) >> DEBUG_WRITE_INTEREST_SHIFT)
+#define DEBUG_WRITE_INTEREST_SCRATCH DEBUG_WRITE_INTEREST_RAM_PAGES
+static uint8_t s_debug_write_interest[DEBUG_WRITE_INTEREST_RAM_PAGES + 1u];
+static unsigned s_debug_write_interest_enabled;
+static int s_debug_write_interest_dirty = 1;
+
+static void debug_server_write_interest_invalidate(void) {
+    s_debug_write_interest_dirty = 1;
+}
+
+static void debug_server_write_interest_add(uint32_t lo, uint32_t hi, unsigned mask) {
+    const uint32_t ram_end = DEBUG_WRITE_INTEREST_RAM_PAGES << DEBUG_WRITE_INTEREST_SHIFT;
+    if (hi <= lo) return;
+    if (lo < ram_end) {
+        const uint32_t end = hi < ram_end ? hi : ram_end;
+        for (uint32_t page = lo >> DEBUG_WRITE_INTEREST_SHIFT;
+             page <= ((end - 1u) >> DEBUG_WRITE_INTEREST_SHIFT); ++page)
+            s_debug_write_interest[page] |= (uint8_t)mask;
+    }
+    if (lo < 0x1F800400u && hi > 0x1F800000u)
+        s_debug_write_interest[DEBUG_WRITE_INTEREST_SCRATCH] |= (uint8_t)mask;
+}
+
+static PSX_DEBUG_COLD void debug_server_write_interest_rebuild(void) {
+    memset(s_debug_write_interest, 0, sizeof s_debug_write_interest);
+    s_debug_write_interest_enabled = 0;
+    if (s_wtrace_trans && s_wtrace_trans_range_count > 0) {
+        s_debug_write_interest_enabled |= 1u;
+        for (int i = 0; i < s_wtrace_trans_range_count; ++i)
+            debug_server_write_interest_add(s_wtrace_trans_ranges[i].lo, s_wtrace_trans_ranges[i].hi, 1u);
+    }
+    if (s_wtrace_boot && s_wtrace_boot_range_count > 0) {
+        s_debug_write_interest_enabled |= 2u;
+        for (int i = 0; i < s_wtrace_boot_range_count; ++i)
+            debug_server_write_interest_add(s_wtrace_boot_ranges[i].lo, s_wtrace_boot_ranges[i].hi, 2u);
+    }
+    if (s_wtrace && s_wtrace_range_count > 0) {
+        s_debug_write_interest_enabled |= 4u;
+        for (int i = 0; i < s_wtrace_range_count; ++i)
+            debug_server_write_interest_add(s_wtrace_ranges[i].lo, s_wtrace_ranges[i].hi, 4u);
+    }
+    s_debug_write_interest_dirty = 0;
+}
+
+static inline unsigned debug_server_write_interest_lookup(uint32_t phys) {
+    if (s_debug_write_interest_dirty) debug_server_write_interest_rebuild();
+    if (phys < (DEBUG_WRITE_INTEREST_RAM_PAGES << DEBUG_WRITE_INTEREST_SHIFT))
+        return s_debug_write_interest[phys >> DEBUG_WRITE_INTEREST_SHIFT];
+    if (phys >= 0x1F800000u && phys < 0x1F800400u)
+        return s_debug_write_interest[DEBUG_WRITE_INTEREST_SCRATCH];
+    return s_debug_write_interest_enabled;
+}
+
+/* Only optional recorder dispatch is cold. Catch-all/fingerprint/live event
+ * recording stays in the hot function, before the real memory mutation. Boot
+ * dispatch must continue after its storage is full: it still counts matches. */
+static PSX_DEBUG_COLD void debug_server_trace_write_optional(uint32_t phys,
+    uint32_t old_val, uint32_t new_val, uint8_t width, unsigned observers) {
+    if (observers & 1u) wtrace_transition_record(phys, old_val, new_val, width);
+    if (observers & 2u) wtrace_boot_record(phys, old_val, new_val, width);
+    if (observers & 4u) {
+        for (int i = 0; i < s_wtrace_range_count; i++) {
+            if (phys >= s_wtrace_ranges[i].lo && phys < s_wtrace_ranges[i].hi) {
+                wtrace_record(phys, old_val, new_val, width);
+                return;
+            }
+        }
+    }
+}
+
 /* Multi-range check called from memory.c write paths.
  * Iterates up to 8 ranges; records if any match.
  * The always-on catch-all ring is recorded UNCONDITIONALLY first so
  * late-connecting probes can still see recent writes without arming. */
-void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
+static void history_record_live_write(uint32_t phys, uint32_t old_val,
                                     uint32_t new_val, uint8_t width)
 {
-#ifdef PSX_NO_DEBUG_TOOLS
-    (void)phys; (void)old_val; (void)new_val; (void)width;
-    return;
-#endif
     /* Render passes are rolled back; keep them out of the live timeline's
      * fingerprints and write traces (docs/RENDER_PASSES.md). */
     if (g_psx_render_pass_active) return;
@@ -11990,7 +12225,7 @@ void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
     }
     if (is_card_critical_addr(phys)) card_trace_record(phys, old_val, new_val, width);
     fp_record_write(phys, new_val, g_debug_last_store_pc);
-    {
+    if (s_rec_frame >= 0) {
         uint32_t ra = debug_cpu_ptr ? debug_cpu_ptr->gpr[31] : 0;
         if (phys < psx_ram_live_bytes())
             rec_event(REC_KIND_RAM_W, phys, new_val, g_debug_last_store_pc, ra);
@@ -11998,25 +12233,25 @@ void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
             rec_event(REC_KIND_SP_W, phys, new_val, g_debug_last_store_pc, ra);
     }
     wtrace_all_record(phys, new_val, width);
-    wtrace_transition_record(phys, old_val, new_val, width);
-    wtrace_boot_record(phys, old_val, new_val, width);
-    if (s_wtrace_range_count == 0) return;
-    for (int i = 0; i < s_wtrace_range_count; i++) {
-        if (phys >= s_wtrace_ranges[i].lo && phys < s_wtrace_ranges[i].hi) {
-            wtrace_record(phys, old_val, new_val, width);
-            return;
-        }
-    }
+    unsigned observers = debug_server_write_interest_lookup(phys);
+    if (old_val == new_val) observers &= ~1u;
+    if (observers)
+        debug_server_trace_write_optional(phys, old_val, new_val, width, observers);
+}
+
+/* One producer for canonical, admitted inline, host and DLL stores. Keep the
+ * old public entry point for callers; the shared core never pumps commands,
+ * changes RAM or advances guest/device time. */
+void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
+                                    uint32_t new_val, uint8_t width)
+{
+    history_record_live_write(phys, old_val, new_val, width);
 }
 
 /* MMIO write trace — called from memory.c mmio_write32/16/8. */
 void debug_server_trace_mmio_write(uint32_t addr, uint32_t val, uint8_t width)
 {
     if (g_psx_render_pass_active) return;   /* rolled back: not live */
-#ifdef PSX_NO_DEBUG_TOOLS
-    (void)addr; (void)val; (void)width;
-    return;
-#endif
     if (s_fmv_quiet) { psx_fp_note_quiet(&s_fp); return; }
     /* First-divergence fingerprint + frame recorder also see device writes. */
     fp_record_mmio(addr, val, g_debug_last_store_pc);
@@ -12061,10 +12296,7 @@ void debug_server_trace_mmio_write(uint32_t addr, uint32_t val, uint8_t width)
  * livelock that polls them. `val` is the value the CPU actually loaded. */
 void debug_server_trace_mmio_read(uint32_t addr, uint32_t val, uint8_t width)
 {
-#ifdef PSX_NO_DEBUG_TOOLS
-    (void)addr; (void)val; (void)width;
-    return;
-#endif
+    if (g_psx_render_pass_active) return;
     if (s_fmv_quiet) return;
     rec_event(REC_KIND_MMIO_R, addr, val, g_debug_last_store_pc,
               debug_cpu_ptr ? debug_cpu_ptr->gpr[31] : 0);
@@ -12111,6 +12343,7 @@ static void handle_wtrace_range(int id, const char *json)
     s_wtrace_ranges[0].lo = lo;
     s_wtrace_ranges[0].hi = hi;
     s_wtrace_range_count = (lo != hi) ? 1 : 0;
+    debug_server_write_interest_invalidate();
     send_fmt("{\"id\":%d,\"ok\":true,\"lo\":\"0x%08X\",\"hi\":\"0x%08X\"}",
              id, lo, hi);
 }
@@ -12124,6 +12357,7 @@ static void handle_wtrace_add(int id, const char *json)
     if (!json_get_str(json, "lo", lo_str, sizeof(lo_str))) { send_err(id, "missing lo"); return; }
     if (!json_get_str(json, "hi", hi_str, sizeof(hi_str))) { send_err(id, "missing hi"); return; }
     int slot = s_wtrace_range_count++;
+    debug_server_write_interest_invalidate();
     s_wtrace_ranges[slot].lo = hex_to_u32(lo_str) & 0x1FFFFFFFu;
     s_wtrace_ranges[slot].hi = hex_to_u32(hi_str) & 0x1FFFFFFFu;
     send_fmt("{\"id\":%d,\"ok\":true,\"slot\":%d,\"lo\":\"0x%08X\",\"hi\":\"0x%08X\"}",
@@ -12140,6 +12374,7 @@ static void handle_wtrace_del(int id, const char *json)
     for (int i = slot; i < s_wtrace_range_count - 1; i++)
         s_wtrace_ranges[i] = s_wtrace_ranges[i + 1];
     s_wtrace_range_count--;
+    debug_server_write_interest_invalidate();
     send_ok(id);
 }
 
@@ -12149,6 +12384,7 @@ static void handle_wtrace_disarm_all(int id, const char *json)
 {
     (void)json;
     s_wtrace_range_count = 0;
+    debug_server_write_interest_invalidate();
     send_ok(id);
 }
 
@@ -12182,6 +12418,7 @@ static void cyc_watch_arm(uint32_t raw, uint32_t end_raw, int n)
     if (n > CYC_WATCH_RING_CAP) n = CYC_WATCH_RING_CAP;
     /* Disarm first so the hot path can't sample mid-reset. */
     s_cyc_watch_armed = 0;
+    debug_server_watch_interest_refresh();
     s_cyc_watch_anchor_raw  = raw;
     s_cyc_watch_anchor_phys = raw & 0x1FFFFFFFu;
     s_cyc_watch_end_raw     = end_raw;
@@ -12194,6 +12431,7 @@ static void cyc_watch_arm(uint32_t raw, uint32_t end_raw, int n)
     s_cyc_watch_last_cycle  = 0xFFFFFFFFFFFFFFFFull;
     memset(s_cyc_watch_ring, 0, sizeof(s_cyc_watch_ring));
     s_cyc_watch_armed = 1;
+    debug_server_watch_interest_refresh();
 }
 
 /* cyc_watch — arm an anchor PC. {"pc":"0x...","n":16}. Clears the ring,
@@ -12252,6 +12490,7 @@ static void handle_cyc_watch_clear(int id, const char *json)
 {
     (void)json;
     s_cyc_watch_armed = 0;
+    debug_server_watch_interest_refresh();
     s_cyc_watch_hits  = 0;
     s_cyc_watch_anchor_phys = 0;
     s_cyc_watch_anchor_raw  = 0;
@@ -12287,6 +12526,7 @@ static void handle_pc_probe_arm(int id, const char *json)
         return;
     }
     s_pc_probe_armed = 1;
+    debug_server_watch_interest_refresh();
     send_fmt("{\"id\":%d,\"ok\":true,\"armed\":1,\"n_pcs\":%d,\"sample_max\":%u,\"nd_intro\":%d}",
              id, s_pc_probe_n, s_pc_probe_sample_max, nd);
 }
@@ -12421,10 +12661,38 @@ static void handle_irq_exc_stats(int id, const char *json)
 
 /* dma_hold_stats: cumulative totals for CPU holds on kicked GPU linked-list
  * walks (dma.c), split by kicks made inside an exception handler. */
+static void handle_pgxp_hook_stats(int id, const char *json)
+{
+    (void)json;
+    PGXPHookStats s;
+    pgxp_get_hook_stats(&s);
+    send_fmt("{\"id\":%d,\"ok\":true,\"active_only\":true,"
+             "\"alu\":%llu,\"load\":%llu,\"store\":%llu,\"cop2\":%llu,"
+             "\"muldiv\":%llu,\"plain_batches\":%llu,\"plain_registers\":%llu,"
+             "\"native_words_captured\":%llu,\"native_words_published\":%llu,"
+             "\"native_sxy_imports\":%llu,\"native_clobbers\":%llu,\"native_gpr_imports\":%llu,"
+             "\"operations\":%llu,\"operation_refusals\":%llu,\"operation_alu\":%llu,"
+             "\"operation_loads\":%llu,\"operation_stores\":%llu}",
+             id, (unsigned long long)s.alu, (unsigned long long)s.load,
+             (unsigned long long)s.store, (unsigned long long)s.cop2,
+             (unsigned long long)s.muldiv, (unsigned long long)s.plain_batches,
+             (unsigned long long)s.plain_registers,
+             (unsigned long long)s.native_words_captured,
+             (unsigned long long)s.native_words_published,
+             (unsigned long long)s.native_sxy_imports,
+             (unsigned long long)s.native_clobbers,
+             (unsigned long long)s.native_gpr_imports,
+             (unsigned long long)s.operations, (unsigned long long)s.operation_refusals,
+             (unsigned long long)s.operation_alu, (unsigned long long)s.operation_loads,
+             (unsigned long long)s.operation_stores);
+}
+
 static void handle_dma_hold_stats(int id, const char *json)
 {
     (void)json;
     DMAGpuHoldStats st;
+    DMAGpuNativeStats native;
+    dma_debug_get_gpu_native(&native);
     uint64_t host_nodes,host_words;
     extern void dma_debug_host_draw(uint64_t*,uint64_t*);
     dma_debug_host_draw(&host_nodes,&host_words);
@@ -12432,13 +12700,20 @@ static void handle_dma_hold_stats(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":true,\"frame\":%llu,\"count\":%llu,\"held_cycles\":%llu,"
              "\"host_us\":%llu,\"words\":%llu,\"steps\":%llu,\"exc_count\":%llu,"
              "\"exc_held_cycles\":%llu,\"exc_host_us\":%llu,"
-             "\"host_draw_nodes\":%llu,\"host_draw_words\":%llu}",
+             "\"host_draw_nodes\":%llu,\"host_draw_words\":%llu,"
+             "\"native_lists\":%llu,\"native_nodes\":%llu,\"native_words\":%llu,"
+             "\"native_direct_words\":%llu,\"native_observed_words\":%llu,\"native_service_requests\":%llu,"
+             "\"native_fallbacks\":%llu}",
              id, (unsigned long long)s_frame_count,
              (unsigned long long)st.count, (unsigned long long)st.held_cycles,
              (unsigned long long)st.host_us, (unsigned long long)st.words,
              (unsigned long long)st.steps, (unsigned long long)st.exc_count,
              (unsigned long long)st.exc_held_cycles, (unsigned long long)st.exc_host_us,
-             (unsigned long long)host_nodes,(unsigned long long)host_words);
+             (unsigned long long)host_nodes,(unsigned long long)host_words,
+             (unsigned long long)native.lists, (unsigned long long)native.nodes,
+             (unsigned long long)native.words, (unsigned long long)native.direct_words,
+             (unsigned long long)native.observed_words,
+             (unsigned long long)native.service_requests, (unsigned long long)native.fallbacks);
 }
 
 /* dma_hold_ring: newest `count` held kicks (default 256, max ring cap),
@@ -13969,7 +14244,12 @@ static void handle_quit(int id, const char *json)
     (void)json;
     send_ok(id);
     psx_crash_trace_set_exit_origin("tcp_quit");
-    debug_server_shutdown();
+    /* Drain compiler/overlay workers before CRT teardown can join their static
+     * services while a loader thread still owns DLL initialization locks. */
+    if (s_host_shutdown)
+        s_host_shutdown();
+    else
+        debug_server_shutdown();
     exit(0);
 }
 
@@ -16534,6 +16814,10 @@ static const CmdEntry s_commands[] = {
     { "pgxp_store_ring",   handle_pgxp_store_ring },
     { "pgxp_shadow",       handle_pgxp_shadow },
     { "host_profile",      handle_host_profile },
+    { "hr_profile_dump",   handle_hr_profile_dump },
+    { "static_call_stats", handle_static_call_stats },
+    { "hr_counters",       handle_hr_counters },
+    { "direct_memory_stats", handle_direct_memory_stats },
     { "host_span_ring",    handle_host_span_ring },
     { "frame_wall_ring",   handle_frame_wall_ring },
     { "pgxp_miss_ring",    handle_pgxp_miss_ring },
@@ -16743,6 +17027,7 @@ static const CmdEntry s_commands[] = {
     { "irqctx_ring",       handle_irqctx_ring },
     { "irq_exc_stats",     handle_irq_exc_stats },
     { "dma_hold_stats",    handle_dma_hold_stats },
+    { "pgxp_hook_stats",   handle_pgxp_hook_stats },
     { "dma_hold_ring",     handle_dma_hold_ring },
     { "sp_ring",           handle_sp_ring },
     { "disp_ring",         handle_disp_ring },
@@ -16945,6 +17230,7 @@ void debug_server_set_cpu(CPUState *cpu)
 {
     s_cpu = cpu;
     debug_cpu_ptr = cpu;
+    debug_server_history_init();
     /* Always-on guest-cycle profile ring (gcp_ring), Release included. */
     guest_cycle_profile_install();
 }
@@ -17005,16 +17291,333 @@ malformed:
         s_wtrace_boot_ranges[s_wtrace_boot_range_count].lo = lo[i];
         s_wtrace_boot_ranges[s_wtrace_boot_range_count].hi = hi[i];
         s_wtrace_boot_range_count++;
+        debug_server_write_interest_invalidate();
         s_wtrace_trans_ranges[s_wtrace_trans_range_count].lo = lo[i];
         s_wtrace_trans_ranges[s_wtrace_trans_range_count].hi = hi[i];
         s_wtrace_trans_range_count++;
+        debug_server_write_interest_invalidate();
     }
     s_wtrace_env_ranges = n;
     return n;
 }
 
+/* Mandatory late-probe histories belong to the execution session, not TCP.
+ * Called once before guest execution; listener retries never reset retained data.
+ * Optional full CPU/block/armed recording remains under its existing controls. */
+static int s_write_history_initialized;
+void debug_server_history_init(void)
+{
+    if (s_write_history_initialized) return;
+    /* Tier 1: heap-allocate write trace ring buffer (32 MB). */
+    if (!s_wtrace) {
+        s_wtrace = (WriteTraceEntry *)calloc(WRITE_TRACE_CAP, sizeof(WriteTraceEntry));
+    }
+    s_wtrace_seq = 0;
+    s_wtrace_head = 0;
+
+    if (!s_wtrace_boot) {
+        s_wtrace_boot =
+            (WriteTraceEntry *)calloc(WRITE_TRACE_BOOT_CAP, sizeof(WriteTraceEntry));
+    }
+    s_wtrace_boot_total = 0;
+    s_wtrace_boot_count = 0;
+    s_wtrace_boot_range_count = 0;
+    debug_server_write_interest_invalidate();
+
+    /* Always-on catch-all: 4M x32-byte records =128MiB. Keep the
+     * established event window and exact late-probe fields. */
+    if (!s_wtrace_all) {
+        s_wtrace_all = (WriteTraceAllEntry *)calloc(WRITE_TRACE_ALL_CAP,
+                                                    sizeof(WriteTraceAllEntry));
+    }
+    s_wtrace_all_seq  = 0;
+    s_wtrace_all_head = 0;
+
+    if (!s_wtrace_trans) {
+        s_wtrace_trans = (WriteTraceTransEntry *)calloc(WRITE_TRACE_TRANS_CAP,
+                                                        sizeof(WriteTraceTransEntry));
+    }
+    s_wtrace_trans_seq = 0;
+    s_wtrace_trans_head = 0;
+    s_wtrace_trans_range_count = 0;
+    debug_server_write_interest_invalidate();
+
+    /* Phase 4.5: watch EB4 area + DF8/DFC area + EvCB slot 1 status + state machine
+     * + spiral texture buffer. */
+    s_wtrace_ranges[0].lo = 0x00079EB0u;
+    s_wtrace_ranges[0].hi = 0x00079EC0u;
+    s_wtrace_ranges[1].lo = 0x00079DF0u;
+    s_wtrace_ranges[1].hi = 0x00079E04u;
+    s_wtrace_ranges[2].lo = 0x0000E044u;  /* EvCB slot 1 (class+status+spec) */
+    s_wtrace_ranges[2].hi = 0x0000E054u;
+    s_wtrace_ranges[3].lo = 0x00066940u;  /* shell state machine 0x80066940 */
+    s_wtrace_ranges[3].hi = 0x00066954u;
+    s_wtrace_ranges[4].lo = 0x001B6810u;  /* spiral texture buffer (heap @ 0x801B6814) */
+    s_wtrace_ranges[4].hi = 0x001B6830u;
+    /* Card-chain visibility (always-on per global rule "use ring buffers, never
+     * sample"): 0x7514 is the shared chain counter, 0x7528[0..1] are the per-slot
+     * chain handler ptrs. Reading 0x7528 = 0x5688 means read-chain installed;
+     * = 0x5B64 means detection-chain installed. Catching every write to these
+     * tells us deterministically when card-read paths get armed. */
+    s_wtrace_ranges[5].lo = 0x00007514u;
+    s_wtrace_ranges[5].hi = 0x00007518u;
+    s_wtrace_ranges[6].lo = 0x00007528u;  /* 0x7528[0] (slot 0 chain handler ptr) */
+    s_wtrace_ranges[6].hi = 0x00007530u;  /* through 0x7528[1] (slot 1) */
+    /* 0x755A is the chain abort flag: D1 sets =1, outer coord clears+aborts on !=0 */
+    s_wtrace_ranges[7].lo = 0x0000755Au;
+    s_wtrace_ranges[7].hi = 0x0000755Cu;
+    /* 0x7520 is the success flag (state-3 sets, dispatcher v0=-1 cascade reads) */
+    s_wtrace_ranges[8].lo = 0x00007520u;
+    s_wtrace_ranges[8].hi = 0x00007524u;
+    /* 0x74A4 is the chain status flag */
+    s_wtrace_ranges[9].lo = 0x000074A4u;
+    s_wtrace_ranges[9].hi = 0x000074A8u;
+    /* 0x75C0 = SIO data-mode flag (set 1 by func_6380, cleared 0 by 0xBFC15EBC).
+     * 0x75C4 = current buffer pointer.  The data-byte handler at RAM 0x641C
+     * exits early via beq v0,zero if [0x75C0]==0; tracking these tells us
+     * whether the install-stub data path is engaging at all. */
+    s_wtrace_ranges[10].lo = 0x000075C0u;
+    s_wtrace_ranges[10].hi = 0x000075C8u;
+    /* 0x74B8 = pad-poll gate: if 0, pad poll function at BFC144BC SKIPS pad
+     * polling. 0x74BC = card-running gate: if non-zero, calls 0xBFC14B00
+     * (outer card coordinator). Tracking both tells us whether the BIOS is
+     * attempting the gate-flip serialization that prevents pad/card races. */
+    s_wtrace_ranges[11].lo = 0x000074B8u;
+    s_wtrace_ranges[11].hi = 0x000074C0u;
+    /* 0x72F0 = data-byte counter (halfword). Install handler at RAM 0x641C
+     * increments this per SIO IRQ during data phase; should reach 128 for a
+     * full sector read. Handoff says it stops at ~16. Track every write
+     * (including any abort-clear) to identify the byte-count regression PC. */
+    s_wtrace_ranges[12].lo = 0x000072F0u;
+    s_wtrace_ranges[12].hi = 0x000072F4u;
+    /* Card op result flags (kernel page 0xA000B9D0): B9D0 = success flag (set by
+     * SIO IRQ chain handler on op success); B9D4..B9E0 = error flags (timeout,
+     * checksum mismatch, etc.). FUN_bfc09144() in card_read returns the value
+     * at B9D0 — sector-≥1 read bail at FUN_bfc08b3c gates on this. Capture
+     * every writer to determine which writer fires for sector ≥1 (success vs
+     * error path) and which PC sets the failure flag. */
+    s_wtrace_ranges[13].lo = 0x0000B9D0u;
+    s_wtrace_ranges[13].hi = 0x0000B9F0u;
+    /* Shell COPY/DELETE/LOAD_DIR sub-state at 0x80066BC0. CIRCLE→7=LOAD_DIR,
+     * CROSS→4=COPY-related, TRIANGLE→0=cleared, 6=DELETE. After clicking
+     * COPY, BIOS got stuck at BC0=4 with NO further input transitions —
+     * likely waiting for a card op completion that never fires. Track every
+     * writer to identify the BIOS function driving this sub-state. */
+    s_wtrace_ranges[14].lo = 0x00066BC0u;
+    s_wtrace_ranges[14].hi = 0x00066BD0u;
+    s_wtrace_ranges[15].lo = 0x00097420u; /* movie/frame handoff state */
+    s_wtrace_ranges[15].hi = 0x00097430u;
+    /* Ape LOAD-GAME higher-layer (libcard + game card-manager) always-on
+     * capture. Oracle diff (2026-07-07 session 3) proved the low-level card
+     * protocol succeeds on both runtimes, but ours stays in top-scene 1
+     * ("Checking") while Beetle advances to scene 4 (file-select). These cells
+     * are the higher-layer state that diverges; capturing every writer from
+     * boot (never probe-time armed) attributes WHICH libcard op-state stalls
+     * and what completion it awaits. Masked-physical (KUSEG) addresses.
+     *   0x800b4e30 = libcard op struct field 0 (count/op-state; 0 ours vs 1 Beetle)
+     *   0x800b4e50 = save-name ptr + filename buffer ("bu00:BASCUS-94423SYS" on Beetle, zeros ours)
+     *   0x800b4ed0 = libcard op-handler ptr (0x80020f4c ours vs 0x80020bc8 Beetle)
+     *   0x800e3880 = SCENE (no-op flip-flop) + 0x800e3884 = TRIG (= top-scene index; 1 ours vs 4 Beetle)
+     *   0x8013af50 = game card-menu substate block (0x8013af56 = 0 ours vs 1 Beetle)
+     *   0x00007264 = kernel card-driver per-state byte M8[0x7264] (handoff: stuck at 1) */
+    s_wtrace_ranges[16].lo = 0x000B4E2Cu;
+    s_wtrace_ranges[16].hi = 0x000B4E40u;
+    s_wtrace_ranges[17].lo = 0x000B4E50u;
+    s_wtrace_ranges[17].hi = 0x000B4E68u;
+    s_wtrace_ranges[18].lo = 0x000B4ECCu;
+    s_wtrace_ranges[18].hi = 0x000B4ED4u;
+    s_wtrace_ranges[19].lo = 0x000E3880u;
+    s_wtrace_ranges[19].hi = 0x000E3888u;
+    s_wtrace_ranges[20].lo = 0x0013AF50u;
+    s_wtrace_ranges[20].hi = 0x0013AF60u;
+    s_wtrace_ranges[21].lo = 0x00007260u;
+    s_wtrace_ranges[21].hi = 0x00007270u;
+    s_wtrace_range_count = 22;
+    debug_server_write_interest_invalidate();
+
+    s_wtrace_boot_ranges[0].lo = 0x00097420u; /* movie/frame handoff state */
+    s_wtrace_boot_ranges[0].hi = 0x00097430u;
+    s_wtrace_boot_range_count = 1;
+    debug_server_write_interest_invalidate();
+
+    s_wtrace_trans_ranges[0].lo = 0x00097420u; /* movie/frame handoff state */
+    s_wtrace_trans_ranges[0].hi = 0x00097430u;
+    s_wtrace_trans_range_count = 1;
+    debug_server_write_interest_invalidate();
+
+#if DEFAULT_DEBUG_PORT == 4470
+    /* Tomba STR/FMVs: movie state, CD sector descriptor ring, and CD globals.
+     * These are passive traces for the game runtime only. */
+    s_wtrace_ranges[15].lo = 0x000D7188u;
+    s_wtrace_ranges[15].hi = 0x000D7588u;
+    s_wtrace_ranges[16].lo = 0x0009B010u;
+    s_wtrace_ranges[16].hi = 0x0009B050u;
+    s_wtrace_ranges[17].lo = 0x000A15C8u;
+    s_wtrace_ranges[17].hi = 0x000A3270u;
+    /* Tomba task scheduler descriptors and scratchpad state. The current
+     * black-screen blocker is a missing resume after the loader task closes,
+     * so keep the task table and scheduler scratch bytes in the reverse trace
+     * from process start. */
+    s_wtrace_ranges[18].lo = 0x001FD800u;
+    s_wtrace_ranges[18].hi = 0x001FD950u;
+    s_wtrace_ranges[19].lo = 0x1F8001CCu;
+    s_wtrace_ranges[19].hi = 0x1F800200u;
+    s_wtrace_ranges[20].lo = 0x1F800150u;
+    s_wtrace_ranges[20].hi = 0x1F800180u;
+    /* Runtime-loaded Tomba overlay text/data and the high-stack descriptors
+     * used by its primitive-list builders. This catches loader writes and any
+     * later self-modification before the frame-2500 overlay loop floods the
+     * trace. */
+    s_wtrace_ranges[21].lo = 0x000E0000u;
+    s_wtrace_ranges[21].hi = 0x000F0000u;
+    s_wtrace_ranges[22].lo = 0x001FE000u;
+    s_wtrace_ranges[22].hi = 0x001FE400u;
+    /* BIOS card-operation public state arrays. The Tomba Load menu waits on
+     * F4000001 events after _card_read; these cells reveal which BIOS path
+     * leaves the operation armed or clears it and delivers the public event. */
+    s_wtrace_ranges[23].lo = 0x00009F20u;
+    s_wtrace_ranges[23].hi = 0x00009F38u;
+    /* Tomba pad-poll buffer (game state +0x30 -> 0x8009EB58, second buffer at
+     * 0x8009EB7A). Display thread state machine gates on (*0x1F8001FC & 0x4008)
+     * which derives from `func_80028D70(0)` reading this buffer. Capture every
+     * write so we can attribute who initialises the layout — BIOS PadInit,
+     * runtime SIO, game-side memcpy, or none of the above. */
+    s_wtrace_ranges[24].lo = 0x0009EB40u;
+    s_wtrace_ranges[24].hi = 0x0009EB80u;
+    /* The gflag word the display thread polls (newly-set bits). */
+    s_wtrace_ranges[25].lo = 0x0009C9D0u;
+    s_wtrace_ranges[25].hi = 0x0009C9E0u;
+    /* OPTIONS/New Game render-state objects. The manager initializes two
+     * 0xF0-byte objects at 0x8009B3A0 and 0x8009B490. Gate func 0x8006B494
+     * reads object+0xE6/object+0x46, and func 0x8006A0C0 initializes the
+     * dispatch callbacks at object+0x14/+0x18. Keep both objects always-on
+     * from boot so the writers survive long menu/FMV runs. */
+    s_wtrace_ranges[26].lo = 0x0009B300u;
+    s_wtrace_ranges[26].hi = 0x0009B700u;
+    /* Function pointer globals used by func_8006A0C0 before it decides whether
+     * to initialize the object. */
+    s_wtrace_ranges[27].lo = 0x00097520u;
+    s_wtrace_ranges[27].hi = 0x00097538u;
+    /* DRAWENV/GPU command queue globals. At the black-screen state,
+     * 0x80090CAC continues to be copied every frame while queue indices
+     * 0x80090DA0/0x80090DA4 stop advancing. Keep register context for the
+     * copy/enqueue writers so we can identify the caller-supplied env. */
+    s_wtrace_ranges[28].lo = 0x00090C80u;
+    s_wtrace_ranges[28].hi = 0x00090DE0u;
+    s_wtrace_ranges[29].lo = 0x000B3200u; /* title/load GPU packet buffer */
+    s_wtrace_ranges[29].hi = 0x000B3800u;
+    s_wtrace_ranges[30].lo = 0x000EA000u; /* BIOS licensed-screen GPU packet buffer */
+    s_wtrace_ranges[30].hi = 0x000ED000u;
+    s_wtrace_ranges[31].lo = 0x00097420u; /* movie/frame handoff state */
+    s_wtrace_ranges[31].hi = 0x00097430u;
+    s_wtrace_range_count = 32;
+    debug_server_write_interest_invalidate();
+
+    s_wtrace_boot_ranges[0].lo = 0x0009B3B0u; /* slot0 callbacks */
+    s_wtrace_boot_ranges[0].hi = 0x0009B3C4u;
+    s_wtrace_boot_ranges[1].lo = 0x0009B3E0u; /* slot0 state bytes */
+    s_wtrace_boot_ranges[1].hi = 0x0009B3F0u;
+    s_wtrace_boot_ranges[2].lo = 0x0009B480u; /* slot0 gate/status */
+    s_wtrace_boot_ranges[2].hi = 0x0009B490u;
+    s_wtrace_boot_ranges[3].lo = 0x0009B4A0u; /* slot1 callbacks */
+    s_wtrace_boot_ranges[3].hi = 0x0009B4B4u;
+    s_wtrace_boot_ranges[4].lo = 0x0009B4D0u; /* slot1 state bytes */
+    s_wtrace_boot_ranges[4].hi = 0x0009B4E0u;
+    s_wtrace_boot_ranges[5].lo = 0x0009B570u; /* slot1 gate/status */
+    s_wtrace_boot_ranges[5].hi = 0x0009B580u;
+    s_wtrace_boot_ranges[6].lo = 0x00097520u; /* manager callbacks */
+    s_wtrace_boot_ranges[6].hi = 0x00097538u;
+    s_wtrace_boot_ranges[7].lo = 0x0000E1F4u; /* BIOS TCB save areas */
+    s_wtrace_boot_ranges[7].hi = 0x0000E400u;
+    s_wtrace_boot_ranges[8].lo = 0x0009C970u; /* title/menu state variables */
+    s_wtrace_boot_ranges[8].hi = 0x0009C9A0u;
+    s_wtrace_boot_ranges[9].lo = 0x000B3200u; /* title/load GPU packet buffer */
+    s_wtrace_boot_ranges[9].hi = 0x000B3800u;
+    s_wtrace_boot_ranges[10].lo = 0x000EA000u; /* BIOS licensed-screen GPU packet buffer */
+    s_wtrace_boot_ranges[10].hi = 0x000ED000u;
+    s_wtrace_boot_ranges[11].lo = 0x00097420u; /* movie/frame handoff state */
+    s_wtrace_boot_ranges[11].hi = 0x00097430u;
+    s_wtrace_boot_range_count = 12;
+    debug_server_write_interest_invalidate();
+
+    s_wtrace_trans_ranges[0].lo = 0x0000E1F4u; /* BIOS TCB save areas */
+    s_wtrace_trans_ranges[0].hi = 0x0000E400u;
+    s_wtrace_trans_ranges[1].lo = 0x001FD800u; /* Tomba task table */
+    s_wtrace_trans_ranges[1].hi = 0x001FD950u;
+    s_wtrace_trans_ranges[2].lo = 0x1F8001CCu; /* scheduler scratch */
+    s_wtrace_trans_ranges[2].hi = 0x1F800200u;
+    s_wtrace_trans_ranges[3].lo = 0x0009B300u; /* render/menu state objects */
+    s_wtrace_trans_ranges[3].hi = 0x0009B700u;
+    s_wtrace_trans_ranges[4].lo = 0x00097520u; /* manager callbacks */
+    s_wtrace_trans_ranges[4].hi = 0x00097538u;
+    s_wtrace_trans_ranges[5].lo = 0x00090C80u; /* DRAWENV/GPU queue globals */
+    s_wtrace_trans_ranges[5].hi = 0x00090DE0u;
+    s_wtrace_trans_ranges[6].lo = 0x0009EB40u; /* pad buffers */
+    s_wtrace_trans_ranges[6].hi = 0x0009EB80u;
+    s_wtrace_trans_ranges[7].lo = 0x0009C9D0u; /* display gflag word */
+    s_wtrace_trans_ranges[7].hi = 0x0009C9E0u;
+    s_wtrace_trans_ranges[8].lo = 0x0009C970u; /* title/menu state variables */
+    s_wtrace_trans_ranges[8].hi = 0x0009C9A0u;
+    s_wtrace_trans_ranges[9].lo = 0x00097420u; /* movie/frame handoff state */
+    s_wtrace_trans_ranges[9].hi = 0x00097430u;
+    s_wtrace_trans_range_count = 10;
+    debug_server_write_interest_invalidate();
+#endif
+
+    /* Launch-time extra ranges for the boot + transition write rings, so any
+     * title can have a physical window recorded from the first guest write
+     * without a per-title rebuild (the always-on catch-all ring can wrap before
+     * a late probe reads it). Format: "lo-hi[,lo-hi...]", hex (0x optional),
+     * masked to physical, hi > lo, at most WTRACE_ENV_MAX_RANGES. Appended after
+     * the built-in defaults into slots reserved for them. The spec is applied
+     * whole or not at all: a malformed item or too many items refuses it, and
+     * wtrace_boot_stats / wtrace_trans_stats report env_ranges and env_error. */
+    wtrace_apply_env_ranges(getenv("PSX_WTRACE_BOOT_RANGES"));
+
+    /* Tier 1: heap-allocate MMIO trace ring buffer (2 MB). */
+    if (!s_mmio_trace) {
+        s_mmio_trace = (MmioTraceEntry *)calloc(MMIO_TRACE_CAP, sizeof(MmioTraceEntry));
+    }
+    s_mmio_trace_seq = 0;
+    s_mmio_trace_head = 0;
+
+    /* Dedicated GP1 display-control ring (long retention). */
+    if (!s_gp1_trace) {
+        s_gp1_trace = (MmioTraceEntry *)calloc(GP1_TRACE_CAP, sizeof(MmioTraceEntry));
+    }
+    s_gp1_trace_seq = 0;
+    s_gp1_trace_head = 0;
+
+    /* MMIO-READ trace ring (range-filtered). Default-armed from init to the CD
+     * regs + I_STAT/I_MASK so the IRQ handler's reads of the CD IRQ-flag and
+     * interrupt status are captured continuously (Rule: always-on ring; probes
+     * query the window). Reuses MMIO_TRACE_CAP entries (~21 MB). */
+    if (!s_mmio_rtrace) {
+        s_mmio_rtrace = (MmioTraceEntry *)calloc(MMIO_TRACE_CAP, sizeof(MmioTraceEntry));
+    }
+    s_mmio_rtrace_seq = 0;
+    s_mmio_rtrace_head = 0;
+    s_mmio_rtrace_ranges[0].lo = 0x1F801800u; s_mmio_rtrace_ranges[0].hi = 0x1F801804u; /* CD regs (idx/IRQ-flag) */
+    s_mmio_rtrace_ranges[1].lo = 0x1F801070u; s_mmio_rtrace_ranges[1].hi = 0x1F801078u; /* I_STAT / I_MASK */
+    s_mmio_rtrace_range_count = 2;
+
+    if (!s_wtrace || !s_wtrace_boot || !s_wtrace_all || !s_wtrace_trans ||
+        !s_mmio_trace || !s_gp1_trace || !s_mmio_rtrace) {
+        fputs("psxrecomp: mandatory write/MMIO history allocation failed\n", stderr);
+        abort(); /* Do not run while advertising unavailable retained history. */
+    }
+    pgxp_set_trace_sources(&g_debug_last_store_pc, &s_frame_count);
+    s_write_history_initialized = 1;
+}
+
+void debug_server_history_frame(void)
+{
+    if (!s_fmv_quiet) fp_snapshot((uint32_t)s_frame_count);
+}
+
 void debug_server_init(int port)
 {
+    debug_server_history_init();
     if (s_listen != SOCK_INVALID) return;
     if (port > 0) s_port = port;
 
@@ -17087,6 +17690,7 @@ void debug_server_init(int port)
                 if (pcs && *pcs) pc_probe_parse_list(pcs);
                 if (s_pc_probe_n > 0) {
                     s_pc_probe_armed = 1;
+                    debug_server_watch_interest_refresh();
                     fprintf(stdout, "psxrecomp: pc_probe armed (%d pcs)\n", s_pc_probe_n);
                 }
             }
@@ -17207,39 +17811,6 @@ void debug_server_init(int port)
     }
     s_history_count = 0;
 
-    /* Tier 1: heap-allocate write trace ring buffer (32 MB). */
-    if (!s_wtrace) {
-        s_wtrace = (WriteTraceEntry *)calloc(WRITE_TRACE_CAP, sizeof(WriteTraceEntry));
-    }
-    s_wtrace_seq = 0;
-    s_wtrace_head = 0;
-
-    if (!s_wtrace_boot) {
-        s_wtrace_boot =
-            (WriteTraceEntry *)calloc(WRITE_TRACE_BOOT_CAP, sizeof(WriteTraceEntry));
-    }
-    s_wtrace_boot_total = 0;
-    s_wtrace_boot_count = 0;
-    s_wtrace_boot_range_count = 0;
-
-    /* Always-on catch-all wtrace ring (8 MB). Records EVERY RAM write
-     * with lean fields (no register window). Sized for ~1 second of
-     * coverage at typical Tomba write rates. */
-    if (!s_wtrace_all) {
-        s_wtrace_all = (WriteTraceAllEntry *)calloc(WRITE_TRACE_ALL_CAP,
-                                                    sizeof(WriteTraceAllEntry));
-    }
-    s_wtrace_all_seq  = 0;
-    s_wtrace_all_head = 0;
-
-    if (!s_wtrace_trans) {
-        s_wtrace_trans = (WriteTraceTransEntry *)calloc(WRITE_TRACE_TRANS_CAP,
-                                                        sizeof(WriteTraceTransEntry));
-    }
-    s_wtrace_trans_seq = 0;
-    s_wtrace_trans_head = 0;
-    s_wtrace_trans_range_count = 0;
-
     fntrace_arm_from_env("PSX_FNTRACE_ARM");
 
     /* Function entry/exit ring buffers (32 MB each, 64 MB total). */
@@ -17266,9 +17837,6 @@ void debug_server_init(int port)
     }
     s_call_focus_seq = 0;
 
-    /* PGXP rings stamp each record with the store PC and frame. */
-    pgxp_set_trace_sources(&g_debug_last_store_pc, &s_frame_count);
-
     /* EvCB walk ring (~240 KB). */
     if (!s_evcb_ring) s_evcb_ring = (EvCBSnapshot *)calloc(EVCB_RING_CAP, sizeof(EvCBSnapshot));
     s_evcb_ring_seq = 0;
@@ -17276,259 +17844,6 @@ void debug_server_init(int port)
     s_evcb_ring_exit_count  = 0;
     s_evcb_pending_active   = 0;
     s_evcb_unwound_count    = 0;
-
-    /* Phase 4.5: watch EB4 area + DF8/DFC area + EvCB slot 1 status + state machine
-     * + spiral texture buffer. */
-    s_wtrace_ranges[0].lo = 0x00079EB0u;
-    s_wtrace_ranges[0].hi = 0x00079EC0u;
-    s_wtrace_ranges[1].lo = 0x00079DF0u;
-    s_wtrace_ranges[1].hi = 0x00079E04u;
-    s_wtrace_ranges[2].lo = 0x0000E044u;  /* EvCB slot 1 (class+status+spec) */
-    s_wtrace_ranges[2].hi = 0x0000E054u;
-    s_wtrace_ranges[3].lo = 0x00066940u;  /* shell state machine 0x80066940 */
-    s_wtrace_ranges[3].hi = 0x00066954u;
-    s_wtrace_ranges[4].lo = 0x001B6810u;  /* spiral texture buffer (heap @ 0x801B6814) */
-    s_wtrace_ranges[4].hi = 0x001B6830u;
-    /* Card-chain visibility (always-on per global rule "use ring buffers, never
-     * sample"): 0x7514 is the shared chain counter, 0x7528[0..1] are the per-slot
-     * chain handler ptrs. Reading 0x7528 = 0x5688 means read-chain installed;
-     * = 0x5B64 means detection-chain installed. Catching every write to these
-     * tells us deterministically when card-read paths get armed. */
-    s_wtrace_ranges[5].lo = 0x00007514u;
-    s_wtrace_ranges[5].hi = 0x00007518u;
-    s_wtrace_ranges[6].lo = 0x00007528u;  /* 0x7528[0] (slot 0 chain handler ptr) */
-    s_wtrace_ranges[6].hi = 0x00007530u;  /* through 0x7528[1] (slot 1) */
-    /* 0x755A is the chain abort flag: D1 sets =1, outer coord clears+aborts on !=0 */
-    s_wtrace_ranges[7].lo = 0x0000755Au;
-    s_wtrace_ranges[7].hi = 0x0000755Cu;
-    /* 0x7520 is the success flag (state-3 sets, dispatcher v0=-1 cascade reads) */
-    s_wtrace_ranges[8].lo = 0x00007520u;
-    s_wtrace_ranges[8].hi = 0x00007524u;
-    /* 0x74A4 is the chain status flag */
-    s_wtrace_ranges[9].lo = 0x000074A4u;
-    s_wtrace_ranges[9].hi = 0x000074A8u;
-    /* 0x75C0 = SIO data-mode flag (set 1 by func_6380, cleared 0 by 0xBFC15EBC).
-     * 0x75C4 = current buffer pointer.  The data-byte handler at RAM 0x641C
-     * exits early via beq v0,zero if [0x75C0]==0; tracking these tells us
-     * whether the install-stub data path is engaging at all. */
-    s_wtrace_ranges[10].lo = 0x000075C0u;
-    s_wtrace_ranges[10].hi = 0x000075C8u;
-    /* 0x74B8 = pad-poll gate: if 0, pad poll function at BFC144BC SKIPS pad
-     * polling. 0x74BC = card-running gate: if non-zero, calls 0xBFC14B00
-     * (outer card coordinator). Tracking both tells us whether the BIOS is
-     * attempting the gate-flip serialization that prevents pad/card races. */
-    s_wtrace_ranges[11].lo = 0x000074B8u;
-    s_wtrace_ranges[11].hi = 0x000074C0u;
-    /* 0x72F0 = data-byte counter (halfword). Install handler at RAM 0x641C
-     * increments this per SIO IRQ during data phase; should reach 128 for a
-     * full sector read. Handoff says it stops at ~16. Track every write
-     * (including any abort-clear) to identify the byte-count regression PC. */
-    s_wtrace_ranges[12].lo = 0x000072F0u;
-    s_wtrace_ranges[12].hi = 0x000072F4u;
-    /* Card op result flags (kernel page 0xA000B9D0): B9D0 = success flag (set by
-     * SIO IRQ chain handler on op success); B9D4..B9E0 = error flags (timeout,
-     * checksum mismatch, etc.). FUN_bfc09144() in card_read returns the value
-     * at B9D0 — sector-≥1 read bail at FUN_bfc08b3c gates on this. Capture
-     * every writer to determine which writer fires for sector ≥1 (success vs
-     * error path) and which PC sets the failure flag. */
-    s_wtrace_ranges[13].lo = 0x0000B9D0u;
-    s_wtrace_ranges[13].hi = 0x0000B9F0u;
-    /* Shell COPY/DELETE/LOAD_DIR sub-state at 0x80066BC0. CIRCLE→7=LOAD_DIR,
-     * CROSS→4=COPY-related, TRIANGLE→0=cleared, 6=DELETE. After clicking
-     * COPY, BIOS got stuck at BC0=4 with NO further input transitions —
-     * likely waiting for a card op completion that never fires. Track every
-     * writer to identify the BIOS function driving this sub-state. */
-    s_wtrace_ranges[14].lo = 0x00066BC0u;
-    s_wtrace_ranges[14].hi = 0x00066BD0u;
-    s_wtrace_ranges[15].lo = 0x00097420u; /* movie/frame handoff state */
-    s_wtrace_ranges[15].hi = 0x00097430u;
-    /* Ape LOAD-GAME higher-layer (libcard + game card-manager) always-on
-     * capture. Oracle diff (2026-07-07 session 3) proved the low-level card
-     * protocol succeeds on both runtimes, but ours stays in top-scene 1
-     * ("Checking") while Beetle advances to scene 4 (file-select). These cells
-     * are the higher-layer state that diverges; capturing every writer from
-     * boot (never probe-time armed) attributes WHICH libcard op-state stalls
-     * and what completion it awaits. Masked-physical (KUSEG) addresses.
-     *   0x800b4e30 = libcard op struct field 0 (count/op-state; 0 ours vs 1 Beetle)
-     *   0x800b4e50 = save-name ptr + filename buffer ("bu00:BASCUS-94423SYS" on Beetle, zeros ours)
-     *   0x800b4ed0 = libcard op-handler ptr (0x80020f4c ours vs 0x80020bc8 Beetle)
-     *   0x800e3880 = SCENE (no-op flip-flop) + 0x800e3884 = TRIG (= top-scene index; 1 ours vs 4 Beetle)
-     *   0x8013af50 = game card-menu substate block (0x8013af56 = 0 ours vs 1 Beetle)
-     *   0x00007264 = kernel card-driver per-state byte M8[0x7264] (handoff: stuck at 1) */
-    s_wtrace_ranges[16].lo = 0x000B4E2Cu;
-    s_wtrace_ranges[16].hi = 0x000B4E40u;
-    s_wtrace_ranges[17].lo = 0x000B4E50u;
-    s_wtrace_ranges[17].hi = 0x000B4E68u;
-    s_wtrace_ranges[18].lo = 0x000B4ECCu;
-    s_wtrace_ranges[18].hi = 0x000B4ED4u;
-    s_wtrace_ranges[19].lo = 0x000E3880u;
-    s_wtrace_ranges[19].hi = 0x000E3888u;
-    s_wtrace_ranges[20].lo = 0x0013AF50u;
-    s_wtrace_ranges[20].hi = 0x0013AF60u;
-    s_wtrace_ranges[21].lo = 0x00007260u;
-    s_wtrace_ranges[21].hi = 0x00007270u;
-    s_wtrace_range_count = 22;
-
-    s_wtrace_boot_ranges[0].lo = 0x00097420u; /* movie/frame handoff state */
-    s_wtrace_boot_ranges[0].hi = 0x00097430u;
-    s_wtrace_boot_range_count = 1;
-
-    s_wtrace_trans_ranges[0].lo = 0x00097420u; /* movie/frame handoff state */
-    s_wtrace_trans_ranges[0].hi = 0x00097430u;
-    s_wtrace_trans_range_count = 1;
-
-#if DEFAULT_DEBUG_PORT == 4470
-    /* Tomba STR/FMVs: movie state, CD sector descriptor ring, and CD globals.
-     * These are passive traces for the game runtime only. */
-    s_wtrace_ranges[15].lo = 0x000D7188u;
-    s_wtrace_ranges[15].hi = 0x000D7588u;
-    s_wtrace_ranges[16].lo = 0x0009B010u;
-    s_wtrace_ranges[16].hi = 0x0009B050u;
-    s_wtrace_ranges[17].lo = 0x000A15C8u;
-    s_wtrace_ranges[17].hi = 0x000A3270u;
-    /* Tomba task scheduler descriptors and scratchpad state. The current
-     * black-screen blocker is a missing resume after the loader task closes,
-     * so keep the task table and scheduler scratch bytes in the reverse trace
-     * from process start. */
-    s_wtrace_ranges[18].lo = 0x001FD800u;
-    s_wtrace_ranges[18].hi = 0x001FD950u;
-    s_wtrace_ranges[19].lo = 0x1F8001CCu;
-    s_wtrace_ranges[19].hi = 0x1F800200u;
-    s_wtrace_ranges[20].lo = 0x1F800150u;
-    s_wtrace_ranges[20].hi = 0x1F800180u;
-    /* Runtime-loaded Tomba overlay text/data and the high-stack descriptors
-     * used by its primitive-list builders. This catches loader writes and any
-     * later self-modification before the frame-2500 overlay loop floods the
-     * trace. */
-    s_wtrace_ranges[21].lo = 0x000E0000u;
-    s_wtrace_ranges[21].hi = 0x000F0000u;
-    s_wtrace_ranges[22].lo = 0x001FE000u;
-    s_wtrace_ranges[22].hi = 0x001FE400u;
-    /* BIOS card-operation public state arrays. The Tomba Load menu waits on
-     * F4000001 events after _card_read; these cells reveal which BIOS path
-     * leaves the operation armed or clears it and delivers the public event. */
-    s_wtrace_ranges[23].lo = 0x00009F20u;
-    s_wtrace_ranges[23].hi = 0x00009F38u;
-    /* Tomba pad-poll buffer (game state +0x30 -> 0x8009EB58, second buffer at
-     * 0x8009EB7A). Display thread state machine gates on (*0x1F8001FC & 0x4008)
-     * which derives from `func_80028D70(0)` reading this buffer. Capture every
-     * write so we can attribute who initialises the layout — BIOS PadInit,
-     * runtime SIO, game-side memcpy, or none of the above. */
-    s_wtrace_ranges[24].lo = 0x0009EB40u;
-    s_wtrace_ranges[24].hi = 0x0009EB80u;
-    /* The gflag word the display thread polls (newly-set bits). */
-    s_wtrace_ranges[25].lo = 0x0009C9D0u;
-    s_wtrace_ranges[25].hi = 0x0009C9E0u;
-    /* OPTIONS/New Game render-state objects. The manager initializes two
-     * 0xF0-byte objects at 0x8009B3A0 and 0x8009B490. Gate func 0x8006B494
-     * reads object+0xE6/object+0x46, and func 0x8006A0C0 initializes the
-     * dispatch callbacks at object+0x14/+0x18. Keep both objects always-on
-     * from boot so the writers survive long menu/FMV runs. */
-    s_wtrace_ranges[26].lo = 0x0009B300u;
-    s_wtrace_ranges[26].hi = 0x0009B700u;
-    /* Function pointer globals used by func_8006A0C0 before it decides whether
-     * to initialize the object. */
-    s_wtrace_ranges[27].lo = 0x00097520u;
-    s_wtrace_ranges[27].hi = 0x00097538u;
-    /* DRAWENV/GPU command queue globals. At the black-screen state,
-     * 0x80090CAC continues to be copied every frame while queue indices
-     * 0x80090DA0/0x80090DA4 stop advancing. Keep register context for the
-     * copy/enqueue writers so we can identify the caller-supplied env. */
-    s_wtrace_ranges[28].lo = 0x00090C80u;
-    s_wtrace_ranges[28].hi = 0x00090DE0u;
-    s_wtrace_ranges[29].lo = 0x000B3200u; /* title/load GPU packet buffer */
-    s_wtrace_ranges[29].hi = 0x000B3800u;
-    s_wtrace_ranges[30].lo = 0x000EA000u; /* BIOS licensed-screen GPU packet buffer */
-    s_wtrace_ranges[30].hi = 0x000ED000u;
-    s_wtrace_ranges[31].lo = 0x00097420u; /* movie/frame handoff state */
-    s_wtrace_ranges[31].hi = 0x00097430u;
-    s_wtrace_range_count = 32;
-
-    s_wtrace_boot_ranges[0].lo = 0x0009B3B0u; /* slot0 callbacks */
-    s_wtrace_boot_ranges[0].hi = 0x0009B3C4u;
-    s_wtrace_boot_ranges[1].lo = 0x0009B3E0u; /* slot0 state bytes */
-    s_wtrace_boot_ranges[1].hi = 0x0009B3F0u;
-    s_wtrace_boot_ranges[2].lo = 0x0009B480u; /* slot0 gate/status */
-    s_wtrace_boot_ranges[2].hi = 0x0009B490u;
-    s_wtrace_boot_ranges[3].lo = 0x0009B4A0u; /* slot1 callbacks */
-    s_wtrace_boot_ranges[3].hi = 0x0009B4B4u;
-    s_wtrace_boot_ranges[4].lo = 0x0009B4D0u; /* slot1 state bytes */
-    s_wtrace_boot_ranges[4].hi = 0x0009B4E0u;
-    s_wtrace_boot_ranges[5].lo = 0x0009B570u; /* slot1 gate/status */
-    s_wtrace_boot_ranges[5].hi = 0x0009B580u;
-    s_wtrace_boot_ranges[6].lo = 0x00097520u; /* manager callbacks */
-    s_wtrace_boot_ranges[6].hi = 0x00097538u;
-    s_wtrace_boot_ranges[7].lo = 0x0000E1F4u; /* BIOS TCB save areas */
-    s_wtrace_boot_ranges[7].hi = 0x0000E400u;
-    s_wtrace_boot_ranges[8].lo = 0x0009C970u; /* title/menu state variables */
-    s_wtrace_boot_ranges[8].hi = 0x0009C9A0u;
-    s_wtrace_boot_ranges[9].lo = 0x000B3200u; /* title/load GPU packet buffer */
-    s_wtrace_boot_ranges[9].hi = 0x000B3800u;
-    s_wtrace_boot_ranges[10].lo = 0x000EA000u; /* BIOS licensed-screen GPU packet buffer */
-    s_wtrace_boot_ranges[10].hi = 0x000ED000u;
-    s_wtrace_boot_ranges[11].lo = 0x00097420u; /* movie/frame handoff state */
-    s_wtrace_boot_ranges[11].hi = 0x00097430u;
-    s_wtrace_boot_range_count = 12;
-
-    s_wtrace_trans_ranges[0].lo = 0x0000E1F4u; /* BIOS TCB save areas */
-    s_wtrace_trans_ranges[0].hi = 0x0000E400u;
-    s_wtrace_trans_ranges[1].lo = 0x001FD800u; /* Tomba task table */
-    s_wtrace_trans_ranges[1].hi = 0x001FD950u;
-    s_wtrace_trans_ranges[2].lo = 0x1F8001CCu; /* scheduler scratch */
-    s_wtrace_trans_ranges[2].hi = 0x1F800200u;
-    s_wtrace_trans_ranges[3].lo = 0x0009B300u; /* render/menu state objects */
-    s_wtrace_trans_ranges[3].hi = 0x0009B700u;
-    s_wtrace_trans_ranges[4].lo = 0x00097520u; /* manager callbacks */
-    s_wtrace_trans_ranges[4].hi = 0x00097538u;
-    s_wtrace_trans_ranges[5].lo = 0x00090C80u; /* DRAWENV/GPU queue globals */
-    s_wtrace_trans_ranges[5].hi = 0x00090DE0u;
-    s_wtrace_trans_ranges[6].lo = 0x0009EB40u; /* pad buffers */
-    s_wtrace_trans_ranges[6].hi = 0x0009EB80u;
-    s_wtrace_trans_ranges[7].lo = 0x0009C9D0u; /* display gflag word */
-    s_wtrace_trans_ranges[7].hi = 0x0009C9E0u;
-    s_wtrace_trans_ranges[8].lo = 0x0009C970u; /* title/menu state variables */
-    s_wtrace_trans_ranges[8].hi = 0x0009C9A0u;
-    s_wtrace_trans_ranges[9].lo = 0x00097420u; /* movie/frame handoff state */
-    s_wtrace_trans_ranges[9].hi = 0x00097430u;
-    s_wtrace_trans_range_count = 10;
-#endif
-
-    /* Launch-time extra ranges for the boot + transition write rings, so any
-     * title can have a physical window recorded from the first guest write
-     * without a per-title rebuild (the always-on catch-all ring can wrap before
-     * a late probe reads it). Format: "lo-hi[,lo-hi...]", hex (0x optional),
-     * masked to physical, hi > lo, at most WTRACE_ENV_MAX_RANGES. Appended after
-     * the built-in defaults into slots reserved for them. The spec is applied
-     * whole or not at all: a malformed item or too many items refuses it, and
-     * wtrace_boot_stats / wtrace_trans_stats report env_ranges and env_error. */
-    wtrace_apply_env_ranges(getenv("PSX_WTRACE_BOOT_RANGES"));
-
-    /* Tier 1: heap-allocate MMIO trace ring buffer (2 MB). */
-    if (!s_mmio_trace) {
-        s_mmio_trace = (MmioTraceEntry *)calloc(MMIO_TRACE_CAP, sizeof(MmioTraceEntry));
-    }
-    s_mmio_trace_seq = 0;
-    s_mmio_trace_head = 0;
-
-    /* Dedicated GP1 display-control ring (long retention). */
-    if (!s_gp1_trace) {
-        s_gp1_trace = (MmioTraceEntry *)calloc(GP1_TRACE_CAP, sizeof(MmioTraceEntry));
-    }
-    s_gp1_trace_seq = 0;
-    s_gp1_trace_head = 0;
-
-    /* MMIO-READ trace ring (range-filtered). Default-armed from init to the CD
-     * regs + I_STAT/I_MASK so the IRQ handler's reads of the CD IRQ-flag and
-     * interrupt status are captured continuously (Rule: always-on ring; probes
-     * query the window). Reuses MMIO_TRACE_CAP entries (~21 MB). */
-    if (!s_mmio_rtrace) {
-        s_mmio_rtrace = (MmioTraceEntry *)calloc(MMIO_TRACE_CAP, sizeof(MmioTraceEntry));
-    }
-    s_mmio_rtrace_seq = 0;
-    s_mmio_rtrace_head = 0;
-    s_mmio_rtrace_ranges[0].lo = 0x1F801800u; s_mmio_rtrace_ranges[0].hi = 0x1F801804u; /* CD regs (idx/IRQ-flag) */
-    s_mmio_rtrace_ranges[1].lo = 0x1F801070u; s_mmio_rtrace_ranges[1].hi = 0x1F801078u; /* I_STAT / I_MASK */
-    s_mmio_rtrace_range_count = 2;
 
     memset(s_watchpoints, 0, sizeof(s_watchpoints));
     memset(s_snapshot_addrs, 0, sizeof(s_snapshot_addrs));
@@ -17707,16 +18022,8 @@ void debug_server_record_frame(void)
     /* Last function */
     strcpy(r->last_func, "(no tracking)");
 
-    /* Always-on display ring: raw display-area pixels for THIS frame number
-     * (pre-increment, matching what the `frame` command reports right now). */
-    disp_ring_capture();
-
     s_history_count = s_frame_count + 1;
     s_frame_count++;
-    /* Layer-1 first-divergence: snapshot the cumulative write fingerprint for
-     * the frame that just completed. Tagged with the new frame number so two
-     * runs line up by frame index. */
-    fp_snapshot((uint32_t)s_frame_count);
 
     /* step / run_to_frame post-frame hooks: removed with the rest of
      * pause/step machinery. s_step_count and s_run_to stay at zero. */

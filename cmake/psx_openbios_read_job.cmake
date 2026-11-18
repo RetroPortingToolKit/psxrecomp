@@ -15,6 +15,9 @@ function(psxrecomp_openbios_read_job target)
             list(APPEND _selected "${_source}")
             continue()
         endif()
+        # Use the same normalized path as the execution contract hasher. Ninja
+        # otherwise receives duplicate configure outputs for root/../generated.
+        get_filename_component(_source "${_source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
         if(_found)
             message(FATAL_ERROR "Duplicate OpenBIOS body for ${target}")
         endif()

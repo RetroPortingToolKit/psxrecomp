@@ -1,5 +1,6 @@
 #ifndef PSXRECOMP_PGXP_SESSION_H
 #define PSXRECOMP_PGXP_SESSION_H
+#define PSX_PGXP_HAS_PLAYER_PREFERENCES 1
 
 /*
  * Which PGXP corrections a session arms (docs/ENHANCEMENTS.md G1.11/G1.12).
@@ -23,11 +24,13 @@
  *      PSX_PERSPECTIVE_TEXTURING, PSX_PGXP_CPU_MODE and PSX_PGXP_CULLING (-1
  *      when unset, else 0 or 1). They win over everything, so an A/B run can
  *      switch PGXP off under an enabled mod.
- *   2. video_* OR mod_*: the [video] baseline (game.toml, then settings.toml
+ *   2. Explicit player vertex/texture preferences, when their *_set flag is
+ *      present. These visual choices do not enable CPU propagation or culling.
+ *   3. video_* OR mod_*: the [video] baseline (game.toml, then settings.toml
  *      and the launcher) and the psx.enhancement.pgxp request this session's
  *      activation recorded. Either one arms a correction. With mod_only
  *      ([video] pgxp_mod_only, a title that ships PGXP through the mod) the
- *      baseline is ignored and the mod is the one switch.
+ *      baseline is ignored; an explicit player visual preference still wins.
  *
  * The mod arms both geometry and texture correction; its CPU-mode option adds
  * tier-2 propagation and its culling option precise culling. Precise culling
@@ -59,6 +62,7 @@ typedef struct PSXPgxpSessionInputs {
     int mod_corrections_set;
     int mod_geometry;
     int mod_texture;
+    int player_geometry_set, player_texture_set;
 } PSXPgxpSessionInputs;
 
 typedef struct PSXPgxpSessionArm {
@@ -78,10 +82,12 @@ static inline PSXPgxpSessionArm psx_pgxp_session_resolve(
     PSXPgxpSessionArm arm;
     const int use_video = in->mod_only ? 0 : 1;
     const int chosen = in->mod_enabled && in->mod_corrections_set;
-    arm.geometry = psx_pgxp_session_pick(in->env_geometry,
+    arm.geometry = psx_pgxp_session_pick(in->env_geometry >= 0 ? in->env_geometry :
+                                         in->player_geometry_set ? in->video_geometry : -1,
                                          !chosen && use_video && in->video_geometry,
                                          in->mod_enabled && (!chosen || in->mod_geometry));
-    arm.texture = psx_pgxp_session_pick(in->env_texture,
+    arm.texture = psx_pgxp_session_pick(in->env_texture >= 0 ? in->env_texture :
+                                        in->player_texture_set ? in->video_texture : -1,
                                         !chosen && use_video && in->video_texture,
                                         in->mod_enabled && (!chosen || in->mod_texture));
     arm.cpu_mode = psx_pgxp_session_pick(in->env_cpu_mode,
@@ -116,6 +122,7 @@ typedef struct PSXPgxpSessionConfig {
     int preserve_projection;
     int mod_only;
     int netplay;   /* this session is a netplay match: precise culling off */
+    int player_geometry_set, player_texture_set;
 } PSXPgxpSessionConfig;
 
 /* Session start, before plugin activation: forget any mod request. */

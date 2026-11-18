@@ -74,11 +74,8 @@ uint32_t gl_renderer_pass_plan(uint32_t period_vblanks,
                                uint32_t shown_after_vblanks,
                                uint32_t *alpha_q16, uint32_t max,
                                uint32_t *wanted);
-/* Open the VRAM transaction for rect; open_gen first captures the game's own
- * image of it as a new generation. reuse_backup: the caller guarantees that
- * no guest code ran since the previous pass ended (its restore left VRAM as
- * backed up), so the backup of that pass is reused when it covers the same
- * rect at the same scale. Returns 0 when refused (nothing changed). */
+/* Retired temporal replay ABI: always refuses without changing the renderer.
+ * Stereo and own-view transactions have separate entry points below. */
 int      gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
                                 uint32_t period_vblanks, int reuse_backup);
 /* Snapshot at the last begin attempt, never reconstructed by a TCP query.
@@ -93,10 +90,9 @@ typedef struct GLRenderPassBeginDiag {
     int generation_x, generation_y, generation_w, generation_h;
 } GLRenderPassBeginDiag;
 void gl_renderer_pass_begin_diag(GLRenderPassBeginDiag *out);
-/* Generations opened from now on are for a frame already on screen (1) or
- * for the next flip (0, default); render_pass_gen_flip_matches. */
+/* Retired temporal compatibility control; ignored. */
 void     gl_renderer_pass_set_flip_shown(int shown);
-/* Capture the drawn rect at alpha_q16 (keep) and roll the rect back. */
+/* Retired temporal compatibility call; ignored. */
 void     gl_renderer_pass_end(uint32_t alpha_q16, int keep);
 uint32_t gl_renderer_pass_leaks(void);
 int      gl_renderer_pass_verify_vram(void);
@@ -143,12 +139,22 @@ int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse_backup);
 uint32_t gl_renderer_local_pair_unavailable(void);
 int gl_renderer_stereo_end(uint32_t eye, int keep);
 void gl_renderer_stereo_stage_reset(void);
+/* One bounded pending local pair. Parking swaps owned image handles, without
+ * copying pixels or changing the displayed pair. The returned lease is consumed
+ * once at the original native commit boundary; reset/context/scale changes and
+ * another published pair invalidate it. No guest drawing occurs at commit. */
+uint64_t gl_renderer_stereo_stage_park(void);
+int gl_renderer_stereo_parked_publish(uint64_t lease,uint64_t pair_id,
+    uint64_t guest_cycle,const int32_t view[2][3]);
+void gl_renderer_stereo_parked_cancel(uint64_t lease);
 int gl_renderer_stereo_stage_readback_pair(uint32_t width,uint32_t height,uint8_t *rgba);
 int gl_renderer_stereo_publish(uint64_t pair_id, uint64_t guest_cycle,
                                 const int32_t eye_view[2][3]);
 void gl_renderer_stereo_reset(void);
 int gl_renderer_stereo_set_presentation(uint32_t mode);
 int gl_renderer_local_pair_set_presentation(int enabled);
+/* Stable presentation layout query; no context acquisition or guest state. */
+int gl_renderer_local_pair_presentation_active(void);
 void gl_renderer_stereo_dump_arm(const char *dir, int pairs);
 /* Bounded metadata for explicitly requested PNG evidence, queried over TCP. */
 typedef struct GLRenderStereoCapture {
@@ -431,20 +437,10 @@ typedef struct GlDynresStats {
     uint64_t hr_reallocs, wide_reallocs; /* surfaces reallocated at a step */
 } GlDynresStats;
 void gl_renderer_dynres_stats(GlDynresStats *out);
-/* Frame generation ([video] frame_generation, docs/FRAME_GENERATION.md):
- * in-between frames drawn by the render thread from the last two game
- * frames' draw lists when it has time to spare. Off by default; with it off
- * nothing changes. set: a sync point. configure: the display's refresh and
- * the guest's frame rate (any thread). hold: pause generation for `secs`
- * (not a breaker trip), e.g. while dynamic resolution is over budget.
- * json: the debug server's {"cmd":"frame_gen"} fields (no sync point). */
+/* Retired frame-generation ABI: setters ignore requests, enabled/generated
+ * queries report zero, real_share is 1. Old settings cannot activate it.
+ * The independent replacement uses presentation_scene.h. */
 void gl_renderer_set_frame_generation(int on);
-/* The sources of the next triangle's vertices (gte_fg_source_lookup: id,
- * camera-space x/y/z, projection distance H; id 0 = none) and the integer
- * positions it will be drawn at; recorded for frame generation only, never
- * drawn. */
-void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int32_t h[3],
-                           const int32_t x[3], const int32_t y[3]);
 int  gl_renderer_frame_generation(void);
 void gl_renderer_frame_gen_configure(double refresh_hz, double guest_hz);
 double gl_renderer_frame_gen_real_share(void);
@@ -552,6 +548,7 @@ enum {
     GL_PRES_BLANK = 3,   /* display-disabled black present                     */
     GL_PRES_INTERP = 4,  /* host-refresh interpolation sub-present              */
     GL_PRES_STEREO = 5,  /* simultaneous left/right side-by-side pair           */
+    GL_PRES_GEOMETRY = 6, /* private source-geometry presentation               */
 };
 
 typedef struct {

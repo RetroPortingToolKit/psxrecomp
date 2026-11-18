@@ -58,4 +58,11 @@ static inline int psx_mod_session_baseline_apply(PSXModSessionBaseline* base,
     return 0;
 }
 
+/* Commit the launcher preference independently of temporary plugin effects. */
+static inline void psx_mod_session_baseline_set_frame_interpolation(
+        PSXModSessionBaseline* base,int enabled,int fps) {
+    base->values.frame_interpolation=enabled?1:0;
+    base->values.frame_interpolation_fps=fps;
+}
+
 #endif

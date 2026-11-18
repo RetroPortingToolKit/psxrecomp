@@ -48,6 +48,12 @@
 #include <string.h>
 #include <setjmp.h>
 
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+enum { PSX_IRQ_OBSERVATION = 1 };
+#else
+enum { PSX_IRQ_OBSERVATION = 0 };
+#endif
+
 /* Event-timeline ring: execution-mode flag owned by dirty_ram_interp.c. The
  * static BIOS exception handler is NOT interp code, so we clear it around the
  * handler dispatch (see psx_check_interrupts). */
@@ -444,7 +450,12 @@ uint32_t psx_spu_sample_event_cycles_to_next(void) {
     /* Gate on SPUCNT alone — this runs on every deadline recompute, and the
      * full SpuGlobalState snapshot here dominated the emu thread under an
      * MMIO-polling guest loop (Capcom FMV, gdb-sampled 2026-09-01). */
+#if defined(PSX_BLOCK_AUDIO) && PSX_BLOCK_AUDIO
+    /* A latched IRQ cannot raise again before a catch-up-before-clear write. */
+    if (!spu_irq_can_raise()) {
+#else
     if ((spu_ctrl_read() & 0x0040u) == 0) {
+#endif
         g_spu_sample_ctrl_rejects++;
         return UINT32_MAX;
     }
@@ -465,6 +476,9 @@ void psx_spu_sample_event_service(void) {
     if (!spu_sample_event_mode() || !s_midframe_audio_pump)
         return;
     /* SPUCNT alone — same hot-gate rationale as the deadline query above. */
+#if defined(PSX_BLOCK_AUDIO) && PSX_BLOCK_AUDIO
+    if (!spu_irq_can_raise()) return;
+#endif
     const uint16_t ctrl = spu_ctrl_read();
     if ((ctrl & 0x0040u) != 0) {
         g_spu_sample_enabled_services++;
@@ -510,7 +524,9 @@ static void fire_vblank_edge(void) {
 
 void interrupts_service_scheduled_events(void) {
     note_sio_progress_cycle();
-    if (in_exception) return;
+    /* Device time continues while the CPU handles an exception, including
+     * with IEc clear: a handler may poll GPUSTAT's field bit. CPU interrupt
+     * delivery stays gated separately by psx_check_interrupts. */
     while (psx_vblank_edge_due(cycles_since_vblank)) {
         if (should_defer_vblank_for_sio()) return;
         fire_vblank_edge();
@@ -550,6 +566,8 @@ static uint64_t exception_reentry_blocks;
  * synchronous-handler recursion is so the nested-delivery path (hardware
  * IEc-re-enabled semantics, see the gate below) can cap host-stack use. */
 static int exception_nest_depth;
+/* Delivery-owned notification; not guest or serialized timing state. */
+static int s_changethread_in_handler_switch;
 /* Nested-delivery gate veto attribution (freeze_check). One counter per guard
  * in the refinement gate below; first-true-wins ordering matches the gate. */
 uint64_t g_nestgate_depth, g_nestgate_rfepend, g_nestgate_escreason, g_nestgate_iec;
@@ -741,7 +759,10 @@ void psx_irq_arm_compiled_resume_pc(uint32_t pc)
  * detected nested, we record it here, let the outgoing thread resume
  * transparently, and honor it at the next outermost block-leader boundary (top
  * of psx_check_interrupts) where the thread can be re-saved cleanly. */
-static int      s_defer_switch_pending = 0;
+int psx_defer_switch_pending = 0;
+#define s_defer_switch_pending psx_defer_switch_pending
+/* A thread switch taken in an exception handler waits for a site-0 poll. */
+int psx_deferred_switch_is_pending(void) { return s_defer_switch_pending; }
 static uint32_t s_defer_switch_target  = 0;  /* TCB PCB[0] should name after the switch */
 static uint32_t s_defer_switch_from    = 0;  /* the interrupted thread to re-save cleanly */
 
@@ -760,6 +781,10 @@ static int same_guest_pc(uint32_t a, uint32_t b) {
 }
 
 int psx_get_in_exception(void) { return in_exception; }
+int psx_exception_nest_depth(void) { return exception_nest_depth; }
+void psx_note_changethread_in_handler_switch(void) {
+    s_changethread_in_handler_switch = 1;
+}
 
 /* Co-sim (COSIM_ORACLE.md): fold the GENUINE guest-timing interrupt statics into the
  * state hash. Deliberately EXCLUDES total_checks / dispatch_count / post_exception_
@@ -904,9 +929,13 @@ void psx_get_freeze_diag(uint64_t *out_total_checks,
 }
 
 void interrupts_init(void) {
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    psx_observation_wait_active = 0;
+#endif
     dispatch_count = 0;
     in_exception = 0;
     exception_nest_depth = 0;
+    s_changethread_in_handler_switch = 0;
     g_psx_dispatch_depth = 0;
     total_checks = 0;
     post_exception_cooldown_until = 0;
@@ -940,7 +969,38 @@ void interrupts_init(void) {
     reset_dirty_snapshot_scope();
 }
 
+/* Set by an IRQ_TIMING section load; the next resync keeps those fields. */
+static int s_resume_timing_from_state;
+
+void interrupts_resume_timing_get(PsxIrqResumeTiming *out) {
+    if (!out) return;
+    out->cooldown_until = post_exception_cooldown_until;
+    out->sio_seq_seen = last_sio_seq_seen;
+    out->sio_progress_cycle = last_sio_progress_cycle;
+    out->defer_from = s_defer_switch_from;
+    out->defer_target = s_defer_switch_target;
+    out->defer_pending = s_defer_switch_pending ? 1u : 0u;
+}
+
+void interrupts_resume_timing_set(const PsxIrqResumeTiming *in) {
+    if (!in) return;
+    post_exception_cooldown_until = in->cooldown_until;
+    last_sio_seq_seen = in->sio_seq_seen;
+    last_sio_progress_cycle = in->sio_progress_cycle;
+    s_defer_switch_from = in->defer_from;
+    s_defer_switch_target = in->defer_target;
+    s_defer_switch_pending = in->defer_pending ? 1 : 0;
+    s_resume_timing_from_state = 1;
+}
+
 void interrupts_resync_after_restore(void) {
+    const int keep_timing = s_resume_timing_from_state;
+    PsxIrqResumeTiming kept;
+    s_resume_timing_from_state = 0;
+    interrupts_resume_timing_get(&kept);
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+    psx_observation_wait_active = 0;
+#endif
     /* Absolute guest-cycle timestamps from the pre-load timeline are invalid
      * once psx_cycle_count rewinds (typical: save → play N seconds → load).
      * Leaving post_exception_cooldown_until in the future blocks every IRQ
@@ -955,6 +1015,7 @@ void interrupts_resync_after_restore(void) {
     dispatch_count = 0;
     in_exception = 0;
     exception_nest_depth = 0;
+    s_changethread_in_handler_switch = 0;
     last_sio_seq_seen = sio_get_seq();
     last_sio_progress_cycle = psx_get_cycle_count();
     s_defer_switch_pending = 0;
@@ -989,6 +1050,15 @@ void interrupts_resync_after_restore(void) {
     /* Drop mid-quantum present armed before the rewind — do not finish_frame
      * against the restored tip with a stale pending count. */
     gpu_vblank_clear_deferred_present();
+    /* A state written for checkpoint resume carried these on its clock. */
+    if (keep_timing) {
+        post_exception_cooldown_until = kept.cooldown_until;
+        last_sio_seq_seen = kept.sio_seq_seen;
+        last_sio_progress_cycle = kept.sio_progress_cycle;
+        s_defer_switch_from = kept.defer_from;
+        s_defer_switch_target = kept.defer_target;
+        s_defer_switch_pending = kept.defer_pending ? 1 : 0;
+    }
 }
 
 void interrupts_log_last_vblank_irqctx(const char *tag)
@@ -1116,6 +1186,7 @@ void psx_interrupt_delivery_diag(uint64_t *need_defer, uint64_t *need_irq,
 
 /* Hot-path attribution for post-load freeze probe (see psx_interrupt_check_path_diag). */
 static uint64_t s_irq_path_entry;
+uint64_t psx_hr_interrupt_at_calls;
 static uint64_t s_irq_path_fast_sr;
 static uint64_t s_irq_path_fast_none;
 static uint64_t s_irq_path_eval;
@@ -1167,7 +1238,11 @@ static void poll_staged_user_snapshot(CPUState* cpu) {
     }
 }
 
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+static void psx_check_interrupts_core(CPUState* cpu) {
+#else
 void psx_check_interrupts(CPUState* cpu) {
+#endif
     /* Frozen guest time (psx_cycle_freeze.h): no delivery, and no
      * check-boundary bookkeeping that the stock timeline would not do. */
     if (g_psx_guest_time_frozen) return;
@@ -1263,7 +1338,7 @@ void psx_check_interrupts(CPUState* cpu) {
         uint32_t sr = cpu->cop0[COP0_SR];
         if (!(sr & 0x01u) || !(sr & (1u << 10))) {
             s_irq_path_fast_sr++;
-            if ((++s_fast_maintenance & 0x3FFFu) == 0 || g_psx_savestate_pending) {
+            if ((++s_fast_maintenance & 0x3FFFu) == 0 || g_psx_savestate_pending || PSX_IRQ_OBSERVATION) {
                 extern void savestate_poll(CPUState* cpu, uint32_t resume_pc);
                 extern void psx_netplay_poll_snap(CPUState* cpu, uint32_t resume_pc);
                 extern void psx_selfcheck_poll(CPUState* cpu, uint32_t resume_pc);
@@ -1308,6 +1383,7 @@ void psx_check_interrupts(CPUState* cpu) {
     uint32_t sw_pending = cpu->cop0[COP0_CAUSE] & cpu->cop0[COP0_SR] & 0x0300u;
     if (!in_exception && (i_stat & i_mask) == 0 && sw_pending == 0 &&
         !s_defer_switch_pending) {
+#if !defined(PSX_OBSERVATION_TIME) || !PSX_OBSERVATION_TIME
         if (g_idle_skip_enabled > 0) {
             uint32_t check_pc = g_dirty_safe_resume_pc ? g_dirty_safe_resume_pc
                                                        : s_compiled_interrupt_resume_pc;
@@ -1315,9 +1391,10 @@ void psx_check_interrupts(CPUState* cpu) {
             s_last_interrupt_check_cycle = psx_get_cycle_count();
             psx_idle_note_check(cpu, check_pc);
         }
+#endif
         if ((i_stat & i_mask) == 0 && sw_pending == 0) {
             s_irq_path_fast_none++;
-            if ((++s_fast_maintenance & 0x3FFFu) == 0 || g_psx_savestate_pending) {
+            if ((++s_fast_maintenance & 0x3FFFu) == 0 || g_psx_savestate_pending || PSX_IRQ_OBSERVATION) {
                 extern void savestate_poll(CPUState* cpu, uint32_t resume_pc);
                 extern void psx_netplay_poll_snap(CPUState* cpu, uint32_t resume_pc);
                 extern void psx_selfcheck_poll(CPUState* cpu, uint32_t resume_pc);
@@ -1346,7 +1423,7 @@ void psx_check_interrupts(CPUState* cpu) {
         s_last_interrupt_check_cycle = psx_get_cycle_count();
         g_ls_suppress_record++;
         total_checks++;
-        if ((total_checks & 0x3FFFu) == 0 || g_psx_savestate_pending) {
+        if ((total_checks & 0x3FFFu) == 0 || g_psx_savestate_pending || PSX_IRQ_OBSERVATION) {
             extern void savestate_poll(CPUState* cpu, uint32_t resume_pc);
             extern void psx_netplay_poll_snap(CPUState* cpu, uint32_t resume_pc);
             extern void psx_selfcheck_poll(CPUState* cpu, uint32_t resume_pc);
@@ -1370,7 +1447,7 @@ void psx_check_interrupts(CPUState* cpu) {
     }
     g_ls_suppress_record++;
     total_checks++;
-    if ((total_checks & 0x3FFFu) == 0) {
+    if ((total_checks & 0x3FFFu) == 0 || PSX_IRQ_OBSERVATION) {
         debug_server_poll();
     }
 
@@ -1392,8 +1469,10 @@ void psx_check_interrupts(CPUState* cpu) {
      * would have taken it. Skip when an unmasked IRQ is already pending —
      * that is not an idle poll (FMV/VLC edges with sticky CD/VBlank bits),
      * and the fast path already noted when I_STAT was clear. */
+#if !defined(PSX_OBSERVATION_TIME) || !PSX_OBSERVATION_TIME
     if ((i_stat & i_mask) == 0)
         psx_idle_note_check(cpu, s_last_interrupt_check_pc);
+#endif
 
     /* User save states: this is a block-leader boundary with a known resume PC;
      * only act outside the exception handler so a restore's stack-unwind can't
@@ -2131,6 +2210,8 @@ irq_deliver_eval:
         cpu->hi = saved_hi;
         cpu->lo = saved_lo;
     }
+    const int changethread_at_call = s_changethread_in_handler_switch;
+    s_changethread_in_handler_switch = 0;
     g_rfe_escape_pending = 0;
     g_exc_escape_reason  = PSX_EXC_ESCAPE_NONE;
 
@@ -2219,7 +2300,9 @@ irq_deliver_eval:
         entry_tcb != 0u && exit_tcb != 0u && entry_tcb != exit_tcb) {
         extern uint32_t psx_read_word(uint32_t addr);   /* memory.c (plain RAM read) */
         uint32_t new_state = psx_read_word(exit_tcb & 0x1FFFFFFFu);
-        if (new_state == 0x4000u) {   /* the new current thread must be runnable */
+        /* Explicit ChangeThread takes any valid block, regardless of its state.
+         * A handler that moved PCB[0] directly still requires a runnable block. */
+        if (new_state == 0x4000u || changethread_at_call) {
             /* A native-only shadow pass must never commit the handler's TCB/RAM
              * changes or escape past the authoritative restore. Bail before
              * configuring either immediate or deferred scheduler state. */
@@ -2252,7 +2335,10 @@ irq_deliver_eval:
              * starve a target thread by re-entering the same VBlank EPC forever.
              * (Card-guard overrides were tried for Ape LOAD and did not help —
              * tip already defers like master; the hang is post-probe arming.) */
-            int can_defer = defer_switch_enabled() && !low_kernel_epc && !at_outermost &&
+            /* The game holds the interrupted context; executing more of that
+             * thread before an explicit switch would repeat its work later. */
+            int can_defer = defer_switch_enabled() && !changethread_at_call &&
+                            !low_kernel_epc && !at_outermost &&
                             g_exception_real_epc != 0u &&
                             (g_exception_real_epc & 0x3u) == 0u &&
                             g_exception_real_epc != (uint32_t)PSX_EXC_SENTINEL_PC &&
@@ -2322,7 +2408,52 @@ irq_deliver_eval:
  * interrupts via psx_check_interrupts (cpu->pc / scratch sentinel). Forwarding
  * here gives the mmx6 baseline interrupt behavior — sufficient to build+run the
  * current generated code on the good baseline for instrumented comparison. */
+#if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
+uint64_t psx_observation_block_edges, psx_observation_slow_edges;
+uint64_t psx_observation_wait_edges;
+int psx_observation_wait_active;
+
+void psx_observation_edge(CPUState *cpu, uint32_t resume_pc, int wait_site) {
+    if (g_psx_guest_time_frozen || g_ls_replay_active) return;
+    psx_cyc_batch_flush();
+    psx_observation_slow_edges++;
+    if (psx_observation_wait_active && !wait_site) {
+        /* One departure resets induction; ordinary loops never train it. */
+        psx_idle_note_check(cpu, 0u);
+        psx_observation_wait_active = 0;
+    }
+    if (psx_next_service_cycle == 0u)
+        psx_devices_refresh_observation_deadline();
+    if (!wait_site && psx_cycle_count < psx_next_service_cycle &&
+        !s_defer_switch_pending && !g_psx_savestate_pending &&
+        !psx_observation_delivery_pending(cpu)) {
+        if (g_ls_suppress_record > 0) g_ls_suppress_record--;
+        return;
+    }
+    uint32_t prev = s_compiled_interrupt_resume_pc;
+    s_compiled_interrupt_resume_pc = resume_pc;
+    /* VBlank/snapshot callbacks must see this edge before catch-up runs. */
+    s_last_interrupt_check_pc = g_dirty_safe_resume_pc ? g_dirty_safe_resume_pc : resume_pc;
+    s_last_interrupt_check_cycle = psx_get_cycle_count();
+    psx_devices_observe();
+    if (wait_site) {
+        psx_observation_wait_edges++;
+        psx_observation_wait_active = 1;
+        if ((i_stat & i_mask) == 0) psx_idle_note_check(cpu, resume_pc);
+        psx_devices_observe();
+    }
+    psx_check_interrupts_core(cpu);
+    s_compiled_interrupt_resume_pc = prev;
+}
+
+void psx_check_interrupts(CPUState *cpu) {
+    uint32_t pc = g_dirty_safe_resume_pc ? g_dirty_safe_resume_pc : s_compiled_interrupt_resume_pc;
+    PSX_BLOCK_EDGE(cpu, pc);
+}
+#endif
+
 void psx_check_interrupts_at(CPUState* cpu, uint32_t resume_pc) {
+    PSX_HR_INC(psx_hr_interrupt_at_calls);
     uint32_t prev = s_compiled_interrupt_resume_pc;
     s_compiled_interrupt_resume_pc = resume_pc;
     psx_check_interrupts(cpu); /* flushes load-charge batch on entry */

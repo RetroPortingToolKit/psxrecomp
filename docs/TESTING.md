@@ -22,6 +22,12 @@ That is the whole thing. 38 tests, under 5 seconds, and it needs **no BIOS dump,
 no disc image, and no generated code** — a plain recompiler build is enough. This
 is the check to run before opening a PR.
 
+On Windows, follow the recipe at the top of
+[`WINDOWS_TOOLCHAIN_TRAPS.md`](WINDOWS_TOOLCHAIN_TRAPS.md) first: the toolchain's
+`bin` folder first on `PATH` in every shell, a short build directory, and
+`psxrecomp-game --help` exiting 0 before you quote a count. Without it a suite
+can report dozens of failures that are a DLL load failure and not the code.
+
 Until 2026-07-27 no document in this repository mentioned `ctest`, `pytest`, or
 how to run a test at all, so the suite was effectively invisible. If you add a
 test, add it to `ctest` in the same commit — an unregistered test cannot fail,

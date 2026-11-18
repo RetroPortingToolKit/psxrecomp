@@ -17,14 +17,24 @@ set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
 include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_execution_profile.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_native_cpu_spans.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_direct_guest_memory.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_observation_time.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_capture_jobs.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_native_idle_wait.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_present_images.cmake")
+option(PSX_HEADROOM_COUNTERS "Keep bounded per-frame cost counters in all builds" ON)
 include("${PSXRECOMP_ROOT}/cmake/psx_host_pacing.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_resident_preparation.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_openbios_read_job.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_media_jobs.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_frame_submission.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_block_audio.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_static_calls.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_precision_slices.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_pgxp_dataflow.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_precision_operations.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_sha256_file.cmake")
+option(PSX_REQUIRED_HOST_PROFILES "Candidate required pre-guest host-profile admission" OFF)
 include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
@@ -133,9 +143,8 @@ endif()
 option(PSX_LOBBY_DEV_LIST "Lobby browser ignores game_version (dev testing only)" OFF)
 # Release channel (public | playtest | empty = dev) and the PSX_PUBLIC_RELEASE
 # it derives: the one build-level notion of a public production release. Today
-# PSX_PUBLIC_RELEASE selects Playtest Diagnostics defaults
-# (runtime/playtest_diagnostics.cmake): OFF stages them default-on, ON keeps
-# the source manifests' default-off. See runtime/psx_release_channel.cmake.
+# Diagnostics recording defaults on in every channel, with explicit saved
+# choices preserved. See runtime/playtest_diagnostics.cmake.
 include("${CMAKE_CURRENT_LIST_DIR}/psx_release_channel.cmake")
 set(PSX_SDL_BACKEND "SDL3" CACHE STRING "SDL backend (SDL3 or SDL2)")
 set_property(CACHE PSX_SDL_BACKEND PROPERTY STRINGS SDL3 SDL2)
@@ -386,7 +395,9 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/local_mouse_policy.cpp
     ${PSXRECOMP_ROOT}/runtime/src/local_mouse_sdl.cpp
     ${PSXRECOMP_ROOT}/runtime/src/memory.c
+    ${PSXRECOMP_ROOT}/runtime/src/text_source_guard.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_ram_geometry.c
+    ${PSXRECOMP_ROOT}/runtime/src/program_set_lock.c
     ${PSXRECOMP_ROOT}/runtime/src/kernel_patch_ranges.c
     ${PSXRECOMP_ROOT}/runtime/src/guest_tty.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu.c
@@ -397,7 +408,6 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/gpu_render.c
     ${PSXRECOMP_ROOT}/runtime/src/render_thread.c
     ${PSXRECOMP_ROOT}/runtime/src/present_thread.c
-    ${PSXRECOMP_ROOT}/runtime/src/frame_gen.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_gl_renderer.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_fmv_hd.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_lle.c
@@ -423,14 +433,19 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/interrupts.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_video_timing.c
     ${PSXRECOMP_ROOT}/runtime/src/frame_pacing.c
-    ${PSXRECOMP_ROOT}/runtime/src/frame_interpolation.c
+    ${PSXRECOMP_ROOT}/runtime/src/presentation_scene.c
+    ${PSXRECOMP_ROOT}/runtime/src/presentation_draw.c
     ${PSXRECOMP_ROOT}/runtime/src/render_pass.c
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_plan.c
-    ${PSXRECOMP_ROOT}/runtime/src/render_pass_motion.c
-    ${PSXRECOMP_ROOT}/runtime/src/render_pass_projection.cpp
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_frame.c
     ${PSXRECOMP_ROOT}/runtime/src/dynamic_resolution.c
     ${PSXRECOMP_ROOT}/runtime/src/host_time.c
+    ${PSXRECOMP_ROOT}/runtime/src/netplay_host_profile.c
+    ${PSXRECOMP_ROOT}/runtime/src/netplay_host_gate.c
+    ${PSXRECOMP_ROOT}/runtime/src/netplay_host_cpu_sdl3.c
+    ${PSXRECOMP_ROOT}/runtime/src/host_executable_identity.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/host_fp_environment.c
+    ${PSXRECOMP_ROOT}/runtime/src/host_session_nonce.c
     ${PSXRECOMP_ROOT}/runtime/src/game_mode.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_fiber.c
     ${PSXRECOMP_ROOT}/runtime/src/sio.c
@@ -438,6 +453,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/debug_server.c
     ${PSXRECOMP_ROOT}/runtime/src/host_sampler.c
     ${PSXRECOMP_ROOT}/runtime/src/host_span_ring.c
+    ${PSXRECOMP_ROOT}/runtime/src/headroom_counters.c
     ${PSXRECOMP_ROOT}/runtime/src/debug_trace_ranges.c
     ${PSXRECOMP_ROOT}/runtime/src/dirty_ram_interp.c
     ${PSXRECOMP_ROOT}/runtime/src/draw_distance.c
@@ -472,6 +488,8 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/cosim.c
     ${PSXRECOMP_ROOT}/runtime/src/traps.c
     ${PSXRECOMP_ROOT}/runtime/src/crash_trace.c
+    ${PSXRECOMP_ROOT}/runtime/src/interp_report.c
+    ${PSXRECOMP_ROOT}/runtime/src/bios_phase_report.c
     ${PSXRECOMP_ROOT}/runtime/src/freeze_dump_policy.c
     ${PSXRECOMP_ROOT}/runtime/src/freeze_heartbeat.c
     ${PSXRECOMP_ROOT}/runtime/src/gte.cpp
@@ -481,10 +499,13 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/nd_intro_ot.c
     ${PSXRECOMP_ROOT}/runtime/src/crc32.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_sha256.c
+    ${PSXRECOMP_ROOT}/runtime/src/source_stateio_identity.c
+    ${PSXRECOMP_ROOT}/runtime/src/tas_checkpoint.c
     ${PSXRECOMP_ROOT}/runtime/src/disc_identity.cpp
     ${PSXRECOMP_ROOT}/runtime/src/cue_sheet.cpp
     ${PSXRECOMP_ROOT}/runtime/src/disc_path.cpp
     ${PSXRECOMP_ROOT}/runtime/src/cdrom.c
+    ${PSXRECOMP_ROOT}/runtime/src/turbo_loads_gate.c
     ${PSXRECOMP_ROOT}/runtime/src/spu.c
     ${PSXRECOMP_ROOT}/runtime/src/spu_shadow.c
     ${PSXRECOMP_ROOT}/runtime/src/audio_shadow.c
@@ -492,6 +513,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/color_lut.c
     ${PSXRECOMP_ROOT}/runtime/src/iso_reader.cpp
     ${PSXRECOMP_ROOT}/runtime/src/iso_reader_c.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/disc_boot_image.cpp
     ${PSXRECOMP_ROOT}/runtime/src/psx_cycles.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_icache.c
     ${PSXRECOMP_ROOT}/runtime/src/starvation_ring.c
@@ -550,7 +572,9 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_lobby_client.c
     ${PSXRECOMP_ROOT}/runtime/src/netplay_bios_settle.c
     ${PSXRECOMP_ROOT}/runtime/src/netplay_exit_reason.c
+    ${PSXRECOMP_ROOT}/runtime/src/netplay_lan_version.c
     ${PSXRECOMP_ROOT}/runtime/src/netplay_ice_hub.c
+    ${PSXRECOMP_ROOT}/runtime/src/start_refusal.c
     ${PSXRECOMP_ROOT}/recompiler/src/config_loader.cpp
     ${PSXRECOMP_ROOT}/recompiler/src/ps1_exe_parser.cpp
     # (sljit Tier-2 in-process JIT backend removed 2026-07-15 — was disabled by
@@ -740,7 +764,12 @@ else()
     set(PSXRECOMP_LOBBY_INCLUDE_DIR "")
 endif()
 
+# Generated overlay_codegen_hash.h lives in this build tree, never in the
+# source tree, and comes first so a stale source-tree copy cannot shadow it.
+set(PSXRECOMP_CODEGEN_HASH_INCLUDE_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/psxrecomp_codegen_include")
 set(PSXRECOMP_RUNTIME_INCLUDE_DIRS
+    ${PSXRECOMP_CODEGEN_HASH_INCLUDE_DIR}
     ${PSXRECOMP_ROOT}/runtime/include
     ${PSXRECOMP_ROOT}/recompiler/src
     ${PSXRECOMP_ROOT}/recompiler/include
@@ -1667,6 +1696,13 @@ function(psxrecomp_add_runtime_target target)
             if(game_dispatch_native_ok_full_decl)
                 set(has_game_dispatch_native_ok_full TRUE)
             endif()
+            file(STRINGS "${PSXRT_GAME_GENERATED_DISPATCH_C}"
+                game_dispatch_source_page_crc32_decl
+                REGEX "psx_game_source_page_crc32\\("
+                LIMIT_COUNT 1)
+            if(game_dispatch_source_page_crc32_decl)
+                set(has_game_dispatch_source_page_crc32 TRUE)
+            endif()
         endif()
     endif()
     # Layer B: statically-compiled overlay dispatch, generated from the
@@ -1715,6 +1751,9 @@ function(psxrecomp_add_runtime_target target)
         endif()
     endif()
     psxrecomp_windows_manifest(${target})
+    if(NOT PSX_HEADROOM_COUNTERS)
+        target_compile_definitions(${target} PRIVATE PSX_DISABLE_HEADROOM_COUNTERS=1)
+    endif()
     psxrecomp_sha256_file(${target})
     set(_execution_contract
         "${PSXRECOMP_ROOT}/runtime/src/gte.cpp"
@@ -1722,8 +1761,7 @@ function(psxrecomp_add_runtime_target target)
         "${PSXRECOMP_ROOT}/runtime/include/hle_gte.h"
         "${PSXRECOMP_ROOT}/runtime/include/cpu_state.h"
         "${PSXRECOMP_ROOT}/runtime/include/gte.h"
-        "${PSXRECOMP_ROOT}/runtime/include/pgxp.h"
-        "${PSXRECOMP_ROOT}/runtime/include/render_pass_projection.h")
+        "${PSXRECOMP_ROOT}/runtime/include/pgxp.h")
     if(PSXRT_ORACLE)
         psxrecomp_execution_profile(${target} PROFILE REFERENCE CONTRACT_FILES ${_execution_contract})
     else()
@@ -1734,8 +1772,49 @@ function(psxrecomp_add_runtime_target target)
     psxrecomp_host_pacing(${target})
     psxrecomp_resident_preparation(${target})
     psxrecomp_native_cpu_spans(${target} ${PSXRT_GAME_GENERATED_FULL_C})
+    psxrecomp_direct_guest_memory(${target} ${PSXRT_GAME_GENERATED_FULL_C})
+    psxrecomp_observation_time(${target}
+        GENERATED_SOURCES ${PSXRT_GAME_GENERATED_FULL_C}
+        WAIT_SITES ${PSXRT_NATIVE_IDLE_WAIT_SITES})
     psxrecomp_openbios_read_job(${target})
     psxrecomp_media_jobs(${target})
+    psxrecomp_frame_submission(${target})
+    psxrecomp_block_audio(${target})
+    psxrecomp_static_calls(${target} "${PSXRT_GAME_GENERATED_DISPATCH_C}")
+    psxrecomp_precision_slices(${target})
+    set(_pgxp_flow_generated ${PSXRT_GAME_GENERATED_FULL_C})
+    # Older titles pass only their primary shard above and the other generated
+    # game bodies through EXTRAS_SOURCES. Validate those shards as well.
+    foreach(_extra IN LISTS PSXRT_EXTRAS_SOURCES)
+        if(_extra MATCHES "_full(_[0-9]+)?[.]c$")
+            list(APPEND _pgxp_flow_generated "${_extra}")
+        endif()
+    endforeach()
+    psxrecomp_pgxp_dataflow(${target} GENERATED_SOURCES ${_pgxp_flow_generated})
+    psxrecomp_precision_operations(${target} GENERATED_SOURCES ${_pgxp_flow_generated})
+    target_compile_definitions(${target} PRIVATE PSX_REQUIRED_HOST_PROFILES=$<BOOL:${PSX_REQUIRED_HOST_PROFILES}>)
+    if(PSX_REQUIRED_HOST_PROFILES)
+        set(_host_required 1)
+    else()
+        set(_host_required 0)
+    endif()
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/host-profile/${target}")
+    set(_host_policy_source "${CMAKE_CURRENT_BINARY_DIR}/host-profile/${target}/selected.c")
+    file(CONFIGURE OUTPUT "${_host_policy_source}" CONTENT
+        "const unsigned psx_build_required_host_profiles = ${_host_required}u;\n" @ONLY)
+    psxrecomp_add_implementation(${target}
+        NAME host-profile-admission CONTRACT immutable-host-catalog-${_host_required}-v1
+        HLE_SOURCES "${_host_policy_source}" LLE_SOURCES "${_host_policy_source}"
+        CONTRACT_FILES "${PSXRECOMP_ROOT}/runtime/include/netplay_host_startup.hpp"
+                       "${PSXRECOMP_ROOT}/runtime/src/netplay_host_profile.c"
+                       "${PSXRECOMP_ROOT}/runtime/src/netplay_host_gate.c"
+                       "${PSXRECOMP_ROOT}/runtime/src/netplay_host_cpu_sdl3.c"
+                       "${PSXRECOMP_ROOT}/runtime/src/host_executable_identity.cpp"
+                       "${PSXRECOMP_ROOT}/runtime/src/host_fp_environment.c"
+                       "${PSXRECOMP_ROOT}/runtime/src/host_session_nonce.c")
+    if(WIN32)
+        target_link_libraries(${target} PRIVATE bcrypt)
+    endif()
     psxrecomp_capture_jobs(${target})
     # audio_trace.c uses C11 atomics. Make the runtime's actual language
     # requirement explicit instead of relying on a parent project's global
@@ -1932,13 +2011,16 @@ function(psxrecomp_add_runtime_target target)
     endif()
 
     # ---- overlay codegen hash (auto cache key) -----------------------------
-    # Hash the recompiler's codegen sources into runtime/include/overlay_codegen_hash.h
-    # (gitignored) so the overlay cache path carries cg<N>_<hash>: any emitter change
+    # Hash the recompiler's codegen sources into a build-owned include directory
+    # (PSXRECOMP_CODEGEN_HASH_INCLUDE_DIR, never the source tree, so two build
+    # trees of one checkout cannot share one header) so the overlay cache path
+    # carries cg<N>_<hash>: any emitter change
     # auto-invalidates the cache instead of silently reusing a stale-but-cgN DLL (the
     # v0.3.0 black-screen). The loader (via overlay_api.h) and compile_overlays.py both
     # read the same generated PSX_OVERLAY_CODEGEN_HASH, so they never drift. Defined
     # once (shared across psx-runtime/psx-beetle); idempotent write avoids rebuilds.
-    set(_codegen_hash_hdr ${PSXRECOMP_ROOT}/runtime/include/overlay_codegen_hash.h)
+    set(_codegen_hash_hdr
+        ${PSXRECOMP_CODEGEN_HASH_INCLUDE_DIR}/overlay_codegen_hash.h)
     if(NOT TARGET psxrecomp_codegen_hash)
         # Canonical source list shared with recompiler/CMakeLists.txt (which bakes
         # the SAME hash into psxrecomp-game for the --codegen-hash staleness guard).
@@ -1947,6 +2029,8 @@ function(psxrecomp_add_runtime_target target)
         set(_codegen_srcs ${PSXRECOMP_CODEGEN_HASH_SRCS})
         add_custom_command(
             OUTPUT  ${_codegen_hash_hdr}
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    ${PSXRECOMP_CODEGEN_HASH_INCLUDE_DIR}
             COMMAND ${CMAKE_COMMAND} -DOUT=${_codegen_hash_hdr} "-DSRCS=${_codegen_srcs}"
                     -P ${PSXRECOMP_ROOT}/runtime/hash_codegen.cmake
             DEPENDS ${_codegen_srcs} ${PSXRECOMP_ROOT}/runtime/hash_codegen.cmake
@@ -2275,6 +2359,14 @@ function(psxrecomp_add_runtime_target target)
             ${PSXRECOMP_ROOT}/runtime/src/game_dispatch_compat.c
             APPEND PROPERTY COMPILE_DEFINITIONS
             PSX_GAME_DISPATCH_HAS_NATIVE_OK_FULL=1)
+    endif()
+    if(has_game_dispatch_source_page_crc32)
+        # The dispatcher carries the generated-from image's page CRCs; the
+        # compatibility unit must not define the empty fallback beside it.
+        set_property(SOURCE
+            ${PSXRECOMP_ROOT}/runtime/src/game_dispatch_compat.c
+            APPEND PROPERTY COMPILE_DEFINITIONS
+            PSX_GAME_DISPATCH_HAS_SOURCE_PAGE_CRC32=1)
     endif()
     if(has_overlay_dispatch)
         target_compile_definitions(${target} PRIVATE PSX_HAS_OVERLAY_DISPATCH=1)

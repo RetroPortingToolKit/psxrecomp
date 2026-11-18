@@ -31,6 +31,9 @@ extern "C" void     gr_vram_write(int x, int y, uint16_t pixel);
 // with real compiled functions; without this the guard blocks their native
 // dispatch and the game fatally routes to psx_unknown_dispatch.
 extern "C" void     dirty_ram_text_bless(uint32_t phys, const uint8_t* bytes, uint32_t len);
+// gwb writes RAM without psx_write_byte, so it tells the kernel-bless table
+// itself (memory.c; a no-op outside the relocated-kernel window).
+extern "C" void     psx_kernel_bless_note_range(uint32_t phys, uint32_t len);
 
 namespace {
 
@@ -50,7 +53,8 @@ inline uint8_t grb(uint8_t* ram, uint32_t va) {
     uint32_t pa; return ram_fold(va, &pa) ? ram[pa] : 0u;
 }
 inline void gwb(uint8_t* ram, uint32_t va, uint8_t v) {
-    uint32_t pa; if (ram_fold(va, &pa)) ram[pa] = v;
+    uint32_t pa;
+    if (ram_fold(va, &pa)) { ram[pa] = v; psx_kernel_bless_note_range(pa, 1u); }
 }
 inline bool va_in_ram(uint32_t va) { uint32_t pa; return ram_fold(va, &pa); }
 // Bless a just-written patch region into the text-image guard (see the extern
