@@ -10068,10 +10068,12 @@ static std::string replay_boot_path(void) {
     std::filesystem::path dir = std::filesystem::path(root) / "replays";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    std::string serial;
-    for (char c : s_replay_serial)
-        serial.push_back((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ? c : '_');
-    if (serial.empty()) serial = "game";
+    /* The disc serial, with anything but ASCII letters and digits made '_'. */
+    std::string serial = s_replay_serial.empty() ? std::string("game") : s_replay_serial;
+    for (char &c : serial) {
+        const bool keep = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        if (!keep) c = '_';
+    }
     const std::time_t now = std::time(nullptr);
     std::tm utc{};
 #ifdef _WIN32
