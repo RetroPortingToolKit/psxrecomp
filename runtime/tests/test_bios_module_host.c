@@ -46,6 +46,7 @@ int psx_mod_dispatch_guest_function(struct CPUState *cpu, uint32_t address) {
     return 1;
 }
 int (*g_psx_bios_hle_hook)(struct CPUState *cpu, uint32_t phys) = 0;
+int (*g_psx_func_override_hook)(struct CPUState *cpu, uint32_t phys) = 0;
 uint64_t g_dispatch_static_hits = 0;
 uint32_t g_debug_current_func_addr = 0;
 uint64_t g_psx_bail_flattened = 0;
@@ -134,6 +135,8 @@ int main(void) {
                   "mod count aliases host");
             CHECK(probe.mod_dispatch_guest_function == psx_mod_dispatch_guest_function,
                   "mod callback forwards to host");
+            CHECK(probe.func_override_hook == &g_psx_func_override_hook,
+                  "override hook pointer aliases host");
         }
     }
 
@@ -150,7 +153,9 @@ int main(void) {
         char path[512];
         CHECK(psx_bios_module_cache_path("/x", "SCPH1001", 0x37157331u, path, sizeof(path)),
               "cache path fits");
-        CHECK(strstr(path, "/x/cache/bios/test-arch/bm2_") == path, "cache path root: %s", path);
+        char root[64];
+        snprintf(root, sizeof(root), "/x/cache/bios/test-arch/bm%d_", PSX_BIOS_MODULE_ABI_VERSION);
+        CHECK(strstr(path, root) == path, "cache path root: %s", path);
         CHECK(strstr(path, "/SCPH1001_37157331.") != 0, "cache path stem+crc: %s", path);
     }
 

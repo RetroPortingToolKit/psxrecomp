@@ -159,6 +159,9 @@ class SetupPackageTests(unittest.TestCase):
             self.write(path, "synthetic fixture\n")
         for name in ("OpenBIOS.toml", "openbios.bin", "OpenBIOS.LICENSE", "SCPH1001.toml"):
             self.write("psxrecomp/bios/" + name, "synthetic BIOS fixture")
+        # The SDK stager copies the codegen hash header from beside the emitter.
+        self.write("emitters/runtime/include/overlay_codegen_hash.h",
+                   "#define PSX_OVERLAY_CODEGEN_HASH 0x12345678u\n")
         self.write("CMakeLists.txt", "# synthetic title\n")
         self.write("VERSION", "0.0.1\n")
         self.write("build/psx_game_version.txt", "0.0.1\n")

@@ -14,7 +14,7 @@
  *                                               checkpoint compatibility id matches
  *   PSX_TAS_PERTURB_RESTORE=<field>             after an accepted resume, change one
  *                                               restored value (ram, irq_timing,
- *                                               sched, memctrl) so a comparison of
+ *                                               sched, timer2, memctrl) so a comparison of
  *                                               the two runs can be shown to fail
  *
  * Frames are the debug server's frame counter (one per VBlank present). A

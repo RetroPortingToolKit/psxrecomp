@@ -36,7 +36,9 @@ void overlay_capture_set_enabled(int enabled);
 /* Opt-in durable history. When enabled, every changed coherent latest snapshot
  * is appended to overlay_captures.addendum.jsonl beside the executable. If
  * persist_dir is non-empty, the same snapshot is also copied atomically to one
- * new immutable JSON file there. game_id is used only in safe filenames. */
+ * new immutable JSON file there. game_id is used only in safe filenames.
+ * Snapshots are committed on three threads; the history step takes one lock,
+ * so each record is one whole line and its sequence number is its own. */
 void overlay_capture_configure_history(int enabled, const char *persist_dir,
                                        const char *game_id);
 

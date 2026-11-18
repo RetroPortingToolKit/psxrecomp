@@ -98,7 +98,7 @@ shards up automatically.
 | `--captures` | The `overlay_captures.json` to read. If the runtime set `PSX_OVERLAY_CAPTURES`, that wins; for a manual run pass this explicitly. |
 | `--game-toml` | Reads the game id (used in the cache path) and the `[widescreen]` site lists. |
 | `--recompiler` | `psxrecomp-game.exe`. **Must be built from the same source tree** — a stale binary is rejected up front (see "Staleness guard"). |
-| `--runtime-include` | The runtime `include/` dir. Supplies the codegen version + hash that namespace the cache. Also supplies the default `--project-root`. |
+| `--runtime-include` | The runtime `include/` dir. Supplies the codegen version and the packaged fallback hash that namespace the cache. A development run first uses the hash header beside the exact `--recompiler` build. Also supplies the default `--project-root`. |
 | `--project-root` | The root the recompiler resolves the BIOS profile against. Defaults to the framework root derived from `--runtime-include`, which is right for every normal invocation — pass it only if that derivation is wrong. See "Packaged configs" below. |
 | `--out-dir` | Cache root. Point it at the `cache` folder next to the exe. |
 | `--gcc` | Absolute path to your mingw gcc, e.g. `C:/msys64/mingw64/bin/gcc.exe`. gcc gives the best-optimized shards. |
@@ -210,7 +210,8 @@ runtime*.
 
 The recompiler *binary* and the codegen *source* are tied together by a hash.
 Before compiling anything, the script runs `psxrecomp-game.exe --codegen-hash`
-and compares it to the hash baked into `--runtime-include`. If they differ — or
+and compares it to the hash header beside that exact emitter build (a packaged
+run falls back to the staged `--runtime-include` header). If they differ — or
 the binary is too old to support the flag — it **aborts** rather than silently
 emitting shards with stale codegen (a real bug class: read-tag matches,
 semantics are old). The fix is always the same:
@@ -221,11 +222,16 @@ cmake --build psxrecomp/recompiler/build --target psxrecomp-game
 
 Rebuild the recompiler from the current tree, then re-run.
 
-The baked hash lives in `runtime/include/overlay_codegen_hash.h`, which the
-runtime build writes. On a tree whose runtime has never been built it is
-absent and the check reads 0. `aot_overlay_pipeline.py static` writes it first
-from the same sources. For a manual run, build the runtime once, or write it
-directly:
+The recompiler build writes the header as
+`<recompiler build>/runtime/include/overlay_codegen_hash.h` (one directory up
+from the executable for multi-config generators); the runtime build writes its
+own copy in `<runtime build>/psxrecomp_codegen_include/`. Neither writes into
+the source tree, so two build trees of one checkout cannot share a stale
+header. Packaging copies the emitter-build header into the staged include
+directory. With no header anywhere the check reads 0.
+`aot_overlay_pipeline.py static` writes one into the source include directory
+as a fallback for a tree whose recompiler build predates this layout. For a
+manual run, rebuild the recompiler, or write the fallback directly:
 
 ```sh
 cmake -DPSXRECOMP_CODEGEN_HASH_ROOT=psxrecomp \

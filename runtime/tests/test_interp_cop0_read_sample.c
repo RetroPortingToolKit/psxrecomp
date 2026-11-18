@@ -22,6 +22,7 @@
 
 /* No mod hooks are active in this interpreter fixture. */
 uint32_t g_psx_mod_instruction_hooks = 0;
+int g_psx_mod_immediate_live = 0;
 
 int interp_test_step(CPUState *cpu, uint32_t pc, uint32_t insn, uint32_t *next);
 
@@ -37,6 +38,7 @@ int      g_psx_cyc_bb_defer;
 uint32_t *g_psx_cyc_local_acc;
 int      g_psx_icache_active;          /* 0: no fetch cost */
 uint32_t g_psx_icache_tv[1024];
+uint32_t g_psx_gcs_recip_q16 = 65536u, g_psx_gcs_frac;  /* guest cycle scale 1 */
 
 static CPUState *s_device_cpu;
 static unsigned  s_services;

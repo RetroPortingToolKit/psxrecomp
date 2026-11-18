@@ -175,6 +175,51 @@ int main(void)
         netplay_start_failure_text(-3, 1, "127.0.0.1:47810", "", NETPLAY_BIND_FAILED, 10048, "", NULL, 0);
     }
 
+    /* A match boots with the BIOS setting of the game's game.toml. */
+    {
+        static const NetplayBootMode real_bios = { 0, 0, 0 };
+        static const NetplayBootMode shortcut = { 1, 0, 0 };
+        NetplayBootMode mode;
+        /* A player on the game's value: nothing changes and nothing is said. */
+        mode = real_bios;
+        CHECK(netplay_boot_mode_settle(&real_bios, &mode) == 0);
+        CHECK(mode.bios_hle == 0 && mode.keep_intro == 0 && mode.fast_boot == 0);
+        mode = shortcut;
+        CHECK(netplay_boot_mode_settle(&shortcut, &mode) == 0);
+        CHECK(mode.bios_hle == 1);
+        /* The stale settings file: game.toml says the real BIOS, the player's
+         * file still says the shortcut. The match takes the game's value. */
+        mode = shortcut;
+        CHECK(netplay_boot_mode_settle(&real_bios, &mode) == 1);
+        CHECK(mode.bios_hle == 0 && mode.keep_intro == 0 && mode.fast_boot == 0);
+        /* The other way round, and each of the other two inputs alone. */
+        mode = real_bios;
+        CHECK(netplay_boot_mode_settle(&shortcut, &mode) == 1);
+        CHECK(mode.bios_hle == 1);
+        mode = real_bios; mode.fast_boot = 1;
+        CHECK(netplay_boot_mode_settle(&real_bios, &mode) == 1);
+        CHECK(mode.fast_boot == 0);
+        mode = shortcut; mode.keep_intro = 1;
+        CHECK(netplay_boot_mode_settle(&shortcut, &mode) == 1);
+        CHECK(mode.bios_hle == 1 && mode.keep_intro == 0);
+        /* On is on: 2 and 1 are the same setting. */
+        mode.bios_hle = 2; mode.keep_intro = 0; mode.fast_boot = 0;
+        CHECK(netplay_boot_mode_settle(&shortcut, &mode) == 0);
+        CHECK(mode.bios_hle == 1);
+        /* Two peers with different files end on the same three values. */
+        {
+            NetplayBootMode peer_a = { 1, 0, 1 }, peer_b = { 0, 1, 0 };
+            (void)netplay_boot_mode_settle(&real_bios, &peer_a);
+            (void)netplay_boot_mode_settle(&real_bios, &peer_b);
+            CHECK(memcmp(&peer_a, &peer_b, sizeof(peer_a)) == 0);
+        }
+        CHECK(netplay_boot_mode_settle(NULL, &mode) == 0);
+        CHECK(netplay_boot_mode_settle(&real_bios, NULL) == 0);
+        /* The sentence fits a toast and names what the match uses. */
+        CHECK(strlen(NETPLAY_BOOT_MODE_NOTICE) < 64);
+        CHECK(strstr(NETPLAY_BOOT_MODE_NOTICE, "BIOS setting") != NULL);
+    }
+
     /* No mismatch seen: never final. */
     CHECK(!netplay_boot_mismatch_final(0u, 100000u, NETPLAY_BOOT_MISMATCH_GRACE_MS));
     /* Seen, grace not yet over, then over. */

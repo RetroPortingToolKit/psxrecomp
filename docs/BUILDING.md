@@ -74,6 +74,9 @@ git clone --recurse-submodules https://github.com/RetroPortingToolKit/psxrecomp.
 pacman -S --needed mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake \
                    mingw-w64-x86_64-ninja mingw-w64-x86_64-ccache
 ```
+A Windows host often has more than one MinGW runtime on `PATH`. Read
+[`WINDOWS_TOOLCHAIN_TRAPS.md`](WINDOWS_TOOLCHAIN_TRAPS.md) before the first
+build: its recipe puts the build toolchain first on `PATH` in every shell.
 
 **macOS:**
 ```sh
@@ -128,6 +131,12 @@ cmake -S runtime -B runtime/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DPSX_RECOMP_UI=OFF -DPSX_NETPLAY=OFF -DPSX_REWIND=OFF
 cmake --build runtime/build --target psx-runtime
 ```
+
+The recompiler writes `runtime/include/overlay_codegen_hash.h` inside its build
+directory. A runtime build writes its copy inside that runtime build directory.
+Neither build changes the source checkout. Setup packaging copies the exact
+recompiler-built header into the staged SDK. The runtime and overlay compiler
+use the value to reject a stale `psxrecomp-game` binary.
 
 On Linux/macOS, `tools/setup_dev.sh` performs the same source-checkout setup:
 

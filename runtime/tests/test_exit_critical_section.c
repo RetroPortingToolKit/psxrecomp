@@ -4,9 +4,20 @@
 #include "cpu_state.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int psx_syscall(CPUState *cpu, uint32_t code);
+
+/* With no memory callbacks, a critical call must not reach a TCB save.
+ * Keep these production dependencies as rejecting spies, never success stubs. */
+void psx_fatal_halt(const char *reason) { (void)reason; abort(); }
+void debug_server_log_thread_event(uint32_t kind, CPUState *cpu,
+    uint32_t from, uint32_t to, uint32_t pc)
+{
+    (void)kind; (void)cpu; (void)from; (void)to; (void)pc;
+    abort();
+}
 
 int main(void) {
     const uint32_t results[] = {0u, 1u, 0x80010000u, UINT32_MAX};

@@ -869,11 +869,13 @@ std::string CodeGenerator::translate_div(uint32_t instr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
 
-    // MIPS division: quotient in LO, remainder in HI
-    // Handle division by zero (MIPS behavior: result is unpredictable but doesn't trap)
-    return fmt::format("if ({} != 0) {{ cpu->lo = (uint32_t)((int32_t){} / (int32_t){}); cpu->hi = (uint32_t)((int32_t){} % (int32_t){}); }} else {{ cpu->lo = ((int32_t){} >= 0) ? 0xFFFFFFFF : 1; cpu->hi = (uint32_t){}; }}"
+    // MIPS division: quotient in LO, remainder in HI. DIV never traps
+    // (PSX-SPX "CPU Specifications", Multiply/divide): x/0 gives HI=x and
+    // LO=-1 (x>=0) or +1 (x<0); -80000000h/-1 gives HI=0, LO=-80000000h.
+    // The second case is undefined in C and faults on x86 hosts.
+    return fmt::format("if ({1} == 0) {{ cpu->lo = ((int32_t){0} >= 0) ? 0xFFFFFFFF : 1; cpu->hi = (uint32_t){0}; }} else if ({0} == 0x80000000u && {1} == 0xFFFFFFFFu) {{ cpu->lo = 0x80000000u; cpu->hi = 0u; }} else {{ cpu->lo = (uint32_t)((int32_t){0} / (int32_t){1}); cpu->hi = (uint32_t)((int32_t){0} % (int32_t){1}); }}"
                       "\n#ifdef PSX_ENABLE_BLOCK_CYCLES\n    psx_muldiv_set(cpu, 37u);\n#endif",
-                      reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rs));
+                      reg_name(rs), reg_name(rt));
 }
 
 std::string CodeGenerator::translate_divu(uint32_t instr) {
@@ -2644,6 +2646,80 @@ std::string CodeGenerator::translate_basic_block(
     uint32_t delayed_load_dest = 0u;
     bool delayed_load_active = false;
 
+    /* Zero-word runs. Discovery reaches the zero-filled BSS and overlay load
+     * areas of an EXE image through JAL targets, and each zero word (sll
+     * $0,$0,0) expands to about ten lines, so one run can make a function of a
+     * million lines (one large title has a 110,381-word run). A run of zero
+     * words with no label, annotation or delay slot among its followers is
+     * emitted as its leader (normal path) plus one loop that makes, per
+     * follower, exactly the calls the expanded form makes: emit_pre_icache's
+     * fetch (every word when uncached, else only at a line start, since a
+     * follower is never a block leader or label), the zero word's psx_cyc_step
+     * mask, and cosim_instr. The loop variable is the runtime PC; a run never
+     * crosses a segment, so the runtime PCs of its words are contiguous. Short
+     * runs stay expanded, so ordinary code is emitted byte-identically. */
+    static constexpr uint32_t kZeroRunMinFollowers = 64u;
+    const uint32_t zero_nop_mask = psx_cyc_dep_res_mask(0u);
+    auto canon_zero_word = [&](uint32_t a) {
+        std::string t = translate_instruction(a, 0u);
+        for (const std::string& hex : {fmt::format("0x{:08X}", runtime_pc(a)),
+                                       fmt::format("0x{:08X}", a)}) {
+            for (size_t p = t.find(hex); p != std::string::npos; p = t.find(hex, p))
+                t.replace(p, hex.size(), "0x@");
+        }
+        return t;
+    };
+    // Exclusive end of the zero-word run led by `lead`.
+    auto scan_zero_run = [&](uint32_t lead) -> uint32_t {
+        const uint64_t limit = exit_uses_delay_slot
+            ? static_cast<uint64_t>(block.end_addr)
+            : static_cast<uint64_t>(block.end_addr) + 4u;
+        const uint32_t lead_seg = lead & kSegmentMask;
+        const std::string lead_text = canon_zero_word(lead);
+        uint64_t a = static_cast<uint64_t>(lead) + 4u;
+        for (; a < limit && a <= 0xFFFFFFF8u; a += 4u) {
+            const uint32_t a32 = static_cast<uint32_t>(a);
+            auto w = exe_.read_word(a32);
+            if (!w.has_value() || *w != 0u) break;
+            if (extra_labels_.count(a32)) break;
+            if ((a32 & kSegmentMask) != lead_seg) break;
+            if (annotations_ && a32 != cfg.function_start &&
+                !annotations_->lookup(a32).empty()) break;
+            if (canon_zero_word(a32) != lead_text) break;
+        }
+        return static_cast<uint32_t>(a);
+    };
+    auto emit_zero_run_followers = [&](uint32_t first, uint32_t end) {
+        const std::string& in = config_.indent;
+        const uint32_t pc_first = runtime_pc(first);
+        const uint32_t pc_end = pc_first + (end - first);
+        const std::string var = fmt::format("_zr_{:08X}", first);
+        ss << in << fmt::format(
+            "{{ /* zero-word run 0x{:08X}..0x{:08X}: {} words, per-word calls as expanded */\n",
+            first, end - 4u, (end - first) / 4u);
+        ss << in << in << fmt::format("uint32_t {};\n", var);
+        ss << in << in << fmt::format(
+            "for ({0} = 0x{1:08X}u; {0} != 0x{2:08X}u; {0} += 4u) {{\n", var, pc_first, pc_end);
+        if (cycle_per_insn) {
+            ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
+            if (psx_fetch_uncached(pc_first)) {
+                ss << in << in << in << fmt::format("psx_icache_fetch(cpu, {});\n", var);
+            } else {
+                ss << in << in << in << fmt::format(
+                    "if (({0} & 0xCu) == 0u) psx_icache_fetch(cpu, {0});\n", var);
+            }
+            ss << in << in << in << fmt::format("psx_cyc_step(cpu, 0x{:X}u);\n", zero_nop_mask);
+            ss << "#endif\n";
+        }
+        ss << "#ifdef PSX_COSIM\n";
+        ss << in << in << in << fmt::format("cosim_instr({});\n", var);
+        ss << "#endif\n";
+        ss << in << in << "}\n";
+        ss << in << "}\n";
+    };
+    uint32_t zero_run_end = 0u;
+    uint32_t zero_run_scanned_end = 0u;
+
     while (addr <= block.end_addr) {
         auto instr_opt = exe_.read_word(addr);
         if (!instr_opt.has_value()) {
@@ -2671,6 +2747,12 @@ std::string CodeGenerator::translate_basic_block(
             const std::string& inote = annotations_->lookup(addr);
             if (!inote.empty())
                 ss << config_.indent << fmt::format("/* [NOTE] {} */\n", inote);
+        }
+
+        if (instr == 0u && !is_cf && !delayed_load_active && addr >= zero_run_scanned_end) {
+            zero_run_end = scan_zero_run(addr);
+            zero_run_scanned_end = zero_run_end;
+            if ((zero_run_end - addr) / 4u - 1u < kZeroRunMinFollowers) zero_run_end = 0u;
         }
 
         if (!is_cf) {
@@ -2834,6 +2916,17 @@ std::string CodeGenerator::translate_basic_block(
                                       delay_saved_target, reg_name(target_rs));
                 }
 
+                // BLTZAL/BGEZAL test rs before writing $ra, so a branch on $ra
+                // itself must see the old value. Latch the condition before the
+                // link write as well as before the delay slot.
+                if (block.exit_instr.type == ControlFlowType::Branch) {
+                    delay_saved_cond = fmt::format("_bc_{:08X}", addr);
+                    ss << config_.indent
+                       << fmt::format("int {} = ({});  /* branch cond before link and delay slot */\n",
+                                      delay_saved_cond,
+                                      generate_branch_condition(block.exit_instr.instruction, block.exit_instr.address));
+                }
+
                 if (block.exit_instr.type == ControlFlowType::JumpLink) {
                     ss << config_.indent
                        << fmt::format("cpu->gpr[31] = 0x{:08X}u;  /* jal link before delay slot */\n",
@@ -2890,14 +2983,7 @@ std::string CodeGenerator::translate_basic_block(
                             // Normal delay slot - always executes.
                             // In MIPS, the branch condition is evaluated at the branch
                             // instruction (before the delay slot). If the delay slot
-                            // modifies a condition register we must save the result first.
-                            if (block.exit_instr.type == ControlFlowType::Branch) {
-                                std::string cond = generate_branch_condition(block.exit_instr.instruction, block.exit_instr.address);
-                                delay_saved_cond = fmt::format("_bc_{:08X}", addr);
-                                ss << config_.indent
-                                   << fmt::format("int {} = ({});  /* save branch cond before delay slot */\n",
-                                                  delay_saved_cond, cond);
-                            }
+                            // modifies a condition register, the latch above holds the result.
                             ss << config_.indent << "/* delay slot (always executes) */\n";
                             // Delay slot's own fetch + §1+deps+DO_LDS, before its body (skipped if a load).
                             if (cycle_per_insn) emit_pre_icache(delay_slot_addr, config_.indent);
@@ -3282,6 +3368,15 @@ std::string CodeGenerator::translate_basic_block(
                     }
                 }
             }
+        }
+
+        if (zero_run_end != 0u) {
+            // The run leader above went through the normal path; its followers
+            // are emitted as one loop making the same per-word calls.
+            emit_zero_run_followers(addr + 4u, zero_run_end);
+            addr = zero_run_end;
+            zero_run_end = 0u;
+            continue;
         }
 
         addr += 4;
@@ -4590,9 +4685,21 @@ std::string CodeGenerator::generate_file(
             std::vector<Function> new_funcs;
             std::set<uint32_t> affected;
 
-            for (uint32_t target : gap_targets) {
+            for (auto git = gap_targets.begin(); git != gap_targets.end(); ++git) {
+                uint32_t target = *git;
                 auto next_it = std::upper_bound(func_starts.begin(), func_starts.end(), target);
                 uint32_t gap_end = (next_it != func_starts.end()) ? *next_it : exe_end;
+                // Sibling gap targets PARTITION the gap, exactly as splits_by_func
+                // below partitions a function it splits. func_starts is a snapshot
+                // taken before this pass created anything, so without this bound
+                // every target in one gap ends at the same gap_end and their bodies
+                // nest: n targets in a gap re-emit the gap's tail n times. On
+                // Galerians that cost 440 MB of duplicated bodies (27x). The
+                // trailing piece still reaches the next one by fall-through, which
+                // generate_functions emits as a tail call.
+                auto sibling = std::next(git);
+                if (sibling != gap_targets.end() && *sibling < gap_end)
+                    gap_end = *sibling;
                 if (target >= gap_end) continue;
 
                 Function nf;

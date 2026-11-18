@@ -29,6 +29,7 @@
 #include "gte_nclip_stats.h"
 #include "event_ring.h"
 #include "psx_video_timing.h"
+#include "interrupts.h"
 #include "color_lut.h"
 #include "mod_runtime.h"
 #include "mod_plugins.h"
@@ -3812,6 +3813,26 @@ static int      s_d24_present_hold = 0; /* vblanks to skip Swap after GP1(07h) *
  * rollback load, so replay != live). */
 static int      s_d24_present_skip = 0;
 static uint32_t s_d24_prev_disp_h = 0;  /* last GP1(07h) band height */
+/* Rows the current 24-bit movie has uploaded. A movie session starts on the
+ * rising edge of MDEC activity; rows it has not written yet hold whatever an
+ * earlier scene left in VRAM and present black instead. Presentation only:
+ * guest VRAM and raw scanout are untouched. Current snapshots retain the row
+ * record so restoring a movie preserves both its pixels and its black bars. */
+static uint8_t s_d24_rows[512];
+static int s_d24_streaming;
+static void depth24_reset_rows(void) {
+    memset(s_d24_rows, 0, sizeof(s_d24_rows));
+    s_d24_streaming = 0;
+}
+
+static int depth24_update_stream(void) {
+    int active = mdec_recently_active(10);
+    if (active && !s_d24_streaming)
+        memset(s_d24_rows, 0, sizeof(s_d24_rows));
+    s_d24_streaming = active;
+    return active;
+}
+
 static void depth24_note_upload(uint32_t x, uint32_t w);
 
 static void gp0_commit_cpu_to_vram(void) {
@@ -3822,6 +3843,11 @@ static void gp0_commit_cpu_to_vram(void) {
                      ((vram_write_x + col) & 1023u)];
     gr_vram_upload_commit(vram_write_x, vram_write_y,
                           vram_write_w, vram_write_h, vram_write_pixels);
+    /* Check the activity edge before marking, so the first upload of a
+     * movie survives even when no present has seen MDEC start yet. */
+    if (gpu_display_is_depth24() && depth24_update_stream())
+        for (uint32_t row = 0; row < vram_write_h; row++)
+            s_d24_rows[(vram_write_y + row) & 511u] = 1;
     depth24_note_upload(vram_write_x, vram_write_w);
     gp0_state = GP0_IDLE;
     vram_write_remaining = 0;
@@ -4150,6 +4176,9 @@ static uint32_t v_display_y2;
 
 /* GPUREAD latch (GP1(10h) get-info result, or VRAM read data) */
 static uint32_t gpuread_latch;
+/* Last word on the GPUREAD bus (a VRAM read word or an info result); its
+ * upper bits survive in the partial GP1(10h) fields. */
+static uint32_t gpuread_data_last;
 
 /* C0 (VRAM→CPU) history: an always-on ring of the most recent reads
  * (it used to keep only the first 32 since boot, so gameplay readbacks were
@@ -4280,6 +4309,7 @@ static void gpu_reset_state(int clear_vram) {
     v_display_y2 = 0x100;
 
     gpuread_latch = 0;
+    gpuread_data_last = 0;
     gpustat_poll_count = 0;
     s_ws_fmv_frame_cache = 0xFFFFFFFFu;
     s_ws_fmv_cached = 0;
@@ -4289,6 +4319,8 @@ static void gpu_reset_state(int clear_vram) {
     s_d24_present_hold = 0;
     s_d24_present_skip = 0;
     s_d24_prev_disp_h = 0;
+    depth24_reset_rows();
+    gr_display_mode_changed();
 }
 
 void gpu_init(void) {
@@ -4393,8 +4425,20 @@ uint32_t gpu_read_gpustat(void) {
     /* Bits 29-30: DMA direction */
     stat |= (dma_direction & 3) << 29;
 
-    /* Bit 31: LCF — drawing even/odd lines in interlace mode */
-    stat |= (lcf & 1) << 31;
+    /* Bit 31: LCF, drawing even/odd lines in interlace mode. It reads 0 in
+     * vertical blanking. This uses the whole-field clock; reading it advances
+     * no time. */
+    uint32_t line_bit = lcf & 1u;
+    if (vertical_interlace && vres) {
+        const uint32_t lines = video_mode ? 314u : 263u;
+        const uint32_t start = v_display_y1 < lines ? v_display_y1 : lines;
+        const uint32_t end = v_display_y2 < lines ? v_display_y2 : lines;
+        const uint32_t active = end > start ? end - start : 0u;
+        const uint64_t phase = interrupts_get_cycles_since_vblank();
+        if (phase * lines < (uint64_t)(lines - active) * g_psx_vblank_cycles)
+            line_bit = 0;
+    }
+    stat |= line_bit << 31;
 
     return stat;
 }
@@ -4416,12 +4460,10 @@ uint32_t gpu_read_gpuread(void) {
         value |= (uint32_t)gr_vram_read((int)rx, (int)ry) << (i * 16);
 
         if (++vram_read_col == vram_read_w) {
-            vram_read_col = 0;
-            if (++vram_read_row == vram_read_h) {
-                /* Transfer complete */
-                vram_read_active = 0;
-                break;
-            }
+            /* Complete both halves of an odd-width final word; its high half
+             * is the next X on the final row, not another row. */
+            if (vram_read_row + 1 == vram_read_h) vram_read_active = 0;
+            else { ++vram_read_row; vram_read_col = 0; }
         }
     }
 
@@ -4434,7 +4476,9 @@ uint32_t gpu_read_gpuread(void) {
             c0_capture_slot_fwd = -1;  /* transfer complete */
     }
 
-    gpuread_latch = value;
+    /* A VRAM read does not overwrite the info latch that idle reads return;
+     * it only becomes the last bus word. */
+    gpuread_data_last = value;
     return value;
 }
 
@@ -4613,10 +4657,11 @@ const uint16_t* gpu_get_vram(void) {
 /* Depth24: note/query/reset the CPU→VRAM upload span tracked above. Used to
  * hide trailing RGB columns when a movie blit doesn't fill the full CRTC
  * width — MotK's Star Wars crawl leaves ~8px of stale VRAM on the right.
- * Only FB-class A0s (w >= 256 halfwords) grow the span; texture uploads must
- * not collapse it. During present-hold, ignore updates entirely. */
+ * Include narrow movie strips as well as full-width uploads. The span only
+ * grows, so smaller uploads cannot collapse it. During present-hold, ignore
+ * updates entirely. */
 static void depth24_note_upload(uint32_t x, uint32_t w) {
-    if (!(display_depth & 1u) || w < 256u) return;
+    if (!(display_depth & 1u) || w == 0u) return;
     if (s_d24_present_hold > 0) return;
     uint32_t x1 = x + w;
     if (x1 > 1024u) x1 = 1024u;
@@ -4651,6 +4696,8 @@ void gpu_depth24_on_savestate_loaded(void) {
      * Upload span / prev_h were restored from the GPU snap. */
     s_d24_present_hold = 0;
     s_d24_present_skip = 0;
+    /* Row coverage and its stream latch were restored with the GPU snapshot.
+     * Clearing them here would black out already-restored movie pixels. */
 }
 
 /* ---- Present-time screen-colour LUT (verified-enhancement, opt-in) -------
@@ -4767,6 +4814,10 @@ uint32_t gpu_display_pixel_argb(const GpuDisplayInfo* di, uint32_t x, uint32_t y
 void gpu_depth24_present_row(const GpuDisplayInfo* di, uint32_t y, uint32_t* out,
                              uint32_t count) {
     uint32_t vy = (di->display_y + y) & 511u;
+    if (depth24_update_stream() && !s_d24_rows[vy]) {
+        for (uint32_t x = 0; x < count; x++) out[x] = 0xFF000000u;
+        return;
+    }
     uint32_t base_byte_x = (di->display_x & 1023u) * 2u;
     const uint16_t* row = vram + (size_t)vy * 1024u;
     uint32_t valid = 0u;
@@ -8366,8 +8417,10 @@ static void gp1_display_mode(uint32_t val) {
     /* VBlank rate, Timer 1 HBlank clock and host pacing follow the live
      * standard, whatever the disc region (psx_video_timing.h). */
     (void)psx_video_timing_set_pal((int)video_mode);
-    if (new_depth != display_depth)
+    if (new_depth != display_depth) {
         s_d24_upload_x1 = 0; /* rising/falling: drop stale coverage */
+        depth24_reset_rows();
+    }
     display_depth = new_depth;
     vertical_interlace = (val >> 5) & 1;
     /* GPUSTAT.13 holds the legacy constant 0 in progressive (see the vblank
@@ -8377,6 +8430,10 @@ static void gp1_display_mode(uint32_t val) {
         interlace_field = 0;
     hres2 = (val >> 6) & 1;
     reverse_flag = (val >> 7) & 1;
+    /* Hand VRAM ownership over now, in command order. Waiting for the next
+     * CPU->VRAM write let a GP0 copy or draw issued after a 24-bit to 15-bit
+     * switch be wiped by the late movie-band clear. */
+    gr_display_mode_changed();
 }
 
 static void gp1_get_info(uint32_t val) {
@@ -8389,17 +8446,23 @@ static void gp1_get_info(uint32_t val) {
      * the wrong value here lands the game on a no-draw branch. */
     uint32_t which = val & 0x0F;
     switch (which) {
+        /* 02h-04h return a 20-bit field and 05h a 22-bit field under the
+         * upper bits of the last word on the GPUREAD bus. */
         case 2: /* texture window */
-            gpuread_latch = texture_window_value;
+            gpuread_latch = (gpuread_data_last & 0xFFF00000u) |
+                            (texture_window_value & 0xFFFFFu);
             break;
         case 3: /* draw area top-left */
-            gpuread_latch = draw_area_left | (draw_area_top << 10);
+            gpuread_latch = (gpuread_data_last & 0xFFF00000u) |
+                            draw_area_left | (draw_area_top << 10);
             break;
         case 4: /* draw area bottom-right */
-            gpuread_latch = draw_area_right | (draw_area_bottom << 10);
+            gpuread_latch = (gpuread_data_last & 0xFFF00000u) |
+                            draw_area_right | (draw_area_bottom << 10);
             break;
         case 5: /* draw offset */
-            gpuread_latch = ((uint32_t)draw_offset_x & 0x7FFu) |
+            gpuread_latch = (gpuread_data_last & 0xFFC00000u) |
+                            ((uint32_t)draw_offset_x & 0x7FFu) |
                             (((uint32_t)draw_offset_y & 0x7FFu) << 11);
             break;
         case 7: /* GPU version: PSX-SPX gives 1 or 2; this models 2 */
@@ -8410,8 +8473,9 @@ static void gp1_get_info(uint32_t val) {
             break;
         default:
             /* N=0,1,6,9..15: leave latch unchanged */
-            break;
+            return;
     }
+    gpuread_data_last = gpuread_latch;
 }
 
 void gpu_write_gp1(uint32_t val) {
@@ -8514,6 +8578,15 @@ static int gpu_snap_emit(PstW *w) {
     /* Depth24 present helpers (MotK FMV) — must resume with upload span. */
     WU(s_d24_upload_x1); WI(s_d24_present_hold | 0x200 | (s_d24_present_skip ? 0x100 : 0));
     WU(s_d24_prev_disp_h);
+    WU(gpuread_data_last);
+    WU(s_d24_streaming);
+    /* Pack the presentation row record to keep private checkpoints bounded. */
+    for (unsigned first = 0; first < 512u; first += 32u) {
+        uint32_t rows = 0;
+        for (unsigned bit = 0; bit < 32u; ++bit)
+            rows |= (uint32_t)(s_d24_rows[first + bit] != 0) << bit;
+        WU(rows);
+    }
 #undef WU
 #undef WI
 #undef WH
@@ -8547,6 +8620,7 @@ static int gpu_snap_parse(PstR *r) {
     RI(vram_read_active); RH(vram_read_x); RH(vram_read_y); RH(vram_read_w); RH(vram_read_h);
     RH(vram_read_col); RH(vram_read_row);
     RU(s_d24_upload_x1); RI(s_d24_present_hold); RU(s_d24_prev_disp_h);
+    RU(gpuread_data_last);
     /* Bit 9 marks an explicit skip flag (bit 8). GP1 can arm a positive
      * count before VBlank, when skip is still false: that state must round
      * trip exactly. Older snaps without the marker infer skip from count. */
@@ -8554,6 +8628,14 @@ static int gpu_snap_parse(PstR *r) {
         ? (s_d24_present_hold & 0x100) != 0
         : (s_d24_present_hold & 0x100) || (s_d24_present_hold & 0xFF) > 0;
     s_d24_present_hold &= 0xFF;
+    RU(s_d24_streaming);
+    s_d24_streaming = s_d24_streaming != 0;
+    for (unsigned first = 0; first < 512u; first += 32u) {
+        uint32_t rows;
+        RU(rows);
+        for (unsigned bit = 0; bit < 32u; ++bit)
+            s_d24_rows[first + bit] = (uint8_t)((rows >> bit) & 1u);
+    }
 #undef RU
 #undef RI
 #undef RH

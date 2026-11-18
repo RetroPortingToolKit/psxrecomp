@@ -8,10 +8,56 @@ import tempfile
 
 
 def run(args, *, ok=True):
-    result = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(args, text=True, encoding='utf-8', errors='replace',
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if (result.returncode == 0) != ok:
         raise AssertionError(result.stdout)
     return result.stdout
+
+
+def check_openbios_paths(args, root, temp):
+    """Mixed profiles must build when the BIOS source includes a parent segment."""
+    source = Path(temp) / 'mixed'
+    (source / 'nested').mkdir(parents=True)
+    native = source / 'runtime/src'
+    native.mkdir(parents=True)
+    (native / 'openbios_read_job.c').write_text(
+        'extern int result; void OpenBIOS_func_1FC03A78(int* cpu) { result=3; }\n')
+    body = source / 'OpenBIOS_full.c'
+    # Synthetic selector fixture; the actual generated-body contract is tested
+    # separately by test_openbios_read_job.py.
+    original = ('/* BIOS SHA256: fabe498fbf224e4721f12f31b6f5fe0659205e341dc4e5c5f91b9bd1a1011c57 */\n'
+                'typedef int CPUState; extern int result;\n'
+                'void OpenBIOS_func_1FC03A78(CPUState* cpu) { result=1; }\n')
+    body.write_text(original)
+    (source / 'main.c').write_text(
+        '#include <stdio.h>\nint result; void OpenBIOS_func_1FC03A78(int*);\n'
+        'int main(void) { OpenBIOS_func_1FC03A78(0); printf("%d\\n",result); return 0; }\n')
+    (source / 'CMakeLists.txt').write_text(f'''cmake_minimum_required(VERSION 3.20)
+project(mixed_profiles C)
+set(PSXRECOMP_ROOT "${{CMAKE_CURRENT_SOURCE_DIR}}")
+include("{root.as_posix()}/cmake/psx_execution_profile.cmake")
+include("{root.as_posix()}/cmake/psx_openbios_read_job.cmake")
+foreach(profile ENHANCED REFERENCE)
+    add_executable(${{profile}} main.c "${{CMAKE_CURRENT_SOURCE_DIR}}/nested/../OpenBIOS_full.c")
+    psxrecomp_execution_profile(${{profile}} PROFILE ${{profile}})
+    psxrecomp_openbios_read_job(${{profile}})
+endforeach()
+''')
+    build = Path(temp) / 'mixed-build'
+    run([args.cmake, '-S', str(source), '-B', str(build), '-G', 'Ninja',
+         '-DCMAKE_C_COMPILER=' + args.cc, '-DCMAKE_MAKE_PROGRAM=' + args.ninja])
+
+    def verify(reference):
+        run([args.cmake, '--build', str(build), '--parallel', '1'])
+        for profile, expected in [('ENHANCED', '3'), ('REFERENCE', reference)]:
+            exe = build / (profile + ('.exe' if (build / (profile + '.exe')).exists() else ''))
+            assert run([str(exe)]).strip() == expected
+        return json.loads((build / 'ENHANCED.execution.json').read_text())['identity']
+
+    before = verify('1')
+    body.write_text(original.replace('result=1', 'result=2'))
+    assert verify('2') != before, 'BIOS edits must still trigger configure and identity refresh'
 
 
 def main():
@@ -83,7 +129,7 @@ psxrecomp_add_implementation(fixture NAME triple CONTRACT integer-v1
             return build
 
         def build_run(build):
-            run([args.cmake, "--build", str(build), "--parallel", "2"])
+            run([args.cmake, "--build", str(build), "--parallel", "1"])
             exe = build / ("fixture.exe" if (build / "fixture.exe").exists() else "fixture")
             values = run([str(exe)]).strip().split()
             manifest = json.loads((build / "fixture.execution.json").read_text())
@@ -141,6 +187,7 @@ psxrecomp_add_implementation(fixture NAME triple CONTRACT integer-v1
         (source / "hle.c").unlink()
         build_run(configure("REFERENCE", "reference-no-private"))
         configure("ENHANCED", "missing-selected", ok=False)
+        check_openbios_paths(args, root, temp)
     print("execution profile link, ABI, identity and failure checks passed")
 
 

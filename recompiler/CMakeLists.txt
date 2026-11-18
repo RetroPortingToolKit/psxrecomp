@@ -213,16 +213,26 @@ endif()
 set(PSXRECOMP_CODEGEN_HASH_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../runtime/codegen_hash_sources.cmake)
 set(_baked_hash_hdr ${CMAKE_CURRENT_BINARY_DIR}/psxrecomp_baked_codegen_hash.h)
+# The same value, as the runtime-style header, beside this emitter build:
+# compile_overlays.py and the SDK stager read it from here, so a header in the
+# source tree (written by another build tree) can never name this binary's hash.
+set(_runtime_hash_hdr ${CMAKE_CURRENT_BINARY_DIR}/runtime/include/overlay_codegen_hash.h)
 add_custom_command(
-    OUTPUT  ${_baked_hash_hdr}
+    OUTPUT  ${_baked_hash_hdr} ${_runtime_hash_hdr}
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            ${CMAKE_CURRENT_BINARY_DIR}/runtime/include
     COMMAND ${CMAKE_COMMAND} -DOUT=${_baked_hash_hdr}
+            "-DSRCS=${PSXRECOMP_CODEGEN_HASH_SRCS}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/hash_codegen.cmake
+    COMMAND ${CMAKE_COMMAND} -DOUT=${_runtime_hash_hdr}
             "-DSRCS=${PSXRECOMP_CODEGEN_HASH_SRCS}"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/hash_codegen.cmake
     DEPENDS ${PSXRECOMP_CODEGEN_HASH_SRCS}
             ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/hash_codegen.cmake
-    COMMENT "Hashing codegen sources -> psxrecomp_baked_codegen_hash.h"
+    COMMENT "Hashing codegen sources -> baked and runtime hash headers"
     VERBATIM)
-add_custom_target(psxrecomp_baked_codegen_hash DEPENDS ${_baked_hash_hdr})
+add_custom_target(psxrecomp_baked_codegen_hash
+    DEPENDS ${_baked_hash_hdr} ${_runtime_hash_hdr})
 add_dependencies(psxrecomp-game psxrecomp_baked_codegen_hash)
 # Force main_psx.cpp to recompile whenever the hash header content changes
 # (same OBJECT_DEPENDS hardening as runtime.cmake — __has_include depfile gap).
@@ -440,6 +450,14 @@ if(BUILD_TESTING)
     )
     target_include_directories(cli_boot_path_test PRIVATE src)
     add_test(NAME cli_boot_path_test COMMAND cli_boot_path_test)
+
+    add_executable(ps1_exe_padding_test
+        tests/ps1_exe_padding_test.cpp
+        src/ps1_exe_parser.cpp
+    )
+    target_include_directories(ps1_exe_padding_test PRIVATE src include)
+    target_link_libraries(ps1_exe_padding_test PRIVATE fmt)
+    add_test(NAME ps1_exe_padding_test COMMAND ps1_exe_padding_test)
 
     add_executable(recompiler_patch_test
         tests/recompiler_patch_test.cpp
@@ -874,6 +892,10 @@ if(BUILD_TESTING)
         include src lib/fmt/include lib/toml11)
     target_link_libraries(select_shortcuts_config_test PRIVATE fmt)
     add_test(NAME select_shortcuts_config_test COMMAND select_shortcuts_config_test)
+    add_executable(negcon_settings_test tests/negcon_settings_test.cpp src/config_loader.cpp src/ps1_exe_parser.cpp)
+    target_include_directories(negcon_settings_test PRIVATE include src lib/fmt/include lib/toml11)
+    target_link_libraries(negcon_settings_test PRIVATE fmt)
+    add_test(NAME negcon_settings_test COMMAND negcon_settings_test)
     add_executable(required_disc_config_test
         tests/required_disc_config_test.cpp src/config_loader.cpp src/ps1_exe_parser.cpp)
     target_include_directories(required_disc_config_test PRIVATE
@@ -895,6 +917,22 @@ if(BUILD_TESTING)
     )
     target_link_libraries(portable_settings_paths_test PRIVATE fmt)
     add_test(NAME portable_settings_paths_test COMMAND portable_settings_paths_test)
+
+    # settings.toml holds bios_hle / fast_boot only when the player wrote them;
+    # an older launcher's echo of them is dropped.
+    add_executable(boot_keys_settings_test
+        tests/boot_keys_settings_test.cpp
+        src/config_loader.cpp
+        src/ps1_exe_parser.cpp
+    )
+    target_include_directories(boot_keys_settings_test PRIVATE
+        include
+        src
+        lib/fmt/include
+        lib/toml11
+    )
+    target_link_libraries(boot_keys_settings_test PRIVATE fmt)
+    add_test(NAME boot_keys_settings_test COMMAND boot_keys_settings_test)
 
     # Needs bios/SCPH1001.toml — run from the framework root.
     add_test(NAME bios_address_model_test
@@ -996,6 +1034,14 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_emitter_stamps.py
                 --cmake ${CMAKE_COMMAND})
+        # tools/bios_emitter_fingerprint.cmake reads its file list from the
+        # psxrecomp-bios target. CMake hands the test that target's own list
+        # of sources, so the script's reading is checked in both directions.
+        add_test(NAME bios_emitter_fingerprint
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_emitter_fingerprint.py
+                --cmake ${CMAKE_COMMAND}
+                --target-sources "$<JOIN:$<TARGET_PROPERTY:psxrecomp-bios,SOURCES>,$<COMMA>>")
         add_test(NAME pgo_rebuild_flow
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pgo_rebuild_flow.py)
@@ -1099,6 +1145,15 @@ if(BUILD_TESTING)
             NAME overlay_cross_page_delay_codegen
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_cross_page_delay_codegen.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        # The dispatch file carries the page CRCs of the executable it was
+        # generated from, so the runtime can tell when the disc a player boots
+        # carries a different one (a multi-disc set with a per-disc code byte).
+        add_test(
+            NAME source_page_crc_table
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_source_page_crc_table.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(NAME split_transfer_fallthrough
@@ -1257,6 +1312,27 @@ if(BUILD_TESTING)
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lwlr_load_delay_forward.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        # Emitted DIV: divide-by-zero and -80000000h/-1 results (PSX-SPX),
+        # compiled and run at -O0/-O2.
+        add_test(
+            NAME div_edge_codegen
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_div_edge_codegen.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>
+                    --compiler ${CMAKE_C_COMPILER}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        add_test(
+            NAME zero_run_compaction
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_zero_run_compaction.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        add_test(
+            NAME branch_link_condition_order
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_branch_link_condition_order.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(
             NAME dirty_text_continuation_guards
             COMMAND ${Python3_EXECUTABLE}
@@ -1372,6 +1448,7 @@ if(BUILD_TESTING)
                 bios_resident_shard
                 computed_stride_jump_codegen
                 msvc_cps_codegen
+                no_overlapping_bodies
                 overlay_guard_codegen
                 overlay_store_barrier_codegen
                 reachable_discovery_codegen)
@@ -1432,14 +1509,23 @@ if(BUILD_TESTING)
                 bios_selection_guards
                 capture_history
                 cli_retail_bios_profile
+                codegen_hash_build_tree
+                codegen_hash_line_endings
                 codegen_host_bios_stems
+                codegen_host_toolchain_keep_pack
+                codegen_host_toolchain_steps
+                codegen_host_disc_cfg_handoff
                 default_renderer_guards
                 mod_owned_display_controls
                 fmv_quiet_guards
                 fps_telemetry_opt_in
                 hybrid_dev_any_input
+                netplay_boot_mode_wiring
                 launcher_pad_mode_wiring
                 netplay_start_failure_wiring
+                netplay_lan_identity_wiring
+                start_refusal_wiring
+                launcher_serial_status_wiring
                 jalr_link_register_guards
                 gl_internal_scale_guards
                 launcher_vulkan_option
@@ -1453,8 +1539,11 @@ if(BUILD_TESTING)
                 overlay_segment_gate
                 recomp_ui_root_override
                 render_pass_guards
+                run_report_cdrom_counters
                 pal_cadence_host_refresh
                 sdl3_main_single_include
+                setup_install_card_path_wiring
+                settings_boot_keys_wiring
                 spu_sample_scheduler_default
                 vk_build_default
                 vk_color_self_barrier
@@ -1588,6 +1677,16 @@ if(BUILD_TESTING AND Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID STREQUAL 
         COMMAND ${Python3_EXECUTABLE}
             "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_syscall_change_thread_self.py"
             --cc ${CMAKE_C_COMPILER})
+    # A ChangeThread called inside an interrupt handler switches at the call.
+    add_test(NAME changethread_in_handler_test
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_changethread_in_handler.py"
+            --cc ${CMAKE_C_COMPILER})
+    # A deferred thread switch is taken while an interpreted thread spins.
+    add_test(NAME deferred_switch_interp_spin_test
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_deferred_switch_interp_spin.py"
+            --cc ${CMAKE_C_COMPILER})
     # CloseTh(current); ChangeTh(other) still saves the outgoing registers.
     add_test(NAME syscall_closed_thread_context
         COMMAND ${Python3_EXECUTABLE}
@@ -1651,6 +1750,13 @@ endforeach()
 # inspects files on disk and has no such ordering requirement.
 include(${CMAKE_CURRENT_SOURCE_DIR}/../runtime/check_test_registration.cmake)
 psxrecomp_check_all_tests_registered()
+
+if(BUILD_TESTING AND Python3_Interpreter_FOUND)
+    foreach(_t IN ITEMS interp_report_wiring bios_phase_report_wiring)
+        add_test(NAME ${_t}_test COMMAND ${Python3_EXECUTABLE} -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_${_t}.py")
+    endforeach()
+endif()
 
 # ---- output-name collision guard (must stay LAST) ---------------------------
 # Fails configure if any two targets here would write the same file on a

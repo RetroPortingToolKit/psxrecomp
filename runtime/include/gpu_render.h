@@ -29,6 +29,10 @@ void      gr_refresh_backend(void);           /* re-fetch the GL table (render t
 
 /* Lifecycle / global state */
 void gr_init(uint16_t *vram);
+/* Call right after the GP1(08h) display-mode registers change, before any
+ * later GP0 command. Optional backend transition work (GL 15/24-bit VRAM
+ * ownership); software keeps no deferred state. */
+void gr_display_mode_changed(void);
 void gr_set_scale(int scale);
 int  gr_scale(void);
 
@@ -247,6 +251,8 @@ typedef struct GpuRenderBackend {
     void (*wide_feedback_rect)(int src_base, int src_x, int src_y, int dst_x,
                                int dst_y, int w, int h, int r, int g, int b,
                                int raw, int semi);
+    /* Appended: gr_display_mode_changed. NULL = nothing to hand over. */
+    void (*display_mode_changed)(void);
 } GpuRenderBackend;
 
 enum { GR_HD_NOTE_INVALIDATE = 0, GR_HD_NOTE_TRACK_UPLOAD = 1,

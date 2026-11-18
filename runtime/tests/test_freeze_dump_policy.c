@@ -69,7 +69,8 @@ int main(void) {
     /* A hard freeze owns the reserved second slot during the same event. */
     EXPECT_EQ(observe(&policy, 1), 1);
     freeze_dump_policy_record_result(&policy, 1);
-    EXPECT_EQ(policy.automatic_dumps, FREEZE_DUMP_AUTO_LIMIT);
+    EXPECT_EQ(policy.automatic_dumps,
+              FREEZE_DUMP_ORDINARY_SLOTS + FREEZE_DUMP_HARD_SLOTS);
     EXPECT_EQ(policy.hard_slot_consumed, 1);
     EXPECT_EQ(observe(&policy, 1), 0);
 
@@ -126,7 +127,56 @@ int main(void) {
     observe_healthy(&hard_first, FREEZE_DUMP_REARM_HEALTHY_TICKS);
     EXPECT_EQ(observe(&hard_first, 5), 1);
     freeze_dump_policy_record_result(&hard_first, 1);
-    EXPECT_EQ(hard_first.automatic_dumps, FREEZE_DUMP_AUTO_LIMIT);
+    EXPECT_EQ(hard_first.automatic_dumps,
+              FREEZE_DUMP_ORDINARY_SLOTS + FREEZE_DUMP_HARD_SLOTS);
+
+    /* A slot spent at startup is filled again after a long healthy
+     * interval: 600 samples in a row, 60 s at the heartbeat's 100 ms. */
+    FreezeDumpPolicy late = {0};
+    EXPECT_EQ(observe(&late, 3), 1);
+    freeze_dump_policy_record_result(&late, 1);
+    EXPECT_EQ(observe(&late, 1), 1);
+    freeze_dump_policy_record_result(&late, 1);
+    EXPECT_EQ(late.automatic_dumps, 2);
+    observe_healthy(&late, 599);
+    EXPECT_EQ(observe(&late, 3), 0);
+    EXPECT_EQ(late.suppressed_events, 1);
+    observe_healthy(&late, 600);
+    EXPECT_EQ(observe(&late, 5), 1);
+    freeze_dump_policy_record_result(&late, 1);
+    EXPECT_EQ(late.automatic_dumps, 3);
+    EXPECT_EQ(observe(&late, 1), 1);
+    freeze_dump_policy_record_result(&late, 1);
+    EXPECT_EQ(late.automatic_dumps, 4);
+
+    /* Each slot is filled again once. The output of a process stays bounded. */
+    observe_healthy(&late, 2000);
+    EXPECT_EQ(observe(&late, 3), 0);
+    EXPECT_EQ(observe(&late, 1), 0);
+    EXPECT_EQ(late.automatic_dumps, 4);
+    EXPECT_EQ(late.automatic_dumps, FREEZE_DUMP_AUTO_LIMIT);
+
+    /* The healthy samples must be in a row. Two halves do not add up. */
+    FreezeDumpPolicy broken = {0};
+    EXPECT_EQ(observe(&broken, 3), 1);
+    freeze_dump_policy_record_result(&broken, 1);
+    observe_healthy(&broken, 300);
+    EXPECT_EQ(observe(&broken, 3), 0);
+    observe_healthy(&broken, 300);
+    EXPECT_EQ(observe(&broken, 3), 0);
+    EXPECT_EQ(broken.automatic_dumps, 1);
+
+    /* A slot that was lost to failed writes gets the same second chance. */
+    FreezeDumpPolicy unwritten = {0};
+    for (uint32_t i = 0; i < FREEZE_DUMP_MAX_FAILED_ATTEMPTS; i++) {
+        EXPECT_EQ(observe(&unwritten, 5), 1);
+        freeze_dump_policy_record_result(&unwritten, 0);
+    }
+    EXPECT_EQ(observe(&unwritten, 5), 0);
+    observe_healthy(&unwritten, 600);
+    EXPECT_EQ(observe(&unwritten, 5), 1);
+    freeze_dump_policy_record_result(&unwritten, 1);
+    EXPECT_EQ(unwritten.automatic_dumps, 1);
 
     /* Equal wall seconds still produce distinct file names. */
     char path0[128], path1[128];
