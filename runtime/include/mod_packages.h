@@ -102,6 +102,9 @@ struct ModFeature {
      * VBlank pacing above the panel rate). The launcher shows its VSync row
      * as overridden instead of offering a choice that would not apply. */
     bool vsync_off = false;
+    /* Manifest `status_file` (format 14): a path relative to the exe folder
+     * whose first line the launcher shows as this feature's status. */
+    std::string status_file;
 };
 
 enum class ModConstraintKind {
@@ -718,5 +721,10 @@ ModPluginAudit mod_audit_registered_plugins(
 bool migrate_legacy_video_settings(ModPackageManager& manager,
                                    const std::filesystem::path& settings_path,
                                    std::string* error = nullptr);
+
+/* First line of <exe_dir>/<status_file>, without "\r", cut to 255 bytes on a
+ * UTF-8 boundary; empty when the file is missing. */
+std::string mod_feature_status_text(const std::filesystem::path& exe_dir,
+                                    const std::string& status_file);
 
 } // namespace PSXRecompV4
