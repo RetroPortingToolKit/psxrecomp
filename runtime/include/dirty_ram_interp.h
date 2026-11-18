@@ -94,6 +94,12 @@ typedef struct DirtyRamLoadDelay {
 void dirty_ram_ld_delay_save(DirtyRamLoadDelay *out);
 void dirty_ram_ld_delay_restore(const DirtyRamLoadDelay *in);
 
+/* Checkpoint resume: put back the pending load a state carried (its
+ * CPU_EXEC section) and keep it through the next
+ * dirty_ram_ld_delay_discard(), which psx_cycles_resync_after_restore calls
+ * after every load. Without the section the load is dropped as before. */
+void dirty_ram_ld_delay_restore_from_state(const DirtyRamLoadDelay *in);
+
 /* Re-anchor host-only dirty IRQ pump ambient (entry-poll stride + 4096-insn
  * gap) after snap restore. Not in boot_state — peers that drifted through FMV
  * otherwise entered the post-FMV dirty wait on opposite poll phases. */
@@ -181,6 +187,12 @@ int      dirty_ram_is_dirty(uint32_t phys);
  * on writes into the body. Runtime-patched bodies (pad/SIO install stubs)
  * never verify and keep interpreting — faithful either way. */
 int      psx_kernel_bless_dispatchable(uint32_t phys);
+/* Nonzero when the active image's bless table fits the runtime's
+ * verify-state array. When it does not, bless is off for the whole run.
+ * Reads only; sets *entries and *capacity when non-NULL. */
+int      psx_kernel_bless_table_fits(uint32_t *entries, uint32_t *capacity);
+/* Bless latch: -1 not decided yet, 0 off, 1 on. Reads only. */
+int      psx_kernel_bless_state(void);
 /* True when a declared kernel patch range ENDS at this RAM address. The
  * emitter registered that PC as a continuation key, so the interpreter hands
  * straight-line flow back to static dispatch there and only the guest's
@@ -188,6 +200,7 @@ int      psx_kernel_bless_dispatchable(uint32_t phys);
 int      psx_kernel_patch_range_ends_at(uint32_t phys);
 void     psx_kernel_bless_note_range(uint32_t phys, uint32_t len);
 void     psx_kernel_bless_stats(uint64_t out[8]);
+void     psx_kernel_bless_paranoid_stats(uint64_t out[5]);
 void     psx_kernel_bless_resync_after_restore(void);
 /* Soft-return rematch / BIOS switch: drop latched SCPH↔OpenBIOS window +
  * CLEAN/MISMATCH so the next kbless_on() re-reads psx_bios_image. */
@@ -219,6 +232,17 @@ void     dirty_ram_text_guard_resync_after_restore(void);
 void     dirty_ram_mark_executable_range(uint32_t phys, uint32_t len);
 void     dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
                                        uint32_t len);
+/* Pages where the boot executable the console loads differs from the image the
+ * static code was generated from (text_source_guard.h). Native text dispatch
+ * is refused on them. Call after dirty_ram_register_text_image. */
+uint32_t dirty_ram_text_note_source_image(const uint8_t *loaded,
+                                          uint32_t phys_lo, uint32_t len,
+                                          const uint32_t *source_crc32,
+                                          uint32_t source_count,
+                                          uint32_t source_phys_lo,
+                                          uint32_t source_len,
+                                          uint32_t *first_phys);
+uint32_t dirty_ram_text_foreign_pages(void);
 int      dirty_ram_text_native_ok(uint32_t phys);
 /* Exact CFG ranges, always checked in full even at a continuation. */
 int      dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
@@ -238,6 +262,7 @@ uint64_t dirty_ram_text_compare_calls(void);
 void     dirty_ram_text_bless(uint32_t phys, const uint8_t *bytes, uint32_t len);
 uint64_t dirty_ram_text_native_blocked(void);
 uint32_t dirty_ram_text_diverged_pages(void);
+int      dirty_ram_text_image_range(uint32_t *lo, uint32_t *hi);
 
 /* Counters for visibility / TCP debug.  Increment in interpreter; expose
  * via debug_server.c if helpful. */

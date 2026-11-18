@@ -75,6 +75,39 @@ void autocompile_shutdown(void);
  * exit code, and the output tail. Returns bytes written. */
 int  autocompile_status_json(char *out, int cap);
 
+/* The overlay compile results of this start, as one JSON object for the run
+ * report (psx_last_run_report.json, key "overlay_compile"). A product has no
+ * debug server, so this is how a start says that units failed to compile and
+ * ran interpreted. Fields:
+ *
+ *   configured, state            is a compile command set; idle/running/done
+ *   consistent                   0 when the copy was taken without the lock
+ *   runs, runs_failed            driver runs started; failures: a run that ended
+ *                                badly or a driver that could not be started,
+ *                                so runs_failed can be larger than runs
+ *   runs_with_result             runs that printed their PSX_SHARD_RESULT line
+ *   runs_stopped_at_quit         runs that a normal quit stopped; a result line
+ *                                such a run had printed is counted
+ *   units_compiled, units_failed, units_skipped
+ *                                those result lines, summed over the start
+ *   units_attempted              units_compiled + units_failed
+ *   fail_lines                   "SHARD FAIL" lines seen, counted as they
+ *                                arrive: it includes a run that the end of
+ *                                the start cut short, which has no result line
+ *   failure_classes              up to failure_classes_max entries:
+ *                                class, count, first (the first SHARD FAIL
+ *                                line of the class), first_error (the
+ *                                compiler's first error line for it, or "")
+ *   fail_lines_in_unnamed_classes  failures in classes past that bound
+ *   output_tail                  the last output_tail_max bytes of the latest
+ *                                run's output
+ *
+ * Each text is cut at failure_text_max bytes. A unit that fails in two runs is
+ * counted twice. Returns the bytes written; the object is always complete
+ * ("{}" when cap is too small). It never waits for a lock: it is called from
+ * the crash handler. */
+int  autocompile_report_json(char *out, int cap);
+
 /* Why overlay autocompile cannot work, or NULL if nothing is known to be wrong.
  *
  * When this is non-NULL, no shard will ever be compiled and overlay execution

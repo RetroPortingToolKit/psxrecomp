@@ -33,6 +33,7 @@
 #include "render_pass.h"
 #include "render_pass_plan.h"
 #include "starvation_ring.h"
+#include "text_source_guard.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -238,6 +239,7 @@ int psx_peek_word(uint32_t addr, uint32_t *out) {
 }
 void memory_clear_low_boot_scratch(void) {
     memset(ram, 0, 0x10u);
+    psx_kernel_bless_note_range(0u, 0x10u);   /* raw write: see the rule there */
 }
 
 /* ---- Dirty-page tracking for install-at-runtime code (CLAUDE.md Rule 18) ----
@@ -339,6 +341,16 @@ static uint64_t kbless_native_hits   = 0;
 static uint64_t kbless_verifies      = 0;
 static uint64_t kbless_mismatches    = 0;
 static uint64_t kbless_invalidations = 0;
+/* PSX_KERNEL_BLESS_PARANOID=1 (diagnostic): re-compare the body at every
+ * dispatch instead of trusting the row. A row that says CLEAN over bytes
+ * that differ means a RAM write reached the window without telling the
+ * table; that count must stay 0. It costs one body compare per kernel
+ * dispatch, so it is never a default. */
+static int      kbless_paranoid = 0;
+static uint64_t kbless_paranoid_checks         = 0;
+static uint64_t kbless_paranoid_bytes          = 0;
+static uint64_t kbless_paranoid_stale_clean    = 0;
+static uint64_t kbless_paranoid_stale_mismatch = 0;
 
 static int kbless_on(void) {
     if (kbless_enabled < 0) {
@@ -360,6 +372,13 @@ static int kbless_on(void) {
         {
             const char* pe = getenv("PSX_KERNEL_PATCH_RANGES");
             if (pe && pe[0] == '0') s_kb_pr_n = 0;
+        }
+        {
+            const char* pe = getenv("PSX_KERNEL_BLESS_PARANOID");
+            kbless_paranoid = (pe && pe[0] == '1') ? 1 : 0;
+            if (kbless_paranoid)
+                fprintf(stderr, "psxrecomp: kernel-bless paranoid mode ON "
+                        "(diagnostic: every kernel dispatch re-compares its body)\n");
         }
         if (s_kb_span == 0) kbless_enabled = 0;   /* BIOS with no bless window */
         /* The emitted constants must agree with each other and the ROM
@@ -419,9 +438,28 @@ int psx_kernel_bless_dispatchable(uint32_t phys) {
     int i = kbless_find(phys);
     if (i < 0) return 0;
     uint8_t st = kbless_state[i];
+    const PsxKernelBody* b = &psx_bios_kernel_bodies[i];
+    if (kbless_paranoid && st != KBLESS_UNKNOWN) {
+        uint64_t skips = 0;   /* keep the verifier's own counter untouched */
+        int differs = psx_kernel_patch_cmp(s_kb_pr, s_kb_pr_n, ram, bios_rom,
+                                           s_kb_lo, s_kb_rom_off,
+                                           b->body_lo, b->body_hi, &skips) != 0;
+        kbless_paranoid_checks++;
+        kbless_paranoid_bytes += b->body_hi - b->body_lo;
+        if (st == KBLESS_CLEAN && differs) {
+            /* The defect this mode exists to find. Fail safe: interpret. */
+            if (kbless_paranoid_stale_clean++ < 16u)
+                fprintf(stderr, "KBLESS PARANOID: key %08X body [%08X,%08X) is "
+                        "marked clean but differs from the ROM\n",
+                        phys, b->body_lo, b->body_hi);
+            kbless_state[i] = KBLESS_MISMATCH;
+            kbless_mismatches++;
+            return 0;
+        }
+        if (st == KBLESS_MISMATCH && !differs) kbless_paranoid_stale_mismatch++;
+    }
     if (st == KBLESS_CLEAN)    { kbless_native_hits++; return 1; }
     if (st == KBLESS_MISMATCH) return 0;
-    const PsxKernelBody* b = &psx_bios_kernel_bodies[i];
     kbless_verifies++;
     if (psx_kernel_patch_cmp(s_kb_pr, s_kb_pr_n, ram, bios_rom,
                              s_kb_lo, s_kb_rom_off,
@@ -459,8 +497,16 @@ static void kbless_note_write(uint32_t phys) {
     }
 }
 
-/* Range write (DMA / EXE load / savestate restore) overlapping the window:
- * bulk, rare events — reset every entry rather than per-byte scanning. */
+/* Range write (savestate restore, or any other store into guest RAM that
+ * does not go through psx_write_word/half/byte) overlapping the window:
+ * bulk, rare events — reset every entry rather than per-byte scanning.
+ *
+ * The rule: the row state follows RAM *writes*. A store through
+ * psx_write_word/half/byte reports itself (kbless_note_write). Every other
+ * writer of guest RAM calls this, next to the write.
+ * tests/test_raw_ram_writers.py lists those writers and fails on a new one
+ * that does not. Marking a range executable is not a write and resets
+ * nothing: see dirty_ram_mark_executable_range. */
 void psx_kernel_bless_note_range(uint32_t phys, uint32_t len) {
     if (kbless_enabled <= 0) return;   /* also pre-init: nothing verified yet */
     if (len == 0) return;
@@ -498,6 +544,35 @@ void psx_kernel_bless_stats(uint64_t out[8]) {
     out[7] = kbless_patch_skips;
 }
 
+/* Paranoid mode for the run report: [0] on, [1] dispatches re-compared,
+ * [2] bytes compared, [3] rows marked clean over bytes that differ (must be
+ * 0), [4] rows marked mismatched over bytes that match (a lost speed-up,
+ * not an error). */
+void psx_kernel_bless_paranoid_stats(uint64_t out[5]) {
+    out[0] = (uint64_t)kbless_paranoid;
+    out[1] = kbless_paranoid_checks;
+    out[2] = kbless_paranoid_bytes;
+    out[3] = kbless_paranoid_stale_clean;
+    out[4] = kbless_paranoid_stale_mismatch;
+}
+
+/* Does the active image's bless table fit kbless_state? kbless_on() turns
+ * bless off for the whole run when it does not. This reports that decision
+ * for the run report; it reads the selected backend's constants and changes
+ * no state. */
+int psx_kernel_bless_table_fits(uint32_t *entries, uint32_t *capacity) {
+    if (entries) *entries = psx_bios_kernel_body_count;
+    if (capacity) *capacity = KBLESS_MAX_ENTRIES;
+    return psx_bios_kernel_body_count <= KBLESS_MAX_ENTRIES;
+}
+
+/* Bless latch for the run report: -1 not decided yet (no kernel-window
+ * dispatch so far), 0 off (PSX_KERNEL_BLESS=0 or an image with no bless
+ * window), 1 on. Reads only. */
+int psx_kernel_bless_state(void) {
+    return kbless_enabled;
+}
+
 void psx_kernel_bless_resync_after_restore(void) {
     /* kbless_state is host-only. CLEAN/MISMATCH are sticky across guest
      * stores only via kbless_note_write; savestate RAM memcpy never hits
@@ -517,6 +592,7 @@ void psx_kernel_bless_reset_for_boot(void) {
     s_kb_rom_off = 0;
     s_kb_pr = NULL;
     s_kb_pr_n = 0;
+    kbless_paranoid = 0;
     memset(kbless_state, KBLESS_UNKNOWN, sizeof(kbless_state));
 }
 
@@ -592,6 +668,18 @@ static uint32_t g_text_exact_last_mismatch = 0;
 static uint32_t g_text_exact_last_live = 0;
 static uint32_t g_text_exact_last_ref = 0;
 
+/* Pages where the boot executable the console loads differs from the image
+ * the static code was generated from (text_source_guard.h). The reference
+ * image above cannot show this: an installed product reads it from the mounted
+ * disc, so it agrees with RAM. A disc of a multi-disc set that carries the
+ * program with a per-disc code difference would otherwise run the other
+ * disc's compiled instruction. Native code never runs over such a page; the
+ * interpreter runs the loaded bytes. Unlike the modified and diverged bitmaps
+ * this is not RAM state: it is fixed for the loaded executable, so a restore
+ * or a reset does not clear it. Only registering an image does. */
+static uint32_t text_foreign_bitmap[DIRTY_RAM_BITMAP_WORDS];
+static uint32_t g_text_foreign_pages = 0;
+
 void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
                                    uint32_t len) {
     if (!bytes || len == 0 || phys_lo >= RAM_LIVE) return;
@@ -602,6 +690,8 @@ void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
     g_psx_text_write_hi = phys_lo + len;
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
+    memset(text_foreign_bitmap, 0, sizeof(text_foreign_bitmap));
+    g_text_foreign_pages = 0;
     g_text_native_blocked = 0;
     g_text_diverged_pages = 0;
     g_text_exact_mismatches = 0;
@@ -613,6 +703,36 @@ void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
 }
 
 int dirty_ram_text_image_registered(void) { return text_ref_image != NULL; }
+
+/* Compare the boot executable image the console loads (`loaded`, at phys_lo)
+ * with the per-page CRCs of the image the static code was generated from.
+ * Call after dirty_ram_register_text_image. Returns the number of pages that
+ * differ; *first_phys receives the lowest one. */
+uint32_t dirty_ram_text_note_source_image(const uint8_t *loaded,
+                                          uint32_t phys_lo, uint32_t len,
+                                          const uint32_t *source_crc32,
+                                          uint32_t source_count,
+                                          uint32_t source_phys_lo,
+                                          uint32_t source_len,
+                                          uint32_t *first_phys) {
+    memset(text_foreign_bitmap, 0, sizeof(text_foreign_bitmap));
+    if (phys_lo >= RAM_LIVE) {
+        g_text_foreign_pages = 0;
+        if (first_phys) *first_phys = 0;
+        return 0;
+    }
+    if (len > RAM_LIVE - phys_lo) len = RAM_LIVE - phys_lo;
+    g_text_foreign_pages = psx_text_source_mismatch(
+        loaded, phys_lo, len, source_crc32, source_count, source_phys_lo,
+        source_len, text_foreign_bitmap, DIRTY_RAM_BITMAP_WORDS, first_phys);
+    return g_text_foreign_pages;
+}
+
+uint32_t dirty_ram_text_foreign_pages(void) { return g_text_foreign_pages; }
+
+static inline int text_page_foreign(uint32_t page) {
+    return (text_foreign_bitmap[page >> 5] >> (page & 31u)) & 1u;
+}
 
 static inline void text_guard_note_write(uint32_t phys, uint32_t val, int size) {
     if (!text_ref_image) return;
@@ -639,6 +759,10 @@ int dirty_ram_text_native_ok(uint32_t phys) {
 
     uint32_t page = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t bit = 1u << (page & 31u);
+    if (g_text_foreign_pages && text_page_foreign(page)) {
+        g_text_native_blocked++;
+        return 0;
+    }
     if (text_diverged_bitmap[page >> 5] & bit) {
         g_text_native_blocked++;
         return 0;
@@ -697,6 +821,21 @@ int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
             return 0;
         }
         any = 1;
+        /* The loaded executable differs from the generated-from image on a
+         * page this range touches: the static body is not this disc's code.
+         * One compare of a counter when no page differs, which is every disc
+         * the build was generated from. */
+        if (g_text_foreign_pages) {
+            uint32_t fp0 = phys >> DIRTY_RAM_PAGE_SHIFT;
+            uint32_t fp1 = (phys + len - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+            uint32_t fp;
+            for (fp = fp0; fp <= fp1; fp++) {
+                if (text_page_foreign(fp)) {
+                    g_text_native_blocked++;
+                    return 0;
+                }
+            }
+        }
         /* Page-clean fast path: every page this range touches is neither
          * guard-modified nor runtime-dirty, so its bytes still equal the
          * reference image — skip the memcmp. This keeps the emitted
@@ -790,6 +929,13 @@ void dirty_ram_text_bless(uint32_t phys, const uint8_t *bytes, uint32_t len) {
 
 uint64_t dirty_ram_text_native_blocked(void) { return g_text_native_blocked; }
 uint32_t dirty_ram_text_diverged_pages(void) { return g_text_diverged_pages; }
+/* The reference image's physical range, for the run report.
+ * Returns 0 when the guard is not armed. */
+int dirty_ram_text_image_range(uint32_t *lo, uint32_t *hi) {
+    if (lo) *lo = g_psx_text_write_lo;
+    if (hi) *hi = g_psx_text_write_hi;
+    return text_ref_image != NULL;
+}
 uint32_t dirty_ram_text_modified_bitmap_word(uint32_t word_index) {
     if (word_index >= DIRTY_RAM_BITMAP_WORDS) return 0;
     return text_modified_bitmap[word_index];
@@ -799,9 +945,16 @@ uint32_t dirty_ram_text_diverged_bitmap_word(uint32_t word_index) {
     return text_diverged_bitmap[word_index];
 }
 
+/* Marks pages as holding code that must be re-checked before a native
+ * dispatch. It writes no guest RAM, so it leaves the kernel-bless rows
+ * alone. It used to reset all of them, and the generated BIOS dispatch
+ * calls this on every RAM-alias dispatch of a continuation key (the
+ * exception handler's 0xD00/0xE10/0xE28): each such dispatch threw away
+ * every verified row, about a million re-verifies in a two-minute start.
+ * Callers that do write RAM go through psx_write_*, which
+ * invalidates the rows the write touches. */
 void dirty_ram_mark_executable_range(uint32_t phys, uint32_t len) {
     if (len == 0 || phys >= RAM_LIVE) return;
-    psx_kernel_bless_note_range(phys, len);
     uint32_t end = phys + len - 1u;
     if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
 
@@ -1086,6 +1239,18 @@ uint64_t g_kseg2_ignored_writes;
 
 /* Cache control register (KSEG2: 0xFFFE0130). */
 static uint32_t cache_ctrl;
+
+void memory_control_get(uint32_t out[PSX_MEMORY_CONTROL_WORDS]) {
+    memcpy(out, mem_ctrl, sizeof mem_ctrl);
+    out[16] = ram_size_reg;
+    out[17] = cache_ctrl;
+}
+
+void memory_control_set(const uint32_t in[PSX_MEMORY_CONTROL_WORDS]) {
+    memcpy(mem_ctrl, in, sizeof mem_ctrl);
+    ram_size_reg = in[16];
+    cache_ctrl = in[17];
+}
 
 /* Pointer to cpu->cop0[12] (SR).  Set once at init.
  * Used by write functions to check the IsC (Isolate Cache) bit: while it is
@@ -1383,9 +1548,9 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
     if (addr >= 0x1F801100u && addr <= 0x1F80112Fu) {
         return timers_read(addr);
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        return cdrom_read(addr);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        return cdrom_read(0x1F801800u | (addr & 3u));
     }
     /* GPU: 0x1F801810 (GPUREAD), 0x1F801814 (GPUSTAT) */
     if (addr == 0x1F801810u) return gpu_read_gpuread();
@@ -1447,9 +1612,9 @@ static void mmio_write32(uint32_t addr, uint32_t val) {
         timers_write(addr, val);
         return;
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        cdrom_write(addr, val);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        cdrom_write(0x1F801800u | (addr & 3u), val);
         return;
     }
     /* GPU GP0: 0x1F801810, GP1: 0x1F801814 */
@@ -1638,9 +1803,9 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
         uint32_t val = mdec_read(addr & ~3u);
         return (uint8_t)(val >> (8 * (addr & 3)));
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        return (uint8_t)cdrom_read(addr);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        return (uint8_t)cdrom_read(0x1F801800u | (addr & 3u));
     }
     /* Expansion 2 / POST: 0x1F802000..0x1F802FFF */
     if (addr >= 0x1F802000u && addr <= 0x1F802FFFu) {
@@ -1725,9 +1890,9 @@ static void mmio_write8(uint32_t addr, uint8_t val) {
         mdec_write(aligned, cur);
         return;
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        cdrom_write(addr, val);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        cdrom_write(0x1F801800u | (addr & 3u), val);
         return;
     }
     /* Expansion 2 / POST: 0x1F802000..0x1F802FFF */

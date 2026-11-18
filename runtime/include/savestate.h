@@ -64,6 +64,26 @@ void savestate_configure(const char* dir, uint32_t bios_checksum, uint32_t entry
  * so their existing paths are untouched. */
 void savestate_set_disc_scope(int disc_number);
 
+/* The disc number in the current file names; 0 when scoping is off. */
+int savestate_disc_scope(void);
+
+/* The discs of the set a load may mount, as numbered in the file names (the
+ * roster positions cdrom_disc_select() uses). With none set, a slot shows
+ * only the mounted disc's state. */
+#define SAVESTATE_MAX_DISCS 8
+void savestate_set_disc_roster(const int* disc_numbers, int count);
+
+/* Whether a slot may show another disc's state. On by default; off while a
+ * recorded input replay plays, whose baseline is the mounted disc's file. */
+void savestate_set_cross_disc(int enabled);
+
+/* The disc whose state the slot shows: the mounted disc's when it has one,
+ * else the newest state another disc of the roster left in that slot. 0 when
+ * the slot is empty or scoping is off. Netplay sees only the mounted disc.
+ * Loading another disc's state mounts that disc first, with no lid event
+ * (cdrom_disc_restore_begin); saving always writes the mounted disc's file. */
+int savestate_slot_disc(int slot);
+
 /* Namespace slot files and their sidecars by a committed content-plan SHA-256.
  * NULL/empty restores historical paths; invalid input blocks saves/loads rather
  * than falling back to shared slots. Changing scope cancels pending requests.
@@ -84,6 +104,14 @@ uint32_t savestate_openbios_wordsum(void);
 
 /* Integrity key last passed to savestate_configure (for sandbox rebind). */
 void savestate_get_integrity(uint32_t* bios_checksum, uint32_t* entry_pc);
+
+/* Checkpoint capture (tas_checkpoint.c): call fn once, at the next boundary
+ * where a slot save could be written, with the CPU state a save would hold.
+ * Unlike a slot save it waits for a safe resume PC without a time limit.
+ * Returns 0 when a capture is already staged. */
+typedef void (*savestate_checkpoint_fn)(const CPUState* snap, uint32_t bios_checksum,
+                                        uint32_t entry_pc);
+int savestate_request_checkpoint(savestate_checkpoint_fn fn);
 
 /* Path for a manual slot or SAVESTATE_QUICK_SLOT. Returns 1 on success. */
 int savestate_slot_path(int slot, char* out, size_t cap);

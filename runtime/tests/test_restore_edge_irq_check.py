@@ -32,8 +32,18 @@ def main():
     assert "if (g_sched_restore_edge_check) {" in loop
     assert "g_sched_restore_edge_check = 0;" in loop
     assert "psx_check_interrupts_dispatch_entry(cpu, run_pc);" in loop
-    # Armed only by resume_at (all restores), never by the recovery path.
-    assert traps.count("g_sched_restore_edge_check = 1;") == 1
+    # Armed only by the two restore entries, never by the recovery path:
+    # resume_at (restores inside a run) and arm_resume (a checkpoint restored
+    # before the run starts, which psx_scheduler_run must not reset).
+    arm = function_body(traps, "int psx_scheduler_arm_resume(uint32_t resume_pc)")
+    assert "g_sched_restore_edge_check = 1;" in arm
+    assert "g_sched_escape.reason     = PSX_RUN_RESUME_CURRENT;" in arm
+    assert "longjmp(" not in arm
+    assert traps.count("g_sched_restore_edge_check = 1;") == 2
+    run = function_body(traps, "void psx_scheduler_run(CPUState* cpu)")
+    head = run[:run.index("for (;;)")]
+    assert "if (g_sched_resume_armed) g_sched_resume_armed = 0;" in head
+    assert "else g_sched_escape.reason = PSX_RUN_CONTINUE;" in head
     print("restore edge irq check: ok")
 
 

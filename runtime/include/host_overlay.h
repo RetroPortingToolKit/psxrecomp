@@ -145,6 +145,10 @@ void     psx_video_current(PsxHostVideoSettings *out);
  * (the in-game menu's quick relaunch for restart-only settings). Returns only
  * on failure. */
 void psx_relaunch_self(int argc, char** argv);
+/* The same with arguments appended after the original ones (later flags win):
+ * the menu relaunches with "--launcher" to return to the launcher, and with
+ * "--no-launcher --disc <current disc>" to restart straight into the game. */
+void psx_relaunch_self_with(int argc, char** argv, const char* const* extra, int extra_n);
 /* Windows command-line quoting for one argument (CommandLineToArgvW rules);
  * returns the quoted length, writing at most cap-1 chars plus NUL to out
  * (out may be NULL to measure). Portable, for tests. */

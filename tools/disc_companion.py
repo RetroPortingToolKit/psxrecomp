@@ -26,6 +26,32 @@ REQUIRED_SBI = {
     },
 }
 
+# Warning metadata only: serials of the matching Redump entries.
+# Serial membership does not qualify another pressing or an SBI representation.
+KNOWN_LIBCRYPT_TRACKS = {
+    "c1c65362b596a7d5d9719c3abbae625b78ec299a": "SCES-02105",
+    "efb95015a057fe55206f4d7aeba4ce9d18f9234d": "SLES-02965",
+    "f193396e90ffa80cddd48cf5686d55d6fa6c6e84": "SLES-12965",
+    "713af56bb5c6cb683411e993874a55bef4dfb8da": "SLES-22965",
+    "b73a9f9334144c0435570668f024ef09a331bfa0": "SLES-32965",
+}
+
+# Native warning metadata: the remaining LibCrypt serials.
+# Keep measured track identities and exact-revision requirements separate.
+KNOWN_LIBCRYPT_SERIALS = set(KNOWN_LIBCRYPT_TRACKS.values()) | {
+    entry["serial"] for entry in REQUIRED_SBI.values()
+} | {
+    "SLES-01301",  # Legacy of Kain: Soul Reaver
+    "SLES-02328", "SLES-12328", "SLES-22328",  # Galerians, discs 1-3
+    "SLES-03324",  # Asterix: Mega Madness
+    "SLES-03530",  # Lucky Luke: Western Fever
+}
+
+
+def missing_sbi_warning(image: Path, serial: str) -> str:
+    return (f'Missing SBI: {serial} is associated with LibCrypt and no SBI was loaded '
+            f'for "{image.name}", so the game may stop or fail to run correctly.')
+
 
 def validate_sbi(data: bytes) -> int:
     """Check the nonempty type-1 format accepted by ISOReader::LoadSBICompanion."""
@@ -70,6 +96,10 @@ def inspect_companion(image: Path, size: int, sha1: str) -> tuple[dict, bytes | 
                 f"{expected}, then retry. A matching main-track hash does not include subchannel data. "
                 "Setup does not supply or download SBI files."
             )
+        serial = KNOWN_LIBCRYPT_TRACKS.get(sha1.lower())
+        if serial:
+            report.update(known_libcrypt_serial=serial,
+                          warning=missing_sbi_warning(image, serial))
         return report, None
     companion = matches[0]
     try:

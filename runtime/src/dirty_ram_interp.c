@@ -38,6 +38,7 @@
 #include "lockstep.h"
 #include "starvation_ring.h"
 #include "fntrace.h"  /* fntrace_is_game_started / fntrace_mark_game_started */
+#include "interp_report.h"
 #include "psx_segment_miss.h"  /* segment misses in static game code (§5.5) */
 #include "draw_distance.h"    /* [[draw_distance.clamp]] sites */
 #include "mod_plugins.h"       /* instruction guards and effective-address adapters */
@@ -261,6 +262,27 @@ static DirtyRamPcEntry *pc_table_get_or_insert_in(DirtyRamPcEntry *table, uint32
     return NULL;
 }
 
+static PsxInterpPreload s_pc_table_preload;
+
+void dirty_ram_pc_table_game_load(void) {
+    extern void overlay_loader_get_miss_reasons(uint64_t above_kernel[PSX_INTERP_MISS_REASONS],
+                                                uint64_t kernel[PSX_INTERP_MISS_REASONS]);
+    uint64_t interpreter[5] = { g_dirty_ram_blocks_run, g_dirty_ram_insns_run,
+                                g_dirty_ram_aborts, g_dirty_ram_guard_yields,
+                                g_dirty_ram_native_handoffs };
+    uint64_t miss[2][PSX_INTERP_MISS_REASONS];
+    overlay_loader_get_miss_reasons(miss[0], miss[1]);
+    psx_interp_preload_counters(&s_pc_table_preload, interpreter, miss);
+    psx_interp_preload_close(g_dirty_ram_pc_table, DIRTY_RAM_PC_TABLE_SIZE,
+                             DIRTY_RAM_KERNEL_WINDOW_END, g_text_image_lo,
+                             g_overlay_region_floor, s_frame_count,
+                             &s_pc_table_preload);
+}
+
+void dirty_ram_pc_table_preload(PsxInterpPreload *out) {
+    if (out) *out = s_pc_table_preload;
+}
+
 static DirtyRamPcEntry *pc_table_get_or_insert(uint32_t pc) {
     return pc_table_get_or_insert_in(g_dirty_ram_pc_table, pc);
 }
@@ -356,7 +378,14 @@ void dirty_ram_ld_delay_flush(CPUState *cpu) {
     cpu->gpr[0] = 0;
 }
 
+/* Set by a CPU_EXEC section load; the next discard keeps the restored value. */
+static int s_ld_pend_from_state = 0;
+
 void dirty_ram_ld_delay_discard(void) {
+    if (s_ld_pend_from_state) {
+        s_ld_pend_from_state = 0;
+        return;
+    }
     s_ld_pend_armed = 0;
     s_ld_pend_age   = 0;
     s_ld_pend_rt    = 0;
@@ -377,6 +406,12 @@ void dirty_ram_ld_delay_restore(const DirtyRamLoadDelay *in) {
     s_ld_pend_val = in->val;
     s_ld_pend_age = in->age;
     s_ld_pend_armed = in->armed;
+}
+
+void dirty_ram_ld_delay_restore_from_state(const DirtyRamLoadDelay *in) {
+    if (!in) return;
+    dirty_ram_ld_delay_restore(in);
+    s_ld_pend_from_state = 1;
 }
 
 void dirty_ram_irq_ambient_resync_after_restore(void) {
@@ -973,6 +1008,17 @@ static int dirty_ram_pump_boundary(CPUState *cpu, uint32_t committed_pc, int sit
     }
 
     cpu->pc = committed_pc;
+    /* A committed control transfer (site 1) is architecturally clean, but a
+     * deferred in-exception switch is honored only at a site-0 poll. If one is
+     * pending, surface to the dispatcher with cpu->pc = the committed target:
+     * the flat re-dispatch re-enters this interpreter there, and its entry poll
+     * honors the switch. Only site 1 surfaces; other pump sites expose
+     * candidate PCs whose CPUState may not be materialized. */
+    if (site == 1) {
+        extern int psx_deferred_switch_is_pending(void);
+        if (psx_deferred_switch_is_pending() && !psx_get_in_exception())
+            return 1;
+    }
     return 0;
 }
 
@@ -1482,6 +1528,10 @@ static int exec_one(CPUState *cpu, uint32_t pc, uint32_t *next_pc_out) {
     return exec_one_fetched(cpu, pc, fetch_word(pc & 0x1FFFFFFFu), next_pc_out);
 }
 
+/* Set while exec_delay_slot runs its instruction. A BREAK there keeps the
+ * fatal exit: EPC and Cause.BD would have to name the branch. */
+static int s_in_delay_slot = 0;
+
 /* Forward: helper for delay-slot execution on jumps/branches. */
 static void exec_delay_slot(CPUState *cpu, uint32_t pc) {
     /* Delay-slot instruction at pc must NOT be a control transfer.
@@ -1503,7 +1553,10 @@ static void exec_delay_slot(CPUState *cpu, uint32_t pc) {
         return;
     }
     uint32_t dummy_next = 0;
+    const int outer_slot = s_in_delay_slot;
+    s_in_delay_slot = 1;
     (void)exec_one_fetched(cpu, pc, insn, &dummy_next);
+    s_in_delay_slot = outer_slot;
     g_dirty_ram_insns_run++;
     /* CYCLE MODEL: the delay-slot instruction is a real retired R3000A instruction
      * and is charged its own per-instruction interlock INSIDE exec_one (top-of-fn
@@ -1883,9 +1936,17 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             cpu->pc = pc;
             psx_syscall(cpu, (insn >> 6) & 0xFFFFFu);
             return (cpu->pc != 0);
-        case 0x0D: /* BREAK */
+        case 0x0D: { /* BREAK */
+            /* The guest's own vector handles it when the guest installed one
+             * (psx_break_vector.h); otherwise the fatal report. */
+            extern int psx_break_enter_guest_vector(CPUState *cpu, uint32_t pc);
+            if (!s_in_delay_slot) {
+                dirty_ram_ld_delay_flush(cpu);   /* pipeline drains on exception entry */
+                if (psx_break_enter_guest_vector(cpu, pc)) return 1;
+            }
             psx_break(cpu, (insn >> 6) & 0xFFFFFu, pc);
             return 1;
+        }
         case 0x0F: /* SYNC */
             return 0;
         case 0x10: /* MFHI */
@@ -3538,7 +3599,13 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
                 !psx_get_in_exception() &&
                 (sr & 0x1u) != 0u &&
                 (sr & (1u << 10)) != 0u;
-            if (deliverable || (++s_interp_entry_poll & 0x3Fu) == 0) {
+            /* A fresh interpreter entry is a materialized boundary; poll when a
+             * deferred in-exception switch is pending so a thread spinning in
+             * one local-flow run can still be switched away (see
+             * dirty_ram_pump_boundary site 1, which brings it back here). */
+            extern int psx_deferred_switch_is_pending(void);
+            int defer_pending = psx_deferred_switch_is_pending() && !psx_get_in_exception();
+            if (deliverable || defer_pending || (++s_interp_entry_poll & 0x3Fu) == 0) {
                 cpu->pc = pc;
                 s_last_dirty_irq_pump_insns = g_dirty_ram_insns_run;
                 psx_check_interrupts_at(cpu, pc);

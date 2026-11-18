@@ -73,16 +73,18 @@ static int disp_ring_materialize(DispRingEntry *e) { return e->valid!=0; }
 
 static void disp_ring_capture(void)
 {
-    /* Full-VRAM GL readback is intentionally expensive and can perturb the
-     * performance issue being measured. Keep the forensic ring default-on, but
-     * allow a controlled acceptance run to disable continuous capture while
-     * retaining the TCP server and one-shot screenshot command. */
+    /* Native GPU history stays enabled by default. The legacy full-VRAM
+     * readback path is opt-in during threaded rendering; explicit overrides
+     * still control both paths, independently of input/replay recording. */
     static int enabled = -1;
     if (enabled < 0) {
         const char *e = getenv("PSX_DISPLAY_RING");
-        enabled = (!e || !*e || *e != '0') ? 1 : 0;
+        enabled = (e && *e) ? (*e != '0') : 2;
     }
     if (!enabled || s_capture_frozen) return;
+#if !defined(PSX_GPU_DISPLAY_HISTORY) || !PSX_GPU_DISPLAY_HISTORY
+    if (enabled == 2 && gl_renderer_render_thread_active()) return;
+#endif
     if (!s_disp_ring_px) {
         size_t vram = (size_t)1024 * 512;
         s_disp_ring_px = (uint16_t *)malloc(DISP_RING_CAP * vram * sizeof(uint16_t));

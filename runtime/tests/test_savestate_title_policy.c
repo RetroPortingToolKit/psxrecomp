@@ -35,6 +35,10 @@ int psx_irq_resume_context_snapshot_site(void) { return 0; }
 void interrupts_resync_after_restore(void) { assert(0); }
 void psx_cycles_resync_after_restore(struct CPUState* cpu) { (void)cpu; assert(0); }
 void cdrom_accelerate_after_savestate(void) { assert(0); }
+int cdrom_disc_restore_begin(int disc) { (void)disc; assert(0); return 0; }
+void cdrom_disc_restore_end(int keep) { (void)keep; assert(0); }
+uint32_t psx_rewind_discard_history(void) { assert(0); return 0; }
+void psx_savestate_menu_note_slots_changed(void) { assert(0); }
 void psx_scheduler_resume_at(uint32_t pc) { (void)pc; assert(0); }
 void psx_frontend_on_savestate_loaded(void) { assert(0); }
 void psx_frontend_on_savestate_notify(int load, int slot, int ok) {
@@ -73,6 +77,14 @@ int boot_state_check_buffer(const uint8_t* data, size_t size, uint32_t bios,
                              uint32_t entry, char* reason, size_t cap) {
     (void)data; (void)size; (void)bios; (void)entry; (void)reason; (void)cap;
     assert(0); return 0;
+}
+
+static int checkpoint_calls;
+static uint32_t checkpoint_pc;
+static void checkpoint_probe(const CPUState* snap, uint32_t bios, uint32_t entry) {
+    (void)bios; (void)entry;
+    ++checkpoint_calls;
+    checkpoint_pc = snap->pc;
 }
 
 static void check_pending_status(int pending) {
@@ -244,6 +256,18 @@ int main(void) {
     mod_callback = override_callback = g_psx_guest_time_frozen = 0;
     host_depth = 0;
     savestate_set_title_blocked(0);
+    /* A checkpoint capture waits for a safe resume PC with no time limit,
+     * runs once with that PC, and writes no slot file. */
+    assert(savestate_request_checkpoint(checkpoint_probe) && g_psx_savestate_pending && !savestate_pending());
+    assert(!savestate_request_checkpoint(checkpoint_probe));
+    context_safe = 0;
+    for (int i = 0; i < 3; ++i) savestate_poll(&cpu, 0x80010000u);
+    assert(checkpoint_calls == 0 && s_checkpoint_fn && g_psx_savestate_pending);
+    context_safe = 1;
+    savestate_poll(&cpu, 0x80010000u);
+    assert(checkpoint_calls == 1 && checkpoint_pc == 0x80010000u && !s_checkpoint_fn && !g_psx_savestate_pending);
+    savestate_poll(&cpu, 0x80010000u);
+    assert(checkpoint_calls == 1);
     puts("savestate title policy and save/load host-continuation tests passed");
     return 0;
 }

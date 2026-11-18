@@ -47,6 +47,13 @@ extern uint32_t g_psx_ram_size;
 extern uint32_t g_psx_ram_mask;
 
 uint32_t memory_get_ram_bytes(void);
+
+/* Checkpoint resume (MEMCTRL section): the 16 memory-control words
+ * 0x1F801000..0x1F80103C, RAM_SIZE (0x1F801060) and CACHE_CTRL (0xFFFE0130),
+ * in that order. */
+#define PSX_MEMORY_CONTROL_WORDS 18u
+void memory_control_get(uint32_t out[PSX_MEMORY_CONTROL_WORDS]);
+void memory_control_set(const uint32_t in[PSX_MEMORY_CONTROL_WORDS]);
 int      psx_ram_8mb_active(void);
 void     psx_ram_reset_size_request(void);
 /* memory_init(): latch the requested geometry for this boot. */

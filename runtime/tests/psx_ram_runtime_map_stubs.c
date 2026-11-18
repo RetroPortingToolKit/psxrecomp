@@ -6,6 +6,9 @@
  * built with -ffunction-sections/--gc-sections like mod_memory_snapshot_test)
  * drops whatever the test never reaches. */
 #include "cpu_state.h"
+#include "dirty_ram_interp.h"
+#include "interrupts.h"
+#include "psx_scheduler.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -65,6 +68,13 @@ int  fntrace_is_game_started(void) { return 0; }
 void fntrace_restore_game_started(int started) { (void)started; }
 void overlay_loader_note_code_write(void) {}
 void overlay_loader_resync_validation_after_restore(void) {}
+/* Checkpoint resume seams (memory.c is real here). */
+void dirty_ram_ld_delay_save(DirtyRamLoadDelay *out) { memset(out, 0, sizeof *out); }
+void dirty_ram_ld_delay_restore_from_state(const DirtyRamLoadDelay *in) { (void)in; }
+uint32_t psx_scheduler_return_tcb(void) { return 0; }
+void psx_scheduler_set_return_tcb(uint32_t tcb) { (void)tcb; }
+void interrupts_resume_timing_get(PsxIrqResumeTiming *out) { memset(out, 0, sizeof *out); }
+void interrupts_resume_timing_set(const PsxIrqResumeTiming *in) { (void)in; }
 void gte_canonicalize_cpu_state(CPUState *cpu) { (void)cpu; }
 
 /* ---- scheduler / interrupts ------------------------------------------------ */

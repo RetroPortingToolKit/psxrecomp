@@ -709,6 +709,8 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         rt.turbo_loads = toml::find<bool>(runtime, "turbo_loads");
         rt.has_turbo_loads = true;
     }
+    if (runtime.contains("fast_loading_optout"))
+        rt.fast_loading_optout = toml::find<bool>(runtime, "fast_loading_optout");
     if (runtime.contains("offer_turbo_loads")) {
         rt.offer_turbo_loads =
             toml::find<bool>(runtime, "offer_turbo_loads");
@@ -1909,6 +1911,24 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     std::vector<std::string> disc_serials;
     if (game.contains("disc_serials"))
         disc_serials = toml::find<std::vector<std::string>>(game, "disc_serials");
+    /* The set positions this build boots; see GameConfig::program_discs. A
+     * value outside the roster or listed twice is a kit error: refuse it, so a
+     * program can never be left with no disc of its own. */
+    std::vector<int> program_discs;
+    if (game.contains("program_discs")) {
+        program_discs = toml::find<std::vector<int>>(game, "program_discs");
+        for (size_t i = 0; i < program_discs.size(); ++i) {
+            const int n = program_discs[i];
+            bool repeated = false;
+            for (size_t j = 0; j < i; ++j)
+                if (program_discs[j] == n) repeated = true;
+            if (n < 1 || n > (int)discs.size() || repeated)
+                throw std::runtime_error(
+                    "[game] program_discs must list distinct 1-based positions "
+                    "in [game] discs; got " + std::to_string(n) + " with " +
+                    std::to_string(discs.size()) + " disc(s)");
+        }
+    }
 
     // Optional expected disc identity (launcher verification badge).
     bool has_disc_crc = false;
@@ -3014,6 +3034,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*stack_base*/       stack_base,
         /*discs*/            discs,
         /*disc_serials*/     disc_serials,
+        /*program_discs*/    program_discs,
         /*has_disc_crc*/     has_disc_crc,
         /*disc_crc*/         disc_crc,
         /*disc_sha1*/        disc_sha1,
@@ -3220,6 +3241,13 @@ UserSettings load_user_settings(const fs::path& path) {
     // Each field guarded independently so one bad value can't blank the rest.
     auto try_get = [](auto&& fn) { try { fn(); } catch (const std::exception&) {} };
 
+    // A file without the key, or with a value that is not a number, is an old
+    // one (format 0).
+    if (doc.contains("settings_format")) try_get([&]{
+        const auto n = toml::find<int64_t>(doc, "settings_format");
+        if (n > 0 && n < 1000) s.settings_format = (int)n;
+    });
+
     if (doc.contains("video")) {
         const toml::value& v = toml::find(doc, "video");
         if (v.contains("renderer")) try_get([&]{
@@ -3234,7 +3262,7 @@ UserSettings load_user_settings(const fs::path& path) {
         // the next save drops it (docs/config_schema.md).
         if (v.contains("window_width")) try_get([&]{
             const auto n = toml::find<int64_t>(v, "window_width");
-            if (n >= 640 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
+            if (n >= 320 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
         });
         // antialiasing, texture_filtering, fmv_filter, crt_filter,
         // scanlines, scanline_strength and the PGXP keys are player settings
@@ -3261,6 +3289,16 @@ UserSettings load_user_settings(const fs::path& path) {
         if (v.contains("bios_hle")) try_get([&]{
             s.bios_hle = toml::find<bool>(v, "bios_hle"); s.has_bios_hle = true;
         });
+        // Before format 2 the launcher wrote these two keys itself at every
+        // save, so in such a file they are not the player's choice: do not
+        // apply them and do not write them back (UserSettings::
+        // boot_keys_were_echoes explains why). The values stay in the struct
+        // so the caller can say what was dropped.
+        if (s.settings_format < 2 && (s.has_fast_boot || s.has_bios_hle)) {
+            s.boot_keys_were_echoes = true;
+            s.has_fast_boot = false;
+            s.has_bios_hle = false;
+        }
         if (v.contains("fullscreen")) try_get([&]{
             // Tri-state (0 off / 1 borderless / 2 exclusive). Back-compat: a
             // settings.toml written before the tri-state migration stores this
@@ -3322,6 +3360,13 @@ UserSettings load_user_settings(const fs::path& path) {
     // [audio] frequency (the output sample rate) is the runtime's built-in
     // rate: the old key is ignored and the next save drops it. spu_hq is a
     // player setting (player_settings.h), read below.
+    if (doc.contains("audio")) {
+        const auto& a = toml::find(doc, "audio");
+        if (a.contains("volume")) try_get([&] {
+            s.volume = std::max(0, std::min(100, toml::find<int>(a, "volume")));
+            s.has_volume = true;
+        });
+    }
     if (doc.contains("hotkeys")) {
         const toml::value& h = toml::find(doc, "hotkeys");
         if (h.contains("rewind_pad")) try_get([&]{
@@ -3624,7 +3669,12 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     };
 
     f << "# psxrecomp user settings - written by the launcher. Safe to hand-edit.\n";
-    f << "# Overrides the bundled game.toml; the command line overrides this file.\n\n";
+    f << "# Overrides the bundled game.toml; the command line overrides this file.\n";
+    // From format 2 on the launcher writes only what it has a control for, or
+    // what the player wrote here. `bios_hle` and `fast_boot` under [video] are
+    // read as the player's own lines in a file of this format, and as an old
+    // launcher's echo in a file without it.
+    f << "settings_format = " << UserSettings::kFormat << "\n\n";
 
     auto has_extra = [&](const char* section) {
         for (const auto& spec:kExtraPlayerSettings)
@@ -3641,7 +3691,15 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
             f << spec.key << " = ";
             if (spec.kind==PlayerSettingKind::Text || spec.kind==PlayerSettingKind::Choice ||
                 spec.kind==PlayerSettingKind::ResolutionFloor) f << std::quoted(item->second);
-            else f << item->second;
+            else if (spec.kind==PlayerSettingKind::Integer)
+                f << static_cast<long long>(std::strtod(item->second.c_str(),nullptr));
+            else if (spec.kind==PlayerSettingKind::Number) {
+                // The validated editor text may contain leading zeros, a leading
+                // plus, or C numeric syntax. Emit a canonical TOML number.
+                std::ostringstream value;
+                value << std::setprecision(17) << std::strtod(item->second.c_str(),nullptr);
+                f << value.str();
+            } else f << item->second;
             f << "\n";
         }
     };
@@ -3687,7 +3745,11 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "adaptive_view     = " << (s.adaptive_view ? "true" : "false") << "\n";
     write_extra("video",false);
     write_extra("runtime",true);
-    write_extra("audio",true);
+    if (s.has_volume || has_extra("audio")) {
+        f << "\n[audio]\n";
+        if (s.has_volume) f << "volume = " << std::max(0,std::min(100,s.volume)) << "\n";
+        write_extra("audio",false);
+    }
     if (s.has_hotkey_pad_rewind || s.has_hotkey_pad_save_state_menu ||
         s.has_hotkey_pad_fast_forward || s.has_hotkey_pad_fast_forward_toggle ||
         s.has_fast_forward_speed || s.has_fast_forward_mode) {

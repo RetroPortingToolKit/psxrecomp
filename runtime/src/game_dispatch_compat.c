@@ -63,3 +63,20 @@ int psx_game_text_native_ok_full(uint32_t addr)
 }
 
 #endif /* PSX_HAS_GAME_DISPATCH */
+
+/* Per-page CRC-32 of the executable image the static code was generated from
+ * (text_source_guard.h). A dispatcher generated before the emitter wrote the
+ * table has none, and the BIOS-only runtime has no game image at all. No table
+ * means no source-image check: such a build behaves as it did. */
+#if !defined(PSX_GAME_DISPATCH_HAS_SOURCE_PAGE_CRC32)
+
+const uint32_t *psx_game_source_page_crc32(uint32_t *count, uint32_t *phys_lo,
+                                           uint32_t *len)
+{
+    if (count) *count = 0;
+    if (phys_lo) *phys_lo = 0;
+    if (len) *len = 0;
+    return 0;
+}
+
+#endif /* !PSX_GAME_DISPATCH_HAS_SOURCE_PAGE_CRC32 */

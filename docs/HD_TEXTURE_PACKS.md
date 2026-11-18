@@ -83,7 +83,11 @@ Pack artwork is supplied separately. Matching depends on native game pixels
 and palettes; a different region or revision may not match. PNG, JPEG, and static WebP are supported,
 with a maximum of 8192 pixels per side, 64 MiB encoded, and 64 MiB decoded RGBA.
 Unsupported identities, configuration features, or images fall back to the
-original artwork. A savestate load or rewind restages VRAM; Beetle-keyed
+original artwork. Beetle-keyed RGBA replacements use their own alpha for
+coverage: zero alpha is transparent, and occupied artwork can fill holes in
+the original low-resolution silhouette. Native texels still supply the STP
+bit for PSX blending; replacement coverage never changes native VRAM.
+A savestate load or rewind restages VRAM; Beetle-keyed
 upload rectangles already seen in the session are then re-admitted when their
 restored words still hash to the same key. That re-hash is bounded: at most
 256 rectangles covering at most one VRAM's worth of words (about 1 MiB of

@@ -279,6 +279,57 @@ static int materialized_edge_products(void) {
 }
 #endif
 
+#if defined(PSX_CLOCK_REAL_GPU) && PSX_CLOCK_REAL_GPU
+/* As in gpu_interlace_status_test, whole-program optimization discards
+ * unrelated renderer code. Keep the actual reader and lazy scheduler in one
+ * TU so their real dependency is exercised without renderer/provider stubs. */
+#include "../src/psx_cycles.c"
+#include "../src/gpu.c"
+uint32_t g_psx_vblank_cycles = 564480u;
+uint32_t interrupts_get_cycles_since_vblank(void) { return s_vblank_phase; }
+void psx_irq_raise(uint32_t bit, uint32_t detail) { (void)detail; i_stat |= 1u << bit; }
+void event_ring_record_aux(uint16_t kind, uint8_t detail, uint32_t aux) {
+    (void)kind; (void)detail; (void)aux;
+}
+static int gpustat_clock_product(void) {
+    g_event_step_conservative = g_psx_guest_time_frozen = g_ls_replay_active = 0;
+    g_psx_render_pass_active = 0; i_mask = i_stat = 0;
+    psx_cycle_sample_period = 0; psx_cycle_sample_hook = NULL;
+    s_cd_ready = 1; s_cd_dma_active = 0; s_device_calls = 0;
+    s_dma_next_event = s_spu_next_sample = UINT32_MAX;
+    s_vblank_phase = 0; s_sio_cycles = 0; fixture_timer_reset();
+    psx_cycles_reset_for_boot();
+    vertical_interlace = vres = lcf = 1u; video_mode = 0u;
+    v_display_y1 = 16u; v_display_y2 = 256u;
+    const uint32_t blank_status = gpu_read_gpustat();
+    VERIFY(!(blank_status & 0x80000000u), "field starts with blanking LCF masked");
+    psx_advance_cycles(1000);
+    psx_devices_mmio_sync_at(0x1F801810u, 0); /* GP0 read */
+    psx_devices_mmio_sync_at(0x1F801814u, 1); /* GP1 mode write */
+    psx_devices_mmio_sync_at(0x1F801820u, 0); /* MDEC read */
+    VERIFY(!s_vblank_phase && !s_sio_cycles && !s_device_calls &&
+           fixture_timer_cycles() == 1000,
+           "GP0/MDEC and GP1 writes retain DMA/timer-only observation");
+    psx_devices_mmio_sync_at(0x1F801814u, 0);
+    VERIFY(s_vblank_phase == 1000 && !(gpu_read_gpustat() & 0x80000000u),
+           "GPUSTAT observes elapsed blanking phase without exposing active LCF");
+    psx_advance_cycles(59000);
+    VERIFY(s_vblank_phase == 1000 && !(gpu_read_gpustat() & 0x80000000u),
+           "unobserved frame phase remains stale despite active guest time");
+    psx_devices_mmio_sync_at(0x1F801817u, 0); /* byte-addressed same register */
+    const uint32_t active_status = gpu_read_gpustat();
+    VERIFY(s_vblank_phase == 60000 && psx_cycle_count == 60000 &&
+           ((active_status ^ blank_status) & 0x80000000u),
+           "GPUSTAT observation releases the real active-field LCF change poll");
+    psx_devices_mmio_sync_at(0x1F801814u, 0);
+    VERIFY(s_vblank_phase == 60000 && (gpu_read_gpustat() & 0x80000000u) &&
+           !s_sio_cycles && !s_device_calls,
+           "repeated GPUSTAT polls advance no time or unrelated quiet devices");
+    fprintf(stderr, "PASS lazy frame observation releases active-field GPUSTAT LCF poll\n");
+    return 0;
+}
+#endif
+
 int main(void) {
     /* NULL cpu: this test pins the scheduler boundary, not the CPU-state
      * rewind. psx_cycles_resync_after_restore guards that block on `if (cpu)`. */
@@ -534,7 +585,7 @@ int main(void) {
     VERIFY(!psx_hr_gpu_hold_depth,"reset/early-clear cannot leak or underflow hold context");
 #endif
 #if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
-    /* Addressed GPU/timer observations must not advance unrelated quiet
+    /* Addressed GP0/timer observations must not advance unrelated quiet
      * SIO/CD/frame state. Materialization is required at an actual read or
      * full snapshot barrier, including at the same global timeline position. */
     g_event_step_conservative = 0; i_mask = 0; i_stat = 0;
@@ -542,8 +593,8 @@ int main(void) {
     s_cd_dma_active = 0; s_vblank_phase = 0; s_sio_cycles = 0; fixture_timer_reset();
     psx_cycles_reset_for_boot();
     calls_before = s_device_calls;
-    psx_advance_cycles(37); psx_devices_mmio_sync_at(0x1F801814u, 0);
-    psx_advance_cycles(11); psx_devices_mmio_sync_at(0x1F801814u, 0);
+    psx_advance_cycles(37); psx_devices_mmio_sync_at(0x1F801810u, 0);
+    psx_advance_cycles(11); psx_devices_mmio_sync_at(0x1F801810u, 0);
     VERIFY(s_device_calls == calls_before && s_sio_cycles == 0 &&
            fixture_timer_cycles() == 0 && s_vblank_phase == 0,
            "GPU MMIO leaves unrelated quiet devices unmaterialized");
@@ -636,6 +687,9 @@ int main(void) {
                     "idle skip bounded by the SPU sample deadline\n");
 #if defined(PSX_TEST_BLOCK_MATERIALIZE) && PSX_TEST_BLOCK_MATERIALIZE
     if(materialized_edge_products()) return 1;
+#endif
+#if defined(PSX_CLOCK_REAL_GPU) && PSX_CLOCK_REAL_GPU
+    if(gpustat_clock_product()) return 1;
 #endif
     return 0;
 }

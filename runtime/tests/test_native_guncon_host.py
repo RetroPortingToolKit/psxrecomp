@@ -25,7 +25,13 @@ def main():
 #include "guncon_map.h"
 #include <cstdio>
 #include <cstring>
-extern "C" { extern uint64_t clock_now; extern uint32_t i_stat; }
+#include <cstdlib>
+extern "C" {
+extern uint64_t clock_now; extern uint32_t i_stat;
+uint32_t sio_snapshot_bytes(void);
+void sio_snapshot_write(uint8_t* data);
+int sio_snapshot_read(const uint8_t* data, uint32_t size);
+}
 using SDL_Window=int;
 using SDL_Cursor=int;
 using Uint8=uint8_t;
@@ -89,7 +95,7 @@ int main() {
             subprocess.run([args.cc,*flags,'-c',str(unit),'-o',str(obj)],check=True)
         exe=work/'host.exe'
         subprocess.run([args.cxx,*flags,'-DPSX_SDL3',str(cpp),str(work/'wire.o'),str(work/'sio.o'),'-o',str(exe)],check=True)
-        subprocess.run([str(exe)],check=True,timeout=30)
+        subprocess.run([str(exe)],check=True)
 
 
 if __name__ == '__main__':

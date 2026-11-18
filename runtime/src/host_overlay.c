@@ -274,7 +274,8 @@ static char* wide_to_utf8(const wchar_t* s) {
     if (u && WideCharToMultiByte(CP_UTF8, 0, s, -1, u, n, NULL, NULL) <= 0) { free(u); u = NULL; }
     return u;
 }
-void psx_relaunch_self(int argc, char** argv) {
+void psx_relaunch_self(int argc, char** argv) { psx_relaunch_self_with(argc, argv, NULL, 0); }
+void psx_relaunch_self_with(int argc, char** argv, const char* const* extra, int extra_n) {
     int wargc = 0, i, ok = 1;
     wchar_t** wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
     const char** args = NULL;
@@ -285,15 +286,25 @@ void psx_relaunch_self(int argc, char** argv) {
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     if (wargv && wargc > 0) {
-        args = (const char**)calloc((size_t)wargc, sizeof(*args));
+        if (extra_n < 0 || !extra) extra_n = 0;
+        args = (const char**)calloc((size_t)wargc + (size_t)extra_n, sizeof(*args));
         for (i = 0; args && i < wargc; ++i)
             if (!(args[i] = wide_to_utf8(wargv[i]))) ok = 0;
-        if (args && ok) line = psx_win_cmdline_join(wargc, args);
+        if (args && ok) {
+            for (i = 0; i < extra_n; ++i) args[wargc + i] = extra[i];
+            line = psx_win_cmdline_join(wargc + extra_n, args);
+        }
         for (i = 0; args && i < wargc; ++i) free((void*)args[i]);
         free((void*)args);
         LocalFree(wargv);
     } else if (argv) {
-        line = psx_win_cmdline_join(argc, (const char* const*)argv);
+        const char** a;
+        if (extra_n < 0 || !extra) extra_n = 0;
+        a = (const char**)calloc((size_t)argc + (size_t)extra_n, sizeof(*a));
+        for (i = 0; a && i < argc; ++i) a[i] = argv[i];
+        for (i = 0; a && i < extra_n; ++i) a[argc + i] = extra[i];
+        if (a) line = psx_win_cmdline_join(argc + extra_n, a);
+        free((void*)a);
     }
     if (!line) return;
     wline = utf8_to_wide(line);
@@ -332,10 +343,12 @@ void psx_relaunch_self(int argc, char** argv) {
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
-void psx_relaunch_self(int argc, char** argv) {
+void psx_relaunch_self(int argc, char** argv) { psx_relaunch_self_with(argc, argv, NULL, 0); }
+void psx_relaunch_self_with(int argc, char** argv, const char* const* extra, int extra_n) {
     char path[4096];
-    (void)argc;
+    char** av = argv;
     if (!argv || !argv[0]) return;
+    if (extra_n < 0 || !extra) extra_n = 0;
     path[0] = '\0';
 #if defined(__APPLE__)
     {
@@ -361,7 +374,15 @@ void psx_relaunch_self(int argc, char** argv) {
         sigemptyset(&none);
         sigprocmask(SIG_SETMASK, &none, NULL);
     }
+    if (extra_n > 0) {
+        int i;
+        av = (char**)calloc((size_t)argc + (size_t)extra_n + 1, sizeof(*av));
+        if (!av) return;
+        for (i = 0; i < argc; ++i) av[i] = argv[i];
+        for (i = 0; i < extra_n; ++i) av[argc + i] = (char*)extra[i];
+    }
     fflush(NULL);
-    execv(path[0] ? path : argv[0], argv);
+    execv(path[0] ? path : argv[0], av);
+    if (av != argv) free(av);
 }
 #endif

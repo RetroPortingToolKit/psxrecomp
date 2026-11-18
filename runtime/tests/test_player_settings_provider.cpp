@@ -79,7 +79,7 @@ int main() {
         {"video.dynamic_resolution","true"},{"video.dynamic_resolution_min","2x"},{"video.match_display_max_lines","1080"},
         {"video.supersample_disable_at_lines","2160"},{"video.geometry_correction","true"},
         {"video.perspective_texturing","false"},{"runtime.bios_hle_keep_intro","true"},
-        {"audio.buffer_ms","64"},{"controller.anti_deadzone","2048"},
+        {"audio.buffer_ms","064"},{"controller.anti_deadzone","2048"},
         {"controller.experimental_jogcon_force_feedback_invert","true"},{"controller.select_shortcuts","false"},
         {"video.internal_resolution","8x"},{"video.crt_filter","trinitron"},{"video.scanlines","true"},
         {"video.scanline_strength","0.25"},{"video.antialiasing","false"},{"video.texture_filtering","xbr"},
@@ -126,6 +126,7 @@ int main() {
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"general","audio.buffer_ms","2147483648"));
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.pgxp_tolerance","nan"));
     assert(!provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.match_display_max_lines","1"));
+    // Leading-zero editor input must save as legal TOML and reload as integer64.
     auto prefs=PSXRecompV4::load_user_settings(path);
     assert(!prefs.parse_error && prefs.extra_player_settings.size()==42);
     assert(prefs.has_fast_boot && prefs.fast_boot && prefs.has_bios_hle && prefs.bios_hle);
@@ -153,8 +154,15 @@ int main() {
     assert(old_snapshot.has_adaptive_view && old_snapshot.adaptive_view);
     assert(old_snapshot.has_parappa_timing_mode && old_snapshot.parappa_timing_extra_early==2 && old_snapshot.parappa_timing_extra_late==3);
     assert(PSXRecompV4::save_user_settings(path,old_snapshot));
+    // Combined #867/#872: volume and buffer settings share one TOML table.
+    old_snapshot.has_volume=true; old_snapshot.volume=37;
+    assert(PSXRecompV4::save_user_settings(path,old_snapshot));
     const auto again=PSXRecompV4::load_user_settings(path);
+    assert(!again.parse_error && again.has_volume && again.volume==37);
     assert(again.extra_player_settings==prefs.extra_player_settings && again.adaptive_view);
+    std::ifstream input(path); std::string text((std::istreambuf_iterator<char>(input)),{});
+    const auto audio_table=text.find("[audio]");
+    assert(audio_table!=std::string::npos && text.find("[audio]",audio_table+1)==std::string::npos);
     puts("PASS:36 actual provider edits -> TOML load -> startup owners; bounds/old snapshot/stub preservation");
     return 0;
 }

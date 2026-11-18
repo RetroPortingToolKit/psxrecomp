@@ -376,6 +376,11 @@ struct RuntimeConfig {
     bool                  turbo_loads = false;
     bool                  has_turbo_loads = false;   // key present in game.toml
 
+    // fast_loading_optout: true keeps the Fast Loading mod from accelerating
+    // this title even when the player enables it, for a game whose in-play
+    // disc reads still look like loads to the engage gate.
+    bool                  fast_loading_optout = false;
+
     // offer_turbo_loads: DEPRECATED AND IGNORED, now that the generic switch
     // it gated no longer exists. Defaults false and is never consulted; the
     // migrated titles that set it false stay correct, and the titles that
@@ -1062,6 +1067,18 @@ struct GameConfig {
     // that produced disc_set.json.
     std::vector<std::string> disc_serials;
 
+    // Optional ([game] program_discs): the 1-based positions in `discs` that
+    // THIS build boots. Absent means every disc, which is every single-disc
+    // title and every set whose discs carry one program. It is set only for a
+    // set whose discs boot different programs (Resident Evil 2: Leon on disc
+    // 1, Claire on disc 2), where each program is its own build and the builds
+    // share one folder, one settings file and one saves folder. `discs` and
+    // `disc_serials` then list the WHOLE set in every program's config, and
+    // this key says which entries are the program's own. The runtime mounts
+    // only those; a remembered disc that belongs to another program is not
+    // mounted, and save states take the disc's position in the set.
+    std::vector<int> program_discs;
+
     // Optional expected disc identity, for the launcher's "Disc verified" badge.
     // disc_crc: full-file CRC32 (IEEE) of the data track. disc_sha1: lowercase
     // hex SHA-1. Either may be absent (has_disc_crc / disc_sha1.empty()).
@@ -1572,12 +1589,31 @@ inline uint32_t ws_cull_clip_edge_width(const GameConfig& c) {
 // Unlike game.toml, paths here are stored verbatim (the user picked them); they
 // are NOT resolved against a project root.
 struct UserSettings {
+    // Host master volume, independent of the emulated audio hardware.
+    bool has_volume = false; int volume = 100;
     std::map<std::string,std::string> extra_player_settings;
     // Set when the file existed but failed to parse as TOML: every field below
     // is defaults and the caller must warn loudly — silently dropping a user's
     // hand-edited settings looks like the settings "don't work", and a later
     // launcher save would overwrite their file with defaults.
     bool parse_error = false;
+
+    // The top-level `settings_format` of the file that was read; 0 when the
+    // file has none (every file written before format 2). save_user_settings
+    // always writes kFormat. Format 2 marks the files in which `fast_boot` and
+    // `bios_hle` are the player's own lines: see boot_keys_were_echoes.
+    static constexpr int kFormat = 2;
+    int  settings_format = 0;
+    // True when the file was older than format 2 and held `fast_boot` or
+    // `bios_hle`. Up to that format the launcher wrote both keys at every
+    // save, with whatever value was in force, although it has no control for
+    // either. The line then overrode game.toml for good: a later change of
+    // `bios_hle` in the game's game.toml never reached a player who had
+    // started an older build once, and two netplay peers of one build could
+    // boot in different BIOS modes. Such a line cannot be told from a hand
+    // edit, so it is taken for what it almost always is: the has_* flags stay
+    // false, game.toml decides, and the next save leaves the keys out.
+    bool boot_keys_were_echoes = false;
 
     // [video]
     bool has_renderer       = false; int  renderer       = DEFAULT_VIDEO_RENDERER; // 0=software,1=opengl,2=vulkan
@@ -1604,6 +1640,9 @@ struct UserSettings {
     // later game.toml change is exactly the write-only latch that shipped
     // turbo-on to MegaManX6Recomp users who had no way to turn it off.
     bool has_turbo_loads    = false; bool turbo_loads    = false;
+    // The two BIOS boot keys have no launcher control. They are in the file
+    // only when the player wrote them there (format 2 and later; see
+    // boot_keys_were_echoes), and the launcher writes them back only then.
     bool has_fast_boot      = false; bool fast_boot      = false;
     // HLE BIOS tier toggle (see RuntimeConfig::bios_hle). Overrides game.toml.
     bool has_bios_hle       = false; bool bios_hle       = false;

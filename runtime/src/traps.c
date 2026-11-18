@@ -19,6 +19,7 @@
 #include "psx_fiber.h"   /* cross-platform fibers (Win32 fibers / POSIX ucontext) */
 #include "psx_scheduler.h" /* deterministic TCB scheduler carve-out (scaffolding) */
 #include "parity_trace.h"  /* general two-process control-flow parity ring */
+#include "psx_break_vector.h"
 
 /* RAM reader adapter for the parity trace (cpu->read_word takes only addr). */
 static uint32_t traps_parity_rw(void* ctx, uint32_t addr) {
@@ -48,6 +49,8 @@ psx_sched_escape_t g_sched_escape;
  * latched at the last YIELD_TO_TCB, restored if the target's top-level dispatch
  * returns. Zero = no pending return target (top-level pc==0 is a real exit). */
 static uint32_t g_sched_return_tcb = 0;
+uint32_t psx_scheduler_return_tcb(void) { return g_sched_return_tcb; }
+void psx_scheduler_set_return_tcb(uint32_t tcb) { g_sched_return_tcb = tcb; }
 
 /* sched_escape_ring (plan step 8) — always-on record of every structured
  * scheduler escape, queryable via the `sched_escape_ring` debug command. This
@@ -330,6 +333,31 @@ static void psx_save_context_to_tcb(CPUState* cpu, uint32_t tcb, uint32_t resume
     cpu->write_word(save + 144u, cpu->cop0[13]);
     thread_ctx_ring_log(cpu, tcb, resume_pc, 0);
     debug_server_log_thread_event(1, cpu, tcb, tcb, resume_pc);
+}
+
+/* Critical fast paths omit guest exception entry, but the kernel's saved
+ * context is observable when a thread block is reused. Capture the incoming
+ * context, then apply the kernel's saved IEp/IM2 and SYS01 result changes.
+ * The caller retains the legacy live CPU continuation contract. */
+static void psx_save_critical_context(CPUState* cpu, uint32_t resume_pc,
+                                      uint32_t func)
+{
+    if (!cpu->read_word || !cpu->write_word) return;
+    uint32_t tcb = psx_current_tcb_ptr(cpu);
+    if (!tcb || !psx_is_valid_tcb(cpu, tcb)) return;
+    uint32_t incoming_sr = cpu->cop0[12];
+    const uint32_t saved_enable_bits = (1u << 2) | (1u << 10); /* IEp, IM2 */
+    psx_save_context_to_tcb(cpu, tcb, resume_pc);
+    uint32_t saved_sr = cpu->read_word(tcb + 0x94u);
+    if (func == 1) {
+        cpu->write_word(tcb + 0x94u, saved_sr & ~saved_enable_bits);
+        cpu->write_word(tcb + 0x10u,
+            (incoming_sr & 0x401u) == 0x401u ? 1u : 0u);
+    } else {
+        cpu->write_word(tcb + 0x94u, saved_sr | saved_enable_bits);
+    }
+    cpu->write_word(tcb + 0x98u,
+        (cpu->cop0[13] & ~(0x80000000u | 0x7Cu)) | (8u << 2));
 }
 
 static uint32_t psx_restore_context_from_tcb(CPUState* cpu, uint32_t tcb)
@@ -764,6 +792,27 @@ void psx_scheduler_resume_at(uint32_t resume_pc)
     longjmp(g_scheduler_jmpbuf, 1); /* unwind to psx_scheduler_run; never returns */
 }
 
+/* Before psx_scheduler_run starts: a restored state resumes the restored CPU
+ * at resume_pc, as psx_scheduler_resume_at does once the run has started,
+ * instead of reloading the current thread's saved context from its TCB. */
+static int g_sched_resume_armed = 0;
+
+int psx_scheduler_arm_resume(uint32_t resume_pc)
+{
+    if (!psx_is_dispatchable(resume_pc)) return 0;
+    g_sched_escape.target_tcb = 0;
+    g_sched_escape.resume_pc  = resume_pc;
+    g_sched_escape.reason     = PSX_RUN_RESUME_CURRENT;
+    g_sched_top_level_resume = 1;
+    g_sched_restore_edge_check = 1;
+    g_sched_resume_armed = 1;
+    {
+        extern void psx_irq_arm_compiled_resume_pc(uint32_t pc);
+        psx_irq_arm_compiled_resume_pc(resume_pc);
+    }
+    return 1;
+}
+
 /* Scheduler mode. HLE = the deterministic TCB scheduler
  * (psx_request_thread_switch, default); LLE = the legacy host-fiber bridge
  * (psx_change_thread_fiber). This is the HLE tier's standing SUBSYSTEM
@@ -846,7 +895,8 @@ void psx_scheduler_run(CPUState* cpu)
 {
     extern int g_psx_dispatch_depth;
     g_in_scheduler_run = 1;
-    g_sched_escape.reason = PSX_RUN_CONTINUE;
+    if (g_sched_resume_armed) g_sched_resume_armed = 0;
+    else g_sched_escape.reason = PSX_RUN_CONTINUE;
     for (;;) {
         if (setjmp(g_scheduler_jmpbuf) != 0) {
             psx_snapshot_host_call_reset();
@@ -971,6 +1021,84 @@ void psx_scheduler_run(CPUState* cpu)
     }
 }
 
+/* A ChangeThread called inside an exception handler.
+ *
+ * The kernel has one path for SYS(03h), in a handler or out of one (SCPH-1001,
+ * exception entry 0xC80, syscall handler 0x1A00, function 3 at 0x1AAC):
+ *   1. the syscall's own exception entry saves every register of that moment
+ *      into the control block the current-thread pointer names; inside a
+ *      handler that overwrites the context the interrupt saved there;
+ *   2. the saved EPC is advanced past the SYSCALL;
+ *   3. the old block's saved v0 becomes 1, and the pointer takes a1;
+ *   4. ReturnFromException loads the registers of the block the pointer names.
+ * A game that preempts a thread this way keeps its own copy of the interrupted
+ * context and writes it back before it resumes the thread (V-Rally 2).
+ * Returning to the interrupted thread instead ran that thread on, and the
+ * game's later restore ran its work a second time.
+ *
+ * Steps 1 to 3 are done here; the caller's manual return below is step 4, and
+ * the end of the delivery (interrupts.c) unwinds to the scheduler at once: the
+ * interrupted thread must not run another instruction, because the game holds
+ * the context of the interrupt, not of a later boundary.
+ *
+ * The kernel does not look at the target's state word: function 3 stores a1
+ * and returns from whatever block it names. A block of the thread table is
+ * therefore taken whatever its state. Not taken, with the behaviour as it
+ * was (a return to the interrupted code): a target that is the current
+ * thread; an address outside the thread table, where the kernel would load
+ * registers from memory that is not a block; a delivery nested in another;
+ * the fiber bridge. Returns 1 when the pointer moved, 0 when not taken, -1
+ * when a native shadow pass must bail before any guest state changes. */
+static uint32_t s_ct_handler_switches, s_ct_handler_same_thread, s_ct_handler_not_taken;
+static uint32_t s_ct_handler_first_epc, s_ct_handler_first_target, s_ct_handler_first_frame;
+
+/* out[0] calls that switched, out[1] calls that named the current thread,
+ * out[2] calls that named another thread and were not taken; of the first
+ * switch: out[3] the interrupted PC, out[4] the target block, out[5] the frame. */
+void psx_changethread_in_handler_stats(uint32_t out[6]) {
+    out[0] = s_ct_handler_switches;
+    out[1] = s_ct_handler_same_thread;
+    out[2] = s_ct_handler_not_taken;
+    out[3] = s_ct_handler_first_epc;
+    out[4] = s_ct_handler_first_target;
+    out[5] = s_ct_handler_first_frame;
+}
+
+static int psx_change_thread_in_handler(CPUState* cpu, uint32_t target_tcb) {
+    uint32_t current_tcb = psx_current_tcb_ptr(cpu);
+    if (current_tcb == target_tcb) {
+        if (s_ct_handler_same_thread != 0xFFFFFFFFu) s_ct_handler_same_thread++;
+        return 0;
+    }
+    if (!psx_is_valid_tcb(cpu, current_tcb) || !psx_is_valid_tcb(cpu, target_tcb) ||
+        !psx_hle_scheduler_enabled() || psx_exception_nest_depth() != 1) {
+        if (s_ct_handler_not_taken != 0xFFFFFFFFu) s_ct_handler_not_taken++;
+        return 0;
+    }
+    {
+        extern int overlay_loader_shadow_native_thread_switch_bail(void);
+        if (overlay_loader_shadow_native_thread_switch_bail()) return -1;
+    }
+    if (s_ct_handler_switches == 0u) {
+        s_ct_handler_first_epc = cpu->cop0[14];   /* where the thread was interrupted */
+        s_ct_handler_first_target = target_tcb;
+        s_ct_handler_first_frame = (uint32_t)s_frame_count;
+    }
+    if (s_ct_handler_switches != 0xFFFFFFFFu) s_ct_handler_switches++;
+
+    uint32_t save = current_tcb + 8u;
+    uint32_t cause = cpu->cop0[13];
+    psx_save_context_to_tcb(cpu, current_tcb, cpu->pc + 4u);            /* 1, 2 */
+    /* This handler's ordinary SYSCALL is a fresh exception, not the
+     * interrupted thread's branch-delay exception. */
+    cpu->write_word(save + 144u, (cause & ~(0x80000000u | 0x7Cu)) | (8u << 2));
+    cpu->write_word(save + 2u * 4u, 1u);                                /* 3: v0 */
+    psx_set_current_tcb(cpu, target_tcb);                               /* 3 */
+    psx_note_changethread_in_handler_switch();
+    debug_server_log_thread_event(34, cpu, current_tcb, target_tcb, cpu->pc);
+    return 1;
+}
+
 int psx_syscall(CPUState* cpu, uint32_t code) {
     /*
      * PS1 BIOS SYSCALL convention:
@@ -991,6 +1119,7 @@ int psx_syscall(CPUState* cpu, uint32_t code) {
 
     switch (func) {
         case 1: /* EnterCriticalSection: disable interrupts */
+            psx_save_critical_context(cpu, cpu->pc + 4u, func);
             cpu->cop0[12] = sr & ~1u; /* clear IEc (bit 0) */
             cpu->gpr[2] = sr & 1u; /* return old IEc */
             g_pc0_reason = PSX_PC0_CRIT_SECTION;
@@ -1003,6 +1132,7 @@ int psx_syscall(CPUState* cpu, uint32_t code) {
             return 0;
 
         case 2: /* ExitCriticalSection: enable interrupts */
+            psx_save_critical_context(cpu, cpu->pc + 4u, func);
             cpu->cop0[12] = sr | 0x0401u; /* set IEc (bit 0) + IM[2] (bit 10) */
             /* SYS(02h) has no return value: it preserves the caller's v0.
              * SDK wrappers can return an earlier BIOS result through this
@@ -1016,8 +1146,8 @@ int psx_syscall(CPUState* cpu, uint32_t code) {
             /* Tomba2 loader-thread diagnosis (Patch 1, trace-only): record every
              * syscall-3 (ChangeThread/RFE) at its decision point. kind 20 = entered
              * with in_exception==0 (eligible for psx_change_thread); kind 24 = entered
-             * with in_exception==1 (will be forced down the manual-RFE path, NOT a
-             * thread switch). target_tcb is the requested switch target; its state
+             * with in_exception==1 (manual RFE; a valid different target first moves
+             * the current-thread pointer, kind34). target_tcb is the requested target; its state
              * word is auto-captured as target_state. This tells us whether the loader
              * ChangeThread is ever requested (Case A) and, if so, whether in_exception
              * diverts it (Case B). */
@@ -1026,6 +1156,8 @@ int psx_syscall(CPUState* cpu, uint32_t code) {
             int switch_result = 0;
             if (!psx_get_in_exception())
                 switch_result = psx_change_thread(cpu, target_tcb);
+            else if (psx_change_thread_in_handler(cpu, target_tcb) < 0)
+                switch_result = -1;
             if (switch_result < 0) {
                 /* Native shadow validation requested an impossible thread
                  * switch. Its bail flag unwinds the speculative call; return
@@ -1125,6 +1257,32 @@ void psx_break(CPUState* cpu, uint32_t code, uint32_t pc) {
     trap_crash(buf);
     fprintf(stderr, "%s\n", buf); fflush(stderr);
     exit(1);
+}
+
+/* An interpreted BREAK enters the guest's own exception vector when the guest
+ * owns it (psx_break_vector.h). Returns 0 when the caller must take psx_break.
+ *
+ * The run report states how often the vector was entered and where first
+ * (crash_trace.c), so a run that later hangs in the guest's handler leaves a
+ * trace. */
+static uint32_t s_break_guest_count, s_break_guest_first_pc, s_break_guest_first_code;
+
+int psx_break_enter_guest_vector(CPUState* cpu, uint32_t pc) {
+    if (!psx_break_vector_enter(cpu, pc, psx_get_in_exception()))
+        return 0;
+    if (s_break_guest_count == 0u) {
+        s_break_guest_first_pc = pc;
+        s_break_guest_first_code = (cpu->read_word(pc) >> 6) & 0xFFFFFu;
+    }
+    if (s_break_guest_count != 0xFFFFFFFFu) s_break_guest_count++;
+    return 1;
+}
+
+/* out[0] entries, out[1] the first BREAK's PC, out[2] its 20-bit code. */
+void psx_break_guest_vector_stats(uint32_t out[3]) {
+    out[0] = s_break_guest_count;
+    out[1] = s_break_guest_first_pc;
+    out[2] = s_break_guest_first_code;
 }
 
 void psx_arith_overflow(CPUState* cpu) {

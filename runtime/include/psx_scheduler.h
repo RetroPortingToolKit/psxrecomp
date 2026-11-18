@@ -104,6 +104,10 @@ void psx_clear_return_to_lobby(void);
  * boundary, in_exception == 0. Never returns (longjmp). Arms top-level
  * resume (see below) for the first post-resume frame. */
 void psx_scheduler_resume_at(uint32_t resume_pc);
+/* Arm a resume of the restored CPU at resume_pc for the next
+ * psx_scheduler_run, without a longjmp. Returns 0 when resume_pc is not
+ * dispatchable. */
+int  psx_scheduler_arm_resume(uint32_t resume_pc);
 
 /* After resume_at, dispatch is top-level — there is no abandoned mid-block
  * native chain under the resume PC. Sentinel same-thread RFE must not publish
@@ -120,6 +124,11 @@ void psx_scheduler_top_level_resume_clear(void);
  * PSX_HLE_SCHEDULER wins over config. Latched at first query; the mode cannot
  * change mid-run. */
 void psx_hle_scheduler_set_default(int on);
+
+/* Checkpoint resume: the one-level switch-back TCB the scheduler keeps
+ * outside guest memory (its SCHED section). 0 = none. */
+uint32_t psx_scheduler_return_tcb(void);
+void     psx_scheduler_set_return_tcb(uint32_t tcb);
 int  psx_hle_scheduler_enabled(void);
 
 #ifdef __cplusplus

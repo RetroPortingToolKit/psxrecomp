@@ -524,7 +524,9 @@ static void fire_vblank_edge(void) {
 
 void interrupts_service_scheduled_events(void) {
     note_sio_progress_cycle();
-    if (in_exception) return;
+    /* Device time continues while the CPU handles an exception, including
+     * with IEc clear: a handler may poll GPUSTAT's field bit. CPU interrupt
+     * delivery stays gated separately by psx_check_interrupts. */
     while (psx_vblank_edge_due(cycles_since_vblank)) {
         if (should_defer_vblank_for_sio()) return;
         fire_vblank_edge();
@@ -564,6 +566,8 @@ static uint64_t exception_reentry_blocks;
  * synchronous-handler recursion is so the nested-delivery path (hardware
  * IEc-re-enabled semantics, see the gate below) can cap host-stack use. */
 static int exception_nest_depth;
+/* Delivery-owned notification; not guest or serialized timing state. */
+static int s_changethread_in_handler_switch;
 /* Nested-delivery gate veto attribution (freeze_check). One counter per guard
  * in the refinement gate below; first-true-wins ordering matches the gate. */
 uint64_t g_nestgate_depth, g_nestgate_rfepend, g_nestgate_escreason, g_nestgate_iec;
@@ -757,6 +761,8 @@ void psx_irq_arm_compiled_resume_pc(uint32_t pc)
  * of psx_check_interrupts) where the thread can be re-saved cleanly. */
 int psx_defer_switch_pending = 0;
 #define s_defer_switch_pending psx_defer_switch_pending
+/* A thread switch taken in an exception handler waits for a site-0 poll. */
+int psx_deferred_switch_is_pending(void) { return s_defer_switch_pending; }
 static uint32_t s_defer_switch_target  = 0;  /* TCB PCB[0] should name after the switch */
 static uint32_t s_defer_switch_from    = 0;  /* the interrupted thread to re-save cleanly */
 
@@ -775,6 +781,10 @@ static int same_guest_pc(uint32_t a, uint32_t b) {
 }
 
 int psx_get_in_exception(void) { return in_exception; }
+int psx_exception_nest_depth(void) { return exception_nest_depth; }
+void psx_note_changethread_in_handler_switch(void) {
+    s_changethread_in_handler_switch = 1;
+}
 
 /* Co-sim (COSIM_ORACLE.md): fold the GENUINE guest-timing interrupt statics into the
  * state hash. Deliberately EXCLUDES total_checks / dispatch_count / post_exception_
@@ -925,6 +935,7 @@ void interrupts_init(void) {
     dispatch_count = 0;
     in_exception = 0;
     exception_nest_depth = 0;
+    s_changethread_in_handler_switch = 0;
     g_psx_dispatch_depth = 0;
     total_checks = 0;
     post_exception_cooldown_until = 0;
@@ -958,7 +969,35 @@ void interrupts_init(void) {
     reset_dirty_snapshot_scope();
 }
 
+/* Set by an IRQ_TIMING section load; the next resync keeps those fields. */
+static int s_resume_timing_from_state;
+
+void interrupts_resume_timing_get(PsxIrqResumeTiming *out) {
+    if (!out) return;
+    out->cooldown_until = post_exception_cooldown_until;
+    out->sio_seq_seen = last_sio_seq_seen;
+    out->sio_progress_cycle = last_sio_progress_cycle;
+    out->defer_from = s_defer_switch_from;
+    out->defer_target = s_defer_switch_target;
+    out->defer_pending = s_defer_switch_pending ? 1u : 0u;
+}
+
+void interrupts_resume_timing_set(const PsxIrqResumeTiming *in) {
+    if (!in) return;
+    post_exception_cooldown_until = in->cooldown_until;
+    last_sio_seq_seen = in->sio_seq_seen;
+    last_sio_progress_cycle = in->sio_progress_cycle;
+    s_defer_switch_from = in->defer_from;
+    s_defer_switch_target = in->defer_target;
+    s_defer_switch_pending = in->defer_pending ? 1 : 0;
+    s_resume_timing_from_state = 1;
+}
+
 void interrupts_resync_after_restore(void) {
+    const int keep_timing = s_resume_timing_from_state;
+    PsxIrqResumeTiming kept;
+    s_resume_timing_from_state = 0;
+    interrupts_resume_timing_get(&kept);
 #if defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME
     psx_observation_wait_active = 0;
 #endif
@@ -976,6 +1015,7 @@ void interrupts_resync_after_restore(void) {
     dispatch_count = 0;
     in_exception = 0;
     exception_nest_depth = 0;
+    s_changethread_in_handler_switch = 0;
     last_sio_seq_seen = sio_get_seq();
     last_sio_progress_cycle = psx_get_cycle_count();
     s_defer_switch_pending = 0;
@@ -1010,6 +1050,15 @@ void interrupts_resync_after_restore(void) {
     /* Drop mid-quantum present armed before the rewind — do not finish_frame
      * against the restored tip with a stale pending count. */
     gpu_vblank_clear_deferred_present();
+    /* A state written for checkpoint resume carried these on its clock. */
+    if (keep_timing) {
+        post_exception_cooldown_until = kept.cooldown_until;
+        last_sio_seq_seen = kept.sio_seq_seen;
+        last_sio_progress_cycle = kept.sio_progress_cycle;
+        s_defer_switch_from = kept.defer_from;
+        s_defer_switch_target = kept.defer_target;
+        s_defer_switch_pending = kept.defer_pending ? 1 : 0;
+    }
 }
 
 void interrupts_log_last_vblank_irqctx(const char *tag)
@@ -2161,6 +2210,8 @@ irq_deliver_eval:
         cpu->hi = saved_hi;
         cpu->lo = saved_lo;
     }
+    const int changethread_at_call = s_changethread_in_handler_switch;
+    s_changethread_in_handler_switch = 0;
     g_rfe_escape_pending = 0;
     g_exc_escape_reason  = PSX_EXC_ESCAPE_NONE;
 
@@ -2249,7 +2300,9 @@ irq_deliver_eval:
         entry_tcb != 0u && exit_tcb != 0u && entry_tcb != exit_tcb) {
         extern uint32_t psx_read_word(uint32_t addr);   /* memory.c (plain RAM read) */
         uint32_t new_state = psx_read_word(exit_tcb & 0x1FFFFFFFu);
-        if (new_state == 0x4000u) {   /* the new current thread must be runnable */
+        /* Explicit ChangeThread takes any valid block, regardless of its state.
+         * A handler that moved PCB[0] directly still requires a runnable block. */
+        if (new_state == 0x4000u || changethread_at_call) {
             /* A native-only shadow pass must never commit the handler's TCB/RAM
              * changes or escape past the authoritative restore. Bail before
              * configuring either immediate or deferred scheduler state. */
@@ -2282,7 +2335,10 @@ irq_deliver_eval:
              * starve a target thread by re-entering the same VBlank EPC forever.
              * (Card-guard overrides were tried for Ape LOAD and did not help —
              * tip already defers like master; the hang is post-probe arming.) */
-            int can_defer = defer_switch_enabled() && !low_kernel_epc && !at_outermost &&
+            /* The game holds the interrupted context; executing more of that
+             * thread before an explicit switch would repeat its work later. */
+            int can_defer = defer_switch_enabled() && !changethread_at_call &&
+                            !low_kernel_epc && !at_outermost &&
                             g_exception_real_epc != 0u &&
                             (g_exception_real_epc & 0x3u) == 0u &&
                             g_exception_real_epc != (uint32_t)PSX_EXC_SENTINEL_PC &&
