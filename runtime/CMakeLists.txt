@@ -2683,6 +2683,9 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_host_enhancements.c
         src/host_enhancements.c)
     target_include_directories(host_enhancements_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(host_enhancements_test PRIVATE m)
+    endif()
     add_test(NAME host_enhancements_test COMMAND host_enhancements_test)
 
     add_executable(memcard_extensions_test
