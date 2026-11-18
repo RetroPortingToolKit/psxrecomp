@@ -110,11 +110,11 @@ int replay_host_state_digest(uint32_t out[4]);
  * different build. */
 static inline const char *replay_platform_name(void)
 {
-#if defined(_WIN32)
+#ifdef _WIN32
 #define REPLAY_PLATFORM_OS "windows"
-#elif defined(__APPLE__)
+#elif defined __APPLE__
 #define REPLAY_PLATFORM_OS "macos"
-#elif defined(__linux__)
+#elif defined __linux__
 #define REPLAY_PLATFORM_OS "linux"
 #else
 #define REPLAY_PLATFORM_OS "unknown"
