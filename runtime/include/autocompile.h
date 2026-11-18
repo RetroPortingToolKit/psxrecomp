@@ -52,6 +52,11 @@ int  autocompile_toolchain_available(void);
 /* 1 while a compile process is running. */
 int  autocompile_busy(void);
 
+/* Owner-thread startup/teardown gate. Sealing rejects any child, worker or
+ * queued publication; callers must join/discard with shutdown first. */
+int autocompile_session_set_interpreted(int sealed);
+int autocompile_session_interpreted_sealed(void);
+
 /* Kick a compile if configured and idle. Returns 1 if started. */
 int  autocompile_request(void);
 

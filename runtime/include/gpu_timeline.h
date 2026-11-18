@@ -29,7 +29,7 @@ typedef enum {
 
 /* Present paths recorded in GTL_PRESENT/GTL_PRESENT_SKIP `a`. */
 enum { GTL_PATH_WIDE_FBO = 1, GTL_PATH_VRAM_FBO = 2, GTL_PATH_CPU = 3,
-       GTL_PATH_HOLD = 4 };
+       GTL_PATH_HOLD = 4,GTL_PATH_GEOMETRY=5 };
 
 typedef struct {
     uint64_t cyc;    /* psx_cycle_count */

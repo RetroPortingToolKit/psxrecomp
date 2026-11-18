@@ -65,6 +65,14 @@ uint32_t overlay_codegen_config_hash(const GameConfig& c) {
 
     h.words("sprite_tag_funcs", c.ws_sprite_tag_funcs);
     h.words("mod_function_entry_funcs", c.mod_function_entry_funcs);
+    if(!c.geometry_scratch_frames.empty()) {
+        h.tag("geometry_scratch_frames-v1");h.u32((uint32_t)c.geometry_scratch_frames.size());
+        for(const auto entry:c.geometry_scratch_frames)h.u32(entry);
+    }
+    if(!c.geometry_control_frames.empty()) {
+        h.tag("geometry_control_frames-v1");h.u32((uint32_t)c.geometry_control_frames.size());
+        for(const auto& [entry,guard]:c.geometry_control_frames) {h.u32(entry);h.tag(guard.c_str());}
+    }
     if (!c.ws_cull_packed_x_sites.empty()) {
         h.tag("cull_packed_x");
         auto sites = c.ws_cull_packed_x_sites;
@@ -3125,6 +3133,26 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     loaded.ws_cull_packed_x_sites = std::move(ws_cull_packed_x_sites);
     loaded.draw_distance_clamp_sites =
         parse_draw_distance_clamps(cfg, config_path);
+    if(recomp.contains("geometry_control_frames")) {
+        const auto& entries=toml::find(recomp,"geometry_control_frames").as_table();
+        for(const auto& [key,value]:entries) {
+            const uint32_t address=parse_hex(key,"recompiler.geometry_control_frames");
+            const auto symbol=toml::get<std::string>(value);
+            if((address&3u) || symbol.empty() ||
+                    !(std::isalpha((unsigned char)symbol[0]) || symbol[0]=='_') ||
+                    std::any_of(symbol.begin(),symbol.end(),[](unsigned char c){return !std::isalnum(c)&&c!='_';}))
+                throw std::runtime_error("geometry_control_frames requires aligned entries and C guard identifiers");
+            loaded.geometry_control_frames.emplace(address,symbol);
+        }
+    }
+    if(recomp.contains("geometry_scratch_frames")) {
+        for(const auto& value:toml::find(recomp,"geometry_scratch_frames").as_array()) {
+            const auto address=parse_hex(toml::get<std::string>(value),"recompiler.geometry_scratch_frames");
+            if(!loaded.geometry_control_frames.count(address))
+                throw std::runtime_error("geometry_scratch_frames requires an exact geometry_control_frames guard");
+            loaded.geometry_scratch_frames.insert(address);
+        }
+    }
     reject_quality_presets(cfg, config_path);
     loaded.mod_immediate_sites = parse_mod_immediate_sites(cfg, config_path);
     return loaded;
@@ -3504,7 +3532,8 @@ UserSettings load_user_settings(const fs::path& path) {
     return s;
 }
 
-fs::path relative_to_folder(const fs::path& p, const fs::path& folder) {
+fs::path relative_to_folder(const fs::path& p, const fs::path& folder,
+                            const fs::path& install_root) {
     if (p.empty() || folder.empty() || !p.is_absolute()) return p;
     std::error_code ec;
     const fs::path base = fs::weakly_canonical(folder, ec);
@@ -3512,9 +3541,29 @@ fs::path relative_to_folder(const fs::path& p, const fs::path& folder) {
     const fs::path full = fs::weakly_canonical(p, ec);
     if (ec) return p;
     const fs::path r = full.lexically_relative(base);
-    // Outside the folder (other drive, or a "../" climb) stays absolute.
-    if (r.empty() || r.is_absolute() || *r.begin() == "..") return p;
+    if (r.empty() || r.is_absolute()) return p;
+    if (*r.begin() != "..") return r;
+    // Outside the folder (other drive, or a "../" climb) stays absolute, with
+    // one exception: the folder is one level below the install's root and the
+    // path lies inside that root. Then the one climb stays inside the install
+    // and moves with it. A deeper folder, or a path outside the root, keeps
+    // its full path: a climb out of the install would name another place
+    // after a move.
+    if (install_root.empty()) return p;
+    const fs::path root = fs::weakly_canonical(install_root, ec);
+    if (ec || base.parent_path() != root) return p;
+    const fs::path in_root = full.lexically_relative(root);
+    if (in_root.empty() || in_root.is_absolute() || *in_root.begin() == "..")
+        return p;
     return r;
+}
+
+namespace {
+fs::path g_user_settings_install_root;
+}
+
+void set_user_settings_install_root(const fs::path& root) {
+    g_user_settings_install_root = root;
 }
 
 bool save_user_settings(const fs::path& path, const UserSettings& s) {
@@ -3534,6 +3583,14 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     // copied to another PC. Readers anchor relative paths on the exe
     // directory, which is where settings.toml lives.
     auto rel = [&](const fs::path& p) { return fwd(relative_to_folder(p, path.parent_path())); };
+    // The memory cards of a setup install are one level above the settings
+    // folder, in <root>/saves. They are part of the install and must move with
+    // it, so they may be written with that one climb. A disc or BIOS file is
+    // the player's own file and keeps the plain rule.
+    auto rel_card = [&](const fs::path& p) {
+        return fwd(relative_to_folder(p, path.parent_path(),
+                                      g_user_settings_install_root));
+    };
 
     f << "# psxrecomp user settings - written by the launcher. Safe to hand-edit.\n";
     f << "# Overrides the bundled game.toml; the command line overrides this file.\n\n";
@@ -3622,11 +3679,11 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         s.has_memcard1_enabled || s.has_memcard2_enabled) {
         f << "\n[memcard]\n";
         if (s.has_memcard_dir)
-            f << "dir     = \"" << rel(s.memcard_dir) << "\"\n";
+            f << "dir     = \"" << rel_card(s.memcard_dir) << "\"\n";
         if (s.has_memcard1_path)
-            f << "card1   = \"" << rel(s.memcard1_path) << "\"\n";
+            f << "card1   = \"" << rel_card(s.memcard1_path) << "\"\n";
         if (s.has_memcard2_path)
-            f << "card2   = \"" << rel(s.memcard2_path) << "\"\n";
+            f << "card2   = \"" << rel_card(s.memcard2_path) << "\"\n";
         if (s.has_memcard1_enabled)
             f << "enable1 = " << (s.memcard1_enabled ? "true" : "false") << "\n";
         if (s.has_memcard2_enabled)

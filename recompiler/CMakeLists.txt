@@ -441,6 +441,14 @@ if(BUILD_TESTING)
     target_include_directories(cli_boot_path_test PRIVATE src)
     add_test(NAME cli_boot_path_test COMMAND cli_boot_path_test)
 
+    add_executable(ps1_exe_padding_test
+        tests/ps1_exe_padding_test.cpp
+        src/ps1_exe_parser.cpp
+    )
+    target_include_directories(ps1_exe_padding_test PRIVATE src include)
+    target_link_libraries(ps1_exe_padding_test PRIVATE fmt)
+    add_test(NAME ps1_exe_padding_test COMMAND ps1_exe_padding_test)
+
     add_executable(recompiler_patch_test
         tests/recompiler_patch_test.cpp
         src/ps1_exe_parser.cpp
@@ -907,6 +915,27 @@ if(BUILD_TESTING)
     add_test(NAME reachable_discovery_test COMMAND reachable_discovery_test)
 
     find_package(Python3 COMPONENTS Interpreter)
+    add_executable(pgxp_dataflow_test tests/test_pgxp_dataflow.cpp)
+    add_test(NAME pgxp_dataflow_analysis COMMAND pgxp_dataflow_test)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME pgxp_dataflow_generation
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pgxp_dataflow_generation.py
+                --cmake ${CMAKE_COMMAND})
+    endif()
+    if(Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING AND
+       CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        add_test(NAME pgxp_baseline_products
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pgxp_dataflow.py
+                --recompiler $<TARGET_FILE:psxrecomp-game>
+                --cc ${CMAKE_C_COMPILER} --cxx ${CMAKE_CXX_COMPILER})
+        add_test(NAME pgxp_deprecated_modes
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pgxp_dataflow_generation.py
+                --contracts-only --cc ${CMAKE_C_COMPILER} --cxx ${CMAKE_CXX_COMPILER})
+        set_tests_properties(pgxp_deprecated_modes PROPERTIES PROCESSORS 1)
+    endif()
     if(Python3_Interpreter_FOUND AND CMAKE_GENERATOR STREQUAL "Ninja")
         add_test(NAME runtime_ipo_configuration
             COMMAND ${Python3_EXECUTABLE}
@@ -1406,8 +1435,6 @@ if(BUILD_TESTING)
                 mod_owned_display_controls
                 fmv_quiet_guards
                 fps_telemetry_opt_in
-                frame_interpolation_display_rate
-                frame_interpolation_flip_source
                 hybrid_dev_any_input
                 launcher_pad_mode_wiring
                 netplay_start_failure_wiring
@@ -1426,6 +1453,7 @@ if(BUILD_TESTING)
                 render_pass_guards
                 pal_cadence_host_refresh
                 sdl3_main_single_include
+                setup_install_card_path_wiring
                 spu_sample_scheduler_default
                 vk_build_default
                 vk_color_self_barrier
@@ -1566,6 +1594,12 @@ if(BUILD_TESTING)
 endif()
 
 # ---- test-registration completeness guard -----------------------------------
+if(BUILD_TESTING AND Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    # test_static_dispatch_owner.c compiles the real emitted owner in this runner.
+    add_test(NAME static_dispatch_owner_test COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_static_dispatch_owner.py
+        --cc ${CMAKE_C_COMPILER} --bios-recompiler $<TARGET_FILE:psxrecomp-bios>)
+endif()
 if(BUILD_TESTING)
     add_executable(fast_forward_policy_test ../runtime/tests/test_fast_forward.c)
     target_include_directories(fast_forward_policy_test PRIVATE ../runtime/include)

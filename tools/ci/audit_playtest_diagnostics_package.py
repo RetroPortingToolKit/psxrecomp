@@ -80,9 +80,8 @@ def _open_package(path):
 
 
 def audit(path, game_id, diagnostics_id, public, replay_helper=True, allow_hd_textures=False):
-    """public=True: a public production release (Playtest Diagnostics ship off).
-    public=False: a playtest/pre-release package (they ship on). Either way the
-    source manifests keep the production default, off."""
+    """Audit either release channel: recording defaults on, display off.
+    Explicit player choices live outside release archives."""
     with _open_package(path) as archive:
         files = {}
         for entry in archive.infolist():
@@ -172,25 +171,33 @@ def audit(path, game_id, diagnostics_id, public, replay_helper=True, allow_hd_te
                     if manifest.get("id") == diagnostics_id:
                         # Only the build-staged runtime copy follows the mode.
                         validate_diagnostics(manifest, name, game_id, diagnostics_id,
-                                             default_enabled=staged and not public)
+                                             staged=staged)
         if not runtime:
             raise ValueError("runtime mods/bundled catalog is missing " + diagnostics_id)
         return len(runtime)
 
 
-def validate_diagnostics(manifest, name, game_id, diagnostics_id, default_enabled):
+def validate_diagnostics(manifest, name, game_id, diagnostics_id, staged):
     if not any(target.get("game_id") == game_id for target in manifest.get("target", [])):
         raise ValueError("diagnostics manifest has the wrong game target: " + name)
     features = {feature.get("id"): feature for feature in manifest.get("feature", [])}
-    for feature_id, plugin_id in (("recording", diagnostics_id), ("osd", diagnostics_id + ".osd")):
+    recording = "recording" if "recording" in features else "input-recording"
+    provided = [(recording, diagnostics_id)]
+    if "osd" in features:
+        provided.append(("osd", diagnostics_id + ".osd"))
+    for feature_id, plugin_id in provided:
         feature = features.get(feature_id, {})
-        # Player-selectable in Mods in every build. Public releases ship them
-        # off; playtest packages (PSX_PUBLIC_RELEASE=OFF) ship them on.
+        # Regular visible Mods controls, independent of presentation packages.
+        # Legacy authored false recording defaults are rewritten by staging.
         if feature.get("channel") == "developer":
             raise ValueError("diagnostics " + feature_id + " cannot be developer-only: " + name)
-        if feature.get("default_enabled") is not default_enabled:
+        wanted = feature_id != "osd"
+        value = feature.get("default_enabled")
+        if not isinstance(value, bool) or (staged and value is not wanted) or (feature_id == "osd" and value):
             raise ValueError("diagnostics {} must ship {} by default: {}".format(
-                feature_id, "enabled" if default_enabled else "disabled", name))
+                feature_id, "enabled" if wanted else "disabled", name))
+        if feature.get("hidden") or feature.get("quick"):
+            raise ValueError("diagnostics must be visible on Mods without default Quick Mods cards: " + name)
         if not any(plugin.get("feature") == feature_id and plugin.get("id") == plugin_id
                    for plugin in manifest.get("plugin", [])):
             raise ValueError("diagnostics " + feature_id + " plugin is missing: " + name)
@@ -204,8 +211,7 @@ def main():
     parser.add_argument("--game-id", required=True)
     parser.add_argument("--diagnostics-id", required=True)
     parser.add_argument("--mode", required=True, choices=("public", "playtest"),
-                        help="public: production release, diagnostics default off; "
-                             "playtest: non-public package, diagnostics default on")
+                        help="release channel; recording defaults on and optional display off in both")
     parser.add_argument("--no-replay-helper", action="store_true",
                         help="the title records with its own diagnostics package and ships "
                              "no replay-diagnostics.py")

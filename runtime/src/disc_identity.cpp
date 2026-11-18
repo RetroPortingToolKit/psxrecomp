@@ -62,6 +62,10 @@ std::string normalize_serial(const std::string& raw) {
         if (std::isalnum((unsigned char)c)) s += (char)std::toupper((unsigned char)c);
         // drop separators ('_', '.', '-')
     }
+    // Some boot filenames insert a fifth letter after the territory prefix.
+    // Keep the canonical four-letter id, but do not reinterpret unknown prefixes.
+    if (s.size() == 10 && std::isalpha((unsigned char)s[4]) &&
+        !region_from_serial(s).empty()) s.erase(4, 1);
     // Expect 4 letters + 5 digits.
     if (s.size() < 9) return std::string();
     for (int i = 0; i < 4; i++) if (!std::isalpha((unsigned char)s[i])) return std::string();

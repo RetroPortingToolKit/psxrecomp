@@ -74,6 +74,9 @@ git clone --recurse-submodules https://github.com/RetroPortingToolKit/psxrecomp.
 pacman -S --needed mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake \
                    mingw-w64-x86_64-ninja mingw-w64-x86_64-ccache
 ```
+A Windows host often has more than one MinGW runtime on `PATH`. Read
+[`WINDOWS_TOOLCHAIN_TRAPS.md`](WINDOWS_TOOLCHAIN_TRAPS.md) before the first
+build: its recipe puts the build toolchain first on `PATH` in every shell.
 
 **macOS:**
 ```sh

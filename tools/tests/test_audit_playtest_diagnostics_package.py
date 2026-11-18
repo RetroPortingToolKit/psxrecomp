@@ -27,7 +27,7 @@ TEXT = '''id = "fixture.diagnostics"
 game_id = "SLUS-00000"
 [[feature]]
 id = "recording"
-default_enabled = false
+default_enabled = true
 [[feature]]
 id = "osd"
 default_enabled = false
@@ -38,8 +38,8 @@ id = "fixture.diagnostics"
 feature = "osd"
 id = "fixture.diagnostics.osd"
 '''
-# What a non-public build stages from the same source (PSX_PUBLIC_RELEASE=OFF).
-PLAYTEST_TEXT = TEXT.replace("default_enabled = false", "default_enabled = true")
+# Both release channels use the same recording-on/display-off policy.
+PLAYTEST_TEXT = TEXT
 
 
 class ArchiveTests(unittest.TestCase):
@@ -86,8 +86,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--mode", result.stderr)
         result = subprocess.run(command + ["--mode", "playtest"], capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must ship enabled", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.files[MANIFEST] = PLAYTEST_TEXT
         self.write()
         result = subprocess.run(command + ["--mode", "playtest"], capture_output=True, text=True)
@@ -139,7 +138,7 @@ class ArchiveTests(unittest.TestCase):
                 self.assertIs(namespace["tomllib"], audit.tomllib)
 
     def test_each_default_and_plugin_is_required(self):
-        for bad in (TEXT.replace("default_enabled = false", "default_enabled = true", 1),
+        for bad in (TEXT.replace("default_enabled = true", "default_enabled = false", 1),
                     TEXT.replace('id = "osd"\ndefault_enabled = false', 'id = "osd"\ndefault_enabled = true'),
                     TEXT.replace('id = "fixture.diagnostics.osd"', 'id = "wrong.osd"'),
                     'channel="developer"\n' + TEXT):
@@ -148,35 +147,26 @@ class ArchiveTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.check()
 
-    def test_public_mode_requires_staged_defaults_off(self):
-        for bad in (PLAYTEST_TEXT, TEXT.replace("default_enabled = false\n", "", 1)):
-            with self.subTest(manifest=bad):
-                self.files[MANIFEST] = bad
-                with self.assertRaisesRegex(ValueError, "disabled by default"):
-                    self.check(public=True)
+    def test_recording_on_display_off_in_both_channels(self):
+        for public in (False, True):
+            self.files[SOURCE] = TEXT
+            self.files[MANIFEST] = TEXT
+            self.assertEqual(self.check(public), 1)
+            for bad in (TEXT.replace("default_enabled = true", "default_enabled = false", 1),
+                        TEXT.replace('id = "osd"\ndefault_enabled = false', 'id = "osd"\ndefault_enabled = true'),
+                        TEXT.replace("default_enabled = true\n", "", 1),
+                        TEXT.replace('id = "recording"', 'id = "recording"\nhidden = true'),
+                        TEXT.replace('id = "recording"', 'id = "recording"\nquick = true')):
+                with self.subTest(public=public, manifest=bad):
+                    self.files[MANIFEST] = bad
+                    with self.assertRaises(ValueError):
+                        self.check(public)
 
-    def test_playtest_mode_requires_staged_defaults_on(self):
-        self.files[SOURCE] = TEXT
-        self.files[MANIFEST] = PLAYTEST_TEXT
-        self.assertEqual(self.check(public=False), 1)
-        for bad in (TEXT,
-                    PLAYTEST_TEXT.replace("default_enabled = true", "default_enabled = false", 1),
-                    PLAYTEST_TEXT.replace('id = "osd"\ndefault_enabled = true', 'id = "osd"\ndefault_enabled = false'),
-                    PLAYTEST_TEXT.replace('id = "osd"\ndefault_enabled = true', 'id = "osd"\ndefault_enabled = "true"'),
-                    PLAYTEST_TEXT.replace('id = "fixture.diagnostics.osd"', 'id = "wrong.osd"'),
-                    'channel="developer"\n' + PLAYTEST_TEXT):
-            with self.subTest(manifest=bad):
-                self.files[MANIFEST] = bad
-                with self.assertRaises(ValueError):
-                    self.check(public=False)
-
-    def test_source_catalog_keeps_production_default_in_both_modes(self):
-        self.files[SOURCE] = PLAYTEST_TEXT
-        with self.assertRaisesRegex(ValueError, "disabled by default"):
-            self.check(public=True)
-        self.files[MANIFEST] = PLAYTEST_TEXT
-        with self.assertRaisesRegex(ValueError, "disabled by default"):
-            self.check(public=False)
+    def test_legacy_source_default_does_not_override_staged_recording(self):
+        self.files[SOURCE] = TEXT.replace("default_enabled = true", "default_enabled = false", 1)
+        self.files[MANIFEST] = TEXT
+        for public in (False, True):
+            self.assertEqual(self.check(public), 1)
 
     def test_missing_helper_executable_or_runtime_catalog(self):
         for name in ("replay-diagnostics.py", "Game.exe", MANIFEST):
@@ -207,8 +197,7 @@ class ArchiveTests(unittest.TestCase):
                 content = content.encode()
             path.write_bytes(content)
         self.assertEqual(audit.audit(stage, GAME, DIAG, True), 1)
-        with self.assertRaises(ValueError):
-            audit.audit(stage, GAME, DIAG, False)
+        self.assertEqual(audit.audit(stage, GAME, DIAG, False), 1)
         (stage / "saves").mkdir()
         (stage / "saves/card1.mcd").write_bytes(b"card")
         with self.assertRaisesRegex(ValueError, "personal state"):
@@ -254,7 +243,7 @@ class ArchiveTests(unittest.TestCase):
                    "--diagnostics-id", DIAG, "--mode", "public", "--allow-hd-textures"]
         self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
         for name, content in (("saves/card1.mcd", "private"),
-                              (MANIFEST, PLAYTEST_TEXT), ("disc/game.cue", "disc")):
+                              (MANIFEST, TEXT.replace("default_enabled = true", "default_enabled = false", 1)), ("disc/game.cue", "disc")):
             with self.subTest(file=name):
                 original = self.files.get(name)
                 self.files[name] = content

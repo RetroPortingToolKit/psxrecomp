@@ -20,6 +20,8 @@
 
 #include <cstdint>
 #include <array>
+#include <map>
+#include <set>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -1547,6 +1549,11 @@ struct GameConfig {
     std::vector<ModImmediateSite> mod_immediate_sites;
     // Guarded SLTU on SX<<16 against screen width<<16; both wide edges.
     std::vector<WidescreenPackedXSite> ws_cull_packed_x_sites;
+    // A title-certified precision contract, not a generic register heuristic.
+    // Keys are function entries; values are linked C guard identifiers.
+    std::map<uint32_t,std::string> geometry_control_frames;
+    // Explicit consumer closure: canonical scratch EA operations are not precision observers.
+    std::set<uint32_t> geometry_scratch_frames;
 };
 
 // Effective clip_edge_width: explicit value, else screen_w_imms[0], else 320.
@@ -1761,8 +1768,20 @@ bool save_user_settings(const std::filesystem::path& path, const UserSettings& s
 
 // `p` relative to `folder` when it lies inside it; otherwise `p` unchanged.
 // Keeps portable game folders portable once the launcher saves a path.
+//
+// With `install_root`: when `folder` sits directly below that root and `p`
+// lies inside the root, `p` is written with one climb ("../saves"). That is
+// the layout of a setup install: settings.toml in <root>/build-release, the
+// memory cards in <root>/saves. Without it the cards were stored by full path
+// and a moved or copied install kept using the old folder.
 std::filesystem::path relative_to_folder(const std::filesystem::path& p,
-                                         const std::filesystem::path& folder);
+                                         const std::filesystem::path& folder,
+                                         const std::filesystem::path& install_root = {});
+
+// The install's root for save_user_settings(): the [memcard] paths that lie
+// inside it are written relative to the settings folder, as above. The disc
+// and BIOS paths are not affected. Empty (the default) keeps the plain rule.
+void set_user_settings_install_root(const std::filesystem::path& root);
 
 // Surgical upsert of `key = true|false` under [controller] in game.toml.
 // Preserves comments and unrelated keys. Creates [controller] if missing.
