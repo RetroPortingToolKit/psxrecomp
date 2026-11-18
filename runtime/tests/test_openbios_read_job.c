@@ -34,6 +34,8 @@ static void wb(uint32_t a,uint8_t v) { ram[a&0x1FFFFFu]=v; }
 static uint16_t rh(uint32_t a) { return (uint16_t)(rb(a)|(rb(a+1u)<<8)); }
 static void wh(uint32_t a,uint16_t v) { wb(a,(uint8_t)v);wb(a+1u,(uint8_t)(v>>8)); }
 /* The canonical stores a direct-memory body falls back to. */
+/* The regenerated stores count bus widths (headroom_counters.h); memory.c owns them. */
+uint64_t psx_hr_bus_callbacks[2][3];
 void psx_write_word(uint32_t a,uint32_t v) { ww(a,v); }
 void psx_write_half(uint32_t a,uint16_t v) { wh(a,v); }
 void psx_write_byte(uint32_t a,uint8_t v) { wb(a,v); }
