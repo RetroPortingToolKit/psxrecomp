@@ -1,6 +1,8 @@
 #pragma once
 
 #include <stdint.h>
+#include "netplay_host_profile.h"
+#define PSX_MOD_NETPLAY_HOST_CATALOG_API 2
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,6 +18,26 @@ extern "C" {
  * pointers, struct padding, rendering caches and local-only input state. It
  * joins the normal netplay core digest while this profile's plan is active. */
 typedef uint32_t (*PSXModNetplayStateDigest)(void);
+typedef struct PSXModNetplayHostStartup {
+    PSXHostCPU cpu;
+    uint32_t compiled_backends,available_backends,fp_contract;
+    int interpreted_overlays_sealed,builtin_linked_bios,direct_loopback_scope;
+    const uint8_t *actual_executable_sha256; /* 32 bytes; callback duration. */
+    const char *declared_build_manifest_sha256; /* Additional diagnostic identity. */
+    const char *builtin_bios_image_id; /* Verified immutable linked descriptor. */
+    uint32_t builtin_bios_image_wordsum;
+    unsigned declared_build_manifest_schema;
+    /* Actual initialized session, before transport. Zero player_count/mask
+     * have the same legacy all-slots meaning as PsxNetplayConfig. */
+    int slot_count,player_count;
+    uint32_t occupied_mask;
+    int rollback,loading_enabled,renderer,retained_texture_banks,aspect_index;
+    int observer; /* Receive-only; no occupied seat or wire offer. */
+} PSXModNetplayHostStartup;
+/* Trusted title qualification policy only. Output rules live for the process;
+ * absent/empty policy refuses frontend netplay. This callback grants no
+ * qualification merely by seeing a CPU feature or matching image hash. */
+typedef int (*PSXModNetplayHostProfiles)(const PSXModNetplayHostStartup *,PSXHostProfileCatalog *out);
 typedef struct PSXModNetplayProfile {
     const char *plugin_id;
     const char *compatibility_id;
@@ -39,6 +61,7 @@ typedef struct PSXModNetplayProfile {
     const char *loading_package_id;
     const char *loading_feature_id;
     const char *loading_plugin_id;
+    PSXModNetplayHostProfiles host_profiles; /* Append-only startup catalog. */
 } PSXModNetplayProfile;
 
 int psx_mod_register_netplay_profile(const PSXModNetplayProfile *profile);

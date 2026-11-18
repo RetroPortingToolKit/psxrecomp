@@ -1,5 +1,6 @@
 include_guard(GLOBAL)
 option(PSX_SHARED_PRESENT_IMAGES "Share completed temporal images with hold-last" ON)
+option(PSX_GPU_DISPLAY_HISTORY "Retain forensic VRAM history on the GPU until export" OFF)
 
 # Presentation-only ownership: this does not alter simulation or peer identity.
 function(psxrecomp_present_images target)
@@ -9,5 +10,8 @@ function(psxrecomp_present_images target)
         set(_selected 1)
     endif()
     target_compile_definitions(${target} PRIVATE PSX_SHARED_PRESENT_IMAGES=${_selected})
+    if(PSX_GPU_DISPLAY_HISTORY)
+        target_compile_definitions(${target} PRIVATE PSX_GPU_DISPLAY_HISTORY=1)
+    endif()
     set_property(TARGET ${target} PROPERTY PSX_SHARED_PRESENT_IMAGES ${_selected})
 endfunction()

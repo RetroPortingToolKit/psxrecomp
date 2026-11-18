@@ -129,6 +129,21 @@ static const ButtonDef s_buttons[] = {
 };
 #define PSXKB_N ((int)(sizeof(s_buttons) / sizeof(s_buttons[0])))
 
+/* GunCon controls (PS1B-305), keybinds.ini [guncon]: [control][0 = primary,
+ * 1 = alt]. Order matches PsxGunconControl. */
+static const char *const s_guncon_names[PSX_GC_COUNT] = {
+    "trigger", "a", "b", "no_light", "offscreen_shot",
+};
+#define PSXKB_GUNCON_DEFAULTS { \
+    { PSXKB_MOUSE_SC(SDL_BUTTON_LEFT),   SDL_SCANCODE_UNKNOWN }, \
+    { PSXKB_MOUSE_SC(SDL_BUTTON_RIGHT),  SDL_SCANCODE_A },       \
+    { PSXKB_MOUSE_SC(SDL_BUTTON_MIDDLE), SDL_SCANCODE_D },       \
+    { PSXKB_MOUSE_SC(SDL_BUTTON_X1),     SDL_SCANCODE_UNKNOWN }, \
+    { SDL_SCANCODE_W,                    SDL_SCANCODE_UNKNOWN }, \
+}
+static SDL_Scancode       s_guncon[PSX_GC_COUNT][2]          = PSXKB_GUNCON_DEFAULTS;
+static const SDL_Scancode s_guncon_defaults[PSX_GC_COUNT][2] = PSXKB_GUNCON_DEFAULTS;
+
 /* ── INI parsing helpers ──────────────────────────────────────────────────── */
 
 static void trim(char *s) {
@@ -275,6 +290,22 @@ static void write_ini(const char *path) {
         write_player_section(f, section, &s_binds.player[p],
                              &s_alt_binds.player[p]);
     }
+    /* The notes sit inside the section: a writer that keeps sections it does
+     * not own (the launcher) keeps them with it. */
+    fprintf(f,
+        "[guncon]\n"
+        "# GunCon light gun (a player whose device is \"guncon\"). The pointer\n"
+        "# aims. a / b are the gun's side buttons (A left side, B right side).\n"
+        "# no_light: held, the gun sees no light (aim off-screen, e.g. reload).\n"
+        "# offscreen_shot: held, no light AND trigger (RE Survivor walks).\n");
+    for (int c = 0; c < PSX_GC_COUNT; ++c) {
+        if (s_guncon[c][1] != SDL_SCANCODE_UNKNOWN)
+            fprintf(f, "%-14s = %s, %s\n", s_guncon_names[c],
+                    scancode_to_name(s_guncon[c][0]), scancode_to_name(s_guncon[c][1]));
+        else
+            fprintf(f, "%-14s = %s\n", s_guncon_names[c], scancode_to_name(s_guncon[c][0]));
+    }
+    fprintf(f, "\n");
     fclose(f);
     printf("[Keybinds] Wrote %s\n", path);
 }
@@ -300,6 +331,9 @@ static void load_ini(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return;
     PsxPlayerBinds *current = NULL, *current_alt = NULL;
+    int in_guncon = 0;
+    /* A file without [guncon] means the defaults, whatever was loaded before. */
+    memcpy(s_guncon, s_guncon_defaults, sizeof(s_guncon));
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         trim(line);
@@ -309,6 +343,7 @@ static void load_ini(const char *path) {
             if (end) *end = '\0';
             const char *section = line + 1;
             current = NULL; current_alt = NULL;
+            in_guncon = !strcmp(section, "guncon");
             if (!strncmp(section, "player", 6)) {
                 int n = atoi(section + 6);
                 if (n >= 1 && n <= PSXKB_MAX_PLAYERS) {
@@ -324,11 +359,21 @@ static void load_ini(const char *path) {
         char *key = line, *val = eq + 1;
         trim(key); trim(val);
         for (char *c = key; *c; c++) *c = (char)tolower((unsigned char)*c);
-        if (!current) continue;
+        if (!current && !in_guncon) continue;
         /* Optional alternate binding after a comma: "cross = X, Mouse1". */
         char *comma = strchr(val, ',');
         char *alt_val = NULL;
         if (comma) { *comma = '\0'; alt_val = comma + 1; trim(val); trim(alt_val); }
+        if (in_guncon) {
+            for (int c = 0; c < PSX_GC_COUNT; c++) {
+                if (!strcmp(key, s_guncon_names[c])) {
+                    s_guncon[c][0] = name_to_scancode(val);
+                    s_guncon[c][1] = alt_val ? name_to_scancode(alt_val) : SDL_SCANCODE_UNKNOWN;
+                    break;
+                }
+            }
+            continue;
+        }
         for (int i = 0; i < PSXKB_N; i++) {
             if (!strcmp(key, s_buttons[i].name)) {
                 *(SDL_Scancode *)((char *)current + s_buttons[i].offset) =
@@ -518,4 +563,23 @@ void psx_keybinds_reset_player(int player) {
 void psx_keybinds_save(void) {
     if (!s_ini_path[0]) strcpy(s_ini_path, "keybinds.ini");
     write_ini(s_ini_path);
+}
+
+/* ── GunCon controls ──────────────────────────────────────────────────────── */
+
+int psx_keybinds_guncon_held(const uint8_t *keys, int control) {
+    if (!keys || control < 0 || control >= PSX_GC_COUNT) return 0;
+    /* GunCon actions share the host pointer and the primary host-key guard. */
+    return held_sc(keys, s_guncon[control][0], 0) ||
+           held_sc(keys, s_guncon[control][1], 0);
+}
+
+SDL_Scancode psx_keybinds_guncon_get(int control, int alt) {
+    if (control < 0 || control >= PSX_GC_COUNT) return SDL_SCANCODE_UNKNOWN;
+    return s_guncon[control][alt ? 1 : 0];
+}
+
+const char *psx_keybinds_guncon_name(int control) {
+    if (control < 0 || control >= PSX_GC_COUNT) return "?";
+    return s_guncon_names[control];
 }

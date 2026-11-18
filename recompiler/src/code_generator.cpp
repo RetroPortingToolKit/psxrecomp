@@ -1,5 +1,6 @@
 #include "code_generator.h"
 #include "pgxp_hook_emitter.h"
+#include "pgxp_dataflow.h"
 #include "control_flow.h"
 #include "gte_register_classification.h"
 #include "../src/bios_address_model.h"
@@ -188,18 +189,161 @@ std::string CodeGenerator::emit_mid_block_cycle_charge(uint32_t addr,
     return ss.str();
 }
 
+std::string CodeGenerator::region_materializer(const PgxpRegionState& state) const {
+    uint32_t mask=0,x[2]={},y[2]={};
+    std::string adds,add_key;unsigned count=0;
+    for(unsigned r=1;r<32;++r)if(state[r].known) {
+        if(state[r].incoming_add) {
+            adds+=fmt::format("{{{}u,{}u,{}}},",r,state[r].source,state[r].addend);
+            add_key+=fmt::format("_a{}_{}_{}{}",r,state[r].source,
+                state[r].addend<0?'n':'p',state[r].addend<0?-int(state[r].addend):int(state[r].addend));
+            ++count;continue;
+        }
+        const uint32_t bit=uint32_t(1)<<r;mask|=bit;
+        for(unsigned m=0;m<2;++m) { if(state[r].flags[m]&1)x[m]|=bit;if(state[r].flags[m]&2)y[m]|=bit; }
+    }
+    const auto key=fmt::format("{}_{}_{}_{}_{}",mask,x[0],y[0],x[1],y[1])+add_key;
+    const auto name=precision_region_owner_+"_receipt_"+key;
+    std::string body;
+    if(count)body=fmt::format("static const PSXPGXPRegionAdd adds[] = {{{}}}; psx_pgxp_region_add_immediates(cpu,adds,{}u); ",adds,count);
+    // Affine sources must be consumed before a plain/constant receipt can
+    // overwrite one of them. The affine batch snapshots its own aliases first.
+    if(mask || !count)body+=fmt::format("psx_pgxp_region_materialize(cpu,0x{:08X}u,0x{:08X}u,0x{:08X}u,0x{:08X}u,0x{:08X}u);",mask,x[0],y[0],x[1],y[1]);
+    precision_region_materializers_[name]=fmt::format("static void {}(CPUState *cpu) {{ {} }}\n",name,body);
+    return name;
+}
+
+std::string CodeGenerator::region_flush(bool preserve_integer_facts) {
+    bool any=false;for(unsigned r=1;r<32;++r)any|=precision_region_state_[r].known;
+    const auto out=any ? config_.indent+region_materializer(precision_region_state_)+"(cpu);\n" : "";
+    if(preserve_integer_facts)pgxp_region_publish_facts(precision_region_state_);
+    else precision_region_state_={};
+    return out;
+}
+void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
+    std::vector<PgxpFlowBlock> blocks,geometry_blocks;
+    std::set<uint32_t> roots{cfg.function_start};
+    precision_geometry_dead_.clear();precision_geometry_control_=false;precision_geometry_scratch_=false;
+    std::set<uint32_t> load_delay_opaque;
+    precision_geometry_guard_.clear();
+    const auto contract=config_.geometry_control_frames.find(cfg.function_start);
+    precision_region_opaque_.clear();
+    for(const auto& [pc,b]:cfg.blocks) {
+        PgxpFlowBlock f{pc,{},b.successors};
+        const auto type=b.exit_instr.type;
+        f.boundary=type!=ControlFlowType::None && type!=ControlFlowType::Branch && type!=ControlFlowType::Jump;
+        if(type==ControlFlowType::JumpLink||type==ControlFlowType::JumpLinkReg) {
+            roots.insert(b.exit_instr.address+8u);f.successors={b.exit_instr.address+8u};
+        }
+        if(type==ControlFlowType::None)f.successors={b.end_addr+4u};
+        uint32_t end=b.end_addr;
+        if(b.exit_instr.has_delay_slot)end=std::max(end,b.exit_instr.address+4u);
+        for(uint32_t a=pc;a<=end;a+=4u) {
+            const auto w=exe_.read_word(a);if(!w){precision_region_plan_={};return;}
+            auto text=translate_instruction_core(a,*w);
+            const bool control=ControlFlowAnalyzer::is_control_flow(*w);
+            bool opaque=extra_labels_.count(a)||!mod_instruction_call(a,*w).empty()||
+                find_mod_immediate_site(a,*w)||!draw_distance_clamp_prefix(a,*w).empty()||
+                text.find("psx_")!=std::string::npos||text.find("gte_")!=std::string::npos;
+            if(control && (f.boundary || pgxp_flow_effect(*w).barrier || !mod_instruction_call(a,*w).empty()))opaque=true;
+            if(type==ControlFlowType::Branch && a==b.exit_instr.address) {
+                const auto condition=generate_branch_condition(*w,a);
+                if(condition.find("psx_")!=std::string::npos||condition.find("gte_")!=std::string::npos)opaque=true;
+            }
+            const unsigned op=*w>>26,rt=(*w>>16)&31u;
+            if(op>=0x20&&op<=0x26&&rt)if(auto next=exe_.read_word(a+4u)) {
+                if(pgxp_flow_effect(*next).uses&(UINT64_C(1)<<rt)) {
+                    opaque=true;precision_region_opaque_.insert(a+4u);
+                    load_delay_opaque.insert(a);load_delay_opaque.insert(a+4u);
+                }
+            }
+            if(opaque)precision_region_opaque_.insert(a);
+            f.instructions.push_back({a,*w,opaque});
+        }
+        auto geometry=f;
+        for(auto& i:geometry.instructions) {
+            // Timing/GTE helpers are not arbitrary metadata consumers. Exact
+            // selectors remain opaque. A scratch-frame declaration certifies
+            // the exact handled adapters' SP/RA roles; emission still publishes
+            // every pending geometry receipt before invoking those adapters.
+            i.opaque=extra_labels_.count(i.address)||
+                (!config_.geometry_scratch_frames.count(cfg.function_start) &&
+                 !mod_instruction_call(i.address,i.word).empty())||
+                find_mod_immediate_site(i.address,i.word)||
+                !draw_distance_clamp_prefix(i.address,i.word).empty();
+        }
+        geometry_blocks.push_back(std::move(geometry));
+        blocks.push_back(std::move(f));
+    }
+    if(contract!=config_.geometry_control_frames.end()) {
+        // Operand publication is independent of optional dead-frame elision.
+        // A genuine opaque exception path can require the full SP/RA receipts
+        // while the same guarded closure still owns canonical scratch EAs.
+        precision_geometry_scratch_=config_.geometry_scratch_frames.count(cfg.function_start)!=0;
+        if(precision_geometry_scratch_)precision_geometry_guard_=contract->second;
+        constexpr uint64_t control=(UINT64_C(1)<<29)|(UINT64_C(1)<<31);
+        constexpr uint64_t all=((UINT64_C(1)<<34)-1u)&~UINT64_C(1);
+        // The title declaration certifies this exact caller/callback closure's
+        // control-register roles. It does not declare any other register dead.
+        std::map<uint32_t,uint64_t> callees;
+        for(const auto& b:geometry_blocks)for(const auto& i:b.instructions)
+            if(i.word>>26==3u)callees[((i.address+4u)&0xf0000000u)|((i.word&0x3ffffffu)<<2)]=all&~control;
+        const auto frame=pgxp_control_frame(geometry_blocks,cfg.function_start);
+        const auto demand=pgxp_geometry_demand(geometry_blocks,cfg.function_start,all&~control,callees);
+        if(frame.valid) {
+            const auto sites=frame.sites();
+            bool complete=true;for(auto pc:sites)complete&=demand.dead.count(pc)!=0;
+            if(complete) {
+                precision_geometry_dead_=sites;precision_geometry_control_=true;
+                precision_geometry_guard_=contract->second;
+            }
+        }
+    }
+    if(precision_geometry_scratch_) {
+        // Runtime guard certifies this exact canonical-bus/handled-adapter
+        // closure. Helpers are classified by real operands below, not by the
+        // presence of a psx_/gte_ name. Load-delay and explicit hooks stay full.
+        blocks=geometry_blocks;precision_region_opaque_=load_delay_opaque;
+        for(auto& b:blocks)for(auto& i:b.instructions) {
+            // The certified adapter may consume geometry metadata: publish
+            // before it even though its declared CPU-register effects are zero.
+            i.opaque=i.opaque||load_delay_opaque.count(i.address)||
+                !mod_instruction_call(i.address,i.word).empty();
+            if(i.opaque)precision_region_opaque_.insert(i.address);
+        }
+    }
+    for(auto& b:blocks)for(auto& i:b.instructions)if(precision_region_opaque_.count(i.address))i.opaque=true;
+    precision_region_plan_=pgxp_region_plan(blocks,roots,precision_geometry_dead_,precision_geometry_scratch_);
+}
+
 std::string CodeGenerator::emit_interrupt_check(uint32_t resume_pc,
                                                 const std::string& indent) const {
-    return std::string("#ifdef PSX_ENABLE_BLOCK_CYCLES\n") + indent +
-           "psx_cyc_bb_defer_flush();\n#endif\n" + indent +
-           fmt::format("psx_check_interrupts_at(cpu, 0x{:08X}u);\n", runtime_pc(resume_pc));
+    if(precision_region_body_) {
+        auto found=precision_region_plan_.entry.find(resume_pc);
+        if(found==precision_region_plan_.entry.end())
+            return indent+region_materializer(precision_region_state_)+"(cpu);\n"+
+                indent+fmt::format("PSX_BLOCK_EDGE(cpu,0x{:08X}u);\n",runtime_pc(resume_pc));
+        auto normalize=precision_region_state_;
+        for(unsigned r=1;r<32;++r)if(found->second[r]==normalize[r])normalize[r]={};
+        bool any=false;for(unsigned r=1;r<32;++r)any|=normalize[r].known;
+        std::string out=indent+"{ const uint32_t _region_pc=cpu->pc;\n";
+        out+=indent+fmt::format("if(psx_block_edge_materialize(cpu,0x{:08X}u,{})) {{\n",runtime_pc(resume_pc),region_materializer(precision_region_state_));
+        out+=indent+"    if(g_psx_call_bail || cpu->pc!=_region_pc) return;\n";
+        out+=indent+fmt::format("    {}_canonical(cpu,0x{:08X}u); return;\n",precision_region_owner_,runtime_pc(resume_pc));
+        out+=indent+"} }\n";
+        if(any)out+=indent+region_materializer(normalize)+"(cpu); /* incompatible precision join */\n";
+        return out;
+    }
+    return indent + precision_operation_receipt_ + fmt::format("PSX_BLOCK_EDGE(cpu, 0x{:08X}u);\n", runtime_pc(resume_pc));
 }
 
 std::string CodeGenerator::emit_interrupt_check_expr(const std::string& resume_pc_expr,
                                                      const std::string& indent) const {
-    return std::string("#ifdef PSX_ENABLE_BLOCK_CYCLES\n") + indent +
-           "psx_cyc_bb_defer_flush();\n#endif\n" + indent +
-           fmt::format("psx_check_interrupts_at(cpu, {});\n", resume_pc_expr);
+    if(precision_region_body_) return
+        (precision_geometry_control_ ? indent+"pgxp_native_clobber(cpu,0xA0000000u,0u); /* dead control outputs */\n" : "")+
+        indent+region_materializer(precision_region_state_)+"(cpu);\n"+
+        indent+fmt::format("PSX_BLOCK_EDGE(cpu, {});\n", resume_pc_expr);
+    return indent + precision_operation_receipt_ + fmt::format("PSX_BLOCK_EDGE(cpu, {});\n", resume_pc_expr);
 }
 
 std::string CodeGenerator::reg_name(int reg_num) {
@@ -260,11 +404,11 @@ std::string CodeGenerator::translate_sw(uint32_t instr, const std::string& memor
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
-    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); cpu->write_word({}, {});", memory_addr, reg_name(rt));
+    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); PSX_STORE_WORD(cpu, {}, {});", memory_addr, reg_name(rt));
     if (offset == 0) {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_word({}, {});", reg_name(rs), reg_name(rt));
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_WORD(cpu, {}, {});", reg_name(rs), reg_name(rt));
     } else {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_word({} + {}, {});",
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_WORD(cpu, {} + {}, {});",
                           reg_name(rs), offset, reg_name(rt));
     }
 }
@@ -533,11 +677,11 @@ std::string CodeGenerator::translate_sb(uint32_t instr, const std::string& memor
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
-    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); cpu->write_byte({}, (uint8_t){});", memory_addr, reg_name(rt));
+    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); PSX_STORE_BYTE(cpu, {}, (uint8_t){});", memory_addr, reg_name(rt));
     if (offset == 0) {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_byte({}, (uint8_t){});", reg_name(rs), reg_name(rt));
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_BYTE(cpu, {}, (uint8_t){});", reg_name(rs), reg_name(rt));
     } else {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_byte({} + {}, (uint8_t){});",
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_BYTE(cpu, {} + {}, (uint8_t){});",
                           reg_name(rs), offset, reg_name(rt));
     }
 }
@@ -547,11 +691,11 @@ std::string CodeGenerator::translate_sh(uint32_t instr, const std::string& memor
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
-    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t){});", memory_addr, reg_name(rt));
+    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {}, (uint16_t){});", memory_addr, reg_name(rt));
     if (offset == 0) {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t){});", reg_name(rs), reg_name(rt));
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {}, (uint16_t){});", reg_name(rs), reg_name(rt));
     } else {
-        return fmt::format("psx_store_cycle_barrier(); cpu->write_half({} + {}, (uint16_t){});",
+        return fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {} + {}, (uint16_t){});",
                           reg_name(rs), offset, reg_name(rt));
     }
 }
@@ -725,11 +869,13 @@ std::string CodeGenerator::translate_div(uint32_t instr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
 
-    // MIPS division: quotient in LO, remainder in HI
-    // Handle division by zero (MIPS behavior: result is unpredictable but doesn't trap)
-    return fmt::format("if ({} != 0) {{ cpu->lo = (uint32_t)((int32_t){} / (int32_t){}); cpu->hi = (uint32_t)((int32_t){} % (int32_t){}); }} else {{ cpu->lo = ((int32_t){} >= 0) ? 0xFFFFFFFF : 1; cpu->hi = (uint32_t){}; }}"
+    // MIPS division: quotient in LO, remainder in HI. DIV never traps
+    // (PSX-SPX "CPU Specifications", Multiply/divide): x/0 gives HI=x and
+    // LO=-1 (x>=0) or +1 (x<0); -80000000h/-1 gives HI=0, LO=-80000000h.
+    // The second case is undefined in C and faults on x86 hosts.
+    return fmt::format("if ({1} == 0) {{ cpu->lo = ((int32_t){0} >= 0) ? 0xFFFFFFFF : 1; cpu->hi = (uint32_t){0}; }} else if ({0} == 0x80000000u && {1} == 0xFFFFFFFFu) {{ cpu->lo = 0x80000000u; cpu->hi = 0u; }} else {{ cpu->lo = (uint32_t)((int32_t){0} / (int32_t){1}); cpu->hi = (uint32_t)((int32_t){0} % (int32_t){1}); }}"
                       "\n#ifdef PSX_ENABLE_BLOCK_CYCLES\n    psx_muldiv_set(cpu, 37u);\n#endif",
-                      reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rs));
+                      reg_name(rs), reg_name(rt));
 }
 
 std::string CodeGenerator::translate_divu(uint32_t instr) {
@@ -1016,12 +1162,92 @@ std::string CodeGenerator::draw_distance_clamp_prefix(uint32_t addr,
     return {};
 }
 
-std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) {
+std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr,
+                                                PgxpPlainSpan* precision_span) {
+    PgxpPlainSpan precision_input;
+    if (precision_span) {
+        precision_input = *precision_span;
+        if (config_.mod_instruction_sites.count(addr) ||
+            config_.mod_instruction_sites.count(runtime_pc(addr)))
+            precision_input.barrier();
+        /* Every early/special emission stays conservative. Only the ordinary
+         * single-hook ALU path below can publish a proven-plain result. */
+        precision_span->barrier();
+    }
     std::string clamp = draw_distance_clamp_prefix(addr, instr);
     const std::string hook = mod_instruction_call(addr, instr);
     const PSXRecompV4::ModImmediateSite* imm_site = find_mod_immediate_site(addr, instr);
-    const std::string body = imm_site ? mod_immediate_translation(addr, instr, *imm_site)
+    std::string body = imm_site ? mod_immediate_translation(addr, instr, *imm_site)
                                       : translate_instruction_core(addr, instr);
+    const bool ordinary = !imm_site && hook.empty() && clamp.empty() &&
+        body.find("psx_") == std::string::npos && body.find("gte_") == std::string::npos;
+    if(precision_region_body_) {
+        if(precision_geometry_dead_.count(addr)) {
+            const auto effect=pgxp_flow_effect(instr);
+            std::string prefix;
+            if(effect.pure_alu)precision_region_state_[effect.destination]={};
+            else prefix=region_flush(precision_geometry_scratch_);
+            const bool saved=precision_operation_body_;precision_operation_body_=true;
+            const auto integer=translate_instruction_core(addr,instr);
+            precision_operation_body_=saved;
+            return prefix+integer+" /* precision-demand: geometry-dead control frame */";
+        }
+        const auto before=precision_region_state_;
+        const auto hook_at=body.find("PGXP_ALU(");
+        const bool candidate=!precision_region_opaque_.count(addr) &&
+            ((ordinary && hook_at!=std::string::npos && body.find("PGXP_ALU(",hook_at+1u)==std::string::npos) ||
+             (precision_geometry_scratch_ && (instr>>26)==0x24u && pgxp_region_scratch_memory(instr,before)));
+        unsigned destination=0;PgxpRegionValue value;
+        if(candidate && pgxp_region_definition(instr,before,destination,value,precision_geometry_scratch_)) {
+            const bool saved=precision_operation_body_;precision_operation_body_=true;
+            const auto integer=translate_instruction_core(addr,instr);
+            precision_operation_body_=saved;
+            precision_region_state_[destination]=value;
+            return integer+" /* precision-demand: native integer definition */";
+        }
+        const auto effect=pgxp_flow_effect(instr);
+        if(precision_geometry_scratch_ && !precision_region_opaque_.count(addr)) {
+            auto next=before;uint32_t publish=0;
+            if(pgxp_region_operand_boundary(instr,next,&publish)) {
+                auto consumed=before;bool any=false;
+                for(unsigned r=1;r<32;++r) {
+                    if(!(publish&(1u<<r)))consumed[r]={};
+                    any|=consumed[r].known;
+                }
+                precision_region_state_=next;
+                return (any?config_.indent+region_materializer(consumed)+"(cpu);\n":"")+
+                    hook+body+" /* precision-demand: operand-only scratch/GTE boundary */";
+            }
+        }
+        if(!ordinary || effect.defines || effect.uses || effect.barrier || (instr>>26)>=0x10u) {
+            const bool explicit_cpu=precision_geometry_scratch_ && pgxp_region_explicit_cpu_effect(instr);
+            const auto out=region_flush(explicit_cpu);
+            if(explicit_cpu)pgxp_region_canonical_effect(instr,precision_region_state_);
+            return out+hook+body;
+        }
+        return hook+body;
+    }
+    bool dead_shadow = false;
+    if (ordinary && precision_dead_alu_.count(addr)) {
+        const auto at = body.find("PGXP_ALU(");
+        if (at != std::string::npos && body.find("PGXP_ALU(", at + 1u) == std::string::npos) {
+            const auto effect = pgxp_flow_effect(instr);
+            const char* selected = precision_elided_alu_.count(addr)
+                ? "PGXP_FLOW_ELIDED_ALU" : "PGXP_FLOW_DEAD_ALU";
+            body.replace(at, 9u, fmt::format("{}({}u, ", selected, effect.destination));
+            dead_shadow = true;
+        }
+    }
+    if (!dead_shadow && precision_span && ordinary && body.find("psx_") == std::string::npos &&
+        body.find("gte_") == std::string::npos) {
+        const auto hook = body.find("PGXP_ALU(");
+        if (hook != std::string::npos && body.find("PGXP_ALU(", hook + 1u) == std::string::npos) {
+            *precision_span = precision_input;
+            uint32_t destination;
+            if (precision_span->consume_alu(instr, destination))
+                body.replace(hook, 9u, fmt::format("PGXP_PLAIN_ALU({}u, ", destination));
+        }
+    }
     if (clamp.empty()) return hook + body;
     // The core translation carries its own indent; give the clamp the same.
     return hook + config_.indent + clamp + "\n" + body;
@@ -1371,7 +1597,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                                config_.ws_cull_bias_lower_sites.count(addr) ? "-" : "+", margin);
             // Preserve the ordinary ALU shadow update, including source capture
             // before an in-place add. Margin zero must also be a PGXP identity.
-            PSXRecomp::append_pgxp_hooks(instr, code, memory_addr);
+            if (!precision_operation_body_) PSXRecomp::append_pgxp_hooks(instr, code, memory_addr);
             return config_.indent + code + comment;
         } else if (!config_.overlay_mode) {
             fmt::print(stderr, "ERROR: [widescreen.cull] bias site 0x{:08X} is not "
@@ -1705,12 +1931,12 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
             int16_t offset = get_imm16(instr);
             std::string store_pc = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr));
             if (!memory_addr.empty())
-                return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
+                return store_pc + fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
                                    memory_addr, reg_name(rt), comment);
             if (offset == 0)
-                return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
+                return store_pc + fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
                                    reg_name(rs), reg_name(rt), comment);
-            return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_half({} + {}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
+            return store_pc + fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {} + {}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
                                reg_name(rs), offset, reg_name(rt), comment);
         } else if (!config_.overlay_mode) {
             fmt::print(stderr, "ERROR: [widescreen.backdrop] x site 0x{:08X} is not "
@@ -1847,10 +2073,10 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
             : std::string(reg_name(rs));
         std::string store_pc = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr));
         if (opcode == 0x28)  // sb
-            return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_byte({0}, (uint8_t)psx_game_option_store({0}, (int){1}));{2}",
+            return store_pc + fmt::format("psx_store_cycle_barrier(); PSX_STORE_BYTE(cpu, {0}, (uint8_t)psx_game_option_store({0}, (int){1}));{2}",
                                aexpr, reg_name(rt), comment);
         if (opcode == 0x29)  // sh
-            return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_half({0}, (uint16_t)psx_game_option_store({0}, (int){1}));{2}",
+            return store_pc + fmt::format("psx_store_cycle_barrier(); PSX_STORE_HALF(cpu, {0}, (uint16_t)psx_game_option_store({0}, (int){1}));{2}",
                                aexpr, reg_name(rt), comment);
         fmt::print(stderr, "ERROR: [persist_options] init site 0x{:08X} is not sb/sh "
                    "(opcode 0x{:02X})\n", addr, opcode);
@@ -2074,7 +2300,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                         : fmt::format("{} + {}", reg_name(rs), offset);
                     code = gte_stall + swc2_store_pc + fmt::format(
                         "{{ uint32_t _pgxa = {}; uint32_t _pgxv = {}; "
-                        "psx_store_cycle_barrier(); cpu->write_word(_pgxa, _pgxv); "
+                        "psx_store_cycle_barrier(); PSX_STORE_WORD(cpu, _pgxa, _pgxv); "
                         "gte_precision_store_word(_pgxa, {}); "
                         "PGXP_COP2(0x{:08X}u, _pgxv, _pgxa); }}  /* swc2 gte[{}], {}({}) */",
                         swc2_addr, value, rt, instr, rt, offset, reg_name(rs));
@@ -2085,7 +2311,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
         }
     }
 
-    PSXRecomp::append_pgxp_hooks(instr, code, memory_addr);
+    if (!precision_operation_body_) PSXRecomp::append_pgxp_hooks(instr, code, memory_addr);
     /* The trailing disassembly comment must not land ON a preprocessor
      * directive line -- it would be swallowed as extra tokens and dropped,
      * costing the annotation and emitting -Wendif-labels noise. Reachable
@@ -2103,7 +2329,78 @@ std::string CodeGenerator::translate_basic_block(
     const BasicBlock& block,
     const ControlFlowGraph& cfg) {
 
+    if (!precision_region_body_ && !precision_operation_reentry_) {
+        std::vector<PgxpFlowInstruction> words;
+        uint32_t end=block.end_addr;
+        if(block.exit_instr.has_delay_slot)end=std::max(end,block.exit_instr.address+4u);
+        bool safe=end>=block.start_addr && end-block.start_addr<=1024u;
+        for(uint32_t pc=block.start_addr;safe&&pc<=end;pc+=4u) {
+            const auto w=exe_.read_word(pc);if(!w){safe=false;break;}
+            const std::string text=translate_instruction_core(pc,*w);
+            const uint32_t op=*w>>26;
+            const bool protected_store=(op==0x28u||op==0x29u||op==0x2bu) && runtime_pc(pc)==0x00001ce4u;
+            bool opaque=protected_store||extra_labels_.count(pc)||!mod_instruction_call(pc,*w).empty()||
+                find_mod_immediate_site(pc,*w)||!draw_distance_clamp_prefix(pc,*w).empty()||
+                text.find("psx_ws_")!=std::string::npos||text.find("psx_mod_")!=std::string::npos||text.find("gte_")!=std::string::npos;
+            words.push_back({pc,*w,opaque});
+        }
+        if(block.exit_instr.type==ControlFlowType::JumpLink) {
+            // JAL sets the live integer RA before its slot, but intentionally
+            // does not publish a new RA shadow. Do not prove the slot from the
+            // old entry value when it reads/writes that link register.
+            if(words.size()>=2) {
+                const uint32_t slot=words.back().word;
+                if(((slot>>21)&31u)==31u || ((slot>>16)&31u)==31u ||
+                    ((slot>>26)==0 && ((slot>>11)&31u)==31u))safe=false;
+            }
+            const auto callee=precision_operation_summaries_.find(block.exit_instr.target);
+            // A direct call is an observation boundary, never an excuse to
+            // classify an unknown/GTE/metadata-transport callee as plain.
+            if(callee==precision_operation_summaries_.end()||callee->second.opaque||callee->second.gte||
+                callee->second.geometry_inputs||callee->second.stored)safe=false;
+        }
+        if(block.exit_instr.type==ControlFlowType::Branch) {
+            const auto condition=generate_branch_condition(block.exit_instr.instruction,block.exit_instr.address);
+            if(condition.find("psx_")!=std::string::npos||condition.find("gte_")!=std::string::npos)safe=false;
+        }
+        const auto plan=safe?pgxp_integer_operation(words):PgxpOperationPlan{};
+        if(plan.valid) {
+            precision_operation_reentry_=true;
+            const auto continuations_before=cps_cur_continuations_;
+            const std::string canonical=translate_basic_block(block,cfg);
+            const auto continuations_after=cps_cur_continuations_;
+            cps_cur_continuations_=continuations_before;
+            precision_operation_body_=true;
+            precision_operation_receipt_=fmt::format("psx_pgxp_operation_end(cpu,0x{:08X}u,0x{:08X}u,0x{:08X}u,0x{:08X}u,0x{:08X}u);\n",plan.plain,plan.exact,plan.high,plan.low,plan.zero);
+            const std::string native=translate_basic_block(block,cfg);
+            cps_cur_continuations_=continuations_after;
+            precision_operation_receipt_.clear();precision_operation_body_=false;precision_operation_reentry_=false;
+            // Keep guaranteed-tail cleanup and borrowed stack lifetimes disjoint.
+            if(native.find("PSX_TRY_NATIVE_TAIL")==std::string::npos && native.find("PGXP_")==std::string::npos && native.find("gte_")==std::string::npos &&
+                native.find("psx_datashard_")==std::string::npos && native.find("psx_mod_")==std::string::npos) {
+                const auto charge=canonical.find("psx_native_span_charge(");
+                const auto prefix_end=canonical.find("#endif\n",charge)+7u;
+                if(charge==std::string::npos || prefix_end<7u || canonical.substr(0,prefix_end)!=native.substr(0,prefix_end))
+                    return canonical;
+                // Admission follows the original leader observer/slicing/charge,
+                // whose callbacks may otherwise invalidate a borrowed context.
+                const auto plain=native.substr(prefix_end),fallback=canonical.substr(prefix_end);
+                std::string out=canonical.substr(0,prefix_end)+"#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && !defined(PSX_OVERLAY_DLL_BUILD) && !defined(PSX_COSIM)\n";
+                out+="    { /* psx-pgxp-integer-operation-v2: one admission/receipt; zero instruction hooks */\n";
+                if(!plan.memory.empty()) {
+                    out+="    const PSXPGXPOperationAccess _pgxp_op_memory[]={\n";
+                    for(const auto& a:plan.memory)out+=fmt::format("        {{{},{}u,psx_pgxp_operation_memory(cpu,{},{}u),0x{:08X}u}},\n",a.address,a.kind,a.address,a.kind,a.instruction);
+                    out+="    };\n";
+                }
+                out+=fmt::format("    if(psx_pgxp_operation_allowed(cpu) && psx_pgxp_operation_begin(cpu,0x{:08X}u,0x{:08X}u,{},{}u,{}u,{}u,{}u)) {{\n",plan.reads,plan.plain|plan.exact|plan.high|plan.low|plan.zero,plan.memory.empty()?"NULL":"_pgxp_op_memory",plan.memory.size(),plan.alu,plan.loads,plan.stores);
+                out+=plain+"    } else\n#endif\n    {\n"+fallback+"    }\n#if defined(PSX_PGXP) && PSX_PGXP && defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && !defined(PSX_OVERLAY_DLL_BUILD) && !defined(PSX_COSIM)\n    }\n#endif\n";
+                return out;
+            }
+        }
+    }
     std::stringstream ss;
+    PgxpPlainSpan precision_span;
+    if(precision_region_body_)precision_region_state_=precision_region_plan_.entry.at(block.start_addr);
 
     // Block label
     ss << fmt::format("block_{:08X}:\n", block.start_addr);
@@ -2113,9 +2410,20 @@ std::string CodeGenerator::translate_basic_block(
     // Beetle's before-instruction sample and the cycle_compare.py anchor
     // semantics, so ANY block-leader PC is anchorable on both backends (not just
     // function entries). Debug-only: prod (PSX_NO_DEBUG_TOOLS) emits nothing.
+    bool region_pending=false;
+    if(precision_region_body_)for(unsigned r=1;r<32;++r)region_pending|=precision_region_state_[r].known;
+    if(region_pending) {
+        uint32_t charge=0;
+        uint32_t end=block.end_addr;
+        if(block.exit_instr.has_delay_slot)end=std::max(end,block.exit_instr.address+4u);
+        for(uint32_t a=block.start_addr;a<=end;a+=4u)if(auto w=exe_.read_word(a))charge+=psx_native_instr_cycles(*w,runtime_pc(a));
+        ss<<config_.indent<<fmt::format("if(PSX_DEBUG_BLOCK_INTEREST(0x{:08X}u) || g_psx_precise_slice || psx_native_span_charge_observable({}u)) {{\n",runtime_pc(block.start_addr),charge);
+        ss<<config_.indent<<"    "<<region_materializer(precision_region_state_)<<"(cpu);\n";
+        ss<<config_.indent<<fmt::format("    {}_canonical(cpu,0x{:08X}u); return;\n",precision_region_owner_,runtime_pc(block.start_addr))<<config_.indent<<"}\n";
+    }
     ss << "#ifndef PSX_NO_DEBUG_TOOLS\n";
     ss << config_.indent
-       << fmt::format("debug_server_cyc_observe(0x{:08X}u);\n", block.start_addr);
+       << fmt::format("PSX_DEBUG_BLOCK_OBSERVE(0x{:08X}u);\n", block.start_addr);
     ss << "#endif\n";
     // First-divergence co-sim oracle (COSIM_ORACLE.md): lean per-block-leader hook,
     // present only in the clean PSX_COSIM build (independent of the debug tools).
@@ -2338,6 +2646,80 @@ std::string CodeGenerator::translate_basic_block(
     uint32_t delayed_load_dest = 0u;
     bool delayed_load_active = false;
 
+    /* Zero-word runs. Discovery reaches the zero-filled BSS and overlay load
+     * areas of an EXE image through JAL targets, and each zero word (sll
+     * $0,$0,0) expands to about ten lines, so one run can make a function of a
+     * million lines (one large title has a 110,381-word run). A run of zero
+     * words with no label, annotation or delay slot among its followers is
+     * emitted as its leader (normal path) plus one loop that makes, per
+     * follower, exactly the calls the expanded form makes: emit_pre_icache's
+     * fetch (every word when uncached, else only at a line start, since a
+     * follower is never a block leader or label), the zero word's psx_cyc_step
+     * mask, and cosim_instr. The loop variable is the runtime PC; a run never
+     * crosses a segment, so the runtime PCs of its words are contiguous. Short
+     * runs stay expanded, so ordinary code is emitted byte-identically. */
+    static constexpr uint32_t kZeroRunMinFollowers = 64u;
+    const uint32_t zero_nop_mask = psx_cyc_dep_res_mask(0u);
+    auto canon_zero_word = [&](uint32_t a) {
+        std::string t = translate_instruction(a, 0u);
+        for (const std::string& hex : {fmt::format("0x{:08X}", runtime_pc(a)),
+                                       fmt::format("0x{:08X}", a)}) {
+            for (size_t p = t.find(hex); p != std::string::npos; p = t.find(hex, p))
+                t.replace(p, hex.size(), "0x@");
+        }
+        return t;
+    };
+    // Exclusive end of the zero-word run led by `lead`.
+    auto scan_zero_run = [&](uint32_t lead) -> uint32_t {
+        const uint64_t limit = exit_uses_delay_slot
+            ? static_cast<uint64_t>(block.end_addr)
+            : static_cast<uint64_t>(block.end_addr) + 4u;
+        const uint32_t lead_seg = lead & kSegmentMask;
+        const std::string lead_text = canon_zero_word(lead);
+        uint64_t a = static_cast<uint64_t>(lead) + 4u;
+        for (; a < limit && a <= 0xFFFFFFF8u; a += 4u) {
+            const uint32_t a32 = static_cast<uint32_t>(a);
+            auto w = exe_.read_word(a32);
+            if (!w.has_value() || *w != 0u) break;
+            if (extra_labels_.count(a32)) break;
+            if ((a32 & kSegmentMask) != lead_seg) break;
+            if (annotations_ && a32 != cfg.function_start &&
+                !annotations_->lookup(a32).empty()) break;
+            if (canon_zero_word(a32) != lead_text) break;
+        }
+        return static_cast<uint32_t>(a);
+    };
+    auto emit_zero_run_followers = [&](uint32_t first, uint32_t end) {
+        const std::string& in = config_.indent;
+        const uint32_t pc_first = runtime_pc(first);
+        const uint32_t pc_end = pc_first + (end - first);
+        const std::string var = fmt::format("_zr_{:08X}", first);
+        ss << in << fmt::format(
+            "{{ /* zero-word run 0x{:08X}..0x{:08X}: {} words, per-word calls as expanded */\n",
+            first, end - 4u, (end - first) / 4u);
+        ss << in << in << fmt::format("uint32_t {};\n", var);
+        ss << in << in << fmt::format(
+            "for ({0} = 0x{1:08X}u; {0} != 0x{2:08X}u; {0} += 4u) {{\n", var, pc_first, pc_end);
+        if (cycle_per_insn) {
+            ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
+            if (psx_fetch_uncached(pc_first)) {
+                ss << in << in << in << fmt::format("psx_icache_fetch(cpu, {});\n", var);
+            } else {
+                ss << in << in << in << fmt::format(
+                    "if (({0} & 0xCu) == 0u) psx_icache_fetch(cpu, {0});\n", var);
+            }
+            ss << in << in << in << fmt::format("psx_cyc_step(cpu, 0x{:X}u);\n", zero_nop_mask);
+            ss << "#endif\n";
+        }
+        ss << "#ifdef PSX_COSIM\n";
+        ss << in << in << in << fmt::format("cosim_instr({});\n", var);
+        ss << "#endif\n";
+        ss << in << in << "}\n";
+        ss << in << "}\n";
+    };
+    uint32_t zero_run_end = 0u;
+    uint32_t zero_run_scanned_end = 0u;
+
     while (addr <= block.end_addr) {
         auto instr_opt = exe_.read_word(addr);
         if (!instr_opt.has_value()) {
@@ -2367,6 +2749,12 @@ std::string CodeGenerator::translate_basic_block(
                 ss << config_.indent << fmt::format("/* [NOTE] {} */\n", inote);
         }
 
+        if (instr == 0u && !is_cf && !delayed_load_active && addr >= zero_run_scanned_end) {
+            zero_run_end = scan_zero_run(addr);
+            zero_run_scanned_end = zero_run_end;
+            if ((zero_run_end - addr) / 4u - 1u < kZeroRunMinFollowers) zero_run_end = 0u;
+        }
+
         if (!is_cf) {
             if (cycle_per_insn) emit_pre_icache(addr, config_.indent);
             if (cycle_per_insn) emit_pre_timing(instr, config_.indent);
@@ -2384,7 +2772,8 @@ std::string CodeGenerator::translate_basic_block(
                     delayed_load_dest,
                     fmt::format("psx_ldd_{:08X}", delayed_load_addr));
             }
-            std::string emitted = translate_instruction(addr, instr);
+            if (extra_labels_.count(addr)) precision_span.barrier();
+            std::string emitted = translate_instruction(addr, instr, &precision_span);
             if (forward_to_lwlr) clear_lwlr_merge_forward();
             int load_dest = simple_load_dest(instr);
             bool defer_load = false;
@@ -2458,6 +2847,8 @@ std::string CodeGenerator::translate_basic_block(
         } else {
             // Control flow is handled at block exit
             if (addr == exit_branch_addr) {
+                if(precision_region_body_ && (precision_region_opaque_.count(addr) ||
+                    (block.exit_instr.type!=ControlFlowType::Branch && block.exit_instr.type!=ControlFlowType::Jump)))ss<<region_flush();
                 // Jumps (j/jal/jr/jalr) and reserved words never reach
                 // generate_branch_condition; check them here.
                 check_explicit_branch_site(addr, block.exit_instr.instruction);
@@ -2525,6 +2916,17 @@ std::string CodeGenerator::translate_basic_block(
                                       delay_saved_target, reg_name(target_rs));
                 }
 
+                // BLTZAL/BGEZAL test rs before writing $ra, so a branch on $ra
+                // itself must see the old value. Latch the condition before the
+                // link write as well as before the delay slot.
+                if (block.exit_instr.type == ControlFlowType::Branch) {
+                    delay_saved_cond = fmt::format("_bc_{:08X}", addr);
+                    ss << config_.indent
+                       << fmt::format("int {} = ({});  /* branch cond before link and delay slot */\n",
+                                      delay_saved_cond,
+                                      generate_branch_condition(block.exit_instr.instruction, block.exit_instr.address));
+                }
+
                 if (block.exit_instr.type == ControlFlowType::JumpLink) {
                     ss << config_.indent
                        << fmt::format("cpu->gpr[31] = 0x{:08X}u;  /* jal link before delay slot */\n",
@@ -2581,14 +2983,7 @@ std::string CodeGenerator::translate_basic_block(
                             // Normal delay slot - always executes.
                             // In MIPS, the branch condition is evaluated at the branch
                             // instruction (before the delay slot). If the delay slot
-                            // modifies a condition register we must save the result first.
-                            if (block.exit_instr.type == ControlFlowType::Branch) {
-                                std::string cond = generate_branch_condition(block.exit_instr.instruction, block.exit_instr.address);
-                                delay_saved_cond = fmt::format("_bc_{:08X}", addr);
-                                ss << config_.indent
-                                   << fmt::format("int {} = ({});  /* save branch cond before delay slot */\n",
-                                                  delay_saved_cond, cond);
-                            }
+                            // modifies a condition register, the latch above holds the result.
                             ss << config_.indent << "/* delay slot (always executes) */\n";
                             // Delay slot's own fetch + §1+deps+DO_LDS, before its body (skipped if a load).
                             if (cycle_per_insn) emit_pre_icache(delay_slot_addr, config_.indent);
@@ -2718,6 +3113,7 @@ std::string CodeGenerator::translate_basic_block(
                         }
                         if (ra_loaded_from_non_sp) break;
                     }
+                    if(precision_region_body_)ss<<region_flush();
                     if (config_.ws_backdrop_unsquash_funcs.count(cfg.function_start)) {
                         ss << config_.indent
                            << "gte_ws_set_suppress(0);  /* widescreen: end far-backdrop un-squash (8C) */\n";
@@ -2877,9 +3273,20 @@ std::string CodeGenerator::translate_basic_block(
                             cps_cur_continuations_.push_back(cont_addr);
                         }
                         ss << emit_interrupt_check(target, config_.indent);
-                        ss << config_.indent
-                           << fmt::format("cpu->pc = 0x{:08X}u; return;  /* CPS jal -> 0x{:08X} */\n",
-                                          runtime_pc(target), runtime_pc(target));
+                        ss << config_.indent << fmt::format("cpu->pc = 0x{:08X}u;\n", runtime_pc(target));
+                        if (native_tail_signature_ && !native_tail_caller_.empty() && !config_.overlay_mode && known_functions_.count(target)) {
+                            // The old body boundary ends its automatic cycle
+                            // guards before the owner may admit another body.
+                            // A guaranteed tail return cannot leave those
+                            // cleanup lifetimes active, even after a manual flush.
+                            ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n";
+                            ss << config_.indent << fmt::format(
+                                "_psx_native_tail_pc = 0x{:08X}u;\n", runtime_pc(target));
+                            ss << config_.indent << fmt::format(
+                                "_psx_native_tail_body = func_{:08X};\n", target);
+                            ss << config_.indent << "goto psx_native_tail_transfer;\n#endif\n";
+                        }
+                        ss << config_.indent << fmt::format("return;  /* CPS jal -> 0x{:08X} */\n", runtime_pc(target));
                     } else {
                     // Function call (jal).  The call contract (Bug D family)
                     // guards the continuation: it may only run if the guest
@@ -2963,6 +3370,15 @@ std::string CodeGenerator::translate_basic_block(
             }
         }
 
+        if (zero_run_end != 0u) {
+            // The run leader above went through the normal path; its followers
+            // are emitted as one loop making the same per-word calls.
+            emit_zero_run_followers(addr + 4u, zero_run_end);
+            addr = zero_run_end;
+            zero_run_end = 0u;
+            continue;
+        }
+
         addr += 4;
     }
 
@@ -2971,11 +3387,21 @@ std::string CodeGenerator::translate_basic_block(
     // a C label/function boundary, preserve the physical fall-through without
     // consuming an interrupt/cooldown check at the artificial boundary.
     if (block.exit_instr.type == ControlFlowType::None && !block.successors.empty()) {
+        if(precision_region_body_) {
+            auto state=precision_region_state_;
+            const auto at=precision_region_plan_.entry.find(block.successors[0]);
+            for(unsigned r=1;r<32;++r)if(at!=precision_region_plan_.entry.end() && at->second[r]==state[r])state[r]={};
+            bool any=false;for(unsigned r=1;r<32;++r)any|=state[r].known;
+            if(any)ss<<config_.indent<<region_materializer(state)<<"(cpu);\n";
+        }
+        ss << config_.indent << precision_operation_receipt_;
         ss << config_.indent << fmt::format("/* fall through to block_{:08X} */\n",
                                            block.successors[0]);
     } else if (block.exit_instr.type == ControlFlowType::None) {
         uint32_t next_addr = block.end_addr + 4;
         if (known_functions_.count(next_addr) > 0) {
+            if(precision_region_body_)ss<<region_flush();
+            ss << config_.indent << precision_operation_receipt_;
             ss << emit_stale_static_guard(runtime_pc(next_addr), config_.indent);
             ss << config_.indent
                << fmt::format("func_{:08X}(cpu); return;  /* fallthrough to split piece */\n",
@@ -2996,6 +3422,72 @@ std::string CodeGenerator::translate_basic_block(
     }
 
     return ss.str();
+}
+
+void CodeGenerator::prepare_precision_dataflow(const ControlFlowGraph& cfg) {
+    precision_dead_alu_.clear();
+    precision_elided_alu_.clear();
+    std::set<uint32_t> delay_slots;
+    for (const auto& [_, b] : cfg.blocks)
+        if (b.exit_instr.has_delay_slot) delay_slots.insert(b.exit_instr.address + 4u);
+    std::vector<PgxpFlowBlock> flow;
+    for (const auto& [address, b] : cfg.blocks) {
+        PgxpFlowBlock f{address, {}, b.successors};
+        const auto kind = b.exit_instr.type;
+        f.boundary = b.is_exit || kind == ControlFlowType::JumpLink ||
+            kind == ControlFlowType::JumpLinkReg || kind == ControlFlowType::JumpRegister ||
+            kind == ControlFlowType::Return;
+        // The discovery graph stores only in-function edges. An omitted tail
+        // target is still an observable caller boundary on that branch arm.
+        if (kind == ControlFlowType::Branch)
+            f.successors = {b.exit_instr.target, b.exit_instr.address + 8u};
+        else if (kind == ControlFlowType::Jump)
+            f.successors = {b.exit_instr.target};
+        else if (kind == ControlFlowType::None)
+            f.successors = {b.end_addr + 4u};
+        uint32_t end = b.end_addr;
+        if (b.exit_instr.has_delay_slot) end = std::max(end, b.exit_instr.address + 4u);
+        if (end < address || end - address > 0x40000u) return;
+        for (uint32_t pc = address; pc <= end; pc += 4u) {
+            const auto word = exe_.read_word(pc);
+            if (!word) return;
+            PgxpFlowInstruction i{pc, *word};
+            i.removable = !delay_slots.count(pc);
+            i.opaque = extra_labels_.count(pc) || !mod_instruction_call(pc, *word).empty() ||
+                find_mod_immediate_site(pc, *word) || !draw_distance_clamp_prefix(pc, *word).empty();
+            const auto effect = pgxp_flow_effect(*word);
+            if (effect.pure_alu && !i.opaque) {
+                const auto text = translate_instruction_core(pc, *word);
+                // Special widescreen/mod emissions are not the decoded ALU.
+                i.opaque = text.find("psx_") != std::string::npos || text.find("gte_") != std::string::npos;
+            }
+            // Keep both sides of a load-delay pair opaque. Its register value
+            // writeback is deliberately reordered by the maintained emitter.
+            const uint32_t op = *word >> 26, rt = (*word >> 16) & 31u;
+            if (rt && op >= 0x20 && op <= 0x26) {
+                if (const auto next = exe_.read_word(pc + 4u)) {
+                    if (pgxp_flow_effect(*next).uses & (UINT64_C(1) << rt)) {
+                        i.opaque = true;
+                        f.instructions.push_back(i);
+                        if (pc + 4u <= end) {
+                            f.instructions.push_back({pc + 4u, *next, true, false});
+                            pc += 4u;
+                        }
+                        continue;
+                    }
+                }
+            }
+            f.instructions.push_back(i);
+        }
+        flow.push_back(std::move(f));
+    }
+    precision_dead_alu_ = pgxp_dead_alu_flow(flow);
+    std::map<uint32_t, unsigned> occurrences;
+    for (const auto& block : flow)
+        for (const auto& instruction : block.instructions) ++occurrences[instruction.address];
+    for (const auto& [pc, count] : occurrences)
+        if (count != 1u) precision_dead_alu_.erase(pc);
+    precision_elided_alu_ = pgxp_elided_alu_flow(flow, precision_dead_alu_);
 }
 
 bool CodeGenerator::func_has_screen_extent_cull(const ControlFlowGraph& cfg) const {
@@ -3082,6 +3574,8 @@ GeneratedFunction CodeGenerator::generate_function(
 
     GeneratedFunction result;
     result.function_name = func.name;
+    native_tail_caller_ = func.name;
+    native_tail_signature_ = true;
     {
         std::string sig;
         if (config_.hot_funcs.count(func.start_addr)) {
@@ -3117,6 +3611,7 @@ GeneratedFunction CodeGenerator::generate_function(
     extra_labels_.clear();
     std::map<uint32_t, std::vector<uint32_t>> jr_table_edges;
     scan_jr_tables(cfg, jr_table_edges);
+    prepare_precision_dataflow(cfg);
 
     // CPS (§25): collect this function's continuations (call return points) as
     // blocks are translated, so the entry-switch below can route a dispatched
@@ -3130,6 +3625,43 @@ GeneratedFunction CodeGenerator::generate_function(
         const BasicBlock& block = cfg.blocks.at(block_addr);
         blocks_ss << "\n" << translate_basic_block(block, cfg);
     }
+
+    std::string private_blocks, private_fallthrough_receipt;
+    precision_region_owner_=func.name+"_precision";
+    precision_region_materializers_.clear();
+    prepare_precision_regions(cfg);
+    // Inline mid-block jump-table entries and local cycle accumulators need a
+    // separate receipt for every entrance; retain the full canonical function.
+    const bool regions=cps_enabled_ && !config_.overlay_mode && extra_labels_.empty() &&
+        !config_.load_charge_batch_funcs.count(func.start_addr) && precision_region_plan_.definitions;
+    if(regions) {
+        precision_region_body_=true;
+        for(uint32_t pc:cfg.block_order)private_blocks+="\n"+translate_basic_block(cfg.blocks.at(pc),cfg);
+        private_fallthrough_receipt=region_flush();
+        precision_region_body_=false;
+        // Private labels remain under this exact native owner. Cold helper
+        // entries skip consumed function hooks AND the already-serviced edge.
+        for(size_t at=0;(at=private_blocks.find("block_",at))!=std::string::npos;) {
+            const bool label=at+14u<=private_blocks.size() &&
+                private_blocks.substr(at+6u,8u).find_first_not_of("0123456789ABCDEF")==std::string::npos;
+            if(!label){at+=6;continue;} // Never rename psx_block_edge_materialize.
+            if(at>=10 && private_blocks.substr(at-10,10)=="canonical_") {
+                private_blocks.erase(at-10,10);at+=14;
+            } else {private_blocks.insert(at,"precision_");at+=24;}
+        }
+    }
+
+    std::string canonical_blocks;
+    if(regions) {
+        // The cold owner has an explicit block entry argument, just like an
+        // alias body. Reuse that maintained CPS policy: publish a JAL target
+        // back to the flat owner instead of promising an incompatible musttail.
+        const bool saved_tail_signature=native_tail_signature_;
+        native_tail_signature_=false;
+        for(uint32_t pc:cfg.block_order)canonical_blocks+="\n"+translate_basic_block(cfg.blocks.at(pc),cfg);
+        native_tail_signature_=saved_tail_signature;
+    }
+    const std::string region_condition="defined(PSX_PGXP) && PSX_PGXP && defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS && defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS && defined(PSX_OBSERVATION_TIME) && PSX_OBSERVATION_TIME && !defined(PSX_COSIM) && !defined(PSX_OVERLAY_DLL_BUILD)";
 
     // FAITHFUL RE-ENTRY — every basic-block leader is a dispatchable continuation
     // (MMX6 boot-wedge class B, resume PC 0x8005B07C). psx_check_interrupts_at is
@@ -3152,7 +3684,16 @@ GeneratedFunction CodeGenerator::generate_function(
     }
 
     std::stringstream body_ss;
+    const bool native_tail_scope = blocks_ss.str().find("goto psx_native_tail_transfer;") != std::string::npos ||
+        private_blocks.find("goto psx_native_tail_transfer;") != std::string::npos;
     body_ss << "{\n";
+    if (native_tail_scope) {
+        body_ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n"
+                << config_.indent << "uint32_t _psx_native_tail_pc = 0;\n"
+                << config_.indent << "PsxNativeTailBody _psx_native_tail_body = 0;\n"
+                << config_.indent << "{  /* execution scope: automatic cycle cleanup ends before transfer */\n"
+                << "#endif\n";
+    }
     body_ss << "#if defined(PSX_ENABLE_BLOCK_CYCLES) && "
                "(defined(__GNUC__) || defined(__clang__))\n"
             << config_.indent
@@ -3189,6 +3730,20 @@ GeneratedFunction CodeGenerator::generate_function(
             if (!seen.insert(c).second) continue;
             // The key is the PC the trampoline hands back (cpu->pc), so it
             // is a runtime PC; the label is the compile identity (§5.2).
+            if(regions) {
+                body_ss<<"#if "<<region_condition<<"\n";
+                if(precision_region_plan_.roots.count(c) && cfg.blocks.count(c)) {
+                    body_ss<<config_.indent<<fmt::format("        case 0x{:08X}u: ",runtime_pc(c));
+                    if(precision_geometry_control_||precision_geometry_scratch_)body_ss<<fmt::format(
+                        "if(!{}(cpu,0x{:08X}u)) {{ {}_canonical(cpu,_cont); return; }} ",
+                        precision_geometry_guard_,runtime_pc(c),precision_region_owner_);
+                    if(precision_geometry_control_)body_ss<<"pgxp_native_clobber(cpu,0xA0000000u,0u); ";
+                    body_ss<<fmt::format("goto precision_block_{:08X};\n",c);
+                }
+                else
+                    body_ss<<config_.indent<<fmt::format("        case 0x{:08X}u: {}_canonical(cpu,_cont); return;\n",runtime_pc(c),precision_region_owner_);
+                body_ss<<"#else\n";
+            }
             if (partial_block_cycle_count(c, cfg) != 0) {
                 body_ss << config_.indent << fmt::format("        case 0x{:08X}u:\n", runtime_pc(c));
                 body_ss << emit_mid_block_cycle_charge(c, cfg, config_.indent + "            ");
@@ -3197,6 +3752,7 @@ GeneratedFunction CodeGenerator::generate_function(
                 body_ss << config_.indent
                         << fmt::format("        case 0x{:08X}u: goto block_{:08X};\n", runtime_pc(c), c);
             }
+            if(regions)body_ss<<"#endif\n";
             cps_continuation_owner_[c] = func.start_addr;
         }
         if (config_.overlay_mode) {
@@ -3288,7 +3844,17 @@ GeneratedFunction CodeGenerator::generate_function(
                               func.start_addr, func.size, cfg.blocks.size());
     }
 
+    if(regions) {
+        body_ss<<"#if "<<region_condition<<"\n";
+        if(precision_geometry_control_||precision_geometry_scratch_)body_ss<<config_.indent<<fmt::format(
+            "if(!{}(cpu,0x{:08X}u)) {{ {}_canonical(cpu,0x{:08X}u); return; }}\n",
+            precision_geometry_guard_,runtime_pc(func.start_addr),precision_region_owner_,runtime_pc(func.start_addr));
+        if(precision_geometry_control_)body_ss<<config_.indent<<
+            "pgxp_native_clobber(cpu,0xA0000000u,0u); /* geometry-dead SP/RA, not affine receipts */\n";
+        body_ss<<config_.indent<<fmt::format("goto precision_block_{:08X};\n",func.start_addr)<<"#else\n";
+    }
     body_ss << blocks_ss.str();
+    const size_t canonical_suffix_at=body_ss.str().size();
 
     // Only a reachable, unterminated final C block needs a safety-net transfer.
     if (!fallthrough_name.empty() && !cfg.block_order.empty()) {
@@ -3327,6 +3893,21 @@ GeneratedFunction CodeGenerator::generate_function(
         }
     }
     body_ss << "    ;  /* label compatibility: C requires a statement after the last label */\n";
+    const std::string canonical_suffix=body_ss.str().substr(canonical_suffix_at);
+    if(regions) {
+        body_ss<<"    return;\n#endif\n#if "<<region_condition<<"\n";
+        body_ss<<"    /* precision-demand-regions: "<<precision_region_plan_.definitions<<" integer definitions; canonical opaque entries retained */\n    {\n"<<private_blocks<<private_fallthrough_receipt<<canonical_suffix<<"    }\n#endif\n";
+    }
+    if (native_tail_scope) {
+        body_ss << "#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_OVERLAY_DLL_BUILD)\n"
+                << config_.indent << "}  /* publish charges and end execution-local lifetimes */\n"
+                << config_.indent << "return;\n"
+                << "psx_native_tail_transfer:\n"
+                << config_.indent << fmt::format(
+                       "PSX_TRY_NATIVE_TAIL(cpu, _psx_native_tail_pc, {}, _psx_native_tail_body);\n", func.name)
+                << config_.indent << "return;  /* refused/handled transfer returns to its original flat owner */\n"
+                << "#endif\n";
+    }
     body_ss << "}\n";
 
     result.body = body_ss.str();
@@ -3339,6 +3920,26 @@ GeneratedFunction CodeGenerator::generate_function(
             annotation_prefix = fmt::format("/* [NOTE] {} */\n", note);
     }
 
+    if(regions) {
+        annotation_prefix+="#if "+region_condition+"\n";
+        if(precision_geometry_control_||precision_geometry_scratch_)annotation_prefix+=fmt::format("extern int {}(CPUState*,uint32_t);\n",precision_geometry_guard_);
+        for(const auto& [name,text]:precision_region_materializers_)annotation_prefix+=text;
+        // Keep the full-precision CFG out of the hot native host owner. The
+        // public function retains its one cleanup scope and all entry hooks;
+        // this helper may only be called after those hooks/edges were consumed.
+        annotation_prefix+="#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 9\n__attribute__((noipa,cold))\n#elif defined(__GNUC__) || defined(__clang__)\n__attribute__((noinline,cold))\n#elif defined(_MSC_VER)\n__declspec(noinline)\n#endif\n";
+        annotation_prefix+=fmt::format("static void {}_canonical(CPUState *cpu,uint32_t entry) {{\n    switch(entry) {{\n",precision_region_owner_);
+        std::set<uint32_t> entries(cps_cur_continuations_.begin(),cps_cur_continuations_.end());
+        entries.insert(func.start_addr);
+        for(uint32_t pc:entries) {
+            annotation_prefix+=fmt::format("    case 0x{:08X}u:\n",runtime_pc(pc));
+            if(partial_block_cycle_count(pc,cfg)!=0)
+                annotation_prefix+=emit_mid_block_cycle_charge(pc,cfg,"        ");
+            annotation_prefix+=fmt::format("        goto block_{:08X};\n",pc);
+        }
+        annotation_prefix+="    default: cpu->pc=entry; return; /* retain an unsupported nonlocal PC */\n    }\n";
+        annotation_prefix+=canonical_blocks+canonical_suffix+"}\n#endif\n";
+    }
     result.full_code = annotation_prefix + result.signature + "\n" + result.body;
     result.line_count = std::count(result.full_code.begin(), result.full_code.end(), '\n');
 
@@ -3410,6 +4011,7 @@ std::vector<GeneratedFunction> CodeGenerator::generate_alias_group(
     extra_labels_.clear();
     std::map<uint32_t, std::vector<uint32_t>> jr_table_edges;
     scan_jr_tables(cfg, jr_table_edges);
+    prepare_precision_dataflow(cfg);
 
     // CPS (§25): collect this alias group's continuations during block
     // translation (also prevents a stale list from leaking into the next
@@ -3451,12 +4053,16 @@ std::vector<GeneratedFunction> CodeGenerator::generate_alias_group(
 
     // Translate live blocks first (populates cps_cur_continuations_ for the CPS
     // continuation switch below).
+    const bool saved_tail_signature = native_tail_signature_;
+    native_tail_signature_ = false;
     std::stringstream blocks_buf;
     for (uint32_t block_addr : cfg.block_order) {
         if (!live_blocks.count(block_addr)) continue;
         const BasicBlock& block = cfg.blocks.at(block_addr);
         blocks_buf << "\n" << translate_basic_block(block, cfg);
     }
+
+    native_tail_signature_ = saved_tail_signature;
 
     // FAITHFUL RE-ENTRY — every live block leader is a dispatchable continuation
     // (see generate_function for the full rationale: psx_check_interrupts_at is at
@@ -3611,6 +4217,38 @@ std::vector<GeneratedFunction> CodeGenerator::generate_all_functions(
     // functions emitted here (the final generate_file pass is authoritative).
     cps_continuation_owner_.clear();
     alias_body_decls_.clear();
+    std::vector<PgxpOperationFunction> precision_functions;
+    for(const auto& function:functions) {
+        const auto at=cfgs.find(function.start_addr);if(at==cfgs.end())continue;
+        PgxpOperationFunction f;f.address=function.start_addr;
+        f.opaque=function.is_data_section||function.alias_walk_lo||config_.mod_function_entry_funcs.count(function.start_addr);
+        for(const auto& [pc,block]:at->second.blocks) {
+            PgxpFlowBlock b{pc,{},block.successors};
+            const auto type=block.exit_instr.type;
+            b.boundary=type==ControlFlowType::Return;
+            if(type==ControlFlowType::JumpLink)b.successors={block.exit_instr.address+8u};
+            if(type==ControlFlowType::Return)b.successors.clear();
+            uint32_t end=block.end_addr;
+            if(block.exit_instr.has_delay_slot)end=std::max(end,block.exit_instr.address+4u);
+            if(end<pc||end-pc>0x40000u){f.opaque=true;continue;}
+            for(uint32_t address=pc;address<=end;address+=4u) {
+                const auto w=exe_.read_word(address);if(!w){f.opaque=true;break;}
+                bool opaque=!mod_instruction_call(address,*w).empty()||find_mod_immediate_site(address,*w)||!draw_distance_clamp_prefix(address,*w).empty();
+                const uint32_t op=*w>>26,rt=(*w>>16)&31u;
+                if(rt&&op>=0x20&&op<=0x26)if(const auto next=exe_.read_word(address+4u))
+                    if(((*next>>21)&31u)==rt||((*next>>16)&31u)==rt)opaque=true;
+                b.instructions.push_back({address,*w,opaque});
+            }
+            // Actual call order includes its always-executed delay slot first.
+            if(type==ControlFlowType::JumpLink&&b.instructions.size()>=2) {
+                auto call=std::find_if(b.instructions.begin(),b.instructions.end(),[&](const auto& i){return i.address==block.exit_instr.address;});
+                if(call!=b.instructions.end()){const auto value=*call;b.instructions.erase(call);b.instructions.push_back(value);}
+            }
+            f.blocks.push_back(std::move(b));
+        }
+        precision_functions.push_back(std::move(f));
+    }
+    precision_operation_summaries_=pgxp_operation_summaries(precision_functions);
 
     fmt::print("\n=== C Code Generation ===\n\n");
     fmt::print("Generating C code for {} functions...\n", functions.size());
@@ -3744,6 +4382,8 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     ss << "extern void cosim_block(uint32_t block_leader_phys);\n";
     ss << "extern void cosim_instr(uint32_t pc);\n";
     ss << "#endif\n";
+    ss << "#include \"psx_static_calls.h\"\n/* psx-native-tail-game-v1 */\n";
+    ss << "/* psx-pgxp-demand-regions-v2; psx-pgxp-operations-v2 */\n";
     ss << "extern int  psx_game_text_native_ok(uint32_t addr);  /* stale-static guard (dispatch shard) */\n";
     ss << "extern int  psx_datashard_enter(CPUState* cpu, uint32_t key);  /* data-shard replay/capture (data_shards.c) */\n";
     ss << "extern void psx_mod_instruction(CPUState*, uint32_t, uint32_t);\n";
@@ -3862,7 +4502,7 @@ void CodeGenerator::emit_unaligned_helpers(std::ostream& ss, bool as_inline) con
     ss << "        case 2: word = (word & 0xFF000000u) | (rt_value >> 8); break;\n";
     ss << "        default: word = rt_value; break;\n";
     ss << "    }\n";
-    ss << "    cpu->write_word(aligned_addr, word);\n";
+    ss << "    PSX_STORE_WORD(cpu, aligned_addr, word);\n";
     ss << "}\n";
     ss << "\n";
     ss << "/* SWR: Store Word Right - stores the low bytes of rt_value into memory.\n";
@@ -3879,7 +4519,7 @@ void CodeGenerator::emit_unaligned_helpers(std::ostream& ss, bool as_inline) con
     ss << "        case 2: word = (word & 0x0000FFFFu) | (rt_value << 16); break;\n";
     ss << "        default: word = (word & 0x00FFFFFFu) | (rt_value << 24); break;\n";
     ss << "    }\n";
-    ss << "    cpu->write_word(aligned_addr, word);\n";
+    ss << "    PSX_STORE_WORD(cpu, aligned_addr, word);\n";
     ss << "}\n";
     ss << "\n";
 }
@@ -3890,6 +4530,7 @@ std::string CodeGenerator::build_shared_decls_header(const std::vector<Generated
     h << "/* Generated by PSXRecomp - shared declarations for split full.c shards. DO NOT EDIT. */\n";
     h << "#pragma once\n";
     h << "#include \"psx_runtime.h\"\n\n";
+    h << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-demand-regions-v2; psx-pgxp-operations-v2 */\n\n";
     emit_runtime_externs(h);
     emit_unaligned_helpers(h, /*as_inline=*/true);
     if (!gen_funcs.empty()) {
@@ -3914,7 +4555,7 @@ std::string CodeGenerator::generate_file(
     // Include the generic PSX runtime header.
     // This provides CPUState, GTE/trap declarations, and call_by_address().
     ss << "#include \"psx_runtime.h\"\n\n";
-    ss << "#include \"psx_native_span.h\"\n\n";
+    ss << "#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-demand-regions-v2; psx-pgxp-operations-v2 */\n\n";
     emit_runtime_externs(ss);
     emit_unaligned_helpers(ss, /*as_inline=*/false);
 
@@ -4044,9 +4685,21 @@ std::string CodeGenerator::generate_file(
             std::vector<Function> new_funcs;
             std::set<uint32_t> affected;
 
-            for (uint32_t target : gap_targets) {
+            for (auto git = gap_targets.begin(); git != gap_targets.end(); ++git) {
+                uint32_t target = *git;
                 auto next_it = std::upper_bound(func_starts.begin(), func_starts.end(), target);
                 uint32_t gap_end = (next_it != func_starts.end()) ? *next_it : exe_end;
+                // Sibling gap targets PARTITION the gap, exactly as splits_by_func
+                // below partitions a function it splits. func_starts is a snapshot
+                // taken before this pass created anything, so without this bound
+                // every target in one gap ends at the same gap_end and their bodies
+                // nest: n targets in a gap re-emit the gap's tail n times. On
+                // Galerians that cost 440 MB of duplicated bodies (27x). The
+                // trailing piece still reaches the next one by fall-through, which
+                // generate_functions emits as a tail call.
+                auto sibling = std::next(git);
+                if (sibling != gap_targets.end() && *sibling < gap_end)
+                    gap_end = *sibling;
                 if (target >= gap_end) continue;
 
                 Function nf;

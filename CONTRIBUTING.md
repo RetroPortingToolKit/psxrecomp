@@ -161,6 +161,11 @@ cmake --build recompiler/build
 cd recompiler/build && ctest --output-on-failure
 ```
 
+On Windows, read [`docs/WINDOWS_TOOLCHAIN_TRAPS.md`](docs/WINDOWS_TOOLCHAIN_TRAPS.md)
+before the first build: the toolchain's `bin` folder must be first on `PATH` in
+every shell, or the test programs fail to load and the suite reports failures
+that are not in the code.
+
 38 tests, under five seconds, no BIOS dump or disc image required. See
 [`docs/TESTING.md`](docs/TESTING.md) for running individual tests, what the
 suite covers, and the three known-failing tests that are deliberately not

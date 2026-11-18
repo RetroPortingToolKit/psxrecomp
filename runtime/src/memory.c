@@ -27,10 +27,13 @@
 #include "psx_cycles.h"
 #include "psx_icache.h"
 #include "psx_memory.h"
+#define PSX_MEMORY_INTERNAL 1
+#include "psx_direct_memory.h"
 #include "pgxp.h"
 #include "render_pass.h"
 #include "render_pass_plan.h"
 #include "starvation_ring.h"
+#include "text_source_guard.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -181,6 +184,19 @@ uint32_t psx_gpu_packet_key(uint32_t address) {
 
 /* Exposed for inlined main-RAM load helpers in psx_cyc.h (VLC/decode hot path). */
 uint8_t *g_psx_ram = ram;
+uint8_t *g_psx_scratchpad = scratchpad;
+PSXDirectMemoryStats g_psx_direct_memory_stats;
+PSXMemoryWidthStats g_psx_memory_width_stats;
+uint64_t psx_hr_runtime_fast_loads[3];
+uint64_t psx_hr_bus_callbacks[2][3];
+
+void psx_memory_get_width_stats(PSXMemoryWidthStats *out) {
+    if (out) *out = g_psx_memory_width_stats;
+}
+
+void psx_direct_memory_get_stats(PSXDirectMemoryStats *out) {
+    if (out) *out = g_psx_direct_memory_stats;
+}
 /* PSX_LOAD_DELAY gate (default on). −1 = unread; 0/1 after first resolve. */
 int g_psx_load_delay = -1;
 
@@ -223,6 +239,7 @@ int psx_peek_word(uint32_t addr, uint32_t *out) {
 }
 void memory_clear_low_boot_scratch(void) {
     memset(ram, 0, 0x10u);
+    psx_kernel_bless_note_range(0u, 0x10u);   /* raw write: see the rule there */
 }
 
 /* ---- Dirty-page tracking for install-at-runtime code (CLAUDE.md Rule 18) ----
@@ -324,6 +341,16 @@ static uint64_t kbless_native_hits   = 0;
 static uint64_t kbless_verifies      = 0;
 static uint64_t kbless_mismatches    = 0;
 static uint64_t kbless_invalidations = 0;
+/* PSX_KERNEL_BLESS_PARANOID=1 (diagnostic): re-compare the body at every
+ * dispatch instead of trusting the row. A row that says CLEAN over bytes
+ * that differ means a RAM write reached the window without telling the
+ * table; that count must stay 0. It costs one body compare per kernel
+ * dispatch, so it is never a default. */
+static int      kbless_paranoid = 0;
+static uint64_t kbless_paranoid_checks         = 0;
+static uint64_t kbless_paranoid_bytes          = 0;
+static uint64_t kbless_paranoid_stale_clean    = 0;
+static uint64_t kbless_paranoid_stale_mismatch = 0;
 
 static int kbless_on(void) {
     if (kbless_enabled < 0) {
@@ -345,6 +372,13 @@ static int kbless_on(void) {
         {
             const char* pe = getenv("PSX_KERNEL_PATCH_RANGES");
             if (pe && pe[0] == '0') s_kb_pr_n = 0;
+        }
+        {
+            const char* pe = getenv("PSX_KERNEL_BLESS_PARANOID");
+            kbless_paranoid = (pe && pe[0] == '1') ? 1 : 0;
+            if (kbless_paranoid)
+                fprintf(stderr, "psxrecomp: kernel-bless paranoid mode ON "
+                        "(diagnostic: every kernel dispatch re-compares its body)\n");
         }
         if (s_kb_span == 0) kbless_enabled = 0;   /* BIOS with no bless window */
         /* The emitted constants must agree with each other and the ROM
@@ -404,9 +438,28 @@ int psx_kernel_bless_dispatchable(uint32_t phys) {
     int i = kbless_find(phys);
     if (i < 0) return 0;
     uint8_t st = kbless_state[i];
+    const PsxKernelBody* b = &psx_bios_kernel_bodies[i];
+    if (kbless_paranoid && st != KBLESS_UNKNOWN) {
+        uint64_t skips = 0;   /* keep the verifier's own counter untouched */
+        int differs = psx_kernel_patch_cmp(s_kb_pr, s_kb_pr_n, ram, bios_rom,
+                                           s_kb_lo, s_kb_rom_off,
+                                           b->body_lo, b->body_hi, &skips) != 0;
+        kbless_paranoid_checks++;
+        kbless_paranoid_bytes += b->body_hi - b->body_lo;
+        if (st == KBLESS_CLEAN && differs) {
+            /* The defect this mode exists to find. Fail safe: interpret. */
+            if (kbless_paranoid_stale_clean++ < 16u)
+                fprintf(stderr, "KBLESS PARANOID: key %08X body [%08X,%08X) is "
+                        "marked clean but differs from the ROM\n",
+                        phys, b->body_lo, b->body_hi);
+            kbless_state[i] = KBLESS_MISMATCH;
+            kbless_mismatches++;
+            return 0;
+        }
+        if (st == KBLESS_MISMATCH && !differs) kbless_paranoid_stale_mismatch++;
+    }
     if (st == KBLESS_CLEAN)    { kbless_native_hits++; return 1; }
     if (st == KBLESS_MISMATCH) return 0;
-    const PsxKernelBody* b = &psx_bios_kernel_bodies[i];
     kbless_verifies++;
     if (psx_kernel_patch_cmp(s_kb_pr, s_kb_pr_n, ram, bios_rom,
                              s_kb_lo, s_kb_rom_off,
@@ -444,8 +497,16 @@ static void kbless_note_write(uint32_t phys) {
     }
 }
 
-/* Range write (DMA / EXE load / savestate restore) overlapping the window:
- * bulk, rare events — reset every entry rather than per-byte scanning. */
+/* Range write (savestate restore, or any other store into guest RAM that
+ * does not go through psx_write_word/half/byte) overlapping the window:
+ * bulk, rare events — reset every entry rather than per-byte scanning.
+ *
+ * The rule: the row state follows RAM *writes*. A store through
+ * psx_write_word/half/byte reports itself (kbless_note_write). Every other
+ * writer of guest RAM calls this, next to the write.
+ * tests/test_raw_ram_writers.py lists those writers and fails on a new one
+ * that does not. Marking a range executable is not a write and resets
+ * nothing: see dirty_ram_mark_executable_range. */
 void psx_kernel_bless_note_range(uint32_t phys, uint32_t len) {
     if (kbless_enabled <= 0) return;   /* also pre-init: nothing verified yet */
     if (len == 0) return;
@@ -483,6 +544,35 @@ void psx_kernel_bless_stats(uint64_t out[8]) {
     out[7] = kbless_patch_skips;
 }
 
+/* Paranoid mode for the run report: [0] on, [1] dispatches re-compared,
+ * [2] bytes compared, [3] rows marked clean over bytes that differ (must be
+ * 0), [4] rows marked mismatched over bytes that match (a lost speed-up,
+ * not an error). */
+void psx_kernel_bless_paranoid_stats(uint64_t out[5]) {
+    out[0] = (uint64_t)kbless_paranoid;
+    out[1] = kbless_paranoid_checks;
+    out[2] = kbless_paranoid_bytes;
+    out[3] = kbless_paranoid_stale_clean;
+    out[4] = kbless_paranoid_stale_mismatch;
+}
+
+/* Does the active image's bless table fit kbless_state? kbless_on() turns
+ * bless off for the whole run when it does not. This reports that decision
+ * for the run report; it reads the selected backend's constants and changes
+ * no state. */
+int psx_kernel_bless_table_fits(uint32_t *entries, uint32_t *capacity) {
+    if (entries) *entries = psx_bios_kernel_body_count;
+    if (capacity) *capacity = KBLESS_MAX_ENTRIES;
+    return psx_bios_kernel_body_count <= KBLESS_MAX_ENTRIES;
+}
+
+/* Bless latch for the run report: -1 not decided yet (no kernel-window
+ * dispatch so far), 0 off (PSX_KERNEL_BLESS=0 or an image with no bless
+ * window), 1 on. Reads only. */
+int psx_kernel_bless_state(void) {
+    return kbless_enabled;
+}
+
 void psx_kernel_bless_resync_after_restore(void) {
     /* kbless_state is host-only. CLEAN/MISMATCH are sticky across guest
      * stores only via kbless_note_write; savestate RAM memcpy never hits
@@ -502,6 +592,7 @@ void psx_kernel_bless_reset_for_boot(void) {
     s_kb_rom_off = 0;
     s_kb_pr = NULL;
     s_kb_pr_n = 0;
+    kbless_paranoid = 0;
     memset(kbless_state, KBLESS_UNKNOWN, sizeof(kbless_state));
 }
 
@@ -558,8 +649,14 @@ void dirty_ram_clear_image_baseline(void) {
  * never frees it). Intentional data patches by the translation layer are blessed
  * into it via dirty_ram_text_bless so they are not mistaken for self-modifying
  * code — see dirty_ram_text_native_ok / dirty_ram_text_bless. */
+static uint64_t text_validation_revision = 1;
+static void text_validation_note_bulk_range(uint32_t first, uint32_t last);
+static uint64_t text_compare_calls;
+uint64_t dirty_ram_text_validation_revision(void) { return text_validation_revision; }
+uint64_t dirty_ram_text_compare_calls(void) { return text_compare_calls; }
+
 static uint8_t *text_ref_image = NULL;
-static uint32_t text_ref_lo = 0, text_ref_hi = 0;
+uint32_t g_psx_text_write_lo = 0, g_psx_text_write_hi = 0;
 static uint32_t text_modified_bitmap[DIRTY_RAM_BITMAP_WORDS];
 static uint32_t text_diverged_bitmap[DIRTY_RAM_BITMAP_WORDS];
 static uint64_t g_text_native_blocked = 0;
@@ -571,15 +668,30 @@ static uint32_t g_text_exact_last_mismatch = 0;
 static uint32_t g_text_exact_last_live = 0;
 static uint32_t g_text_exact_last_ref = 0;
 
+/* Pages where the boot executable the console loads differs from the image
+ * the static code was generated from (text_source_guard.h). The reference
+ * image above cannot show this: an installed product reads it from the mounted
+ * disc, so it agrees with RAM. A disc of a multi-disc set that carries the
+ * program with a per-disc code difference would otherwise run the other
+ * disc's compiled instruction. Native code never runs over such a page; the
+ * interpreter runs the loaded bytes. Unlike the modified and diverged bitmaps
+ * this is not RAM state: it is fixed for the loaded executable, so a restore
+ * or a reset does not clear it. Only registering an image does. */
+static uint32_t text_foreign_bitmap[DIRTY_RAM_BITMAP_WORDS];
+static uint32_t g_text_foreign_pages = 0;
+
 void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
                                    uint32_t len) {
     if (!bytes || len == 0 || phys_lo >= RAM_LIVE) return;
     if (len > RAM_LIVE - phys_lo) len = RAM_LIVE - phys_lo;
+    ++text_validation_revision;
     text_ref_image = (uint8_t *)bytes;  /* runtime-owned mutable heap buffer */
-    text_ref_lo = phys_lo;
-    text_ref_hi = phys_lo + len;
+    g_psx_text_write_lo = phys_lo;
+    g_psx_text_write_hi = phys_lo + len;
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
+    memset(text_foreign_bitmap, 0, sizeof(text_foreign_bitmap));
+    g_text_foreign_pages = 0;
     g_text_native_blocked = 0;
     g_text_diverged_pages = 0;
     g_text_exact_mismatches = 0;
@@ -592,10 +704,40 @@ void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
 
 int dirty_ram_text_image_registered(void) { return text_ref_image != NULL; }
 
+/* Compare the boot executable image the console loads (`loaded`, at phys_lo)
+ * with the per-page CRCs of the image the static code was generated from.
+ * Call after dirty_ram_register_text_image. Returns the number of pages that
+ * differ; *first_phys receives the lowest one. */
+uint32_t dirty_ram_text_note_source_image(const uint8_t *loaded,
+                                          uint32_t phys_lo, uint32_t len,
+                                          const uint32_t *source_crc32,
+                                          uint32_t source_count,
+                                          uint32_t source_phys_lo,
+                                          uint32_t source_len,
+                                          uint32_t *first_phys) {
+    memset(text_foreign_bitmap, 0, sizeof(text_foreign_bitmap));
+    if (phys_lo >= RAM_LIVE) {
+        g_text_foreign_pages = 0;
+        if (first_phys) *first_phys = 0;
+        return 0;
+    }
+    if (len > RAM_LIVE - phys_lo) len = RAM_LIVE - phys_lo;
+    g_text_foreign_pages = psx_text_source_mismatch(
+        loaded, phys_lo, len, source_crc32, source_count, source_phys_lo,
+        source_len, text_foreign_bitmap, DIRTY_RAM_BITMAP_WORDS, first_phys);
+    return g_text_foreign_pages;
+}
+
+uint32_t dirty_ram_text_foreign_pages(void) { return g_text_foreign_pages; }
+
+static inline int text_page_foreign(uint32_t page) {
+    return (text_foreign_bitmap[page >> 5] >> (page & 31u)) & 1u;
+}
+
 static inline void text_guard_note_write(uint32_t phys, uint32_t val, int size) {
     if (!text_ref_image) return;
-    if (phys < text_ref_lo || phys + (uint32_t)size > text_ref_hi) return;
-    const uint8_t *ref = text_ref_image + (phys - text_ref_lo);
+    if (phys < g_psx_text_write_lo || phys + (uint32_t)size > g_psx_text_write_hi) return;
+    const uint8_t *ref = text_ref_image + (phys - g_psx_text_write_lo);
     uint8_t buf[4] = { (uint8_t)val, (uint8_t)(val >> 8),
                        (uint8_t)(val >> 16), (uint8_t)(val >> 24) };
     if (memcmp(ref, buf, (size_t)size) != 0) {
@@ -612,11 +754,15 @@ static int dirty_ram_force_interp(void);
 
 int dirty_ram_text_native_ok(uint32_t phys) {
     if (dirty_ram_force_interp() && phys >= DIRTY_RAM_KERNEL_TRACK_BYTES) return 0;
-    if (!text_ref_image || phys < text_ref_lo || phys >= text_ref_hi)
+    if (!text_ref_image || phys < g_psx_text_write_lo || phys >= g_psx_text_write_hi)
         return !dirty_ram_is_dirty(phys);
 
     uint32_t page = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t bit = 1u << (page & 31u);
+    if (g_text_foreign_pages && text_page_foreign(page)) {
+        g_text_native_blocked++;
+        return 0;
+    }
     if (text_diverged_bitmap[page >> 5] & bit) {
         g_text_native_blocked++;
         return 0;
@@ -634,8 +780,9 @@ int dirty_ram_text_native_ok(uint32_t phys) {
      * dirty_ram_text_bless) does not needlessly block a still-valid function and
      * route it to psx_unknown_dispatch. A genuine code overwrite still diverges. */
     uint32_t n = 256;
-    if (n > text_ref_hi - phys) n = text_ref_hi - phys;
-    if (memcmp(ram + phys, text_ref_image + (phys - text_ref_lo), n) == 0)
+    if (n > g_psx_text_write_hi - phys) n = g_psx_text_write_hi - phys;
+    ++text_compare_calls;
+    if (memcmp(ram + phys, text_ref_image + (phys - g_psx_text_write_lo), n) == 0)
         return 1;
 
     text_diverged_bitmap[page >> 5] |= bit;
@@ -668,12 +815,27 @@ int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
     for (uint32_t i = 0; i < count; i++) {
         uint32_t phys = lo_len_pairs[i * 2u] & 0x1FFFFFFFu;
         uint32_t len = lo_len_pairs[i * 2u + 1u];
-        if (len == 0 || phys < text_ref_lo || phys >= text_ref_hi ||
-            len > text_ref_hi - phys) {
+        if (len == 0 || phys < g_psx_text_write_lo || phys >= g_psx_text_write_hi ||
+            len > g_psx_text_write_hi - phys) {
             g_text_native_blocked++;
             return 0;
         }
         any = 1;
+        /* The loaded executable differs from the generated-from image on a
+         * page this range touches: the static body is not this disc's code.
+         * One compare of a counter when no page differs, which is every disc
+         * the build was generated from. */
+        if (g_text_foreign_pages) {
+            uint32_t fp0 = phys >> DIRTY_RAM_PAGE_SHIFT;
+            uint32_t fp1 = (phys + len - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+            uint32_t fp;
+            for (fp = fp0; fp <= fp1; fp++) {
+                if (text_page_foreign(fp)) {
+                    g_text_native_blocked++;
+                    return 0;
+                }
+            }
+        }
         /* Page-clean fast path: every page this range touches is neither
          * guard-modified nor runtime-dirty, so its bytes still equal the
          * reference image — skip the memcmp. This keeps the emitted
@@ -693,10 +855,11 @@ int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
             }
             if (clean) continue;
         }
-        if (memcmp(ram + phys, text_ref_image + (phys - text_ref_lo), len) != 0) {
+        ++text_compare_calls;
+        if (memcmp(ram + phys, text_ref_image + (phys - g_psx_text_write_lo), len) != 0) {
             uint32_t off = 0;
             const uint8_t *live = ram + phys;
-            const uint8_t *ref = text_ref_image + (phys - text_ref_lo);
+            const uint8_t *ref = text_ref_image + (phys - g_psx_text_write_lo);
             while (off < len && live[off] == ref[off]) off++;
             g_text_exact_mismatches++;
             g_text_exact_last_range_lo = phys;
@@ -747,14 +910,15 @@ void dirty_ram_text_exact_mismatch_stats(uint64_t *count,
  * Byte-for-byte identical writes are a no-op. */
 void dirty_ram_text_bless(uint32_t phys, const uint8_t *bytes, uint32_t len) {
     if (!text_ref_image || !bytes || len == 0) return;
-    if (phys >= text_ref_hi || phys + len <= text_ref_lo) return;   /* out of range */
-    uint32_t lo = phys < text_ref_lo ? text_ref_lo : phys;
-    uint32_t hi = phys + len > text_ref_hi ? text_ref_hi : phys + len;
+    if (phys >= g_psx_text_write_hi || phys + len <= g_psx_text_write_lo) return;   /* out of range */
+    uint32_t lo = phys < g_psx_text_write_lo ? g_psx_text_write_lo : phys;
+    uint32_t hi = phys + len > g_psx_text_write_hi ? g_psx_text_write_hi : phys + len;
     if (hi <= lo) return;
-    uint8_t *ref = text_ref_image + (lo - text_ref_lo);
+    uint8_t *ref = text_ref_image + (lo - g_psx_text_write_lo);
     const uint8_t *src = bytes + (lo - phys);
     if (memcmp(ref, src, hi - lo) == 0) return;                     /* already in sync */
     memcpy(ref, src, hi - lo);
+    ++text_validation_revision;
     /* Re-open the affected pages: clear the sticky diverged bit so the next
      * dispatch re-runs the compare against the now-updated reference. */
     uint32_t first_page = lo >> DIRTY_RAM_PAGE_SHIFT;
@@ -765,6 +929,13 @@ void dirty_ram_text_bless(uint32_t phys, const uint8_t *bytes, uint32_t len) {
 
 uint64_t dirty_ram_text_native_blocked(void) { return g_text_native_blocked; }
 uint32_t dirty_ram_text_diverged_pages(void) { return g_text_diverged_pages; }
+/* The reference image's physical range, for the run report.
+ * Returns 0 when the guard is not armed. */
+int dirty_ram_text_image_range(uint32_t *lo, uint32_t *hi) {
+    if (lo) *lo = g_psx_text_write_lo;
+    if (hi) *hi = g_psx_text_write_hi;
+    return text_ref_image != NULL;
+}
 uint32_t dirty_ram_text_modified_bitmap_word(uint32_t word_index) {
     if (word_index >= DIRTY_RAM_BITMAP_WORDS) return 0;
     return text_modified_bitmap[word_index];
@@ -774,14 +945,24 @@ uint32_t dirty_ram_text_diverged_bitmap_word(uint32_t word_index) {
     return text_diverged_bitmap[word_index];
 }
 
+/* Marks pages as holding code that must be re-checked before a native
+ * dispatch. It writes no guest RAM, so it leaves the kernel-bless rows
+ * alone. It used to reset all of them, and the generated BIOS dispatch
+ * calls this on every RAM-alias dispatch of a continuation key (the
+ * exception handler's 0xD00/0xE10/0xE28): each such dispatch threw away
+ * every verified row, about a million re-verifies in a two-minute start.
+ * Callers that do write RAM go through psx_write_*, which
+ * invalidates the rows the write touches. */
 void dirty_ram_mark_executable_range(uint32_t phys, uint32_t len) {
     if (len == 0 || phys >= RAM_LIVE) return;
-    psx_kernel_bless_note_range(phys, len);
     uint32_t end = phys + len - 1u;
     if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
 
     uint32_t first_page = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t last_page = end >> DIRTY_RAM_PAGE_SHIFT;
+    /* Bulk DMA/EXE loaders may bypass individual store notifications. Only
+     * invalidate watched code pages; unrelated DMA does not alter its proof. */
+    text_validation_note_bulk_range(first_page, last_page);
     for (uint32_t page = first_page; page <= last_page; page++) {
         dirty_ram_bitmap[page >> 5] |= (1u << (page & 31u));
     }
@@ -855,6 +1036,7 @@ uint32_t dirty_ram_get_bitmap_word_count(void) {
 }
 
 void dirty_ram_set_bitmap_words(const uint32_t* words, uint32_t count) {
+    ++text_validation_revision;
     memset(dirty_ram_bitmap, 0, sizeof(dirty_ram_bitmap));
     if (count > DIRTY_RAM_LIVE_BITMAP_WORDS) count = DIRTY_RAM_LIVE_BITMAP_WORDS;
     for (uint32_t i = 0; i < count; i++)
@@ -878,15 +1060,28 @@ void dirty_ram_set_bitmap_words(const uint32_t* words, uint32_t count) {
  * The bitmap is almost always empty, so the per-store cost on the common path
  * is a single bitmap lookup.
  */
-static uint32_t overlay_watch_bitmap[DIRTY_RAM_BITMAP_WORDS];
+uint32_t g_psx_overlay_watch_bitmap[DIRTY_RAM_BITMAP_WORDS];
 static uint32_t overlay_page_gen[DIRTY_RAM_PAGE_COUNT];
 
+static void text_validation_note_bulk_range(uint32_t first, uint32_t last) {
+#if defined(PSX_NATIVE_STATIC_CALLS) && PSX_NATIVE_STATIC_CALLS
+    for (uint32_t pg = first; pg <= last; ++pg) {
+        if (g_psx_overlay_watch_bitmap[pg >> 5] & (1u << (pg & 31u))) {
+            if (++overlay_page_gen[pg] == 0) ++text_validation_revision;
+        }
+    }
+#else
+    (void)first; (void)last;
+#endif
+}
+
 void dirty_ram_reset_for_boot(void) {
+    ++text_validation_revision;
     memset(dirty_ram_bitmap, 0, sizeof(dirty_ram_bitmap));
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
     g_text_diverged_pages = 0;
-    memset(overlay_watch_bitmap, 0, sizeof(overlay_watch_bitmap));
+    memset(g_psx_overlay_watch_bitmap, 0, sizeof(g_psx_overlay_watch_bitmap));
     memset(overlay_page_gen, 0, sizeof(overlay_page_gen));
     memset(g_dirty_ram_exec_page_bitmap, 0, sizeof(g_dirty_ram_exec_page_bitmap));
     memset(g_dirty_ram_exec_pc_bitmap, 0, sizeof(g_dirty_ram_exec_pc_bitmap));
@@ -901,17 +1096,18 @@ void overlay_watch_set_range(uint32_t phys, uint32_t len) {
     uint32_t fp = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t lp = end  >> DIRTY_RAM_PAGE_SHIFT;
     for (uint32_t pg = fp; pg <= lp; pg++)
-        overlay_watch_bitmap[pg >> 5] |= (1u << (pg & 31u));
+        g_psx_overlay_watch_bitmap[pg >> 5] |= (1u << (pg & 31u));
 }
 
 void overlay_watch_clear_range(uint32_t phys, uint32_t len) {
     if (len == 0 || phys >= RAM_LIVE) return;
+    ++text_validation_revision;
     uint32_t end = phys + len - 1u;
     if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
     uint32_t fp = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t lp = end  >> DIRTY_RAM_PAGE_SHIFT;
     for (uint32_t pg = fp; pg <= lp; pg++)
-        overlay_watch_bitmap[pg >> 5] &= ~(1u << (pg & 31u));
+        g_psx_overlay_watch_bitmap[pg >> 5] &= ~(1u << (pg & 31u));
 }
 
 /* Sum of generation counters over the pages spanning [phys, phys+len). The
@@ -928,11 +1124,25 @@ uint32_t overlay_watch_pagegen_sum(uint32_t phys, uint32_t len) {
     return sum;
 }
 
+/* Unlike the legacy u32 sum, this witness cannot alias when several page
+ * counters add past UINT32_MAX. An individual page wrap changes the revision. */
+uint64_t overlay_watch_pagegen_sum64(uint32_t phys, uint32_t len) {
+    if (!len || phys >= RAM_LIVE) return 0;
+    uint32_t end = phys + len - 1u;
+    if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
+    uint64_t sum = 0;
+    for (uint32_t page = phys >> DIRTY_RAM_PAGE_SHIFT;
+         page <= (end >> DIRTY_RAM_PAGE_SHIFT); ++page)
+        sum += overlay_page_gen[page];
+    return sum;
+}
+
 /* Savestate restores RAM via memcpy and never hits the store chokepoint that
  * bumps overlay_page_gen. Without this, ENTRY_VALID overlays keep the gen-gated
  * fast path and run native code against restored bytes they were not validated
  * for — hang / freeze after the restored frame presents. */
 void dirty_ram_text_guard_resync_after_restore(void) {
+    ++text_validation_revision;
     /* text_diverged_bitmap is sticky: once a page's entry bytes fail the
      * reference compare, native stays blocked forever. That is correct for
      * forward sim, but after a savestate/RB rewind the restored RAM may
@@ -954,17 +1164,17 @@ void dirty_ram_text_guard_resync_after_restore(void) {
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
     g_text_diverged_pages = 0;
-    if (text_ref_image && text_ref_hi > text_ref_lo) {
-        uint32_t p0 = text_ref_lo >> DIRTY_RAM_PAGE_SHIFT;
-        uint32_t p1 = (text_ref_hi - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+    if (text_ref_image && g_psx_text_write_hi > g_psx_text_write_lo) {
+        uint32_t p0 = g_psx_text_write_lo >> DIRTY_RAM_PAGE_SHIFT;
+        uint32_t p1 = (g_psx_text_write_hi - 1u) >> DIRTY_RAM_PAGE_SHIFT;
         for (uint32_t p = p0; p <= p1; p++) {
             uint32_t lo = p << DIRTY_RAM_PAGE_SHIFT;
             uint32_t hi = lo + (1u << DIRTY_RAM_PAGE_SHIFT);
-            if (lo < text_ref_lo) lo = text_ref_lo;
-            if (hi > text_ref_hi) hi = text_ref_hi;
+            if (lo < g_psx_text_write_lo) lo = g_psx_text_write_lo;
+            if (hi > g_psx_text_write_hi) hi = g_psx_text_write_hi;
             if (hi > RAM_LIVE) hi = RAM_LIVE;
             if (hi <= lo) continue;
-            if (memcmp(ram + lo, text_ref_image + (lo - text_ref_lo), hi - lo) != 0)
+            if (memcmp(ram + lo, text_ref_image + (lo - g_psx_text_write_lo), hi - lo) != 0)
                 text_modified_bitmap[p >> 5] |= (1u << (p & 31u));
         }
     }
@@ -972,7 +1182,7 @@ void dirty_ram_text_guard_resync_after_restore(void) {
 
 void overlay_watch_invalidate_after_ram_restore(void) {
     for (uint32_t pg = 0; pg < DIRTY_RAM_PAGE_COUNT; pg++)
-        overlay_page_gen[pg]++;
+        if (++overlay_page_gen[pg] == 0) ++text_validation_revision;
     extern void overlay_loader_note_code_write(void);
     extern void overlay_loader_resync_validation_after_restore(void);
     overlay_loader_note_code_write();
@@ -983,6 +1193,11 @@ void overlay_watch_invalidate_after_ram_restore(void) {
 
 static inline void overlay_watch_note_write(uint32_t phys, uint32_t size) {
     uint32_t pg = phys >> DIRTY_RAM_PAGE_SHIFT;
+    if (size > 1u && phys <= UINT32_MAX - (size - 1u)) {
+        const uint32_t last = phys + size - 1u;
+        if ((last >> DIRTY_RAM_PAGE_SHIFT) != pg)
+            overlay_watch_note_write(last, 1u);
+    }
     if (pg >= (RAM_LIVE >> DIRTY_RAM_PAGE_SHIFT)) return;
     /* Never attach pre-write PC evidence to post-write bytes, including for
      * completely unknown/self-modifying code. This is deliberately a compact
@@ -996,8 +1211,8 @@ static inline void overlay_watch_note_write(uint32_t phys, uint32_t size) {
         dirty_ram_dispatch_evidence_clear(bitmap_word, 4096u / 4u / 32u);
         g_dirty_ram_exec_page_bitmap[pg >> 5] &= ~(1u << (pg & 31u));
     }
-    if ((overlay_watch_bitmap[pg >> 5] >> (pg & 31u)) & 1u) {
-        overlay_page_gen[pg]++;
+    if ((g_psx_overlay_watch_bitmap[pg >> 5] >> (pg & 31u)) & 1u) {
+        if (++overlay_page_gen[pg] == 0) ++text_validation_revision;
         /* Also invalidate generation-aware negative overlay lookups: bytes in
          * a manifested code page may now match a previously absent variant.
          * Keep this separate from g_dirty_ram_code_gen: interpreter widescreen
@@ -1025,10 +1240,22 @@ uint64_t g_kseg2_ignored_writes;
 /* Cache control register (KSEG2: 0xFFFE0130). */
 static uint32_t cache_ctrl;
 
+void memory_control_get(uint32_t out[PSX_MEMORY_CONTROL_WORDS]) {
+    memcpy(out, mem_ctrl, sizeof mem_ctrl);
+    out[16] = ram_size_reg;
+    out[17] = cache_ctrl;
+}
+
+void memory_control_set(const uint32_t in[PSX_MEMORY_CONTROL_WORDS]) {
+    memcpy(mem_ctrl, in, sizeof mem_ctrl);
+    ram_size_reg = in[16];
+    cache_ctrl = in[17];
+}
+
 /* Pointer to cpu->cop0[12] (SR).  Set once at init.
  * Used by write functions to check the IsC (Isolate Cache) bit: while it is
  * set, a CPU store goes to the caches and never reaches the bus (isc_store). */
-static const uint32_t *sr_ptr;
+const uint32_t *g_psx_memory_sr_ptr;
 
 /* Interrupt controller — non-static so hardware subsystems can set I_STAT bits. */
 uint32_t i_stat;  /* 0x1F801070 — interrupt status (AND-acknowledge semantics) */
@@ -1213,8 +1440,8 @@ static inline int scph1001_relocated_store(uint32_t pc, uint32_t rom) {
 
 /* SPU registers are now handled by spu.c */
 
-void memory_set_sr_ptr(const uint32_t *p) { sr_ptr = p; }
-uint32_t memory_get_sr(void) { return sr_ptr ? *sr_ptr : 0; }
+void memory_set_sr_ptr(const uint32_t *p) { g_psx_memory_sr_ptr = p; }
+uint32_t memory_get_sr(void) { return g_psx_memory_sr_ptr ? *g_psx_memory_sr_ptr : 0; }
 
 static uint32_t s_bios_checksum = 0;
 uint32_t memory_get_bios_checksum(void) { return s_bios_checksum; }
@@ -1321,9 +1548,9 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
     if (addr >= 0x1F801100u && addr <= 0x1F80112Fu) {
         return timers_read(addr);
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        return cdrom_read(addr);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        return cdrom_read(0x1F801800u | (addr & 3u));
     }
     /* GPU: 0x1F801810 (GPUREAD), 0x1F801814 (GPUSTAT) */
     if (addr == 0x1F801810u) return gpu_read_gpuread();
@@ -1347,14 +1574,14 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
  * the device read executes exactly once. */
 static uint32_t mmio_read32(uint32_t addr) {
     if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 4)) return 0;
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 0);
     uint32_t v = mmio_read32_impl(addr);
     debug_server_trace_mmio_read(addr, v, 4);
     return v;
 }
 
 static void mmio_write32(uint32_t addr, uint32_t val) {
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 1);
     SHADOW_NOTE_MMIO();
     debug_server_trace_mmio_write(addr, val, 4);
     /* Memory control: 0x1F801000..0x1F801020 */
@@ -1385,9 +1612,9 @@ static void mmio_write32(uint32_t addr, uint32_t val) {
         timers_write(addr, val);
         return;
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        cdrom_write(addr, val);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        cdrom_write(0x1F801800u | (addr & 3u), val);
         return;
     }
     /* GPU GP0: 0x1F801810, GP1: 0x1F801814 */
@@ -1470,14 +1697,14 @@ static uint16_t mmio_read16_impl(uint32_t addr) {
 
 static uint16_t mmio_read16(uint32_t addr) {
     if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 2)) return 0;
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 0);
     uint16_t v = mmio_read16_impl(addr);
     debug_server_trace_mmio_read(addr, (uint32_t)v, 2);
     return v;
 }
 
 static void mmio_write16(uint32_t addr, uint16_t val) {
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 1);
     SHADOW_NOTE_MMIO();
     debug_server_trace_mmio_write(addr, (uint32_t)val, 2);
     /* Memory control: 0x1F801000..0x1F80103C — halfword lane RMW. */
@@ -1576,9 +1803,9 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
         uint32_t val = mdec_read(addr & ~3u);
         return (uint8_t)(val >> (8 * (addr & 3)));
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        return (uint8_t)cdrom_read(addr);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        return (uint8_t)cdrom_read(0x1F801800u | (addr & 3u));
     }
     /* Expansion 2 / POST: 0x1F802000..0x1F802FFF */
     if (addr >= 0x1F802000u && addr <= 0x1F802FFFu) {
@@ -1590,14 +1817,14 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
 
 static uint8_t mmio_read8(uint32_t addr) {
     if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 1)) return 0;
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 0);
     uint8_t v = mmio_read8_impl(addr);
     debug_server_trace_mmio_read(addr, (uint32_t)v, 1);
     return v;
 }
 
 static void mmio_write8(uint32_t addr, uint8_t val) {
-    psx_devices_mmio_sync();
+    psx_devices_mmio_sync_at(addr, 1);
     SHADOW_NOTE_MMIO();
     debug_server_trace_mmio_write(addr, (uint32_t)val, 1);
     /* Memory control: 0x1F801000..0x1F80103C — byte lane RMW. Tomba2's late
@@ -1663,9 +1890,9 @@ static void mmio_write8(uint32_t addr, uint8_t val) {
         mdec_write(aligned, cur);
         return;
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        cdrom_write(addr, val);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        cdrom_write(0x1F801800u | (addr & 3u), val);
         return;
     }
     /* Expansion 2 / POST: 0x1F802000..0x1F802FFF */
@@ -1692,6 +1919,7 @@ static uint32_t psx_read_word_raw(uint32_t addr);
  * exception context (ISR work replays live), never under DMA (DMA writes
  * poison the window via ds_note_dma_write instead). */
 uint32_t psx_read_word(uint32_t addr) {
+    psx_memory_note_helper_width(addr, 0u, 4u);
     if (g_ls_mode == 2) return ls_read_hook(addr, 4, 0u);
     if (g_ds_recording && g_dma_exec_depth == 0 && !psx_get_in_exception())
         ds_note_read(addr, 4);
@@ -1859,13 +2087,29 @@ int g_host_store_depth;   /* >0 inside psx_host_write_* */
  * word: two projections that round to the same integers differ in their
  * fractions and depth, so the old shadow would be believed for a value it
  * did not produce. Drop the touched word's shadow instead. */
-static inline void pgxp_untracked_store(uint32_t phys) {
+static inline void pgxp_untracked_store(uint32_t phys, uint32_t value, uint32_t width) {
+#if (defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS) || \
+    (defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS)
+    pgxp_write_owned(phys, value, width);
+#else
+    (void)value; (void)width;
     if (g_dma_exec_depth > 0 || g_host_store_depth > 0)
         pgxp_invalidate_word(phys);
+#endif
 }
 
+/* The existing inline/DLL observer boundary, with no extra per-access
+ * forwarding layer. Observers still see pre-write bytes/precision first. */
+#if (defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS) || \
+    (defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS)
+void psx_direct_precision_write(uint32_t phys, uint32_t old_value, uint32_t value, uint8_t width) {
+    debug_server_trace_write_check(phys, old_value, value, width);
+    pgxp_write_owned(phys, value, width);
+}
+#endif
+
 static inline int cpu_store_isolated(void) {
-    return sr_ptr && (*sr_ptr & 0x10000u) && g_dma_exec_depth == 0 &&
+    return g_psx_memory_sr_ptr && (*g_psx_memory_sr_ptr & 0x10000u) && g_dma_exec_depth == 0 &&
            g_host_store_depth == 0;
 }
 
@@ -1876,14 +2120,14 @@ static void isc_store(uint32_t addr, uint32_t val, uint32_t width) {
     if ((cache_ctrl & (PSX_BIU_DCACHE_ENABLE | PSX_BIU_LOCK)) ==
         PSX_BIU_DCACHE_ENABLE) {
         uint32_t off = addr & 0x3FFu;
-#ifndef PSX_NO_DEBUG_TOOLS
         uint32_t old = 0;
         for (uint32_t i = 0; i < width; i++)
             old |= (uint32_t)scratchpad[(off + i) & 0x3FFu] << (8u * i);
         debug_server_trace_write_check(0x1F800000u + off, old, val, (uint8_t)width);
-#endif
-        for (uint32_t i = 0; i < width; i++)
+        for (uint32_t i = 0; i < width; i++) {
+            pgxp_untracked_store(0x1f800000u + ((off+i)&0x3ffu),val>>(8u*i),1u);
             scratchpad[(off + i) & 0x3FFu] = (uint8_t)(val >> (8u * i));
+        }
     }
 }
 
@@ -2010,6 +2254,7 @@ static void render_pass_store(uint32_t addr, uint32_t val, uint32_t width) {
 
 static void psx_write_word_raw(uint32_t addr, uint32_t val);
 void psx_write_word(uint32_t addr, uint32_t val) {
+    psx_memory_note_helper_width(addr, 1u, 4u);
     extern void (*g_overlay_flush_pending_cycles)(void);
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
     if (g_psx_render_pass_active) { render_pass_store(addr, val, 4); return; }
@@ -2113,9 +2358,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
             }
         }
         if (phys == D44_PHYS) d44_note(phys, read_ram_word(phys), val);
-#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys, read_ram_word(phys), val, 4);
-#endif
         parity_trace_note_write(phys, 4, effective_store_pc());
         card_data_writes_check(phys, val, 4);
         dirty_ram_mark_kernel_write(phys);
@@ -2124,7 +2367,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
 #ifdef PSX_COSIM
         { extern void cosim_note_ram_write(uint32_t,uint32_t); cosim_note_ram_write(phys, 4); }
 #endif
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 4u);
         ram[phys]     = (uint8_t)(val);
         ram[phys + 1] = (uint8_t)(val >> 8);
         ram[phys + 2] = (uint8_t)(val >> 16);
@@ -2134,6 +2377,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     {
         uint32_t off;
         if (mod_gpu_dma_memory_offset(phys, 4u, &off)) {
+            pgxp_untracked_store(phys, val, 4u);
             memcpy(mod_gpu_dma_memory + off, &val, sizeof(val));
             return;
         }
@@ -2142,6 +2386,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     {
         uint32_t off;
         if (mod_memory_offset(phys, 4u, &off)) {
+            pgxp_untracked_store(phys, val, 4u);
             memcpy(mod_memory + off, &val, sizeof(val));
             return;
         }
@@ -2149,15 +2394,13 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     if (phys >= 0x1F000000u && phys <= 0x1F7FFFFFu) return;
     if (phys >= 0x1F800000u && phys <= 0x1F8003FFu) {
         uint32_t off = phys - 0x1F800000u;
-#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys,
             (uint32_t)scratchpad[off]
           | ((uint32_t)scratchpad[off + 1] << 8)
           | ((uint32_t)scratchpad[off + 2] << 16)
           | ((uint32_t)scratchpad[off + 3] << 24),
             val, 4);
-#endif
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 4u);
         scratchpad[off]     = (uint8_t)(val);
         scratchpad[off + 1] = (uint8_t)(val >> 8);
         scratchpad[off + 2] = (uint8_t)(val >> 16);
@@ -2177,6 +2420,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
 
 static uint16_t psx_read_half_raw(uint32_t addr);
 uint16_t psx_read_half(uint32_t addr) {
+    psx_memory_note_helper_width(addr, 0u, 2u);
     if (g_ls_mode == 2) return (uint16_t)ls_read_hook(addr, 2, 0u);
     if (g_ds_recording && g_dma_exec_depth == 0 && !psx_get_in_exception())
         ds_note_read(addr, 2);
@@ -2225,6 +2469,7 @@ static uint16_t psx_read_half_raw(uint32_t addr) {
 
 static void psx_write_half_raw(uint32_t addr, uint16_t val);
 void psx_write_half(uint32_t addr, uint16_t val) {
+    psx_memory_note_helper_width(addr, 1u, 2u);
     extern void (*g_overlay_flush_pending_cycles)(void);
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
     if (g_psx_render_pass_active) { render_pass_store(addr, val, 2); return; }
@@ -2249,9 +2494,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     uint32_t phys = psx_phys_addr_store(addr);
 
     if (phys < RAM_SIZE) {
-#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys, (uint32_t)read_ram_half(phys), (uint32_t)val, 2);
-#endif
         parity_trace_note_write(phys, 2, effective_store_pc());
         card_data_writes_check(phys, (uint32_t)val, 2);
         dirty_ram_mark_kernel_write(phys);
@@ -2260,7 +2503,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
 #ifdef PSX_COSIM
         { extern void cosim_note_ram_write(uint32_t,uint32_t); cosim_note_ram_write(phys, 2); }
 #endif
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 2u);
         ram[phys]     = (uint8_t)(val);
         ram[phys + 1] = (uint8_t)(val >> 8);
         return;
@@ -2268,6 +2511,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     {
         uint32_t off;
         if (mod_gpu_dma_memory_offset(phys, 2u, &off)) {
+            pgxp_untracked_store(phys, val, 2u);
             mod_gpu_dma_memory[off] = (uint8_t)val;
             mod_gpu_dma_memory[off + 1u] = (uint8_t)(val >> 8);
             return;
@@ -2276,6 +2520,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     {
         uint32_t off;
         if (mod_memory_offset(phys, 2u, &off)) {
+            pgxp_untracked_store(phys, val, 2u);
             mod_memory[off] = (uint8_t)val;
             mod_memory[off + 1u] = (uint8_t)(val >> 8);
             return;
@@ -2284,12 +2529,10 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     if (phys >= 0x1F000000u && phys <= 0x1F7FFFFFu) return;
     if (phys >= 0x1F800000u && phys <= 0x1F8003FFu) {
         uint32_t off = phys - 0x1F800000u;
-#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys,
             (uint32_t)scratchpad[off] | ((uint32_t)scratchpad[off + 1] << 8),
             (uint32_t)val, 2);
-#endif
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 2u);
         scratchpad[off]     = (uint8_t)(val);
         scratchpad[off + 1] = (uint8_t)(val >> 8);
         return;
@@ -2306,6 +2549,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
 
 static uint8_t psx_read_byte_raw(uint32_t addr);
 uint8_t psx_read_byte(uint32_t addr) {
+    psx_memory_note_helper_width(addr, 0u, 1u);
     if (g_ls_mode == 2) return (uint8_t)ls_read_hook(addr, 1, 0u);
     if (g_ds_recording && g_dma_exec_depth == 0 && !psx_get_in_exception())
         ds_note_read(addr, 1);
@@ -2548,7 +2792,10 @@ uint8_t psx_cyc_load_byte(CPUState* cpu, uint32_t addr, uint32_t rt, uint32_t re
     psx_cyc_load_timing(cpu, addr, 1u, rt, reg_mask);
 #if defined(PSX_NO_DEBUG_TOOLS) && !defined(PSX_COSIM)
     uint32_t phys;
-    if (psx_cyc_main_ram_fast_addr(addr, 1u, &phys)) return ram[phys];
+    if (psx_cyc_main_ram_fast_addr(addr, 1u, &phys)) {
+        PSX_HR_RUNTIME_FAST_LOAD(0);
+        return ram[phys];
+    }
 #endif
     return psx_read_byte(addr);
 }
@@ -2565,6 +2812,7 @@ uint32_t psx_cyc_lwc2_read(CPUState* cpu, uint32_t addr) {
 #if defined(PSX_NO_DEBUG_TOOLS) && !defined(PSX_COSIM)
     uint32_t phys;
     if (psx_cyc_main_ram_fast_addr(addr, 4u, &phys)) {
+        PSX_HR_RUNTIME_FAST_LOAD(2);
         return (uint32_t)ram[phys]
              | ((uint32_t)ram[phys + 1] << 8)
              | ((uint32_t)ram[phys + 2] << 16)
@@ -2582,6 +2830,7 @@ uint8_t  psx_guest_read_byte(uint32_t addr) { return psx_read_byte(addr); }
 
 static void psx_write_byte_raw(uint32_t addr, uint8_t val);
 void psx_write_byte(uint32_t addr, uint8_t val) {
+    psx_memory_note_helper_width(addr, 1u, 1u);
     extern void (*g_overlay_flush_pending_cycles)(void);
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
     if (g_psx_render_pass_active) { render_pass_store(addr, val, 1); return; }
@@ -2625,9 +2874,7 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     uint32_t phys = psx_phys_addr_store(addr);
 
     if (phys < RAM_SIZE) {
-#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys, (uint32_t)ram[phys], (uint32_t)val, 1);
-#endif
         parity_trace_note_write(phys, 1, effective_store_pc());
         card_data_writes_check(phys, (uint32_t)val, 1);
         dirty_ram_mark_kernel_write(phys);
@@ -2636,13 +2883,14 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
 #ifdef PSX_COSIM
         { extern void cosim_note_ram_write(uint32_t,uint32_t); cosim_note_ram_write(phys, 1); }
 #endif
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 1u);
         ram[phys] = val;
         return;
     }
     {
         uint32_t off;
         if (mod_gpu_dma_memory_offset(phys, 1u, &off)) {
+            pgxp_untracked_store(phys, val, 1u);
             mod_gpu_dma_memory[off] = val;
             return;
         }
@@ -2650,17 +2898,16 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     {
         uint32_t off;
         if (mod_memory_offset(phys, 1u, &off)) {
+            pgxp_untracked_store(phys, val, 1u);
             mod_memory[off] = val;
             return;
         }
     }
     if (phys >= 0x1F000000u && phys <= 0x1F7FFFFFu) return;
     if (phys >= 0x1F800000u && phys <= 0x1F8003FFu) {
-#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys, (uint32_t)scratchpad[phys - 0x1F800000u],
                                        (uint32_t)val, 1);
-#endif
-        pgxp_untracked_store(phys);
+        pgxp_untracked_store(phys, val, 1u);
         scratchpad[phys - 0x1F800000u] = val;
         return;
     }
@@ -2672,4 +2919,61 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
         return; /* ROM: ignore */
     }
     unmapped_fatal(addr, phys, "WRITE");
+}
+
+/* Overlay ABI v37: pointers remain live across observer registration, restore,
+ * RAM geometry and private-bus scopes. Module format is not an observer. */
+const PSXDirectMemoryView *psx_direct_memory_host_view(void) {
+    static const PSXDirectMemoryView view={
+        sizeof(PSXDirectMemoryView),
+#if defined(PSX_NATIVE_CPU_SPANS) && PSX_NATIVE_CPU_SPANS
+        1,
+#else
+        0,
+#endif
+#if defined(PSX_DIRECT_GUEST_MEMORY) && PSX_DIRECT_GUEST_MEMORY
+        1,
+#else
+        0,
+#endif
+#if defined(PSX_DIRECT_GUEST_MEMORY) && PSX_DIRECT_GUEST_MEMORY
+        1,
+#else
+        0,
+#endif
+        &g_psx_ram,
+        &g_psx_scratchpad,
+        &g_psx_ram_mask,
+        &g_psx_text_write_lo,
+        &g_psx_text_write_hi,
+        &g_psx_memory_sr_ptr,
+        &g_parity_trace_armed,
+        &g_card_data_write_armed,
+        &g_host_store_depth,
+        &g_dma_exec_depth,
+        &g_psx_render_pass_active,
+        &g_ls_mode,
+        &g_ls_replay_active,
+        &g_ds_recording,
+        &g_ram_read_watch_active,
+        &g_guest_store_count,
+        &g_psx_track_last_store,
+        &g_guest_last_store_addr,
+        &g_guest_last_store_val,
+        &g_psx_direct_memory_stats,
+        g_psx_overlay_watch_bitmap,g_dirty_ram_exec_page_bitmap,
+        &g_overlay_flush_pending_cycles,
+#if defined(PSX_DISABLE_HEADROOM_COUNTERS) && PSX_DISABLE_HEADROOM_COUNTERS
+        NULL,
+#else
+        &g_psx_memory_width_stats,
+#endif
+#if (defined(PSX_PGXP_OPERATIONS) && PSX_PGXP_OPERATIONS) || \
+    (defined(PSX_PGXP_DEMAND_REGIONS) && PSX_PGXP_DEMAND_REGIONS)
+        psx_direct_precision_write
+#else
+        debug_server_trace_write_check
+#endif
+    };
+    return &view;
 }

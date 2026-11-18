@@ -96,6 +96,51 @@ static int psxrecomp_game_main(int argc, char** argv);
 // abort(): the process dies by SIGABRT and macOS files a crash report instead
 // of the caller seeing a diagnostic. Every caller already treats any non-zero
 // status as failure, so print the message and exit with status 1.
+// CRC-32 (zlib polynomial) of each 4 KiB RAM page of the image the code was
+// generated from, appended to the dispatch file. Page 0 starts at the load
+// address; later pages start on RAM page boundaries; the last may be partial.
+// The runtime compares the executable it loads against this table
+// (runtime/include/text_source_guard.h).
+static std::string source_page_crc_table(const std::vector<uint8_t>& image,
+                                         uint32_t load_address) {
+    auto crc32_of = [](const uint8_t* data, size_t len) {
+        uint32_t crc = 0xFFFFFFFFu;
+        for (size_t i = 0; i < len; ++i) {
+            crc ^= data[i];
+            for (int bit = 0; bit < 8; ++bit)
+                crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+        return crc ^ 0xFFFFFFFFu;
+    };
+    const uint32_t source_lo = load_address & 0x1FFFFFFFu;
+    std::vector<uint32_t> page_crcs;
+    for (size_t pos = 0; pos < image.size();) {
+        const uint32_t addr = source_lo + (uint32_t)pos;
+        size_t take = 4096u - (addr & 4095u);
+        if (take > image.size() - pos) take = image.size() - pos;
+        page_crcs.push_back(crc32_of(image.data() + pos, take));
+        pos += take;
+    }
+    std::string ds;
+    ds += "/* Per-page CRC-32 of the boot executable image this code was generated\n";
+    ds += " * from (before [[recompiler.patch]] edits). See text_source_guard.h. */\n";
+    ds += "static const uint32_t k_psx_game_source_page_crc32[] = {\n";
+    if (page_crcs.empty()) ds += "    0u,\n";
+    for (size_t i = 0; i < page_crcs.size(); ++i) {
+        if ((i & 7u) == 0) ds += "    ";
+        ds += fmt::format("0x{:08X}u,", page_crcs[i]);
+        ds += (((i & 7u) == 7u || i + 1 == page_crcs.size()) ? "\n" : " ");
+    }
+    ds += "};\n";
+    ds += "const uint32_t* psx_game_source_page_crc32(uint32_t* count, uint32_t* phys_lo, uint32_t* len) {\n";
+    ds += fmt::format("    if (count) *count = {}u;\n", page_crcs.size());
+    ds += fmt::format("    if (phys_lo) *phys_lo = 0x{:08X}u;\n", source_lo);
+    ds += fmt::format("    if (len) *len = 0x{:X}u;\n", image.size());
+    ds += "    return k_psx_game_source_page_crc32;\n";
+    ds += "}\n\n";
+    return ds;
+}
+
 int main(int argc, char** argv) {
     try {
         return psxrecomp_game_main(argc, argv);
@@ -224,6 +269,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
     std::set<uint32_t>    mod_entry_funcs;      // trusted game-mod entry hooks
     std::vector<PSXRecompV4::WidescreenMaskedRejectSite> ws_cull_masked_reject;
     std::set<uint32_t>    hot_funcs;            // [recompiler] hot_funcs
+    std::map<uint32_t,std::string> geometry_control_frames;
+    std::set<uint32_t> geometry_scratch_frames;
     std::set<uint32_t>    load_charge_batch_funcs; // [recompiler] load_charge_batch*
     std::map<uint32_t, std::array<uint32_t, 4>> vsync_query_hle_funcs;
     std::set<uint32_t>    ws_cull_bias, ws_cull_range, ws_cull_a1; // [widescreen.cull]
@@ -293,6 +340,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
                                cfg.mod_function_entry_funcs.end());
         mod_instruction_sites.insert(cfg.mod_instruction_sites.begin(), cfg.mod_instruction_sites.end());
         mod_immediate_sites = cfg.mod_immediate_sites;
+        geometry_control_frames = cfg.geometry_control_frames;
+        geometry_scratch_frames = cfg.geometry_scratch_frames;
         hot_funcs.insert(cfg.hot_funcs.begin(), cfg.hot_funcs.end());
         if (cfg.load_charge_batch) {
             load_charge_batch_funcs.insert(cfg.load_charge_batch_funcs.begin(),
@@ -409,6 +458,13 @@ static int psxrecomp_game_main(int argc, char** argv) {
     // sites (same TOML) — std::set insert dedupes.
     if (!ws_config_path.empty()) {
         const auto wscfg = PSXRecompV4::load_game_config(ws_config_path);
+        geometry_scratch_frames.insert(wscfg.geometry_scratch_frames.begin(),wscfg.geometry_scratch_frames.end());
+        for(const auto& [entry,guard]:wscfg.geometry_control_frames) {
+            const auto at=geometry_control_frames.find(entry);
+            if(at!=geometry_control_frames.end() && at->second!=guard)
+                throw std::runtime_error("conflicting geometry_control_frames contracts");
+            geometry_control_frames[entry]=guard;
+        }
         ws_tag_funcs.insert(wscfg.ws_sprite_tag_funcs.begin(), wscfg.ws_sprite_tag_funcs.end());
         mod_entry_funcs.insert(wscfg.mod_function_entry_funcs.begin(),
                                wscfg.mod_function_entry_funcs.end());
@@ -558,6 +614,14 @@ static int psxrecomp_game_main(int argc, char** argv) {
         fmt::print(stderr, "Failed to parse PS1-EXE: {}\n", error_msg);
         return 1;
     }
+
+    // The loaded image exactly as the disc carries it: before the analysis
+    // bound trims it and before [[recompiler.patch]] edits it. Its per-page
+    // CRCs go into the dispatch file, so the runtime can tell when the disc a
+    // player boots carries a different executable than this one (a multi-disc
+    // set can carry one program with a per-disc code byte).
+    const std::vector<uint8_t> source_image = exe->code_data;
+    const uint32_t source_image_load = exe->header.load_address;
 
     // [game].text_size is the title-owned static-analysis bound. It may trim a
     // verified data/padding tail, but it may never widen the parsed payload or
@@ -1547,6 +1611,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
     codegen_config.ws_sprite_tag_funcs = ws_tag_funcs;
     codegen_config.data_shard_funcs = ds_funcs;
     codegen_config.mod_function_entry_funcs = mod_entry_funcs;
+    codegen_config.geometry_control_frames = geometry_control_frames;
+    codegen_config.geometry_scratch_frames = geometry_scratch_frames;
     codegen_config.ws_cull_masked_reject_sites = ws_cull_masked_reject;
     codegen_config.mod_instruction_sites = mod_instruction_sites;
     codegen_config.mod_immediate_sites = mod_immediate_sites;
@@ -1809,7 +1875,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
                 out_dir / fmt::format("{}_full_{:02d}.c", exe_stem, shard_index);
             std::string body = fmt::format(
                 "/* Generated by PSXRecomp - full.c shard {}. DO NOT EDIT. */\n"
-                "#include \"{}\"\n#include \"psx_native_span.h\"\n\n{}",
+                "#include \"{}\"\n#include \"psx_native_span.h\"\n/* psx-direct-memory-v1 */\n/* psx-observation-edge-v1 */\n/* psx-pgxp-dataflow-v2 */\n/* psx-pgxp-demand-regions-v2; psx-pgxp-operations-v2 */\n\n{}",
                 shard_index, decls_basename, shard_buf.str());
             if (write_file_if_changed(shard_filename, body)) {
                 fmt::print("✓ Saved shard {} ({} lines) to {}\n",
@@ -1878,6 +1944,10 @@ static int psxrecomp_game_main(int argc, char** argv) {
             fmt::print(stderr, "ERROR: {}\n", dispatch_error);
             return 1;
         }
+        // Overlays are captured from RAM and validated by their own range
+        // hashes, so they carry no source page table.
+        if (!overlay_mode)
+            dispatch_source += source_page_crc_table(source_image, source_image_load);
         // Entries of the home compile, plus those of its segment variants.
         size_t variant_entries = 0;
         for (size_t u = 1; u < dispatch_units.size(); ++u)

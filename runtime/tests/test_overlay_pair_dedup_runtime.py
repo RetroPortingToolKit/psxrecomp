@@ -84,8 +84,10 @@ def compile_fixture(gcc: str, out: pathlib.Path, *, instance: int,
     run(command)
 
 
-def compile_harness(gcc: str, out: pathlib) -> None:
+def compile_harness(gcc: str, out: pathlib, *, codegen_hash: int | None = None) -> None:
     platform_defines = ["-D_GNU_SOURCE"] if platform.system() != "Windows" else []
+    if codegen_hash is not None:
+        platform_defines.append(f"-DPSX_OVERLAY_CODEGEN_HASH=0x{codegen_hash:08x}u")
     command = [
         gcc, "-std=c11", "-O0", "-Wall", "-Wextra",
         "-DPSX_NO_DEBUG_TOOLS",

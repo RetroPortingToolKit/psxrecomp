@@ -20,6 +20,8 @@
 
 #include <cstdint>
 #include <array>
+#include <map>
+#include <set>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -33,7 +35,7 @@ namespace PSXRecompV4 {
 //   analog  — always present a DualShock/analog pad (id 0x73). The D-pad is
 //             independent from both sticks, matching real hardware. Default.
 //   digital — always present a digital pad (id 0x41); sticks disabled.
-enum PadMode { PAD_MODE_ANALOG = 1, PAD_MODE_DIGITAL = 2 };
+enum PadMode { PAD_MODE_ANALOG = 1, PAD_MODE_DIGITAL = 2, PAD_MODE_NEGCON = 3 };
 
 // Renderer IDs shared by game.toml/settings parsing and runtime startup.
 // OpenGL is the default because the Windows software/SDL_Renderer path is slow
@@ -373,6 +375,11 @@ struct RuntimeConfig {
     // through the `turbo_loads` TCP debug command.
     bool                  turbo_loads = false;
     bool                  has_turbo_loads = false;   // key present in game.toml
+
+    // fast_loading_optout: true keeps the Fast Loading mod from accelerating
+    // this title even when the player enables it, for a game whose in-play
+    // disc reads still look like loads to the engage gate.
+    bool                  fast_loading_optout = false;
 
     // offer_turbo_loads: DEPRECATED AND IGNORED, now that the generic switch
     // it gated no longer exists. Defaults false and is never consulted; the
@@ -1061,6 +1068,18 @@ struct GameConfig {
     // that produced disc_set.json.
     std::vector<std::string> disc_serials;
 
+    // Optional ([game] program_discs): the 1-based positions in `discs` that
+    // THIS build boots. Absent means every disc, which is every single-disc
+    // title and every set whose discs carry one program. It is set only for a
+    // set whose discs boot different programs (Resident Evil 2: Leon on disc
+    // 1, Claire on disc 2), where each program is its own build and the builds
+    // share one folder, one settings file and one saves folder. `discs` and
+    // `disc_serials` then list the WHOLE set in every program's config, and
+    // this key says which entries are the program's own. The runtime mounts
+    // only those; a remembered disc that belongs to another program is not
+    // mounted, and save states take the disc's position in the set.
+    std::vector<int> program_discs;
+
     // Optional expected disc identity, for the launcher's "Disc verified" badge.
     // disc_crc: full-file CRC32 (IEEE) of the data track. disc_sha1: lowercase
     // hex SHA-1. Either may be absent (has_disc_crc / disc_sha1.empty()).
@@ -1547,6 +1566,11 @@ struct GameConfig {
     std::vector<ModImmediateSite> mod_immediate_sites;
     // Guarded SLTU on SX<<16 against screen width<<16; both wide edges.
     std::vector<WidescreenPackedXSite> ws_cull_packed_x_sites;
+    // A title-certified precision contract, not a generic register heuristic.
+    // Keys are function entries; values are linked C guard identifiers.
+    std::map<uint32_t,std::string> geometry_control_frames;
+    // Explicit consumer closure: canonical scratch EA operations are not precision observers.
+    std::set<uint32_t> geometry_scratch_frames;
 };
 
 // Effective clip_edge_width: explicit value, else screen_w_imms[0], else 320.
@@ -1566,11 +1590,31 @@ inline uint32_t ws_cull_clip_edge_width(const GameConfig& c) {
 // Unlike game.toml, paths here are stored verbatim (the user picked them); they
 // are NOT resolved against a project root.
 struct UserSettings {
+    // Host master volume, independent of the emulated audio hardware.
+    bool has_volume = false; int volume = 100;
+    std::map<std::string,std::string> extra_player_settings;
     // Set when the file existed but failed to parse as TOML: every field below
     // is defaults and the caller must warn loudly — silently dropping a user's
     // hand-edited settings looks like the settings "don't work", and a later
     // launcher save would overwrite their file with defaults.
     bool parse_error = false;
+
+    // The top-level `settings_format` of the file that was read; 0 when the
+    // file has none (every file written before format 2). save_user_settings
+    // always writes kFormat. Format 2 marks the files in which `fast_boot` and
+    // `bios_hle` are the player's own lines: see boot_keys_were_echoes.
+    static constexpr int kFormat = 2;
+    int  settings_format = 0;
+    // True when the file was older than format 2 and held `fast_boot` or
+    // `bios_hle`. Up to that format the launcher wrote both keys at every
+    // save, with whatever value was in force, although it has no control for
+    // either. The line then overrode game.toml for good: a later change of
+    // `bios_hle` in the game's game.toml never reached a player who had
+    // started an older build once, and two netplay peers of one build could
+    // boot in different BIOS modes. Such a line cannot be told from a hand
+    // edit, so it is taken for what it almost always is: the has_* flags stay
+    // false, game.toml decides, and the next save leaves the keys out.
+    bool boot_keys_were_echoes = false;
 
     // [video]
     bool has_renderer       = false; int  renderer       = DEFAULT_VIDEO_RENDERER; // 0=software,1=opengl,2=vulkan
@@ -1601,6 +1645,9 @@ struct UserSettings {
     // later game.toml change is exactly the write-only latch that shipped
     // turbo-on to MegaManX6Recomp users who had no way to turn it off.
     bool has_turbo_loads    = false; bool turbo_loads    = false;
+    // The two BIOS boot keys have no launcher control. They are in the file
+    // only when the player wrote them there (format 2 and later; see
+    // boot_keys_were_echoes), and the launcher writes them back only then.
     bool has_fast_boot      = false; bool fast_boot      = false;
     // HLE BIOS tier toggle (see RuntimeConfig::bios_hle). Overrides game.toml.
     bool has_bios_hle       = false; bool bios_hle       = false;
@@ -1636,6 +1683,8 @@ struct UserSettings {
     bool has_netplay_lobby_url = false; std::string netplay_lobby_url;
     bool has_aspect_ratio   = false; int  aspect_num     = 4; // display aspect W:H
                                      int  aspect_den     = 3; // (4:3 = native)
+    // Preserved legacy field; no ordinary runtime consumer. No GUI checkbox
+    // until an implemented adaptive-view behavior is available.
     bool has_adaptive_view  = false; bool adaptive_view  = false;
     // Local rewind (on/off, buffer depth, interval) is the built-in Rewind
     // mod (psx.feature.rewind); the old [video] rewind keys are ignored. Its
@@ -1676,6 +1725,8 @@ struct UserSettings {
     // device is one of:
     //   "none"     — no pad in this port (port not connected)
     //   "keyboard" — driven by the keyboard map (input.ini)
+    //   "mouse"    — a Sony PS1 Mouse in this port, driven by the host mouse
+    //                (PS1B-279; pN_mode does not apply)
     //   "<GUID>"   — an SDL game-controller GUID (SDL_JoystickGetGUIDString)
     // Modes (see PadMode): analog / digital. Hybrid is mod-only. Defaults: P1 keyboard,
     // P2–P5 none. Deadzone default is 10% (3277/32767). TOML keys:
@@ -1703,6 +1754,9 @@ struct UserSettings {
     // DualShock-on-tap hack (settings.toml [controller] multitap_analog).
     // Default on when unset; game.toml / global prefs may override.
     bool has_multitap_analog = false; bool multitap_analog = true;
+    // Relative host motion scale and initial capture for a native Mouse seat.
+    bool has_mouse_sensitivity = false; double mouse_sensitivity = 1.0;
+    bool has_mouse_capture = false; bool mouse_capture = true;
     // EXPERIMENTAL JogCon wheel force feedback, the player's choice
     // (settings.toml [controller] jogcon_force_feedback). Unset = the title's
     // game.toml experimental_jogcon_force_feedback default (off).
@@ -1712,6 +1766,8 @@ struct UserSettings {
     // settings.toml [localization].language.
     bool has_language = false; std::string language = "en";
 
+    // Preserved authoring stubs. These three fields have no runtime consumer
+    // and are deliberately not presented as working player controls.
     bool has_parappa_timing_mode = false; std::string parappa_timing_mode = "stock";
     bool has_parappa_timing_extra_early = false; int parappa_timing_extra_early = 0;
     bool has_parappa_timing_extra_late = false; int parappa_timing_extra_late = 0;
@@ -1761,8 +1817,20 @@ bool save_user_settings(const std::filesystem::path& path, const UserSettings& s
 
 // `p` relative to `folder` when it lies inside it; otherwise `p` unchanged.
 // Keeps portable game folders portable once the launcher saves a path.
+//
+// With `install_root`: when `folder` sits directly below that root and `p`
+// lies inside the root, `p` is written with one climb ("../saves"). That is
+// the layout of a setup install: settings.toml in <root>/build-release, the
+// memory cards in <root>/saves. Without it the cards were stored by full path
+// and a moved or copied install kept using the old folder.
 std::filesystem::path relative_to_folder(const std::filesystem::path& p,
-                                         const std::filesystem::path& folder);
+                                         const std::filesystem::path& folder,
+                                         const std::filesystem::path& install_root = {});
+
+// The install's root for save_user_settings(): the [memcard] paths that lie
+// inside it are written relative to the settings folder, as above. The disc
+// and BIOS paths are not affected. Empty (the default) keeps the plain rule.
+void set_user_settings_install_root(const std::filesystem::path& root);
 
 // Surgical upsert of `key = true|false` under [controller] in game.toml.
 // Preserves comments and unrelated keys. Creates [controller] if missing.

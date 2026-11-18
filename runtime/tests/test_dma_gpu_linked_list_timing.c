@@ -126,7 +126,8 @@ int main(void) {
         ram[NODES - 1u] = 0x00FFFFFFu;             /* empty terminator */
 
         completed = hit_limit = emitted_count = 0u;
-        dma_gpu_ll_start(&state, 0x00u, 64u);
+        /* A diagnostic node budget is not a hardware end marker. */
+        dma_gpu_ll_start(&state, 0x00u, 1u);
         uint32_t spent = 0u;
         while (state.active && spent < 1000u) {
             uint32_t d = dma_gpu_ll_cycles_to_event(&state);
@@ -139,14 +140,29 @@ int main(void) {
         CHECK(spent == NODES);                     /* nodes + 0 payload words */
     }
 
-    /* A malformed cycle is bounded and reports the safety stop. */
+    /* A cycle stays busy across bounded service calls. Only a guest end
+     * marker or cancellation can stop it, never a host node-count limit. */
     memset(ram, 0, sizeof(ram));
     completed = hit_limit = 0u;
     ram[0x00 / 4] = 0x00000000u;
     dma_gpu_ll_start(&state, 0x00u, 1u);
     dma_gpu_ll_advance(&state, 1u, &ops, NULL);
     dma_gpu_ll_advance(&state, 1u, &ops, NULL);
-    CHECK(completed == 1u && hit_limit == 1u && !state.active);
+    CHECK(completed == 0u && hit_limit == 0u && state.active);
+    CHECK(state.nodes_processed == 2u);
+    CHECK(dma_gpu_ll_cycles_to_event(&state) == 1u);
+    ram[0] = 0x00FFFFFFu;
+    dma_gpu_ll_advance(&state, 1u, &ops, NULL);
+    CHECK(completed == 1u && hit_limit == 0u && !state.active);
+
+    completed = hit_limit = 0u;
+    ram[0] = 0u;
+    dma_gpu_ll_start(&state, 0u, 1u);
+    dma_gpu_ll_advance(&state, 16u, &ops, NULL);
+    CHECK(completed == 0u && state.active && state.nodes_processed == 16u);
+    dma_gpu_ll_cancel(&state);
+    dma_gpu_ll_advance(&state, 16u, &ops, NULL);
+    CHECK(completed == 0u && !state.active);
 
     puts("dma_gpu_linked_list_timing_test: PASS");
     return 0;

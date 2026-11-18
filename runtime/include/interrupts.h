@@ -32,11 +32,29 @@ void psx_snapshot_host_call_restore(unsigned depth);
 
 void interrupts_init(void);
 
+/* Syscall-to-delivery control. Explicit handler switches must not be deferred. */
+int psx_exception_nest_depth(void);
+void psx_note_changethread_in_handler_switch(void);
+
 /* Save-state restore: re-anchor host-only IRQ pacing after psx_cycle_count is
  * overwritten from a snapshot. Clears absolute-cycle cooldowns / deferred
  * switches that would otherwise strand delivery until the restored clock
  * catches up to the pre-load host timeline (warm-reload picture freeze). */
 void interrupts_resync_after_restore(void);
+
+/* Checkpoint resume: the IRQ delivery state that interrupts_resync_after_restore
+ * otherwise resets (its IRQ_TIMING section). Absolute cycles are on the
+ * restored clock. A set keeps these fields through the next resync. */
+typedef struct PsxIrqResumeTiming {
+    uint64_t cooldown_until;      /* post-exception IRQ cooldown deadline */
+    uint32_t sio_seq_seen;        /* last SIO sequence the VBlank defer saw */
+    uint64_t sio_progress_cycle;  /* cycle of that SIO progress */
+    uint32_t defer_from;          /* deferred thread switch: interrupted TCB */
+    uint32_t defer_target;        /* deferred thread switch: target TCB */
+    uint32_t defer_pending;       /* 1 = a deferred switch is waiting */
+} PsxIrqResumeTiming;
+void interrupts_resume_timing_get(PsxIrqResumeTiming *out);
+void interrupts_resume_timing_set(const PsxIrqResumeTiming *in);
 
 /* Netplay diag: last VBLANK irqctx exit/restore (+ v0) for peer diff. */
 void interrupts_log_last_vblank_irqctx(const char *tag);
@@ -109,6 +127,8 @@ uint32_t cycles_to_next_event(void);
 
 /* Query whether we are currently inside an exception handler dispatch. */
 int psx_get_in_exception(void);
+/* Nonzero while an in-exception thread switch waits for a site-0 poll. */
+int psx_deferred_switch_is_pending(void);
 
 /* Most recent block-leader IRQ-check guest PC / compiled resume latch.
  * Used by the post-savestate freeze probe (vblank-time "where was the game"). */

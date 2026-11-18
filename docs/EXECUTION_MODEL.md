@@ -114,6 +114,13 @@ the program's real instructions, exactly as the game's authors wrote them — th
 (RAM-at-runtime vs disc-at-build-time). We never synthesize "the answer the code
 would have produced."
 
+A `break` that the interpreter executes raises exception code 9 through the
+guest's exception vector when the guest has installed its own stub there
+(`runtime/include/psx_break_vector.h`); a `break` in statically compiled code,
+in a branch delay slot, or under the BIOS's own vector ends the run with a report.
+The run report counts the vector entries (`break_guest_vector`: the count, and
+the PC and code of the first entry).
+
 ## The guiding rule: precision over recall
 
 The tiers are ordered so the system can only ever fail *toward being slow*, never

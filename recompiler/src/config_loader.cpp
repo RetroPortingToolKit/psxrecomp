@@ -1,6 +1,8 @@
 // config_loader.cpp — see config_loader.h for the contract.
 
 #include "config_loader.h"
+#include "player_settings.h"
+#include <iomanip>
 
 #include <unordered_set>
 #include <algorithm>
@@ -65,6 +67,14 @@ uint32_t overlay_codegen_config_hash(const GameConfig& c) {
 
     h.words("sprite_tag_funcs", c.ws_sprite_tag_funcs);
     h.words("mod_function_entry_funcs", c.mod_function_entry_funcs);
+    if(!c.geometry_scratch_frames.empty()) {
+        h.tag("geometry_scratch_frames-v1");h.u32((uint32_t)c.geometry_scratch_frames.size());
+        for(const auto entry:c.geometry_scratch_frames)h.u32(entry);
+    }
+    if(!c.geometry_control_frames.empty()) {
+        h.tag("geometry_control_frames-v1");h.u32((uint32_t)c.geometry_control_frames.size());
+        for(const auto& [entry,guard]:c.geometry_control_frames) {h.u32(entry);h.tag(guard.c_str());}
+    }
     if (!c.ws_cull_packed_x_sites.empty()) {
         h.tag("cull_packed_x");
         auto sites = c.ws_cull_packed_x_sites;
@@ -320,6 +330,7 @@ int pad_mode_from_settings_string(const std::string& s, int fallback) {
     std::string l;
     l.reserve(s.size());
     for (char c : s) l.push_back((char)std::tolower((unsigned char)c));
+    if (l == "negcon")  return PAD_MODE_NEGCON;
     if (l == "hybrid")  return PAD_MODE_ANALOG;
     if (l == "analog")  return PAD_MODE_ANALOG;
     if (l == "digital") return PAD_MODE_DIGITAL;
@@ -330,6 +341,7 @@ const char* pad_mode_to_string(int mode) {
     /* Never writes "hybrid": the mod requests it at runtime and it is not
      * persisted as a user preference. */
     switch (mode) {
+        case PAD_MODE_NEGCON: return "negcon";
         case PAD_MODE_DIGITAL: return "digital";
         default:               return "analog";
     }
@@ -697,6 +709,8 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         rt.turbo_loads = toml::find<bool>(runtime, "turbo_loads");
         rt.has_turbo_loads = true;
     }
+    if (runtime.contains("fast_loading_optout"))
+        rt.fast_loading_optout = toml::find<bool>(runtime, "fast_loading_optout");
     if (runtime.contains("offer_turbo_loads")) {
         rt.offer_turbo_loads =
             toml::find<bool>(runtime, "offer_turbo_loads");
@@ -1897,6 +1911,24 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     std::vector<std::string> disc_serials;
     if (game.contains("disc_serials"))
         disc_serials = toml::find<std::vector<std::string>>(game, "disc_serials");
+    /* The set positions this build boots; see GameConfig::program_discs. A
+     * value outside the roster or listed twice is a kit error: refuse it, so a
+     * program can never be left with no disc of its own. */
+    std::vector<int> program_discs;
+    if (game.contains("program_discs")) {
+        program_discs = toml::find<std::vector<int>>(game, "program_discs");
+        for (size_t i = 0; i < program_discs.size(); ++i) {
+            const int n = program_discs[i];
+            bool repeated = false;
+            for (size_t j = 0; j < i; ++j)
+                if (program_discs[j] == n) repeated = true;
+            if (n < 1 || n > (int)discs.size() || repeated)
+                throw std::runtime_error(
+                    "[game] program_discs must list distinct 1-based positions "
+                    "in [game] discs; got " + std::to_string(n) + " with " +
+                    std::to_string(discs.size()) + " disc(s)");
+        }
+    }
 
     // Optional expected disc identity (launcher verification badge).
     bool has_disc_crc = false;
@@ -3002,6 +3034,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*stack_base*/       stack_base,
         /*discs*/            discs,
         /*disc_serials*/     disc_serials,
+        /*program_discs*/    program_discs,
         /*has_disc_crc*/     has_disc_crc,
         /*disc_crc*/         disc_crc,
         /*disc_sha1*/        disc_sha1,
@@ -3125,6 +3158,26 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     loaded.ws_cull_packed_x_sites = std::move(ws_cull_packed_x_sites);
     loaded.draw_distance_clamp_sites =
         parse_draw_distance_clamps(cfg, config_path);
+    if(recomp.contains("geometry_control_frames")) {
+        const auto& entries=toml::find(recomp,"geometry_control_frames").as_table();
+        for(const auto& [key,value]:entries) {
+            const uint32_t address=parse_hex(key,"recompiler.geometry_control_frames");
+            const auto symbol=toml::get<std::string>(value);
+            if((address&3u) || symbol.empty() ||
+                    !(std::isalpha((unsigned char)symbol[0]) || symbol[0]=='_') ||
+                    std::any_of(symbol.begin(),symbol.end(),[](unsigned char c){return !std::isalnum(c)&&c!='_';}))
+                throw std::runtime_error("geometry_control_frames requires aligned entries and C guard identifiers");
+            loaded.geometry_control_frames.emplace(address,symbol);
+        }
+    }
+    if(recomp.contains("geometry_scratch_frames")) {
+        for(const auto& value:toml::find(recomp,"geometry_scratch_frames").as_array()) {
+            const auto address=parse_hex(toml::get<std::string>(value),"recompiler.geometry_scratch_frames");
+            if(!loaded.geometry_control_frames.count(address))
+                throw std::runtime_error("geometry_scratch_frames requires an exact geometry_control_frames guard");
+            loaded.geometry_scratch_frames.insert(address);
+        }
+    }
     reject_quality_presets(cfg, config_path);
     loaded.mod_immediate_sites = parse_mod_immediate_sites(cfg, config_path);
     return loaded;
@@ -3188,6 +3241,13 @@ UserSettings load_user_settings(const fs::path& path) {
     // Each field guarded independently so one bad value can't blank the rest.
     auto try_get = [](auto&& fn) { try { fn(); } catch (const std::exception&) {} };
 
+    // A file without the key, or with a value that is not a number, is an old
+    // one (format 0).
+    if (doc.contains("settings_format")) try_get([&]{
+        const auto n = toml::find<int64_t>(doc, "settings_format");
+        if (n > 0 && n < 1000) s.settings_format = (int)n;
+    });
+
     if (doc.contains("video")) {
         const toml::value& v = toml::find(doc, "video");
         if (v.contains("renderer")) try_get([&]{
@@ -3196,22 +3256,24 @@ UserSettings load_user_settings(const fs::path& path) {
             else if (m == "opengl") { s.renderer = 1; s.has_renderer = true; }
             else if (m == "vulkan") { s.renderer = 2; s.has_renderer = true; }
         });
-        // supersampling, internal_resolution, supersample, dynamic_resolution
-        // and dynamic_resolution_min are no longer player settings: the
-        // built-in Internal Resolution mod (psx.enhancement.internal-resolution)
-        // owns the internal resolution over the title's [video] baseline, Auto
-        // (dynamic resolution) included. Old keys are ignored, not errors, and
-        // the next save drops them (docs/config_schema.md).
+        // supersampling and internal_resolution are no longer player
+        // settings: the built-in Internal Resolution mod
+        // (psx.enhancement.internal-resolution) owns the internal resolution
+        // over the title's [video] baseline, Auto included. Old keys are
+        // ignored, not errors, and the next save drops them
+        // (docs/config_schema.md). dynamic_resolution, dynamic_resolution_min
+        // and supersample are player settings (player_settings.h), read below.
         if (v.contains("window_width")) try_get([&]{
             const auto n = toml::find<int64_t>(v, "window_width");
-            if (n >= 640 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
+            if (n >= 320 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
         });
-        // antialiasing, texture_filtering, fmv_filter, crt_filter, scanlines,
-        // scanline_strength, geometry_correction and perspective_texturing
-        // are no longer player settings: they are the built-in CRT Filter,
-        // Image Filtering and PGXP Precision mods (mods/state.toml), over the
-        // title's [video] baseline. Old keys are ignored, not errors, and the
-        // next save drops them (docs/config_schema.md).
+        // antialiasing, texture_filtering, fmv_filter, crt_filter, scanlines
+        // and scanline_strength are no longer player settings: they are the
+        // built-in CRT Filter and Image Filtering mods (mods/state.toml), over
+        // the title's [video] baseline. Old keys are ignored, not errors, and
+        // the next save drops them (docs/config_schema.md).
+        // geometry_correction and perspective_texturing are player settings
+        // (player_settings.h, PGXP page), read below.
         if (v.contains("fov_scale")) try_get([&]{
             const auto& n = toml::find(v, "fov_scale");
             if (n.is_floating())     s.fov_scale = n.as_floating();
@@ -3234,6 +3296,16 @@ UserSettings load_user_settings(const fs::path& path) {
         if (v.contains("bios_hle")) try_get([&]{
             s.bios_hle = toml::find<bool>(v, "bios_hle"); s.has_bios_hle = true;
         });
+        // Before format 2 the launcher wrote these two keys itself at every
+        // save, so in such a file they are not the player's choice: do not
+        // apply them and do not write them back (UserSettings::
+        // boot_keys_were_echoes explains why). The values stay in the struct
+        // so the caller can say what was dropped.
+        if (s.settings_format < 2 && (s.has_fast_boot || s.has_bios_hle)) {
+            s.boot_keys_were_echoes = true;
+            s.has_fast_boot = false;
+            s.has_bios_hle = false;
+        }
         if (v.contains("fullscreen")) try_get([&]{
             // Tri-state (0 off / 1 borderless / 2 exclusive). Back-compat: a
             // settings.toml written before the tri-state migration stores this
@@ -3292,9 +3364,15 @@ UserSettings load_user_settings(const fs::path& path) {
         // rewind / rewind_depth / rewind_interval moved to the built-in
         // Rewind mod (psx.feature.rewind); the old keys are ignored.
     }
-    // [audio] holds no player setting: frequency (the output sample rate) is
-    // the runtime's built-in rate and spu_hq is the built-in Enhanced Audio
-    // mod. Both old keys are ignored and the next save drops them.
+    // Only host volume is a player audio setting. Sample rate and HQ remain
+    // owned by the runtime and the Enhanced Audio mod.
+    if (doc.contains("audio")) {
+        const auto& a = toml::find(doc, "audio");
+        if (a.contains("volume")) try_get([&] {
+            s.volume = std::max(0, std::min(100, toml::find<int>(a, "volume")));
+            s.has_volume = true;
+        });
+    }
     if (doc.contains("hotkeys")) {
         const toml::value& h = toml::find(doc, "hotkeys");
         if (h.contains("rewind_pad")) try_get([&]{
@@ -3482,6 +3560,17 @@ UserSettings load_user_settings(const fs::path& path) {
             s.multitap_analog = toml::find<bool>(ct, "multitap_analog");
             s.has_multitap_analog = true;
         });
+        if (ct.contains("mouse_sensitivity")) try_get([&]{
+            const auto& value = toml::find(ct, "mouse_sensitivity");
+            const double scale = value.is_integer() ? (double)value.as_integer() : value.as_floating();
+            if (scale >= 0.05 && scale <= 10.0) {
+                s.mouse_sensitivity = scale; s.has_mouse_sensitivity = true;
+            }
+        });
+        if (ct.contains("mouse_capture")) try_get([&]{
+            s.mouse_capture = toml::find<bool>(ct, "mouse_capture");
+            s.has_mouse_capture = true;
+        });
         if (ct.contains("jogcon_force_feedback")) try_get([&]{
             s.jogcon_force_feedback = toml::find<bool>(ct, "jogcon_force_feedback");
             s.has_jogcon_force_feedback = true;
@@ -3501,10 +3590,32 @@ UserSettings load_user_settings(const fs::path& path) {
             }
         });
     }
+    for (const auto& spec : kExtraPlayerSettings) {
+        if (!doc.contains(spec.section)) continue;
+        const auto& section=toml::find(doc,spec.section);
+        if (!section.contains(spec.key)) continue;
+        try_get([&] {
+            const auto& raw=toml::find(section,spec.key);
+            std::string value;
+            if (spec.kind==PlayerSettingKind::Boolean) value=raw.as_boolean()?"true":"false";
+            else if (spec.kind==PlayerSettingKind::Text || spec.kind==PlayerSettingKind::Choice ||
+                     (spec.kind==PlayerSettingKind::ResolutionFloor && raw.is_string())) value=raw.as_string().str;
+            else {
+                std::ostringstream text;
+                text << std::setprecision(17);
+                if (raw.is_integer()) text << raw.as_integer();
+                else if (raw.is_floating()) text << raw.as_floating();
+                else return;
+                value=text.str();
+            }
+            if (player_setting_valid(spec,value)) s.extra_player_settings[player_setting_id(spec)]=value;
+        });
+    }
     return s;
 }
 
-fs::path relative_to_folder(const fs::path& p, const fs::path& folder) {
+fs::path relative_to_folder(const fs::path& p, const fs::path& folder,
+                            const fs::path& install_root) {
     if (p.empty() || folder.empty() || !p.is_absolute()) return p;
     std::error_code ec;
     const fs::path base = fs::weakly_canonical(folder, ec);
@@ -3512,9 +3623,29 @@ fs::path relative_to_folder(const fs::path& p, const fs::path& folder) {
     const fs::path full = fs::weakly_canonical(p, ec);
     if (ec) return p;
     const fs::path r = full.lexically_relative(base);
-    // Outside the folder (other drive, or a "../" climb) stays absolute.
-    if (r.empty() || r.is_absolute() || *r.begin() == "..") return p;
+    if (r.empty() || r.is_absolute()) return p;
+    if (*r.begin() != "..") return r;
+    // Outside the folder (other drive, or a "../" climb) stays absolute, with
+    // one exception: the folder is one level below the install's root and the
+    // path lies inside that root. Then the one climb stays inside the install
+    // and moves with it. A deeper folder, or a path outside the root, keeps
+    // its full path: a climb out of the install would name another place
+    // after a move.
+    if (install_root.empty()) return p;
+    const fs::path root = fs::weakly_canonical(install_root, ec);
+    if (ec || base.parent_path() != root) return p;
+    const fs::path in_root = full.lexically_relative(root);
+    if (in_root.empty() || in_root.is_absolute() || *in_root.begin() == "..")
+        return p;
     return r;
+}
+
+namespace {
+fs::path g_user_settings_install_root;
+}
+
+void set_user_settings_install_root(const fs::path& root) {
+    g_user_settings_install_root = root;
 }
 
 bool save_user_settings(const fs::path& path, const UserSettings& s) {
@@ -3534,10 +3665,50 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     // copied to another PC. Readers anchor relative paths on the exe
     // directory, which is where settings.toml lives.
     auto rel = [&](const fs::path& p) { return fwd(relative_to_folder(p, path.parent_path())); };
+    // The memory cards of a setup install are one level above the settings
+    // folder, in <root>/saves. They are part of the install and must move with
+    // it, so they may be written with that one climb. A disc or BIOS file is
+    // the player's own file and keeps the plain rule.
+    auto rel_card = [&](const fs::path& p) {
+        return fwd(relative_to_folder(p, path.parent_path(),
+                                      g_user_settings_install_root));
+    };
 
     f << "# psxrecomp user settings - written by the launcher. Safe to hand-edit.\n";
-    f << "# Overrides the bundled game.toml; the command line overrides this file.\n\n";
+    f << "# Overrides the bundled game.toml; the command line overrides this file.\n";
+    // From format 2 on the launcher writes only what it has a control for, or
+    // what the player wrote here. `bios_hle` and `fast_boot` under [video] are
+    // read as the player's own lines in a file of this format, and as an old
+    // launcher's echo in a file without it.
+    f << "settings_format = " << UserSettings::kFormat << "\n\n";
 
+    auto has_extra = [&](const char* section) {
+        for (const auto& spec:kExtraPlayerSettings)
+            if (!std::strcmp(spec.section,section) && s.extra_player_settings.count(player_setting_id(spec))) return true;
+        return false;
+    };
+    auto write_extra = [&](const char* section, bool heading) {
+        if (!has_extra(section)) return;
+        if (heading) f << "\n[" << section << "]\n";
+        for (const auto& spec:kExtraPlayerSettings) {
+            if (std::strcmp(spec.section,section)) continue;
+            auto item=s.extra_player_settings.find(player_setting_id(spec));
+            if (item==s.extra_player_settings.end() || !player_setting_valid(spec,item->second)) continue;
+            f << spec.key << " = ";
+            if (spec.kind==PlayerSettingKind::Text || spec.kind==PlayerSettingKind::Choice ||
+                spec.kind==PlayerSettingKind::ResolutionFloor) f << std::quoted(item->second);
+            else if (spec.kind==PlayerSettingKind::Integer)
+                f << static_cast<long long>(std::strtod(item->second.c_str(),nullptr));
+            else if (spec.kind==PlayerSettingKind::Number) {
+                // The validated editor text may contain leading zeros, a leading
+                // plus, or C numeric syntax. Emit a canonical TOML number.
+                std::ostringstream value;
+                value << std::setprecision(17) << std::strtod(item->second.c_str(),nullptr);
+                f << value.str();
+            } else f << item->second;
+            f << "\n";
+        }
+    };
     f << "[video]\n";
     if (s.has_renderer)
         f << "renderer          = \""
@@ -3578,6 +3749,13 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "aspect_ratio      = \"" << s.aspect_num << ":" << s.aspect_den << "\"\n";
     if (s.has_adaptive_view)
         f << "adaptive_view     = " << (s.adaptive_view ? "true" : "false") << "\n";
+    write_extra("video",false);
+    write_extra("runtime",true);
+    if (s.has_volume || has_extra("audio")) {
+        f << "\n[audio]\n";
+        if (s.has_volume) f << "volume = " << std::max(0,std::min(100,s.volume)) << "\n";
+        write_extra("audio",false);
+    }
     if (s.has_hotkey_pad_rewind || s.has_hotkey_pad_save_state_menu ||
         s.has_hotkey_pad_fast_forward || s.has_hotkey_pad_fast_forward_toggle ||
         s.has_fast_forward_speed || s.has_fast_forward_mode) {
@@ -3622,11 +3800,11 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         s.has_memcard1_enabled || s.has_memcard2_enabled) {
         f << "\n[memcard]\n";
         if (s.has_memcard_dir)
-            f << "dir     = \"" << rel(s.memcard_dir) << "\"\n";
+            f << "dir     = \"" << rel_card(s.memcard_dir) << "\"\n";
         if (s.has_memcard1_path)
-            f << "card1   = \"" << rel(s.memcard1_path) << "\"\n";
+            f << "card1   = \"" << rel_card(s.memcard1_path) << "\"\n";
         if (s.has_memcard2_path)
-            f << "card2   = \"" << rel(s.memcard2_path) << "\"\n";
+            f << "card2   = \"" << rel_card(s.memcard2_path) << "\"\n";
         if (s.has_memcard1_enabled)
             f << "enable1 = " << (s.memcard1_enabled ? "true" : "false") << "\n";
         if (s.has_memcard2_enabled)
@@ -3634,7 +3812,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     }
 
     {
-        bool any_ctrl = s.has_deadzone || s.has_multitap_enabled ||
+        bool any_ctrl = has_extra("controller") || s.has_mouse_sensitivity || s.has_mouse_capture ||
+                        s.has_deadzone || s.has_multitap_enabled ||
                         s.has_multitap_analog || s.has_jogcon_force_feedback;
         for (int i = 0; i < UserSettings::kMaxControllerPlayers; ++i) {
             if (s.has_p_device[i] || s.has_p_mode[i] || s.has_p_deadzone[i])
@@ -3649,6 +3828,7 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
                 "p1_deadzone", "p2_deadzone", "p3_deadzone", "p4_deadzone",
                 "p5_deadzone"};
             f << "\n[controller]\n";
+            write_extra("controller",false);
             for (int i = 0; i < UserSettings::kMaxControllerPlayers; ++i) {
                 if (s.has_p_device[i])
                     f << kDevKeys[i] << " = \"" << s.p_device[i] << "\"\n";
@@ -3664,6 +3844,10 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
             if (s.has_multitap_analog)
                 f << "multitap_analog = "
                   << (s.multitap_analog ? "true" : "false") << "\n";
+            if (s.has_mouse_sensitivity)
+                f << "mouse_sensitivity = " << s.mouse_sensitivity << "\n";
+            if (s.has_mouse_capture)
+                f << "mouse_capture = " << (s.mouse_capture ? "true" : "false") << "\n";
             if (s.has_jogcon_force_feedback)
                 f << "jogcon_force_feedback = "
                   << (s.jogcon_force_feedback ? "true" : "false") << "\n";

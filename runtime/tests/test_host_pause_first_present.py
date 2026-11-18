@@ -24,6 +24,7 @@ void SDL_RenderClear(void*) {}
 void SDL_RenderCopy(void*,void*,void*,void*) {}
 void host_osd_draw_sdl(void*) {}
 void SDL_RenderPresent(void*) {}
+void software_present_with_telemetry(void* renderer) { SDL_RenderPresent(renderer); }
 """
 CHECKS = r"""
 int main() {
@@ -40,6 +41,52 @@ int main() {
     return 0;
 }
 """
+
+
+def check_window_resize(cxx, folder, source):
+    body = function_body(source, 'extern "C" int psx_debug_window_size(int w, int h)')
+    function = 'extern "C" int psx_debug_window_size(int w, int h) {' + body + '}'
+    prelude = r"""
+#include <cassert>
+void *sdl_window = reinterpret_cast<void *>(1);
+static bool held, resize_ok = true;
+static int resized, released, acquired;
+int rt_held() { return held; }
+void rt_acquire(const char *) { if (!held) { held = true; ++acquired; } }
+void rt_release() { assert(held); held = false; ++released; }
+#ifdef PSX_SDL3
+bool SDL_SetWindowSize(void *, int, int) {
+    assert(held); ++resized; return resize_ok;
+}
+#else
+void SDL_SetWindowSize(void *, int, int) { assert(held); ++resized; }
+#endif
+"""
+    checks = r"""
+int main() {
+    assert(!psx_debug_window_size(1, 480) && !resized && !acquired);
+    assert(psx_debug_window_size(640, 480));
+    assert(!held && acquired == 1 && released == 1 && resized == 1);
+    held = true;
+    assert(psx_debug_window_size(800, 600));
+    assert(held && acquired == 1 && released == 1 && resized == 2);
+    held = false;
+#ifdef PSX_SDL3
+    resize_ok = false;
+    assert(!psx_debug_window_size(640, 480));
+    assert(!held && acquired == 2 && released == 2 && resized == 3);
+#endif
+}
+"""
+    for sdl in (2, 3):
+        cpp = folder / f'window-resize-sdl{sdl}.cpp'
+        exe = folder / f'window-resize-sdl{sdl}.exe'
+        cpp.write_bytes((prelude + function + checks).encode())
+        defines = ['-DPSX_SDL3=1'] if sdl == 3 else []
+        subprocess.run([cxx, '-std=c++17', *defines, str(cpp), '-o', str(exe)], check=True)
+        subprocess.run([str(exe)], check=True)
+    print('window resize: SDL2/SDL3 result and held-context ownership PASS')
+
 
 def main():
     a=argparse.ArgumentParser();a.add_argument('--cxx',required=True);args=a.parse_args()
@@ -62,5 +109,6 @@ def main():
             else:
                 assert r.returncode==1,'Regression must reject the old missing fallback'
                 print('pre-fix presenter: regression rejects missing first-frame draw')
+        check_window_resize(args.cxx, p, source)
 
 if __name__=='__main__':main()

@@ -726,7 +726,14 @@ static bool exact_resolve_constant_transfer(const PS1Executable& exe,
             low = static_cast<uint16_t>(instr & 0xFFFFu);
             continue;
         }
-        if (opcode == 0x0Fu && rt == target_reg) {
+        // `lui rN,hi` defines the upper half; `li rN,imm` (addiu/ori from
+        // $zero) defines the whole register.  The second form is how Psy-Q
+        // BIOS thunks load 0xA0/0xB0/0xC0 before `jr rN`; without it a thunk
+        // that is already a call target has no bounded extent, and the data
+        // after it turns the thunk into a data stub.
+        const bool full_li = (opcode == 0x09u || opcode == 0x0Du) &&
+                             rs == 0u && rt == target_reg && target_reg != 0u;
+        if ((opcode == 0x0Fu || full_li) && rt == target_reg) {
             // A definition in a control-transfer delay slot is not a local
             // reaching definition for the linear suffix.  A call can clobber
             // the register before returning at pc+4; a branch/jump can enter a
@@ -766,6 +773,12 @@ static bool exact_resolve_constant_transfer(const PS1Executable& exe,
             if (crossed_inbound_boundary) return false;
 
             uint32_t upper = (instr & 0xFFFFu) << 16;
+            if (full_li) {
+                upper = (opcode == 0x09u)
+                    ? static_cast<uint32_t>(static_cast<int32_t>(
+                          static_cast<int16_t>(instr & 0xFFFFu)))
+                    : (instr & 0xFFFFu);
+            }
             if (!have_low) {
                 target_out = upper;
             } else if (low_is_addiu) {
@@ -2073,9 +2086,11 @@ FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
             if (!wr.visited.count(target)) continue;
             auto evidence = derived_evidence.find(target);
             if (evidence == derived_evidence.end()) break;
+            // A named reference: Apple clang 15 refuses a structured binding in a capture.
+            const auto& host_visited = wr.visited;
             auto source = std::find_if(
                 evidence->second.begin(), evidence->second.end(),
-                [&](const auto& item) { return wr.visited.count(item.first); });
+                [&host_visited](const auto& item) { return host_visited.count(item.first); });
             if (source == evidence->second.end()) break;
             result.absorbed_entries.push_back(
                 {target, host.start_addr, host.end_addr,

@@ -962,6 +962,35 @@ int main() {
           thunk_starts.count(kLoad + 0x610),
           "packed BIOS thunk bounds the following frameless leaf");
 
+    // A BIOS thunk that is already a call target (so the packed-thunk pass
+    // leaves it alone) and is followed by a data table must still end after
+    // its delay slot.  `li t2,0xB0; jr t2` is a constant transfer out of the
+    // image; leaving it unresolved let the data after the thunk set its
+    // extent and turned the thunk into a data stub (Tekken 2 0x8002F5DC).
+    {
+        auto called_thunk = make_exe_buffer(0x1000);
+        put32(called_thunk, text + 0x000, jal(kLoad + 0x600u));
+        put32(called_thunk, text + 0x004, 0x00000000u);
+        put32(called_thunk, text + 0x008, 0x03E00008u);
+        put32(called_thunk, text + 0x00C, 0x00000000u);
+        put32(called_thunk, text + 0x600, 0x240A00B0u); // li t2,0xB0
+        put32(called_thunk, text + 0x604, 0x01400008u); // jr t2
+        put32(called_thunk, text + 0x608, 0x24090050u); // li t1,0x50
+        put32(called_thunk, text + 0x60C, 0x00000000u);
+        for (size_t off = 0x610; off < 0x1000; off += 4)
+            put32(called_thunk, text + off, 0xFC000000u | static_cast<uint32_t>(off));
+        auto called_exe = parse(called_thunk);
+        auto called_result = PSXRecomp::FunctionAnalyzer(called_exe).analyze();
+        bool found_code_thunk = false;
+        for (const auto& function : called_result.functions) {
+            if (function.start_addr != kLoad + 0x600u) continue;
+            found_code_thunk = !function.is_data_section &&
+                               function.end_addr <= kLoad + 0x610u;
+        }
+        CHECK(found_code_thunk,
+              "called BIOS thunk before data stays code and ends at its delay slot");
+    }
+
     // ---- No-split guard on EXPLICIT entries (overlay mode) ----------------
     // A root is a hard cap, so an explicit entry that the entry below it
     // reaches by fallthrough splits that function (beads-eio.3.177: Tomba

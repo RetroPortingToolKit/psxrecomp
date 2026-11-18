@@ -9,6 +9,7 @@
 
 #include "cpu_state.h"
 #include "psx_bios_backend.h"
+#include "psx_static_calls.h"
 #include "psx_segment_miss.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -45,6 +46,9 @@ extern int (*g_psx_func_override_hook)(CPUState* cpu, uint32_t phys);
 
 #ifdef PSX_HAS_GAME_DISPATCH
 extern int psx_game_address_in_text(uint32_t addr);
+#ifndef PSX_BIOS_MODULE_BUILD
+extern int dirty_ram_dispatch_game_direct(CPUState*, uint32_t);
+#endif
 #endif
 
 extern void OpenBIOS_func_00000540(CPUState* cpu);
@@ -9074,31 +9078,19 @@ extern int g_psx_dispatch_depth;  /* runtime-owned: shared dispatch state, not p
 
 static void psx_dispatch_check_return_boundary(CPUState* cpu, uint32_t stop_addr) {
     if (stop_addr != 0u) {
-        psx_check_interrupts_at(cpu, stop_addr);
+        PSX_BLOCK_EDGE(cpu, stop_addr);
         if (cpu->pc == stop_addr) cpu->pc = 0;
     } else {
         psx_check_interrupts(cpu);
     }
 }
 
-static void psx_dispatch_impl(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
-    /* Tail-call trampoline: functions signal tail calls by setting
-     * cpu->pc to the target and returning. We loop here to re-dispatch
-     * without growing the native stack. Interrupts are only checked when
-     * the outermost dispatch returns, so a nested callee cannot interrupt
-     * before its generated caller runs the post-call continuation. */
-    int outermost = (g_psx_dispatch_depth++ == 0);
-    /* Call contract (Bug D family): the guest $sp at the call.  A C
-     * continuation behind this dispatch may only run if the guest
-     * actually returns here ($ra == stop_addr) with this $sp. */
-    uint32_t sp_at_call = cpu->gpr[29];
-    for (;;) {
-        /* Always-on call ring: every iteration counts as a separate
-         * call (initial entry + each tail-call re-dispatch). a0..a3
-         * reflect the args being passed for THIS iteration. */
-        fntrace_record(cpu, addr);
+/* PSX_NATIVE_TAIL_OWNER_V1 */
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS && !defined(PSX_BIOS_MODULE_BUILD)
+extern void fntrace_record_tail(CPUState*, uint32_t);
+static int psx_dispatch_chain_hooks(CPUState* cpu, uint32_t addr) {
+        fntrace_record_tail(cpu, addr);
         cpu->pc = 0;
-        int lo = 0, hi = 3990 - 1;
         int found = 0;
         if (g_psx_mod_guest_functions)
             found = psx_mod_dispatch_guest_function(cpu, addr);
@@ -9130,7 +9122,71 @@ static void psx_dispatch_impl(CPUState* cpu, uint32_t addr, uint32_t stop_addr) 
             cpu->pc = cpu->gpr[31];
             found = 1;
         }
+    return found;
+}
+#endif
+/* PSX_NATIVE_STATIC_OWNER_V1: all hooks precede static entry. */
+static void psx_dispatch_impl(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
+    /* Tail-call trampoline: functions signal tail calls by setting
+     * cpu->pc to the target and returning. We loop here to re-dispatch
+     * without growing the native stack. Interrupts are only checked when
+     * the outermost dispatch returns, so a nested callee cannot interrupt
+     * before its generated caller runs the post-call continuation. */
+    int outermost = (g_psx_dispatch_depth++ == 0);
+    /* Call contract (Bug D family): the guest $sp at the call.  A C
+     * continuation behind this dispatch may only run if the guest
+     * actually returns here ($ra == stop_addr) with this $sp. */
+    uint32_t sp_at_call = cpu->gpr[29];
+    for (;;) {
+        /* Always-on call ring: every iteration counts as a separate
+         * call (initial entry + each tail-call re-dispatch). a0..a3
+         * reflect the args being passed for THIS iteration. */
+        fntrace_record(cpu, addr);
+        cpu->pc = 0;
+        int found = 0;
+        if (g_psx_mod_guest_functions)
+            found = psx_mod_dispatch_guest_function(cpu, addr);
+        /* BIOS HLE tier: consult the hook FIRST, on the pre-normalize
+         * physical address. It must see (a) the A0/B0/C0 service vectors
+         * (game thunks jr there with the function number in $t1) and (b)
+         * the shell entry for HLE boot-skip — the latter lies inside the
+         * game-text/dirty-RAM window, so the check cannot sit after those
+         * backends. Handled (rc 1) ⇒ the service completed against guest
+         * state and the guest resumes at $ra via the trampoline's normal
+         * return/tail contract below. rc 0 ⇒ pure LLE fall-through. */
+        if (!found && g_psx_bios_hle_hook &&
+            g_psx_bios_hle_hook(cpu, addr & 0x1FFFFFFFu)) {
+            cpu->pc = cpu->gpr[31];
+            found = 1;
+        }
+        /* Byte-guarded A0/B0/C0 call-vector tail stubs. */
+        if (!found && psx_bios_try_native_call_stub(cpu, addr))
+            found = 1;
+        /* Function-override tier: AFTER the BIOS tiers (an override
+         * can never shadow a kernel service vector), BEFORE every
+         * game code backend, so one address-keyed hook covers the
+         * static EXE, runtime-loaded overlays and dirty RAM alike.
+         * Handled (rc 1) => the override completed against guest
+         * state; resume at $ra via the trampoline's normal
+         * return/tail contract. rc 0 => fall through untouched. */
+        if (!found && g_psx_func_override_hook &&
+            g_psx_func_override_hook(cpu, addr & 0x1FFFFFFFu)) {
+            cpu->pc = cpu->gpr[31];
+            found = 1;
+        }
+        int lo = 0, hi = 3990 - 1;
 #ifdef PSX_HAS_GAME_DISPATCH
+#if defined(PSX_NATIVE_STATIC_CALLS) && PSX_NATIVE_STATIC_CALLS && !defined(PSX_BIOS_MODULE_BUILD)
+        if (!found && psx_game_address_in_text(addr))
+#if defined(PSX_NATIVE_TAIL_CHAINS) && PSX_NATIVE_TAIL_CHAINS
+            found = dirty_ram_dispatch_game_chain(cpu, addr, outermost && stop_addr == 0u, psx_dispatch_chain_hooks);
+#else
+            found = dirty_ram_dispatch_game_direct(cpu, addr);
+#endif
+#endif
+        /* A handled hook/static body has completed this logical entry.
+         * Classify shell/dirty fallbacks only when a backend is still needed. */
+        if (!found) {
         /* Game EXEs can overlap the BIOS shell copy window at
          * physical 0x30000-0x5AFFF. If the target belongs to the
          * active game text range, route it through the game/dirty-RAM
@@ -9172,6 +9228,7 @@ static void psx_dispatch_impl(CPUState* cpu, uint32_t addr, uint32_t stop_addr) 
         if (!found && (game_shell_overlap || game_text_in_shell_window ||
             (psx_game_address_in_text(addr) && dirty_ram_is_dirty(game_phys)))) {
             found = dirty_ram_dispatch(cpu, addr, stop_addr);
+        }
         }
 #endif
         uint32_t phys = normalize(addr);

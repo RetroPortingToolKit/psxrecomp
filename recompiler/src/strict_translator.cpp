@@ -1164,7 +1164,7 @@ TranslateResult StrictTranslator::translate_impl(const PSXRecomp::DecodedInstruc
         r.supported = true;
         r.c_code = fmt::format(
             "psx_store_cycle_barrier(); g_debug_last_store_pc = 0x{:08X}u; "
-            "cpu->write_byte((uint32_t)((int32_t)cpu->gpr[{}] + ({})), (uint8_t)(cpu->gpr[{}] & 0xFFu));",
+            "PSX_STORE_BYTE(cpu, (uint32_t)((int32_t)cpu->gpr[{}] + ({})), (uint8_t)(cpu->gpr[{}] & 0xFFu));",
             pc, static_cast<int>(rs), simm, static_cast<int>(rt));
         r.comment = fmt::format("sb {}, {}({})", gpr_name(rt), simm, gpr_name(rs));
         return r;
@@ -1180,7 +1180,7 @@ TranslateResult StrictTranslator::translate_impl(const PSXRecomp::DecodedInstruc
             "{{ psx_store_cycle_barrier(); uint32_t psx_addr = (uint32_t)((int32_t)cpu->gpr[{}] + ({})); "
             "if (psx_addr & 1u) {{ psx_unaligned_access(cpu, psx_addr, 0x{:08X}u); return; }} "
             "g_debug_last_store_pc = 0x{:08X}u; "
-            "cpu->write_half(psx_addr, (uint16_t)(cpu->gpr[{}] & 0xFFFFu)); }}",
+            "PSX_STORE_HALF(cpu, psx_addr, (uint16_t)(cpu->gpr[{}] & 0xFFFFu)); }}",
             static_cast<int>(rs), simm, pc, pc, static_cast<int>(rt));
         r.comment = fmt::format("sh {}, {}({})", gpr_name(rt), simm, gpr_name(rs));
         return r;
@@ -1223,7 +1223,7 @@ TranslateResult StrictTranslator::translate_impl(const PSXRecomp::DecodedInstruc
             "uint32_t psx_mem = cpu->read_word(psx_aligned); "
             "uint32_t psx_new = (psx_mem & psx_keep_mask) | (cpu->gpr[{}] >> psx_shift_bits); "
             "g_debug_last_store_pc = 0x{:08X}u; "
-            "cpu->write_word(psx_aligned, psx_new); }}",
+            "PSX_STORE_WORD(cpu, psx_aligned, psx_new); }}",
             static_cast<int>(rs), simm, static_cast<int>(rt), pc);
         r.comment = fmt::format("swl {}, {}({})", gpr_name(rt), simm, gpr_name(rs));
         return r;
@@ -1239,7 +1239,7 @@ TranslateResult StrictTranslator::translate_impl(const PSXRecomp::DecodedInstruc
             "{{ psx_store_cycle_barrier(); uint32_t psx_addr = (uint32_t)((int32_t)cpu->gpr[{}] + ({})); "
             "if (psx_addr & 3u) {{ psx_unaligned_access(cpu, psx_addr, 0x{:08X}u); return; }} "
             "g_debug_last_store_pc = 0x{:08X}u; "
-            "cpu->write_word(psx_addr, cpu->gpr[{}]); }}",
+            "PSX_STORE_WORD(cpu, psx_addr, cpu->gpr[{}]); }}",
             static_cast<int>(rs), simm, pc, pc, static_cast<int>(rt));
         r.comment = fmt::format("sw {}, {}({})", gpr_name(rt), simm, gpr_name(rs));
         return r;
@@ -1275,7 +1275,7 @@ TranslateResult StrictTranslator::translate_impl(const PSXRecomp::DecodedInstruc
             "uint32_t psx_mem = cpu->read_word(psx_aligned); "
             "uint32_t psx_new = (psx_mem & psx_keep_mask) | (cpu->gpr[{}] << psx_shift_bits); "
             "g_debug_last_store_pc = 0x{:08X}u; "
-            "cpu->write_word(psx_aligned, psx_new); }}",
+            "PSX_STORE_WORD(cpu, psx_aligned, psx_new); }}",
             static_cast<int>(rs), simm, static_cast<int>(rt), pc);
         r.comment = fmt::format("swr {}, {}({})", gpr_name(rt), simm, gpr_name(rs));
         return r;
@@ -1480,7 +1480,7 @@ TranslateResult StrictTranslator::translate_impl(const PSXRecomp::DecodedInstruc
             r.c_code = gte_stall + fmt::format(
                 "psx_store_cycle_barrier(); g_debug_last_store_pc = 0x{:08X}u; "
                 "{{ uint32_t _pgxa = {}; uint32_t _pgxv = {}; "
-                "cpu->write_word(_pgxa, _pgxv); "
+                "PSX_STORE_WORD(cpu, _pgxa, _pgxv); "
                 "gte_precision_store_word(_pgxa, {}); "
                 "PGXP_COP2(0x{:08X}u, _pgxv, _pgxa); }}",
                 pc, addr, value, static_cast<int>(rt), d.raw);

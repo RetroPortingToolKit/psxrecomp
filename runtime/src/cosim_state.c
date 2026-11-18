@@ -32,6 +32,7 @@ static inline uint64_t fnv_u64(uint64_t h, uint64_t v) { return fnv(h, &v, 8); }
 extern CPUState *debug_cpu_ptr;
 extern uint8_t  *memory_get_ram_ptr(void);
 extern uint8_t  *memory_get_scratchpad_ptr(void);
+extern void      psx_kernel_bless_note_range(uint32_t phys, uint32_t len);
 extern uint32_t  i_stat;
 extern uint32_t  i_mask;
 extern uint64_t  psx_cycle_count;
@@ -159,6 +160,7 @@ uint64_t cosim_state_hash(CosimSubHashes *sub) {
     /* apply pending gate-4 injection to live state */
     if (s_inj_ram_phys >= 0 && (uint32_t)s_inj_ram_phys < RAM_SIZE) {
         ram[s_inj_ram_phys] ^= s_inj_ram_xor; cosim_note_ram_write((uint32_t)s_inj_ram_phys, 1);
+        psx_kernel_bless_note_range((uint32_t)s_inj_ram_phys, 1u);   /* raw RAM write */
         s_inj_ram_phys = -1;
     }
     if (s_inj_reg >= 0 && cpu) {

@@ -315,6 +315,20 @@ Without a lobby start (LAN or Direct IP):
 Sim authority: pad **slot 0** is the session host (`START`, state transfer).
 Guests rearrange among seats **1..N−1**.
 
+**Build and game match.** A LAN / Direct IP room has no lobby server, so
+the host makes the server's two checks itself. The guest's JOIN ends with
+its lobby version and then its lobby game name (`[game] name`, the name
+online rooms are listed under), after the BIOS CRC line. The host refuses
+another version with `MOTK1 ERR version_mismatch` and another game name with
+`MOTK1 ERR game_mismatch` (`runtime/src/netplay_lan_version.c`); both
+players then see the reason on the launcher's status line. A missing
+version counts as `dev`, as on the server. A guest that sends no game line
+(a build from before the check) is refused on any host, so two different
+titles are never seated together. The same-machine room file
+`netplay_lan_lobby.txt` sits beside the exe; it is offered and joined only
+when the game name it records is this title's, because the programs of a
+multi-program set share that folder.
+
 **When the start fails.** A LAN host listens on the room's UDP
 port (7777 by default; the browser scans 7777 to 7808), a guest on a port the
 system picks, and a command-line start on the `--net-bind` address. When the
@@ -422,6 +436,25 @@ required_tracks = 17
 Generate & rebuild / prepare flows should point at the **`.cue`**, not a lone
 `.bin`. See [`config_schema.md`](config_schema.md) and the release checklist in
 [`GAME_PROJECT_SETUP.md`](GAME_PROJECT_SETUP.md).
+
+## BIOS boot mode
+
+The peers of a match must boot the BIOS the same way. Offline, the boot mode
+is the player's choice: `[runtime] bios_hle`, `bios_hle_keep_intro` and
+`fast_boot` come from the game's `game.toml`, then the player's
+`settings.toml`, then the launcher. A match takes all three from the game's
+`game.toml`, which both peers of one build share. A player who had chosen
+otherwise sees "Netplay: this match uses the game's own BIOS setting." at the
+start of the match; the choice is not changed and applies again offline.
+
+Before this, two peers that differed started a match (the boot digest at tick
+0 is the same in both modes) and the cores forked for good at sim 22. A
+`settings.toml` written by an older build of the game was enough.
+
+`PSX_BIOS_HLE` and `PSX_BIOS_HLE_KEEP_INTRO` stay test overrides on top of
+this rule. Set them on both peers. Two different builds of a game can still
+differ; nothing compares the mode between the peers. A mod netplay profile
+with `skip_bios_intro` still replaces the mode after this rule.
 
 ---
 

@@ -100,6 +100,7 @@ void psx_bail_record(uint32_t ra, uint32_t sp, uint32_t pc, uint32_t gsp) {
     (void)ra; (void)sp; (void)pc; (void)gsp;
 }
 void psx_break(CPUState *cpu, uint32_t code, uint32_t pc) { (void)cpu; (void)code; (void)pc; }
+int psx_break_enter_guest_vector(CPUState *cpu, uint32_t pc) { (void)cpu; (void)pc; return 0; }
 void psx_check_interrupts(struct CPUState *cpu) { (void)cpu; }
 void psx_dispatch_call(CPUState *cpu, uint32_t t, uint32_t r) { (void)cpu; (void)t; (void)r; }
 void psx_fatal_halt(const char *reason) { fprintf(stderr, "fatal: %s\n", reason); exit(2); }

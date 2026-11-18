@@ -11,6 +11,7 @@
 #include "disc_path.h"
 #include "iso_reader.h"
 #include "psx_sha256.h"
+#include "sbi_setup.h"
 
 #include <algorithm>
 #include <cctype>
@@ -62,6 +63,10 @@ std::string normalize_serial(const std::string& raw) {
         if (std::isalnum((unsigned char)c)) s += (char)std::toupper((unsigned char)c);
         // drop separators ('_', '.', '-')
     }
+    // Some boot filenames insert a fifth letter after the territory prefix.
+    // Keep the canonical four-letter id, but do not reinterpret unknown prefixes.
+    if (s.size() == 10 && std::isalpha((unsigned char)s[4]) &&
+        !region_from_serial(s).empty()) s.erase(4, 1);
     // Expect 4 letters + 5 digits.
     if (s.size() < 9) return std::string();
     for (int i = 0; i < 4; i++) if (!std::isalpha((unsigned char)s[i])) return std::string();
@@ -131,6 +136,7 @@ void fill_toc_from_mount(DiscIdentity& v, const DiscPathResolution& resolved) {
         return;
     }
     v.toc_opened = true;
+    v.sbi_loaded = reader.HasSubChannelReplacements();
     // SYSTEM.CNF can lie beyond the bounded early-image scan. Read the actual
     // directory entry first; unrelated executable strings must not select a region.
     uint8_t pvd[2048];
@@ -293,6 +299,8 @@ DiscIdentity identify_disc(const fs::path& path,
                 v.crc_matches = v.crc == expected_crc;
             }
         }
+        v.sbi_warning = missing_sbi_warning(resolved.mount, v.detected_serial,
+                                            v.sbi_loaded);
         return v;
     }
 
@@ -378,6 +386,11 @@ DiscIdentity identify_disc(const fs::path& path,
     if (netplay_expect)
         apply_netplay_disc_expect(v, *netplay_expect);
 
+    // sbi_loaded is set only by a TOC mount that also loaded the .sbi, so an
+    // image whose TOC did not mount (a damaged .sbi beside it, say) has no SBI
+    // loaded: the warning agrees with the launcher's SBI File row.
+    v.sbi_warning = missing_sbi_warning(resolved.mount, v.detected_serial,
+                                        v.sbi_loaded);
     return v;
 }
 

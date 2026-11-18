@@ -56,11 +56,10 @@ void dma_gpu_ll_advance(DMAGPULinkedList *state, uint32_t cycles,
         state->cycles_remaining = 0;
 
         if (state->phase == DMA_GPU_LL_PHASE_HEADER) {
-            if (state->nodes_processed >= state->max_nodes) {
-                state->hit_limit = 1;
-                finish(state, ops, opaque);
-                return;
-            }
+            /* The cycle budget bounds this service call. A long or cyclic
+             * list stays busy until its terminator or guest cancellation;
+             * a diagnostic node count must not report DMA completion.
+             * max_nodes stays in the serialized state for compatibility. */
 
             state->current_addr = resolve_address(
                 ops, opaque, state->current_addr);
