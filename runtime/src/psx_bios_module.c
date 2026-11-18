@@ -208,6 +208,7 @@ void psx_bios_module_fill_callbacks(PsxBiosModuleCallbacks *out) {
     extern uint64_t s_frame_count;
     extern uint32_t g_psx_mod_guest_functions;
     extern int psx_mod_dispatch_guest_function(struct CPUState *cpu, uint32_t address);
+    extern int (*g_psx_func_override_hook)(struct CPUState *cpu, uint32_t phys);
     memset(out, 0, sizeof(*out));
     out->size = (uint32_t)sizeof(*out);
     out->arith_overflow            = psx_arith_overflow;
@@ -233,6 +234,7 @@ void psx_bios_module_fill_callbacks(PsxBiosModuleCallbacks *out) {
     out->frame_count               = &s_frame_count;
     out->mod_guest_functions       = &g_psx_mod_guest_functions;
     out->mod_dispatch_guest_function = psx_mod_dispatch_guest_function;
+    out->func_override_hook        = &g_psx_func_override_hook;
 }
 
 /* ---- Loading -------------------------------------------------------------- */

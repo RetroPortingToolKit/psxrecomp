@@ -127,6 +127,21 @@ respective files.
 | `discs` | game (multi-disc) | array of .cue paths; `disc` is sugar for `discs = [disc]` |
 | `disc_serials` | game (multi-disc, optional) | array parallel to `discs`: the serial each disc carries (`["SCUS-94163", "SCUS-94164", "SCUS-94165"]`). Without it every disc is checked against `[game] id` — the BOOT disc's serial — so selecting disc 2 reports "wrong disc". A disc with no entry here is not serial-gated; the ISO-header check still applies. |
 
+Multi-disc metadata uses the declared roster order. Disc paths include their
+directories, so separate cache folders can both contain `disc.cue`. A CUE and
+same-directory BIN with the same stem resolve to the same roster entry. A
+relocated image is matched by filename stem only when that stem is unique in
+the roster. The one-based persisted `disc.selected` index wins over a path
+that identifies another disc or has an ambiguous relocated name.
+
+### Disc set and settings at the first start
+
+The setup host records the disc set in `disc.cfg` and the launcher settings in
+`settings.toml` beside the setup executable. When it starts the built product,
+after a rebuild or on a later start, it copies each file beside the product
+only if the product has none. An existing product `settings.toml`, even an
+empty one, keeps its contents; an empty product `disc.cfg` is filled in.
+
 ### Multi-disc selection
 
 Relative paths in executable-side `settings.toml` (`[disc] path`, `[bios] path`,
@@ -146,10 +161,39 @@ selected = 2                               # 1-based index into [game] discs
 ```
 
 `selected` names the disc and `path` only survives when it *is* that disc
-(same file-name stem), so writing `selected` alone — from an external launcher
+(see the roster identity rule above), so writing `selected` alone — from an external launcher
 or by hand — switches discs even though `path` still points at the previous
 one. That is what makes disc choice manageable like any other setting. Both
 keys are written only for multi-disc titles.
+
+### Several programs in one set
+
+Some sets put a different program on each disc (Resident Evil 2: Leon on disc
+1, Claire on disc 2). Each program is its own build. The builds can share one
+folder, one `settings.toml`, one set of key binds and one `saves` folder:
+
+- **A config per exe.** If `<exe name>.game.toml` exists beside the
+  executable, it is that executable's game config. Otherwise the build's
+  default config name applies, as for every single-program folder.
+- **`[game] program_discs`.** Every program's config lists the whole set in
+  `discs` and `disc_serials`. `program_discs` holds the 1-based positions the
+  program boots:
+
+  ```toml
+  [game]
+  id            = "SLUS-00756"
+  discs         = ["Game (Disc 1).chd", "Game (Disc 2).chd"]
+  disc_serials  = ["SLUS-00748", "SLUS-00756"]
+  program_discs = [2]
+  ```
+
+  The program mounts only its own discs. When the shared settings remember
+  the other program's disc, the program mounts its own disc instead. Save
+  states take the disc's position in the set (`_disc2`), so two programs with
+  the same entry point never share a state file. Absent, the key means "every
+  disc".
+- **One at a time.** The programs share the memory cards, so a second program
+  started from the same folder is refused while the first runs.
 
 ## Recompiler block
 
@@ -717,8 +761,8 @@ buffer_ms = 60
 `buffer_ms` accepts 30–500 milliseconds and defaults to 180. Lower values
 reduce audible input-to-sound delay, but leave less reserve for frames where a
 game temporarily produces no audio and can therefore crackle on affected
-titles. This is deliberately a per-game developer choice; it is not read from
-the player's `settings.toml`.
+titles. The title supplies the default; the General Settings audio-buffer
+preference can override it in the player's `settings.toml`.
 
 ## Video Block
 
@@ -741,12 +785,21 @@ Vulkan after validating their visuals and stability.
 
 These `[video]` / `[audio]` keys are the title's **baseline**: what a player
 sees and hears with the matching built-in mod at Game default (or off, except
-Internal Resolution, whose disabled state is native 1x). They are not player
-settings any more (no `settings.toml` key, no launcher Settings row, no
-in-game menu row); a player changes them through the framework's built-in
-mods on the Mods page, whose "Game default" option values keep the baseline
+Internal Resolution, whose disabled state is native 1x). A player changes these
+through the framework's built-in mods, whose "Game default" option values keep the baseline
 (`runtime/include/host_enhancements.h`, docs/MOD_PACKAGES.md "Built-in host
 enhancements"):
+
+The paired compact Settings UI also exposes the existing built-in resolution
+and image-filtering controls. Explicit player vertex/perspective preferences
+(`[video] geometry_correction`, `perspective_texturing` in `settings.toml`, on
+the launcher's PGXP page) can override those PGXP visual choices independently
+of the mod's CPU/culling options. The Display page's Automatic resolution
+section keeps `dynamic_resolution`, `dynamic_resolution_min`,
+`match_display_max_lines`, `supersample` and `supersample_disable_at_lines` in
+`settings.toml`; they replace the title's baseline under the Internal
+Resolution mod. See [Player Settings](PLAYER_SETTINGS.md) for persistence and
+presets.
 
 | `game.toml` key | Built-in mod (option) |
 |---|---|
@@ -763,20 +816,21 @@ Local rewind has no `game.toml` key; it is the Rewind mod
 
 A `settings.toml` written before this change may still carry `antialiasing`,
 `texture_filtering`, `fmv_filter`, `crt_filter`, `scanlines`,
-`scanline_strength`, `geometry_correction`, `perspective_texturing`, `rewind`,
-`rewind_depth`, `rewind_interval`, `supersampling`, `internal_resolution`,
-`supersample`, `dynamic_resolution`, `dynamic_resolution_min`, `[audio]
+`scanline_strength`, `rewind`,
+`rewind_depth`, `rewind_interval`, `supersampling`, `internal_resolution`, `[audio]
 spu_hq`, `[audio] frequency` or the `quality_*` keys. They are ignored, never
-an error, and the next save drops them (an empty `[audio]` table included).
+an error, and the next save drops them. Current volume and buffer preferences
+remain supported.
 
 **Audio sample rate.** The host audio device opens at the runtime's built-in
 rate (44.1 kHz, the SPU's own). It is not a player setting: the launcher has no
 Sample rate row for PSX and `settings.toml` has no `[audio] frequency`. Volume
 stays a launcher setting.
 
-**Graphics presets were removed.** A `game.toml` that still has a `[quality]`
+**Legacy title quality tables were removed.** A `game.toml` that still has a `[quality]`
 table (`[quality.low]` .. `[quality.ultra]`) fails to load with an error naming
-the table; delete it. No title shipped one.
+the table; delete it. No title shipped one. The player-facing Faithful / Best
+choices use current built-in features and preferences, not this legacy table.
 
 ### Internal resolution (`internal_resolution`, `supersampling`)
 

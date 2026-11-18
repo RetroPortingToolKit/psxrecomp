@@ -74,6 +74,7 @@ extern uint64_t *g_psx_bm_bail_flattened_p;
 #  define s_frame_count             (*g_psx_bm_frame_count_p)
 #  define g_psx_mod_guest_functions (*g_psx_bm_mod_guest_functions_p)
 #  define psx_mod_dispatch_guest_function g_psx_bm_mod_dispatch_guest
+#  define g_psx_func_override_hook  (*g_psx_bm_func_override_hook_p)
 #endif
 
 #ifdef __cplusplus
@@ -84,7 +85,7 @@ struct CPUState;
 struct OverlayCallbacks;
 struct PsxBiosBackend;
 
-#define PSX_BIOS_MODULE_ABI_VERSION 2
+#define PSX_BIOS_MODULE_ABI_VERSION 3
 
 /* Combined tag: ABI version (low 16) | codegen flavor (high 16), like
  * PSX_OVERLAY_ABI_TAG. The flavor comes from the same -DPSX_OVERLAY_FLAVOR
@@ -138,6 +139,10 @@ typedef struct PsxBiosModuleCallbacks {
      * template. */
     uint32_t *mod_guest_functions;  /* registration count */
     int (*mod_dispatch_guest_function)(struct CPUState *cpu, uint32_t addr);
+    /* Game function-override hook (func_override.c). The generated dispatch
+     * consults it after the BIOS tiers; it stays NULL until an override is
+     * registered, so the module reads it live. Added in ABI 3. */
+    int (**func_override_hook)(struct CPUState *cpu, uint32_t phys);
 } PsxBiosModuleCallbacks;
 
 /* ---- Host side (runtime/src/psx_bios_module.c) ----------------------------- */

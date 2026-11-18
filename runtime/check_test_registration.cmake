@@ -45,6 +45,7 @@ set(_PSXRECOMP_TESTREG_DIR "${CMAKE_CURRENT_LIST_DIR}")
 set(PSXRECOMP_TESTS_NOT_REGISTERED
     "test_dma_gpu_native_submission.c|compiled and run at O0/O2 by test_dma_gpu_list_cpu_hold.py, registered as gpu_native_dma_submission_test"
     "test_overlay_posix.c|built and run by tests/run_overlay_posix_test.sh, which stages the dlopen fixture tree; that script is registered as overlay_posix_test on UNIX"
+    "test_break_guest_vector_report.c|run-report fixture compiled and run by tests/test_break_guest_vector_interp.py with traps.c and crash_trace.c; registered through break_guest_vector_interp_test"
     "test_openxr_color_gl.c|real-GL fixture compiled and run by tests/run_openxr_color_gl.py (like test_gl_readback_region.c); not a ctest binary"
 )
 

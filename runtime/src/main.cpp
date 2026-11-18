@@ -16,6 +16,7 @@
 #include "regional_launch.h"
 #include "projection_scale.hpp"
 #include "projection_scale_config.hpp"
+#include "player_settings.h"
 #include "mod_controller_source.h"
 #include "window_size.h"     /* default game-window size */
 #include "internal_resolution.h" /* the Internal Resolution mod and [video] internal_resolution */
@@ -27,9 +28,11 @@
 #include "device_trace.h"    /* general two-process device-event cycle ring */
 #include "psx_interpreter.h"
 #include "cdrom.h"
+#include "turbo_loads_gate.h"
 #include "fntrace.h"
 #include "text_xlate.h"
 #include "boot_state.h"
+#include "source_stateio_identity.h"
 #include "bios_hle.h"
 #include "bios_hle_plan.h"
 #include "psx_bios_known_images.h"
@@ -115,6 +118,8 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "psx_lobby_client.h"
 #include "netplay_bios_settle.h"
 #include "netplay_exit_reason.h"
+#include "netplay_lan_version.h"
+#include "start_refusal.h"
 #include "host_time.h"
 #if defined(PSX_HAS_RECOMP_NET)
 #include "recomp_net/auth.h"
@@ -138,12 +143,16 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "debug_server.h"
 #include "host_sampler.h"
 #include "crash_trace.h"
+#include "bios_phase_report.h"
+#include "interp_report.h"
 #include "freeze_heartbeat.h"
 #include "config_loader.h"
 #include "game_mode.h"
 #include "bios_rom_alias.h"
 #include "host_path.h"
 #include "launcher_device.h"
+#include "guncon_map.h"
+
 #include "fast_forward.h"
 #include "game_options.h"
 #include "mod_plugins.h"
@@ -162,8 +171,10 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "disc_identity.h"
 #include "disc_content_hash.h"
 #include "sbi_setup.h"
+#include "disc_roster.h"
+#include "program_set_lock.h"
 #include "disc_path.h"
-#include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
+#include "disc_boot_image.h" /* text-image guard: the boot EXE on the disc */
 #include "psx_keybinds.h"
 #include "host_overlay.h"
 #include "psx_disc_tray.h"
@@ -174,6 +185,16 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 
 #if defined(RECOMP_LAUNCHER)
 #include "recomp_launcher.h"   /* shared recomp-ui Dear ImGui launcher */
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_PERIPHERAL_CAPS)
+static constexpr bool kLauncherNativeGuncon=true, kLauncherNegconMode=true;
+#else
+static constexpr bool kLauncherNativeGuncon=false, kLauncherNegconMode=false;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_MOUSE_CAP)
+static constexpr bool kLauncherNativeMouse = true;
+#else
+static constexpr bool kLauncherNativeMouse = false;
+#endif
 #include "launcher_vsync.h"
 #include "launcher_profile.h"  /* per-system variant profile (theme/caps bundle) */
 #include "launcher_boot_timing.h" /* PSX_LAUNCHER_BOOT_TIMING stamps */
@@ -224,6 +245,7 @@ extern "C" void psx_game_codegen_forward_if_built(int argc, char** argv);
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <iomanip>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -319,6 +341,35 @@ extern "C" void     dirty_ram_register_text_image(uint32_t phys_lo,
                                                   const uint8_t *bytes,
                                                   uint32_t len);
 
+extern "C" uint32_t dirty_ram_text_note_source_image(
+    const uint8_t *loaded, uint32_t phys_lo, uint32_t len,
+    const uint32_t *source_crc32, uint32_t source_count,
+    uint32_t source_phys_lo, uint32_t source_len, uint32_t *first_phys);
+/* Generated dispatcher, or game_dispatch_compat.c when it has no table. */
+extern "C" const uint32_t *psx_game_source_page_crc32(uint32_t *count,
+                                                      uint32_t *phys_lo,
+                                                      uint32_t *len);
+
+/* Tell the guard which pages of the executable the console loads differ from
+ * the executable the static code was generated from (text_source_guard.h).
+ * A disc of a set that carries the program with a per-disc code byte is the
+ * case: its differing page must run from RAM, not from the other disc's
+ * compiled function. `loaded` is not kept. */
+static void note_text_source_image(const uint8_t *loaded, uint32_t phys_lo,
+                                   uint32_t len, const char *what) {
+    uint32_t count = 0, source_lo = 0, source_len = 0, first = 0;
+    const uint32_t *crcs = psx_game_source_page_crc32(&count, &source_lo, &source_len);
+    if (!crcs || count == 0) return;
+    const uint32_t pages = dirty_ram_text_note_source_image(
+        loaded, phys_lo, len, crcs, count, source_lo, source_len, &first);
+    if (pages)
+        std::fprintf(stdout,
+            "psxrecomp: text image guard: %u page(s) of the %s differ from the "
+            "executable this build was generated from (first 0x%08X); code on "
+            "those pages runs from RAM\n",
+            pages, what, first | 0x80000000u);
+}
+
 /* Arm the dirty-RAM text-image guard with the boot EXE bytes. The guard is
  * load-bearing: dispatch native-safety (dirty_ram_text_native_ok) and the
  * fntrace alternate game-start latch both key off the registered image, so
@@ -332,6 +383,12 @@ static void arm_text_image_guard(const std::string &exe_path,
                                  uint32_t load_address,
                                  const std::string &disc_path) {
     const uint32_t phys_lo = load_address & 0x1FFFFFFFu;
+    /* The console loads the mounted disc's boot EXE, whichever image becomes
+     * the reference below. Read it first so the source-image check always
+     * judges the bytes that will be in RAM. */
+    uint32_t disc_len = 0;
+    std::string disc_name;
+    uint8_t *disc_img = psx_read_disc_boot_image(exe_path, disc_path, &disc_len, &disc_name);
     /* 1. Local EXE file (skip the 2048-byte PS-X EXE header). */
     if (!exe_path.empty()) {
         std::ifstream ef(exe_path, std::ios::binary | std::ios::ate);
@@ -347,6 +404,13 @@ static void arm_text_image_guard(const std::string &exe_path,
                         std::fprintf(stdout,
                             "psxrecomp: text image guard armed (0x%08X..0x%08X, local EXE)\n",
                             load_address, load_address + img_len);
+                        if (disc_img)
+                            note_text_source_image(disc_img, phys_lo, disc_len,
+                                                   "mounted disc's boot executable");
+                        else
+                            note_text_source_image(img, phys_lo, img_len,
+                                                   "local boot executable");
+                        std::free(disc_img);
                         return;
                     }
                     std::free(img);
@@ -354,74 +418,20 @@ static void arm_text_image_guard(const std::string &exe_path,
             }
         }
     }
-    /* 2. Extract the boot EXE from the disc image. */
-    if (!disc_path.empty()) {
-        PS1::ISOReader iso;
-        if (iso.Open(disc_path)) {
-            /* The boot filename: basename of the game.toml exe field (it names
-             * the same file the recompiler consumed, which came off this disc);
-             * fall back to the SYSTEM.CNF BOOT token for configs whose local
-             * name differs from the disc name. */
-            std::string boot_name;
-            if (!exe_path.empty()) {
-                const size_t slash = exe_path.find_last_of("/\\");
-                boot_name = (slash == std::string::npos)
-                                ? exe_path : exe_path.substr(slash + 1);
-            }
-            PS1::ISOFileEntry ent;
-            if (boot_name.empty() || !iso.FindFile(boot_name, ent)) {
-                /* SYSTEM.CNF: `BOOT = cdrom:\SCUS_944.23;1` */
-                uint8_t cnf[2048] = {0};
-                size_t n = iso.ReadFile("SYSTEM.CNF", cnf, sizeof(cnf) - 1);
-                if (n > 0) {
-                    std::string text((const char *)cnf, n);
-                    std::string lower = text;
-                    for (char &c : lower) c = (char)std::tolower((unsigned char)c);
-                    const size_t key = lower.find("cdrom:");
-                    if (key != std::string::npos) {
-                        size_t j = key + 6;
-                        while (j < text.size() && (text[j] == '\\' || text[j] == '/')) j++;
-                        std::string tok;
-                        while (j < text.size()) {
-                            char c = text[j];
-                            if (c == ';' || c == '\r' || c == '\n' || c == ' ' ||
-                                c == '\t' || c == '\0') break;
-                            tok += c; j++;
-                            if (tok.size() > 64) break;
-                        }
-                        const size_t s2 = tok.find_last_of("\\/");
-                        if (s2 != std::string::npos) tok = tok.substr(s2 + 1);
-                        if (!tok.empty() && iso.FindFile(tok, ent)) boot_name = tok;
-                    }
-                }
-            }
-            if (!boot_name.empty() && iso.FindFile(boot_name, ent) &&
-                ent.size > 2048) {
-                uint8_t *file = (uint8_t *)std::malloc(ent.size);
-                if (file) {
-                    size_t got = iso.ReadFile(boot_name, file, ent.size);
-                    if (got > 2048) {
-                        uint32_t img_len = (uint32_t)(got - 2048);
-                        uint8_t *img = (uint8_t *)std::malloc(img_len);
-                        if (img) {
-                            memcpy(img, file + 2048, img_len);
-                            std::free(file);
-                            dirty_ram_register_text_image(phys_lo, img, img_len);
-                            std::fprintf(stdout,
-                                "psxrecomp: text image guard armed (0x%08X..0x%08X, disc %s)\n",
-                                load_address, load_address + img_len,
-                                boot_name.c_str());
-                            return;
-                        }
-                    }
-                    std::free(file);
-                }
-            }
-        }
+    /* 2. The boot EXE from the disc image. */
+    if (disc_img) {
+        dirty_ram_register_text_image(phys_lo, disc_img, disc_len);
+        std::fprintf(stdout,
+            "psxrecomp: text image guard armed (0x%08X..0x%08X, disc %s)\n",
+            load_address, load_address + disc_len, disc_name.c_str());
+        note_text_source_image(disc_img, phys_lo, disc_len,
+                               "mounted disc's boot executable");
+        return;
     }
     std::fprintf(stdout,
         "psxrecomp: WARNING: text image guard NOT armed (no local EXE, no disc "
-        "boot EXE) — native text dispatch will be conservative\n");
+        "boot EXE) — no statically compiled game function will run; the game's "
+        "own code is interpreted\n");
 }
 
 /* dma.c */
@@ -463,8 +473,9 @@ static SDL_Texture*  sdl_texture;
 /* Per-player input device routing (PSX ports 1 & 2). Seeded from the
  * [controller] settings the launcher writes; the runtime opens the matching
  * SDL controller (or uses the keyboard) and feeds each PSX pad slot. */
+static bool g_offer_frame_interpolation=true;
 struct PlayerInput {
-    int   kind = 0;            /* 0=none, 1=keyboard, 2=controller */
+    int   kind = 0;            /* 0=none, 1=keyboard, 2=controller, 3=PS1 Mouse, 4=GunCon */
     char  guid[40] = {0};      /* SDL joystick GUID string when kind==controller */
     /* Pad input mode (PSXRecompV4::PadMode): 1=analog (default), 2=digital.
      * Game-owned plugins may register a trusted per-sample presentation policy
@@ -480,6 +491,9 @@ struct PlayerInput {
     bool    rumble_known = false;
     bool    rumble_warned = false;
     bool    steering_wheel = false;
+    /* Keyboard seat temporarily driving an adopted pad (kind 1 -> 2);
+     * reverts to keyboard when that pad goes away. Never persisted. */
+    bool    adopted_pad = false;
     /* EXPERIMENTAL JogCon force feedback on this pad's SDL haptics
      * ([controller] experimental_jogcon_force_feedback; psx_jogcon_ffb.h). */
     PsxJogconHaptic    ffb_haptic = {nullptr, -1, -1};
@@ -490,6 +504,13 @@ struct PlayerInput {
 static bool g_jogcon_ffb = false;
 static bool g_jogcon_ffb_invert = false;
 static PlayerInput g_players[PSX_MAX_PLAYERS];
+static double g_mouse_sensitivity = 1.0;
+static bool   g_mouse_sensitivity_set = false;
+static bool   g_mouse_capture_wanted = true;   /* mouse_capture; MouseCapture hotkey toggles */
+static bool   g_mouse_capture_set = false;
+static bool   g_mouse_captured = false;        /* SDL relative mode is on */
+static double g_mouse_frac[2] = { 0.0, 0.0 };  /* sub-count remainder per axis */
+
 /* Offline SIO sample loop bound (from game.toml players; clamped). */
 static int g_offline_pad_count = 2;
 /* Set when [controller] lock_mode pins every seat to digital — blocks the
@@ -1236,11 +1257,12 @@ extern "C" void psx_mod_set_texture_filter(int mode) {
  * GameInfo cannot clear: an older recomp-ui still draws it, and the runtime
  * ignores what it returns.) */
 static void psx_launcher_hide_mod_owned_rows(RecompLauncherCGameInfo* gi) {
+    gi->has_frame_interp=g_offer_frame_interpolation?1:0;
 #ifdef RECOMP_LAUNCHER_HAS_VSYNC_VRR
     gi->has_vsync_vrr = 1;
 #endif
 #ifdef RECOMP_LAUNCHER_HAS_FRAME_GENERATION_HIDDEN
-    gi->frame_generation_hidden = 1;
+    gi->frame_generation_hidden = 0; /* Supported host presentation preference. */
 #endif
     gi->has_supersampling = 0;       /* Internal Resolution (and the legacy
                                       * Supersampling cycle) */
@@ -2291,8 +2313,19 @@ extern "C" int psx_debug_display_aspect(int num, int den, int adaptive) {
  * in --hidden-window runs. */
 extern "C" int psx_debug_window_size(int w, int h) {
     if (!sdl_window || w < 64 || h < 64 || w > 16384 || h > 16384) return 0;
+    /* Cocoa replaces the drawable during resize. Drain rendering before
+     * changing it, including HUD framebuffer readbacks on the render thread. */
+    const bool held = rt_held() != 0;
+    rt_acquire("window_size");
+#if defined(PSX_SDL3)
+    const bool resized = SDL_SetWindowSize(sdl_window, w, h);
+#else
+    /* SDL2 exposes no resize result. Preserve its previous success reply. */
     SDL_SetWindowSize(sdl_window, w, h);
-    return 1;
+    const bool resized = true;
+#endif
+    if (!held) rt_release();
+    return resized ? 1 : 0;
 }
 
 static bool          g_gl_active = false;    /* GL context live -> GL present path */
@@ -2713,14 +2746,6 @@ extern "C" void psx_frontend_netplay_force_sw_gpu(void) {
     fflush(stderr);
 }
 
-/* Vsync self-heal state (see SDL_RenderPresent wrapper in
- * sdl_vblank_present). C linkage: freeze_heartbeat.c includes both in
- * the freeze dump so a slow-frames wedge can be attributed to driver
- * present backpressure from the dump alone. */
-extern "C" {
-uint32_t g_present_slow_count = 0;     /* presents that blocked >250ms */
-int      g_present_vsync_disabled = 0; /* 1 once self-heal tripped */
-}
 
 /* Turbo-through-loads (step 4). C linkage: debug_server.c reads/toggles the
  * enable and reports the frame counter. Enabled by game.toml [runtime]
@@ -2739,11 +2764,11 @@ static int g_turbo_audio_sink_config_enabled = 0;
  * a symmetric release debounce rides through tiny late-sector/IRQ gaps. This
  * changes host presentation/pacing only; guest cycles and input sampling keep
  * advancing normally. */
-#define TURBO_LOADS_ENGAGE_FRAMES  4
 #define TURBO_LOADS_RELEASE_FRAMES 6
 /* Zero multiplier retains the historical uncapped turbo behavior. */
 static int g_turbo_load_wall_multiplier = 0;
 static int g_turbo_load_release_frames = TURBO_LOADS_RELEASE_FRAMES;
+static bool g_fast_loading_optout = false;   /* game.toml [runtime] fast_loading_optout */
 static SDL_AudioDeviceID sdl_audio_device;
 static uint64_t audio_host_closes, audio_stream_clears, audio_bridge_inits;
 static void audio_clear_tracked(SDL_AudioDeviceID device) {
@@ -2861,6 +2886,33 @@ static void load_host_keymap(const char *argv0) {
         host_keymap_load(nullptr);
 }
 
+/* "<exe name>.game.toml" beside the executable, when that file exists; empty
+ * otherwise. A folder that holds several programs of one set (Resident Evil 2:
+ * a Leon exe and a Claire exe) gives each exe its own game config this way,
+ * while settings, key binds and saves stay shared. A folder with one program
+ * has no such file and uses the build's default config name as before. */
+static std::filesystem::path exe_specific_game_config(const char* argv0) {
+    namespace fs = std::filesystem;
+    std::string name;
+#ifdef _WIN32
+    {
+        wchar_t buf[MAX_PATH * 4];
+        DWORD n = GetModuleFileNameW(NULL, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])));
+        if (n > 0 && n < (DWORD)(sizeof(buf) / sizeof(buf[0])))
+            name = fs::path(std::wstring(buf, buf + n)).stem().string();
+    }
+#endif
+    if (name.empty() && argv0 && argv0[0]) {
+        const fs::path p(argv0);
+        /* Only Windows executables carry an extension to drop. */
+        name = (p.extension() == ".exe" ? p.stem() : p.filename()).string();
+    }
+    if (name.empty()) return {};
+    std::error_code ec;
+    const fs::path candidate = exe_dir_from_argv(argv0) / (name + ".game.toml");
+    return fs::is_regular_file(candidate, ec) ? candidate : fs::path{};
+}
+
 static std::filesystem::path resolve_existing_runtime_path(const char* requested,
                                                            const char* argv0) {
     namespace fs = std::filesystem;
@@ -2895,6 +2947,16 @@ static std::filesystem::path anchor_on_exe_dir(const char* argv0,
     return PSXRecompV4::host_resolve(exe_dir_from_argv(argv0), p);
 }
 
+/* The same for a [memcard] value. A setup install keeps its cards one level
+ * above the exe folder and stores them as "../saves", so a relative value can
+ * hold a climb: fold it, and the card folder reads as <root>/saves everywhere
+ * it is shown or compared. An absolute value is returned unchanged. */
+static std::filesystem::path anchor_card_path(const char* argv0,
+                                              const std::filesystem::path& p) {
+    if (p.empty() || PSXRecompV4::host_path_is_absolute(p)) return p;
+    return anchor_on_exe_dir(argv0, p).lexically_normal();
+}
+
 static std::filesystem::path read_cached_path(const char* argv0, const char* filename) {
     std::ifstream f(sidecar_cfg_path(argv0, filename));
     if (!f.is_open()) return {};
@@ -2920,7 +2982,16 @@ static void write_cached_path(const char* argv0, const char* filename,
 /* Nobody is at the screen: never block on a modal dialog or a file picker. */
 static bool frontend_unattended() { return g_headless || g_hidden_window; }
 
+/* The last warning shown to the player, and how many there have been. A
+ * refused start reports the box its own check has just shown. */
+static unsigned    s_player_message_seq = 0;
+static std::string s_player_message_title;
+static std::string s_player_message_text;
+
 static void launcher_warning(const char* title, const std::string& msg) {
+    ++s_player_message_seq;
+    s_player_message_title = title ? title : "";
+    s_player_message_text  = msg;
     std::fprintf(stderr, "%s: %s\n", title, msg.c_str());
     // Unattended (--headless / PSX_HEADLESS / --hidden-window): NEVER pop a blocking modal — it would
     // hang an unattended/CI/scripted run forever waiting for a click.
@@ -2932,6 +3003,55 @@ static void launcher_warning(const char* title, const std::string& msg) {
 static void launcher_info(const char* title, const std::string& msg) {
     std::fprintf(stderr, "%s: %s\n", title, msg.c_str());
     if (!frontend_unattended()) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, title, msg.c_str(), NULL);
+}
+
+/* True when a person started this program. A refusal that used to print only
+ * to stderr may then open a box: a Windows product has no console, so the
+ * program was simply gone. A scripted start keeps the line and gets no modal,
+ * which would wait for a click that never comes. Scripted means every way of
+ * skipping the launcher: --headless, PSX_HEADLESS, --no-launcher, a replay
+ * launch, PSX_NO_LAUNCHER, and `[launcher] skip_launcher = true` in
+ * settings.toml. Set when the command line is read, and again when the
+ * settings are (start_is_interactive). */
+static bool s_start_interactive = false;
+
+static bool start_is_interactive(bool force_launcher, bool force_no_launcher,
+                                 bool skip_launcher_setting) {
+    if (frontend_unattended()) return false;
+    if (force_launcher) return true;
+    return !force_no_launcher && !std::getenv("PSX_NO_LAUNCHER") &&
+           !skip_launcher_setting;
+}
+
+/* A start that is refused before the first frame. The run report
+ * gets the kind and the sentence; until now every refusal, a closed launcher
+ * and a setup program's exit all read "atexit / unknown / frame 0".
+ *
+ * `seq_before` is s_player_message_seq read before the check ran. When the
+ * check has shown its own warning since, that warning is the reason and no
+ * second box opens. Otherwise `title` and `sentence` are the reason.
+ * Returns the exit code for main(). */
+static int refuse_start(const char* kind, const char* title,
+                        const std::string& sentence, unsigned seq_before,
+                        int code = 1) {
+    if (s_player_message_seq != seq_before) {
+        psx_start_refusal_set(kind, s_player_message_title.c_str(),
+                              s_player_message_text.c_str());
+    } else {
+        psx_start_refusal_set(kind, title, sentence.c_str());
+        if (s_start_interactive && !frontend_unattended())
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, title,
+                                     sentence.c_str(), NULL);
+    }
+    std::fprintf(stderr, "psxrecomp: start refused (%s)\n", kind);
+    psx_crash_trace_set_exit_origin("start_refused");
+    return code;
+}
+
+/* The same for a refusal with no check before it that could have shown a box. */
+static int refuse_start(const char* kind, const char* title,
+                        const std::string& sentence) {
+    return refuse_start(kind, title, sentence, s_player_message_seq);
 }
 
 /* Game display name for picker dialogs ("Tomba!"); set after the game
@@ -2994,38 +3114,52 @@ static bool pick_runtime_file(const char* title, const char* filter,
 #endif
 }
 
-/* Per-disc expected serials for a multi-disc set, keyed by the disc image's
- * UPPERCASED file-name stem (game.toml [game] disc_serials, in the order of
- * [game] discs). Every disc of a set carries its own serial, so checking disc
- * 2 against the BOOT disc's serial reports the player's correct disc as the
- * wrong game -- which is what the launcher's disc dropdown would trip on
- * every time, and what the launch-time check warned about even when the
- * player picked exactly the right image. A disc absent from this map is not
- * serial-gated at all; the ISO-header check still applies. Keyed by stem
- * rather than full path because a .cue and the .bin it owns are one disc and
- * either may be what the player picked. Populated from game.toml; empty for
- * every single-disc title, which therefore behaves exactly as before. */
-static std::unordered_map<std::string, std::string> g_disc_serials;
-
-/* Per-disc netplay TOC fingerprints, same keying and same reason as
- * g_disc_serials: every disc of a set has its own TOC, so a set gated on the
- * BOOT disc's fingerprint refuses online play on every other disc the player
- * can now select. Populated from game.toml [netplay] required_disc_fps; empty
- * for every single-disc title and every port that predates the key, which
- * therefore keep the flat [netplay] required_disc_fp behaviour exactly. */
-static std::unordered_map<std::string, std::string> g_disc_netplay_fps;
+/* Per-disc metadata follows the roster order. Paths with equal basenames in
+ * different directories are distinct discs. The shared resolver preserves
+ * same-directory CUE/BIN alternatives and unambiguous relocated names. */
+static std::vector<std::filesystem::path> g_disc_metadata_roster;
+static std::vector<std::string> g_disc_serials;
+static std::vector<std::string> g_disc_netplay_fps;
+/* [game] program_discs: the 1-based positions of the set roster above that
+ * THIS build boots. Empty for every title except a program of a set whose
+ * discs boot different programs (see disc_roster.h). The three vectors above
+ * always describe the whole set. */
+static std::vector<int> g_program_discs;
 
 static std::string uppercase_ascii(std::string s);
 
 /* The serial THIS image is expected to carry: the set's per-disc value when
  * the game declared one, the game's own id otherwise. An image that belongs
  * to a declared set but has no serial listed is returned ungated (""), never
- * gated against another disc's number. */
+ * gated against another disc's number. A disc that another program of the set
+ * boots is gated against this program's own id, so it reads as the wrong disc
+ * here, which it is. */
 static std::string expected_serial_for_disc(const std::filesystem::path& disc,
                                             const std::string& fallback) {
-    if (g_disc_serials.empty()) return fallback;
-    const auto it = g_disc_serials.find(uppercase_ascii(disc.stem().string()));
-    return it != g_disc_serials.end() ? it->second : std::string();
+    return PSXRecompV4::disc_roster_expected_serial(
+        g_disc_metadata_roster, g_disc_serials, g_program_discs, disc, fallback);
+}
+
+/* True when `disc` is an image that another program of the set boots: a set
+ * roster entry this build does not own, or a relocated image whose serial is
+ * one of the other programs' serials. The programs of a set share
+ * settings.toml and disc.cfg, so the disc one program remembered reaches the
+ * other; it must not be mounted there. */
+static bool disc_belongs_to_other_program(const std::filesystem::path& disc) {
+    if (g_program_discs.empty() || disc.empty()) return false;
+    if (PSXRecompV4::disc_roster_index(g_disc_metadata_roster, disc) >= 0)
+        return PSXRecompV4::disc_roster_program_foreign(
+            g_disc_metadata_roster, g_program_discs, disc);
+    for (size_t i = 0; i < g_disc_serials.size(); ++i) {
+        if (g_disc_serials[i].empty() ||
+            PSXRecompV4::disc_roster_program_owns(g_program_discs, (int)i + 1))
+            continue;
+        const PSXRecompV4::DiscIdentity id = PSXRecompV4::identify_disc(
+            disc, g_disc_serials[i], /*expected_crc*/0,
+            /*has_expected_crc*/false, /*compute_crc*/false);
+        if (id.opened && id.has_header && id.serial_matches) return true;
+    }
+    return false;
 }
 
 static std::string uppercase_ascii(std::string s) {
@@ -3058,11 +3192,24 @@ static bool read_at(std::ifstream& f, uint64_t offset, uint8_t* out, size_t len)
     return f.gcount() == (std::streamsize)len;
 }
 
+/* The missing-SBI warning of the disc in the drive, for the run report and
+ * stderr. Empty when the disc needs no SBI or its SBI was loaded. */
+static void note_mounted_disc_warning(const std::filesystem::path& image,
+                                      const std::string& serial) {
+    const auto warning = PSXRecompV4::missing_sbi_warning(
+        image, serial, cdrom_has_sbi() != 0);
+    psx_disc_warning_set(warning.c_str());
+    if (!warning.empty())
+        std::fprintf(stderr, "psxrecomp: %s\n", warning.c_str());
+}
+
 struct DiscValidation {
+    std::string sbi_warning;   // missing-SBI warning; empty when none applies
     bool opened = false;
     bool has_header = false;
     bool id_matches = false;
     std::string detail;
+    std::string wrong_disc;   // the sentence, when the disc is refused for its serial
 };
 
 static DiscValidation validate_disc_image(const std::filesystem::path& selected_path,
@@ -3077,20 +3224,56 @@ static DiscValidation validate_disc_image(const std::filesystem::path& selected_
     const PSXRecompV4::DiscIdentity id =
         PSXRecompV4::identify_disc(selected_path, expect, /*expected_crc*/0,
                                    /*has_expected_crc*/false, /*compute_crc*/false);
+    /* A build with a serial list expects nothing of an image its disc list
+     * does not know, so `expect` is empty for it and nothing was compared:
+     * another game's disc started with no warning, where a build with no
+     * list warns. Such an image is
+     * judged as the launcher's panel judges it, by the serial read against
+     * every serial of the list, and gets the same warning. Whether the start
+     * should be refused is not decided here: it is not. */
+    const PSXRecompV4::DiscSetSerial outside = PSXRecompV4::disc_roster_outside_list(
+        g_disc_metadata_roster, g_disc_serials, selected_path,
+        id.expected_serial_given, id.opened && id.has_header, id.detected_serial);
+    const bool outside_wrong = PSXRecompV4::disc_roster_wrong_disc(outside);
     DiscValidation v;
     v.opened     = id.opened;
+    v.sbi_warning = id.sbi_warning;
     v.has_header = id.has_header;
-    v.id_matches = expect.empty() ? true : id.serial_matches;
+    v.id_matches = expect.empty() ? !outside_wrong : id.serial_matches;
     v.detail     = id.detail;
-    if (id.opened && id.has_header && !v.id_matches && v.detail.empty()) {
-        v.detail = "The disc header is readable, but it does not contain the expected game ID " +
-                   uppercase_ascii(expect) + " in the early disc metadata.";
-    }
+    /* A readable disc whose serial is not the one this build needs is the
+     * wrong disc, and a start with it is refused:
+     * another game's disc cannot run on this game's code. The sentence is the
+     * panel's. */
+    if (id.opened && id.has_header && !v.id_matches)
+        v.wrong_disc = PSXRecompV4::disc_roster_wrong_disc_sentence(
+            id.detected_serial,
+            expect.empty() ? PSXRecompV4::disc_roster_serial_list(g_disc_serials)
+                           : PSXRecompV4::disc_roster_serial_list({uppercase_ascii(expect)}));
     return v;
+}
+
+/* The sentence of the last disc this start checked and refused for its
+ * serial; empty when the last disc checked was not refused for that. The
+ * start's refusal reads it for the run report (kind `wrong_disc`). */
+static std::string s_wrong_disc_sentence;
+
+/* The box for a disc that is refused for its serial. As every refusal's box
+ * it opens only when a person started the program: a scripted start gets the
+ * line on stderr and the run report. */
+static void wrong_disc_notice(const std::string& sentence) {
+    ++s_player_message_seq;
+    s_player_message_title = "Disc verification failed";
+    s_player_message_text  = sentence;
+    std::fprintf(stderr, "Disc verification failed: %s\n", sentence.c_str());
+    if (s_start_interactive && !frontend_unattended())
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Disc verification failed",
+                                 sentence.c_str(), NULL);
 }
 
 static bool validate_disc_for_launch(const std::filesystem::path& path,
                                      const std::string& game_id) {
+    s_wrong_disc_sentence.clear();
     std::string identity_error;
     if (!PSXRecompV4::required_original_disc_matches(path, &identity_error)) {
         std::fprintf(stderr, "psxrecomp: %s\n", identity_error.c_str());
@@ -3101,7 +3284,18 @@ static bool validate_disc_for_launch(const std::filesystem::path& path,
         launcher_warning("Disc Image Not Found", v.detail + "\n\nSelected path:\n" + path.string());
         return false;
     }
-    if (!v.has_header || !v.id_matches) {
+    /* The wrong disc is refused, as the launcher's PLAY refuses it.
+     * Until then a start from the command line warned and
+     * ran another game's disc on this game's code. */
+    if (!v.wrong_disc.empty()) {
+        s_wrong_disc_sentence = v.wrong_disc;
+        wrong_disc_notice(v.wrong_disc);
+        return false;
+    }
+    /* What the warning still covers: an image that opens and has no ISO 9660
+     * header where a PlayStation disc has one. Its serial cannot be read, so
+     * it cannot be called another game's disc. */
+    if (!v.has_header) {
         launcher_warning("Disc Image Warning",
             v.detail + "\n\nThis may be the wrong game or a corrupt image. The runtime will try to run it anyway.");
     }
@@ -3111,7 +3305,83 @@ static bool validate_disc_for_launch(const std::filesystem::path& path,
         launcher_warning("SBI file required", companion.message);
         return false;
     }
+    if (!v.sbi_warning.empty())
+        launcher_warning("Missing SBI", v.sbi_warning);
     return true;
+}
+
+/* compiler.txt relative paths belong to the installed overlay toolchain,
+ * never the caller's working directory or PATH. */
+static std::filesystem::path resolve_overlay_compiler_path(
+    const std::filesystem::path& toolchain, const std::string& configured) {
+    const auto marker = toolchain / "compiler-store.sha256";
+    if (std::filesystem::exists(marker)) {
+        const auto reject = [](const std::filesystem::path& bad) {
+            throw std::runtime_error("shared overlay compiler unavailable or corrupt: " + bad.string() +
+                "; repair or reinstall the shared compiler store, or rebuild as portable");
+        };
+        const auto valid_hash = [](const std::string& value) {
+            return value.size() == 64 && value.find_first_not_of("0123456789abcdef") == std::string::npos;
+        };
+        std::ifstream marker_file(marker, std::ios::binary);
+        std::string expected, extra;
+        std::error_code marker_error;
+        if (std::filesystem::file_size(marker, marker_error) != 65 || marker_error ||
+            !std::getline(marker_file, expected) || !valid_hash(expected) || std::getline(marker_file, extra))
+            reject(marker);
+        const std::filesystem::path compiler(configured);
+        if (!PSXRecompV4::host_path_is_absolute(compiler) || compiler.filename() != "clang.exe" ||
+            compiler.parent_path().filename() != "bin") reject(toolchain / "compiler.txt");
+        const auto store = compiler.parent_path().parent_path();
+        if (store.filename() != "overlay-clang-" + expected) reject(store);
+#ifdef _WIN32
+        struct StoreGuard {
+            HANDLE handle = INVALID_HANDLE_VALUE;
+            ~StoreGuard() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+        };
+        static StoreGuard guard;
+        if (guard.handle == INVALID_HANDLE_VALUE) {
+            const auto lock = std::filesystem::path(store.wstring() + L".lock");
+            guard.handle = CreateFileW(lock.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                      OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (guard.handle == INVALID_HANDLE_VALUE) reject(lock);
+        }
+#else
+        reject(store); // The managed Clang store is currently Windows-only.
+#endif
+        const auto manifest = store / "SHA256SUMS.txt";
+        char actual[65];
+        if (!source_stateio_file_sha256(manifest.string().c_str(), actual) || expected != actual)
+            reject(manifest);
+        std::ifstream entries(manifest, std::ios::binary);
+        std::string line, previous;
+        bool compiler_listed = false;
+        while (std::getline(entries, line)) {
+            if (line.size() < 67 || line.substr(64, 2) != "  " || !valid_hash(line.substr(0, 64)))
+                reject(manifest);
+            const std::string relative = line.substr(66);
+            const std::filesystem::path member(relative);
+            if (relative <= previous || member.is_absolute() || relative.find('\\') != std::string::npos ||
+                relative.find(':') != std::string::npos || member.lexically_normal().generic_string() != relative)
+                reject(manifest);
+            for (const auto& component : member) if (component == "..") reject(manifest);
+            previous = relative;
+            const auto file = store / member;
+            if (!std::filesystem::is_regular_file(file) ||
+                !source_stateio_file_sha256(file.string().c_str(), actual) || line.substr(0, 64) != actual)
+                reject(file);
+            if (relative == "bin/clang.exe") compiler_listed = true;
+        }
+        if (entries.bad() || !compiler_listed) reject(manifest);
+        return compiler;
+    }
+    if (configured.empty()) return {};
+    std::filesystem::path path(configured);
+    if (path.is_relative()) path = toolchain / path;
+    std::error_code error;
+    path = std::filesystem::absolute(path, error).lexically_normal();
+    if (error || !std::filesystem::is_regular_file(path, error)) return {};
+    return path;
 }
 
 static std::filesystem::path normalize_disc_path_for_launch(const std::filesystem::path& path) {
@@ -3133,37 +3403,27 @@ static std::filesystem::path resolve_persisted_disc_path(
  * That ordering is the whole point of storing the index: an external launcher
  * (or a hand edit) changes discs by writing one integer, and it takes effect
  * even though settings.toml still carries the previous disc's path. A player
- * who browsed for their own copy of the selected disc is still honoured,
- * because a relocated or container-swapped image keeps its stem -- a Redump
- * dump names the disc in the file name and only the extension moves
- * (".. (Disc 2).cue" and ".. (Disc 2).bin" identify the same disc).
- * normalize_disc_path_for_launch preserves the resolver's mount path.
+ * who browsed for their own copy of the selected disc is still honoured
+ * when the shared resolver identifies it as that disc (disc_roster.h): its
+ * directory-qualified path matches a roster entry (".. (Disc 2).cue" and a
+ * same-directory ".. (Disc 2).bin" are one disc), or it was relocated and its
+ * stem names exactly one roster entry. Equal file names in different
+ * directories are different discs; an ambiguous relocated name is no disc.
  *
  * Single-disc titles (roster of 0 or 1) are returned unchanged: the persisted
  * path wins, exactly as it did before any of this existed. */
-/* Roster position of `disc`, or -1. Compare stems so the roster can identify
- * equivalent CUE and raw-image selections after disc-path resolution. */
+/* Roster position of `disc`, or -1. The same resolver keys per-disc serials
+ * and netplay fingerprints, so every per-disc lookup agrees on identity. */
 static int roster_index_for_disc(
     const std::vector<std::filesystem::path>& roster,
     const std::filesystem::path& disc) {
-    if (disc.empty()) return -1;
-    const std::string want = uppercase_ascii(disc.stem().string());
-    for (size_t i = 0; i < roster.size(); ++i)
-        if (uppercase_ascii(roster[i].stem().string()) == want) return (int)i;
-    return -1;
+    return PSXRecompV4::disc_roster_index(roster, disc);
 }
 
 static std::filesystem::path resolve_selected_disc(
     const std::vector<std::filesystem::path>& roster, int selected_1based,
     const std::filesystem::path& persisted) {
-    if (roster.size() < 2) return persisted;
-    const int idx = selected_1based - 1;
-    if (idx < 0 || idx >= (int)roster.size()) return persisted;
-    if (!persisted.empty() &&
-        uppercase_ascii(persisted.stem().string()) ==
-            uppercase_ascii(roster[(size_t)idx].stem().string()))
-        return persisted;
-    return roster[(size_t)idx];
+    return PSXRecompV4::disc_roster_selected(roster, selected_1based, persisted);
 }
 
 /* BIOS selection state (docs/BIOS_SELECTION.md). s_openbios_allowed is the
@@ -3414,7 +3674,10 @@ static std::filesystem::path resolve_disc_for_runtime(const std::filesystem::pat
     if (!cached.empty()) {
         cached = resolve_persisted_disc_path(cached, exe_dir_from_argv(argv0));
     }
+    /* disc.cfg is shared by the programs of a set; the other program's disc
+     * is not this build's. */
     if (!cached.empty() && std::filesystem::exists(cached) &&
+        !disc_belongs_to_other_program(cached) &&
         validate_disc_for_launch(cached, game_id)) {
         return cached;
     }
@@ -3815,7 +4078,7 @@ static int host_driver_vsync_unreliable(void) {
 }
 
 static int present_vsync_owns_cadence(void) {
-    if (g_video_vsync == 0 || g_video_vsync == 2 || g_present_vsync_disabled)
+    if (g_video_vsync == 0 || g_video_vsync == 2 || psx_present_vsync_disabled())
         return 0;
     if (host_driver_vsync_unreliable())
         return 0;
@@ -3836,7 +4099,7 @@ extern "C" int psx_present_vsync_owns_cadence(void) {
 
 static int present_effective_swap_interval(void) {
     const int blocked = g_netplay_vsync_forced_off || psx_netplay_active() ||
-        g_frame_interpolation || g_present_vsync_disabled ||
+        g_frame_interpolation || psx_present_vsync_disabled() ||
         host_driver_vsync_unreliable();
     return psx_present_sync_interval(g_video_vsync, blocked,
         g_frame_period_ms > 0.0 ? 1000.0 / g_frame_period_ms : 0.0,
@@ -5671,7 +5934,7 @@ static int device_claimed_by_other(int self_slot, SDL_JoystickID inst) {
 static void open_player(PlayerInput& p, int self_slot) {
     if (p.kind != 2 || p.handle) return;
 
-    int chosen = -1, fallback = -1;
+    int chosen = -1, fallback = -1, valve_fallback = -1;
     const int joysticks = SDL_NumJoysticks();
     for (int i = 0; i < joysticks; i++) {
         if (!SDL_IsGameController(i)) continue;
@@ -5701,8 +5964,20 @@ static void open_player(PlayerInput& p, int self_slot) {
             break;
         }
         if (chosen < 0 && p.guid[0] && std::strcmp(buf, p.guid) == 0) chosen = i;
-        if (fallback < 0) fallback = i;
+        /* A physical Valve pad (Steam Controller, Deck) read through HIDAPI
+         * while the Steam client owns it delivers no input; Steam Input's
+         * virtual pad (or any other pad) carries the player's input then.
+         * Take the physical one only when nothing else is connected. */
+        /* SDL GUIDs carry the USB vendor/product little-endian at 4 and 8. */
+        const unsigned vid = (unsigned)g.data[4] | ((unsigned)g.data[5] << 8);
+        const unsigned pid = (unsigned)g.data[8] | ((unsigned)g.data[9] << 8);
+        if (psx_controller_is_physical_valve_pad(vid, pid)) {
+            if (valve_fallback < 0) valve_fallback = i;
+        } else if (fallback < 0) {
+            fallback = i;
+        }
     }
+    if (fallback < 0) fallback = valve_fallback;
     if (chosen < 0) chosen = fallback;
     if (chosen < 0) return;
 
@@ -5834,6 +6109,7 @@ static int pad_mode_boot_analog(int mode) {
 
 static int pad_type_boot(const PlayerInput& p, int mode) {
     return p.steering_wheel ? SIO_PAD_JOGCON
+         : mode == PSXRecompV4::PAD_MODE_NEGCON ? SIO_PAD_NEGCON
          : (pad_mode_boot_analog(mode) ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL);
 }
 
@@ -5859,7 +6135,7 @@ static bool live_pad_mode(int s) {
 #ifndef PSX_NO_DEBUG_TOOLS
     if (debug_server_get_pad_type_override() >= 0) return false;
 #endif
-    return !g_controller_mode_locked && !p.steering_wheel &&
+    return !g_controller_mode_locked && p.mode != PSXRecompV4::PAD_MODE_NEGCON && !p.steering_wheel &&
         !g_mod_controller_policy[s].callback &&
         g_mod_controller_mode_override[s] < 0 &&
         !mod_controller_source_present((uint32_t)s) &&
@@ -5894,6 +6170,8 @@ static int assert_sio_pad_profile(int s, bool dev_here) {
     const ModControllerPresentationPolicy& policy = g_mod_controller_policy[s];
     const int boot_mode = live_pad_mode(s) ? (int)PSXRecompV4::PAD_MODE_DIGITAL
         : (policy.callback ? policy.initial_mode : mode);
+    sio_set_port_device(s, p.kind == 3 ? SIO_DEVICE_MOUSE :
+                           p.kind == 4 ? SIO_DEVICE_GUNCON : SIO_DEVICE_PAD);
     sio_set_pad_connected(s, (p.kind != 0 || dev_here) ? 1 : 0);
     /* A local DualShock stays config-capable while digital. Explicit title
      * locks and mod policies can still select a plain digital controller.
@@ -5935,8 +6213,33 @@ static void refresh_player_devices(void) {
                 p.kind == 2, p.handle != nullptr, attached,
                 p.guid, active_guid))
             close_player(p);
+        if (p.adopted_pad && !p.handle) {
+            p.kind = 1;              /* adopted pad unplugged: back to keyboard */
+            p.adopted_pad = false;
+            p.guid[0] = '\0';
+        }
         if (p.kind == 2) open_player(p, s);
         if (netplay || psx_selfcheck_input_locked()) continue;
+        {
+            bool other_pad = false;
+            for (int o = 0; o < PSX_MAX_PLAYERS; ++o)
+                if (o != s && g_players[o].kind == 2) other_pad = true;
+            if (psx_keyboard_seat_should_adopt_pad(s, p.kind, other_pad,
+                                                   netplay != 0)) {
+                p.kind = 2;
+                p.guid[0] = '\0';
+                p.preferred_instance = -1;
+                open_player(p, s);
+                if (p.handle) {
+                    p.adopted_pad = true;
+                    std::fprintf(stdout, "psxrecomp runtime: keyboard seat %d "
+                                 "adopted controller (instance %d); keyboard "
+                                 "binds stay live\n", s + 1, (int)p.instance);
+                } else {
+                    p.kind = 1;
+                }
+            }
+        }
         const bool automatic = live_pad_mode(s);
         const int device = p.steering_wheel ? SIO_PAD_JOGCON : SIO_PAD_DUALSHOCK;
         /* An unrelated hotplug must not reset another controller's mode. */
@@ -5949,18 +6252,23 @@ static void refresh_player_devices(void) {
         const int boot_type = pad_type_boot_for_slot(s, p, boot_mode);
         if (boot_type == SIO_PAD_DUALSHOCK || boot_type == SIO_PAD_JOGCON)
             sio_set_pad_config_capable(s, 1);
-        sio_set_pad_type(s, boot_type, 0x80, 0x80, 0x80, 0x80);
+        const uint8_t released = boot_type == SIO_PAD_NEGCON ? 0 : 0x80;
+        sio_set_pad_type(s, boot_type, 0x80, released, released, released);
     }
 }
 
 /* Parse a [controller] device string into a player slot:
- *   "none" -> no pad; "keyboard" -> keyboard map; otherwise an SDL GUID. */
+ *   "none" -> no pad; "keyboard" -> keyboard map; "mouse" -> a PS1 Mouse
+ *   driven by the host pointer; otherwise an SDL GUID. */
 static void set_player_device(PlayerInput& p, const std::string& dev, int mode) {
     p.mode = mode;
     p.guid[0] = '\0';
+    p.adopted_pad = false;
     std::string d = lower_copy(trim_copy(dev));
     if (d.empty() || d == "none") { p.kind = 0; }
     else if (d == "keyboard")     { p.kind = 1; }
+    else if (d == "mouse")        { p.kind = 3; }
+    else if (d == "guncon")       { p.kind = 4; }
     else if (d == "auto" || d == "gamepad" || d == "controller") {
         /* First available SDL game controller (guid empty -> open_player falls
          * back to the first connected pad). Lets a user default to "my
@@ -6006,6 +6314,9 @@ static bool controller_source_pressed_h(SDL_GameController* h, const ControllerS
  * (arrows=d-pad, X/S/Z/A=Cross/Circle/Square/Triangle, Q/W/E/R=L1/R1/L2/R2,
  * Return=Start, RShift=Select) plus T/Y=L3/R3 stick clicks. */
 static uint16_t pad_from_keyboard(int player) {
+    /* Without input focus the keyboard reads as released: SDL's cached key
+     * array can hold keys pressed while another application had focus. */
+    if (!host_hotkey_input_focused()) return 0xFFFF;
     const Uint8* keys = SDL_GetKeyboardState(NULL);
     return psx_keybinds_pad_word(keys, player);
 }
@@ -6114,7 +6425,9 @@ static void pad_sticks_for(const PlayerInput& p, int player, uint8_t out[4]) {
     if (p.kind == 1) {
         /* Keyboard analog: the configurable left/right stick-direction binds
          * (default = arrow keys on the LEFT stick; RIGHT stick unbound), so the
-         * old keyboard analog behaviour is preserved unless the user rebinds. */
+         * old keyboard analog behaviour is preserved unless the user rebinds.
+         * Without input focus the sticks stay centred. */
+        if (!host_hotkey_input_focused()) return;
         const Uint8* keys = SDL_GetKeyboardState(NULL);
         psx_keybinds_sticks(keys, player, out);
         return;
@@ -6223,6 +6536,49 @@ struct PadSources {
     bool all_pads;  /* every connected controller (dev-any-input)              */
 };
 
+/* Steam Desktop Configuration echo guard. Started outside Steam, a physical
+ * Valve pad (Steam Controller, Deck) reaches SDL through HIDAPI as a normal
+ * gamepad, while the Steam client keeps applying its Desktop layout to the
+ * same press: B = Escape (menu), Back = Tab (turbo), A = Enter (Start),
+ * D-pad = arrows, triggers = mouse clicks. While P1's own Valve pad has input
+ * held (plus a short trailing window for the key-up), keyboard and mouse
+ * input is that echo and is dropped. A keyboard-only player, any other pad
+ * and Steam Input's virtual pad (a Steam launch) are unaffected. */
+static uint64_t g_valve_echo_last_held_ms = 0;
+static constexpr uint64_t kValveEchoWindowMs = 150;
+static bool p1_valve_pad_input_held(SDL_GameController* h, int deadzone) {
+    for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; ++b)
+        if (SDL_GameControllerGetButton(h, (SDL_GameControllerButton)b))
+            return true;
+    for (int a = 0; a < SDL_CONTROLLER_AXIS_MAX; ++a) {
+        const int v = SDL_GameControllerGetAxis(h, (SDL_GameControllerAxis)a);
+        const bool trig = a == SDL_CONTROLLER_AXIS_TRIGGERLEFT ||
+                          a == SDL_CONTROLLER_AXIS_TRIGGERRIGHT;
+        if (trig ? v > 4096 : (v > deadzone || v < -deadzone)) return true;
+    }
+    return false;
+}
+static bool steam_desktop_echo_guard(void) {
+    const PlayerInput& p = g_players[0];
+    const bool valve = p.kind == 2 && p.handle &&
+        psx_controller_is_physical_valve_pad(
+            SDL_GameControllerGetVendor(p.handle),
+            SDL_GameControllerGetProduct(p.handle));
+    const uint64_t now = (uint64_t)SDL_GetTicks();
+    const bool held = valve && p1_valve_pad_input_held(p.handle, p.deadzone);
+    if (held) g_valve_echo_last_held_ms = now ? now : 1;
+    return psx_steam_desktop_echo_active(valve, held, now,
+                                         g_valve_echo_last_held_ms,
+                                         kValveEchoWindowMs);
+}
+/* Event-level half of the guard: key and mouse-button presses that Steam
+ * synthesizes never reach the in-game menu (Escape) or the overlay. Releases
+ * pass so no consumer is left with a stuck key. */
+static bool steam_desktop_echo_event(const SDL_Event& ev) {
+    if (ev.type != SDL_KEYDOWN && ev.type != SDL_MOUSEBUTTONDOWN) return false;
+    return steam_desktop_echo_guard();
+}
+
 static PadSources pad_sources_for(const PlayerInput& p, bool dev_here) {
     PadSources s;
     s.device   = (p.kind != 0);
@@ -6244,7 +6600,8 @@ static PadSources pad_sources_for(const PlayerInput& p, bool dev_here) {
      * consumes the binds through pad_buttons_for/pad_sticks_for, and applying
      * them twice is idempotent. */
     (void)dev_here;
-    s.keybinds = true;
+    /* ...except Steam's desktop-layout echo of P1's own Valve pad. */
+    s.keybinds = !(&p == &g_players[0] && steam_desktop_echo_guard());
     s.all_pads = dev_here;
     return s;
 }
@@ -6288,7 +6645,7 @@ static bool controller_policy_dpad_active(const PlayerInput& p, int player,
                 return true;
         }
     }
-    if (src.keybinds) {
+    if (src.keybinds && host_hotkey_input_focused()) {
         const Uint8* keys = SDL_GetKeyboardState(NULL);
         if (psx_keybinds_dpad_active(keys, player)) return true;
     }
@@ -6474,7 +6831,8 @@ static int any_controller_button_down(void) {
 
 static int savestate_resume_inputs_held(void) {
     const Uint8* keys = SDL_GetKeyboardState(NULL);
-    if (keys) {
+    /* A key latched across a focus change must not hold the resume guard. */
+    if (keys && host_hotkey_input_focused()) {
         if (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER] ||
             keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_L])
             return 1;
@@ -6632,8 +6990,10 @@ extern "C" int psx_mod_read_local_pad_sticks(uint32_t player,
         pad_sticks_for(p, (int)player + 1, out);
         return 1;
     }
-    const Uint8* keys = SDL_GetKeyboardState(NULL);
-    psx_keybinds_sticks(keys, (int)player + 1, out);
+    if (host_hotkey_input_focused()) {
+        const Uint8* keys = SDL_GetKeyboardState(NULL);
+        psx_keybinds_sticks(keys, (int)player + 1, out);
+    }
     dev_any_controller_sticks(out);
     return 1;
 }
@@ -6742,7 +7102,7 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
     /* Opt-in dev merge: P1 is driven by the keyboard AND every connected
      * controller (PSX_DEV_INPUT=1). Default is strict per-slot routing. */
     const bool dev_here = (dev_any_input_enabled() && s == 0);
-    if (p.kind == 0 && !dev_here) return 0;  /* no device in this port */
+    if ((p.kind == 0 && !dev_here) || p.kind == 3 || p.kind == 4) return 0;
 
     /* Mapping follows the live controller mode for ordinary local play. */
     /* One source set, consumed by the presentation policy, the button merge and the
@@ -6752,7 +7112,7 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
     const int mode = live_pad_mode(s) ? sampled_pad_mode(s)
         : effective_player_mode_for_sio(p, s);
     uint8_t st[4] = { 0x80, 0x80, 0x80, 0x80 };
-    if (mode == PSXRecompV4::PAD_MODE_ANALOG || p.steering_wheel ||
+    if ((mode == PSXRecompV4::PAD_MODE_ANALOG || mode == PSXRecompV4::PAD_MODE_NEGCON) || p.steering_wheel ||
         g_mod_controller_policy[s].callback || host_view) {
         pad_sticks_for(p, player, st);
     }
@@ -6761,8 +7121,9 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
     const int effective_mode = controller_policy_resolve_mode(
         s, player, mode, src, p, policy_buttons, st);
     const int eff_analog =
-        effective_mode == PSXRecompV4::PAD_MODE_ANALOG ? 1 : 0;
+        (effective_mode == PSXRecompV4::PAD_MODE_ANALOG || effective_mode == PSXRecompV4::PAD_MODE_NEGCON) ? 1 : 0;
     int frame_type = p.steering_wheel ? SIO_PAD_JOGCON
+                   : effective_mode == PSXRecompV4::PAD_MODE_NEGCON ? SIO_PAD_NEGCON
                    : (eff_analog ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL);
 #ifndef PSX_NO_DEBUG_TOOLS
     const int debug_type = debug_server_get_pad_type_override();
@@ -6772,6 +7133,7 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
     if (guarded) {
         out->buttons = 0xFFFFu;
         out->lx = out->ly = out->rx = out->ry = 0x80u;
+        if(frame_type==SIO_PAD_NEGCON) out->ly=out->rx=out->ry=0;
         out->analog = (uint8_t)frame_type;
         out->connected = 1;
         return 1;
@@ -6806,7 +7168,7 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
      * inside pad_sticks_for; psx_keybinds_sticks only widens a deflection, so
      * applying it twice is idempotent. */
     if (eff_analog || host_view) {
-        if (src.keybinds) {
+        if (src.keybinds && host_hotkey_input_focused()) {
             const Uint8* keys = SDL_GetKeyboardState(NULL);
             psx_keybinds_sticks(keys, player, st);
         }
@@ -6817,6 +7179,16 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
         st[0] = st[1] = st[2] = st[3] = 0x80;
     }
 
+    if(frame_type==SIO_PAD_NEGCON) {
+        int r=0,l=0;
+        if(p.kind==2 && p.handle) {
+            r=SDL_GameControllerGetAxis(p.handle,SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+            l=SDL_GameControllerGetAxis(p.handle,SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+        }
+        st[1]=(btn&0x0400u)?0:255;
+        st[2]=(btn&0x4000u)?(uint8_t)(r<=0?0:r>=32767?255:(r*255+16383)/32767):255;
+        st[3]=(btn&0x8000u)?(uint8_t)(l<=0?0:l>=32767?255:(l*255+16383)/32767):255;
+    }
     out->buttons = btn;
     out->lx = st[0]; out->ly = st[1]; out->rx = st[2]; out->ry = st[3];
     if (psx_host_ui_capture_active()) {
@@ -6824,6 +7196,7 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
          * peer simulates identically. */
         out->buttons = 0xFFFFu;
         out->lx = out->ly = out->rx = out->ry = 0x80u;
+        if (frame_type == SIO_PAD_NEGCON) out->ly = out->rx = out->ry = 0;
     }
     out->analog = (uint8_t)frame_type;
     out->connected = 1;
@@ -6859,6 +7232,7 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
     const int  player  = s + 1;             /* keybinds.ini section (1..5) */
     const bool dev_here = false;
     if (p.kind == 0) return 0;  /* no device in this port */
+    if (p.kind == 3 || p.kind == 4) return 0; /* netplay carries pads only */
 
     /* Same predicate as capture_pad_slot, with dev-any-input disabled:
      * netplay must stay exclusive so peers hash-agree. */
@@ -6866,7 +7240,7 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
     const int sio_slot = (present_sio_slot >= 0) ? present_sio_slot : s;
     int mode = effective_player_mode_for_sio(p, sio_slot);
     uint8_t st[4] = { 0x80, 0x80, 0x80, 0x80 };
-    if (mode == PSXRecompV4::PAD_MODE_ANALOG || p.steering_wheel ||
+    if ((mode == PSXRecompV4::PAD_MODE_ANALOG || mode == PSXRecompV4::PAD_MODE_NEGCON) || p.steering_wheel ||
         g_mod_controller_policy[s].callback) {
         pad_sticks_for(p, player, st);
     }
@@ -6874,8 +7248,9 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
     const int effective_mode = controller_policy_resolve_mode(
         s, player, mode, src, p, policy_buttons, st);
     const int eff_analog =
-        effective_mode == PSXRecompV4::PAD_MODE_ANALOG ? 1 : 0;
+        (effective_mode == PSXRecompV4::PAD_MODE_ANALOG || effective_mode == PSXRecompV4::PAD_MODE_NEGCON) ? 1 : 0;
     const int frame_type = p.steering_wheel ? SIO_PAD_JOGCON
+                   : effective_mode == PSXRecompV4::PAD_MODE_NEGCON ? SIO_PAD_NEGCON
                          : (eff_analog ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL);
 
     const bool suppress_stick = (eff_analog != 0) || p.steering_wheel;
@@ -6885,6 +7260,16 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
         st[0] = st[1] = st[2] = st[3] = 0x80;
     }
 
+    if(frame_type==SIO_PAD_NEGCON) {
+        int r=0,l=0;
+        if(p.kind==2 && p.handle) {
+            r=SDL_GameControllerGetAxis(p.handle,SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+            l=SDL_GameControllerGetAxis(p.handle,SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+        }
+        st[1]=(btn&0x0400u)?0:255;
+        st[2]=(btn&0x4000u)?(uint8_t)(r<=0?0:r>=32767?255:(r*255+16383)/32767):255;
+        st[3]=(btn&0x8000u)?(uint8_t)(l<=0?0:l>=32767?255:(l*255+16383)/32767):255;
+    }
     out->buttons = btn;
     out->lx = st[0]; out->ly = st[1]; out->rx = st[2]; out->ry = st[3];
     out->analog = (uint8_t)frame_type;
@@ -7014,6 +7399,7 @@ static void capture_override_pad(int override_word, PsxNetPad* out) {
         eff_analog = 1;
 #endif
     int frame_type = p.steering_wheel ? SIO_PAD_JOGCON
+                   : effective_mode == PSXRecompV4::PAD_MODE_NEGCON ? SIO_PAD_NEGCON
                    : (eff_analog ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL);
 #ifndef PSX_NO_DEBUG_TOOLS
     if (debug_type >= SIO_PAD_DIGITAL && debug_type <= SIO_PAD_JOGCON)
@@ -7447,6 +7833,7 @@ static void netplay_barrier_admit(int override) {
                 /* The in-game overlay sees events first here too: the netplay
                  * admit wait polls every frame, and an Esc meant for the menu
                  * must not end the match. */
+                if (steam_desktop_echo_event(ev)) continue;
                 if (psx_host_input_sink_dispatch(&ev)) continue;
                 if (ev.type == SDL_QUIT) {
                     netplay_soft_exit("sdl_window_close");
@@ -7671,7 +8058,31 @@ static void apply_input_override_port2(int override_word) {
 #endif
 }
 
+static void sample_mouse_ports(void);
+static bool mouse_seat_configured(void);
+static void sample_guncon_ports(void);
+
+/* Live port swap (Ctrl+F6): the first pad answers on console Port 2 and the
+ * second on Port 1 (sio_set_pads_swapped). Like moving the plugs, it is host
+ * state and is not saved in a save state. It needs no second player: in a
+ * one-player title the pad moves to Port 2 and Port 1 is empty. */
+static bool g_controller_ports_swapped = false;
+
+/* Not in netplay (every peer keeps the plain layout), not with a multitap,
+ * not under the self-check input lock and not while a mod controller source
+ * owns port 1 or 2. */
+static bool controller_port_swap_available(void) {
+    return !psx_netplay_active() && !sio_get_multitap() &&
+           !psx_selfcheck_input_locked() &&
+           !mod_controller_source_present(0u) && !mod_controller_source_present(1u);
+}
+
+static void controller_port_swap_sync(void) {
+    sio_set_pads_swapped(g_controller_ports_swapped && controller_port_swap_available());
+}
+
 static void sample_pad_into_sio(int override) {
+    controller_port_swap_sync();
     if (replay_session_owns_p1()) { apply_replay_p1_to_sio(); return; }
     /* Selfcheck fighter mash owns P1 when enabled (headless-safe). */
     if (override < 0) {
@@ -7688,6 +8099,7 @@ static void sample_pad_into_sio(int override) {
     restore_input_override_profile(0);
 #endif
     int n = g_offline_pad_count;
+    if(mouse_seat_configured() && n<2) n=2;
     if (n < 1) n = 1;
     if (n > PSX_MAX_PLAYERS) n = PSX_MAX_PLAYERS;
     const uint32_t consumer_sim =
@@ -7709,6 +8121,8 @@ static void sample_pad_into_sio(int override) {
                                  0, 0);
         }
     }
+    sample_mouse_ports();
+    sample_guncon_ports();
 }
 
 /* Measurement aid, release builds included: PSX_HOLD_PADS="p1[,p2]" holds
@@ -8385,12 +8799,14 @@ static void savestate_menu_poll_nav(uint32_t now_ms) {
     if (host_pad_layer(&host_word, sticks, &lt, &rt)) buttons = host_word;
     const int lx = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTX);
     const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    /* Without input focus the held arrows read as released. */
+    const int kb = host_hotkey_input_focused() ? 1 : 0;
     /* Merge event taps and held keyboard-as-pad arrows before stepping.
      * Moving in both the event handler and this poll skipped two slots. */
-    prev = savestate_menu_key_direction < 0 || keys[SDL_SCANCODE_LEFT] ||
-        keys[SDL_SCANCODE_UP] || !(buttons & PAD_LEFT) || !(buttons & PAD_UP) || lx < -16000;
-    next = savestate_menu_key_direction > 0 || keys[SDL_SCANCODE_RIGHT] ||
-        keys[SDL_SCANCODE_DOWN] || !(buttons & PAD_RIGHT) || !(buttons & PAD_DOWN) || lx > 16000;
+    prev = savestate_menu_key_direction < 0 || (kb && keys[SDL_SCANCODE_LEFT]) ||
+        (kb && keys[SDL_SCANCODE_UP]) || !(buttons & PAD_LEFT) || !(buttons & PAD_UP) || lx < -16000;
+    next = savestate_menu_key_direction > 0 || (kb && keys[SDL_SCANCODE_RIGHT]) ||
+        (kb && keys[SDL_SCANCODE_DOWN]) || !(buttons & PAD_RIGHT) || !(buttons & PAD_DOWN) || lx > 16000;
     savestate_menu_key_direction = 0;
     load = !(buttons & PAD_CROSS);
     save = !(buttons & PAD_SQUARE);
@@ -8492,13 +8908,16 @@ static void fast_forward_toggle_poll_buttons(void) {
 
 static void rewind_poll_nav(uint32_t now_ms) {
     const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    int left = keys[SDL_SCANCODE_LEFT] ? 1 : 0;
-    int right = keys[SDL_SCANCODE_RIGHT] ? 1 : 0;
+    /* Without input focus the direct keys read as released, so a key latched
+     * across a focus change cannot keep the rewind cursor moving. */
+    const int kb = host_hotkey_input_focused() ? 1 : 0;
+    int left = (kb && keys[SDL_SCANCODE_LEFT]) ? 1 : 0;
+    int right = (kb && keys[SDL_SCANCODE_RIGHT]) ? 1 : 0;
     /* Direct menu keys supplement the configured pad bindings below. Letter
      * aliases conflict with remaps: X is Cross by default, so treating X as
      * Cancel sets both edges and silently cancels every keyboard load. */
-    int acc = (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_SPACE]) ? 1 : 0;
-    int can = (keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_BACKSPACE]) ? 1 : 0;
+    int acc = (kb && (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_SPACE])) ? 1 : 0;
+    int can = (kb && (keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_BACKSPACE])) ? 1 : 0;
     /* Honor remapped Cross/Circle (and Select/R3) via the same pad path as
      * gameplay — GameController A/B alone miss keyboard-as-pad and remaps. */
     uint16_t btn = pad_buttons_for(g_players[0], 1, true);
@@ -8554,6 +8973,159 @@ static int runtime_menu_chord_down(void) {
            p1_host_button_down(nullptr, SDL_CONTROLLER_BUTTON_LEFTSTICK);
 }
 static int runtime_menu_chord_was;
+static bool mouse_seat_configured(void) {
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++)
+        if (g_players[s].kind == 3) return true;
+    return false;
+}
+
+static void mouse_set_relative(bool on) {
+    if (on == g_mouse_captured || !sdl_window) return;
+#if defined(PSX_SDL3)
+    if (!SDL_SetWindowRelativeMouseMode(sdl_window, on)) return;
+#else
+    if (SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE) != 0) return;
+#endif
+    g_mouse_captured = on;
+}
+
+/* Capture while the player wants it, the window has focus and no host menu
+ * is open; release otherwise so the pointer is usable. */
+static bool mouse_capture_requested(void) {
+    return !g_headless && !psx_netplay_active() && mouse_seat_configured() &&
+           g_mouse_capture_wanted && host_hotkey_input_focused() &&
+           !savestate_menu_open && !psx_host_ui_capture_active() &&
+           !psx_runtime_menu_is_open() && !psx_rewind_is_open();
+}
+
+static void mouse_capture_sync(void) {
+    mouse_set_relative(mouse_capture_requested());
+}
+
+static void mouse_capture_toggle(void) {
+    if (!mouse_seat_configured()) return;
+    g_mouse_capture_wanted = !g_mouse_capture_wanted;
+    mouse_capture_sync();
+    char key[32];
+    char msg[80];
+    host_keymap_label(HOST_KEYMAP_MOUSE_CAPTURE, key, sizeof(key));
+    if (g_mouse_capture_wanted)
+        std::snprintf(msg, sizeof(msg), "Mouse captured (%s releases)", key);
+    else
+        std::snprintf(msg, sizeof(msg), "Mouse released (%s captures)", key);
+    host_osd_push(msg, 1500);
+}
+
+/* Feed host pointer motion and buttons into every mouse seat. Motion is
+ * scaled by mouse_sensitivity; the sub-count remainder carries to the next
+ * frame. Released capture or lost focus feeds nothing and drops unread
+ * motion, and both buttons read released. */
+static void sample_mouse_ports(void) {
+    if (g_headless || !mouse_seat_configured()) return;
+    mouse_capture_sync();
+    float fx = 0.0f, fy = 0.0f;
+#if defined(PSX_SDL3)
+    const SDL_MouseButtonFlags buttons = SDL_GetRelativeMouseState(&fx, &fy);
+#else
+    int ix = 0, iy = 0;
+    const Uint32 buttons = SDL_GetRelativeMouseState(&ix, &iy);
+    fx = (float)ix;
+    fy = (float)iy;
+#endif
+    const bool live = g_mouse_captured && mouse_capture_requested();
+    int dx = 0, dy = 0;
+    if (live) {
+        const double x = (double)fx * g_mouse_sensitivity + g_mouse_frac[0];
+        const double y = (double)fy * g_mouse_sensitivity + g_mouse_frac[1];
+        dx = (int)x;
+        dy = (int)y;
+        g_mouse_frac[0] = x - dx;
+        g_mouse_frac[1] = y - dy;
+    } else {
+        g_mouse_frac[0] = g_mouse_frac[1] = 0.0;
+    }
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        if (g_players[s].kind != 3) continue;
+        if (!live) {
+            sio_mouse_clear_motion(s);
+            sio_set_mouse_buttons(s, 0, 0);
+            continue;
+        }
+        sio_mouse_add_motion(s, dx, dy);
+        sio_set_mouse_buttons(s, (buttons & SDL_BUTTON_LMASK) != 0,
+                              (buttons & SDL_BUTTON_RMASK) != 0);
+    }
+}
+
+static bool guncon_seat_configured(void) {
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++)
+        if (g_players[s].kind == 4) return true;
+    return false;
+}
+
+static SDL_Cursor* g_guncon_cursor = nullptr;
+static bool g_guncon_cursor_on = false;
+
+static void guncon_cursor_sync(bool on) {
+    if (on == g_guncon_cursor_on) return;
+    if (on) {
+        if (!g_guncon_cursor)
+            g_guncon_cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
+        if (g_guncon_cursor) SDL_SetCursor(g_guncon_cursor);
+    } else {
+        SDL_SetCursor(SDL_GetDefaultCursor());
+    }
+    g_guncon_cursor_on = on;
+}
+
+/* Aim every GunCon seat at the host pointer. The pointer's place over the
+ * letterboxed game image becomes X/Y through the game's GP1(06h)/(07h)
+ * display range (guncon_map.h). Outside the image, with the side button held
+ * (off-screen reload), without focus, in a host menu or while a PS1 Mouse
+ * holds the pointer captured, the gun sees no light and its buttons read
+ * released. Left button = trigger, right = A, middle = B. */
+static void sample_guncon_ports(void) {
+    if (g_headless || !guncon_seat_configured() || !sdl_window) return;
+    const bool menu = savestate_menu_open || psx_host_ui_capture_active() ||
+                      psx_rewind_is_open();
+    const bool live = host_hotkey_input_focused() && !psx_netplay_active() && !menu && !g_mouse_captured;
+    guncon_cursor_sync(live);
+    uint16_t gx = (uint16_t)SIO_GUNCON_NO_LIGHT_X, gy = (uint16_t)SIO_GUNCON_NO_LIGHT_Y;
+    uint16_t btn = 0xFFFFu;
+    if (live) {
+#if defined(PSX_SDL3)
+        float mx = 0.0f, my = 0.0f;
+        (void)SDL_GetMouseState(&mx, &my);
+#else
+        int mx = 0, my = 0;
+        (void)SDL_GetMouseState(&mx, &my);
+#endif
+        const Uint8* keys = SDL_GetKeyboardState(NULL);
+        auto held = [&](int c) { return psx_keybinds_guncon_held(keys, c); };
+        int no_light = 0;
+        btn = guncon_host_buttons(held(PSX_GC_TRIGGER), held(PSX_GC_A), held(PSX_GC_B),
+                                  held(PSX_GC_NO_LIGHT), held(PSX_GC_OFFSCREEN_SHOT),
+                                  &no_light);
+        int ww = 0, wh = 0;
+        SDL_GetWindowSize(sdl_window, &ww, &wh);
+        int rx = 0, ry = 0, rw = 0, rh = 0;
+        guncon_letterbox(ww, wh, g_video_aspect_num, g_video_aspect_den,
+                         &rx, &ry, &rw, &rh);
+        if (rw > 0 && rh > 0 && !no_light) {
+            uint32_t x1 = 0, x2 = 0, y1 = 0, y2 = 0, hr1 = 0, hr2 = 0;
+            gpu_get_crtc_debug(&x1, &x2, &y1, &y2, &hr1, &hr2);
+            guncon_map_pointer(((double)mx - rx) / (double)rw,
+                               ((double)my - ry) / (double)rh,
+                               x1, x2, y1, y2, psx_video_timing_is_pal(),
+                               &gx, &gy);
+        }
+    }
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        if (g_players[s].kind != 4) continue;
+        sio_set_guncon_state(s, btn, gx, gy);
+    }
+}
+
 static void runtime_menu_poll_toggle(void) {
     const int down = runtime_menu_chord_down();
     if (down && !runtime_menu_chord_was && host_hotkey_input_focused() && !savestate_menu_open &&
@@ -8696,6 +9268,7 @@ static void rewind_host_pause_loop(void) {
 static void host_pause_service(void);  /* in-game overlay glue (P6), below */
 static bool host_pause_event(const SDL_Event& ev);  /* P3: input sink */
 static bool host_pause_event(const SDL_Event& ev) {
+    if (steam_desktop_echo_event(ev)) return true;
     return psx_host_input_sink_dispatch(&ev) != 0;
 }
 
@@ -8888,6 +9461,23 @@ struct NetplayVblankEpilogue {
     int override = -1;
 };
 
+/* Ctrl+F6: move controller 1 to console Port 2, or back. Held buttons are
+ * released, as after a pad reconnect. */
+static void controller_port_swap_toggle(void) {
+    if (!controller_port_swap_available()) {
+        host_osd_push(psx_netplay_active() ? "Port swap is unavailable during netplay"
+                                           : "Port swap is unavailable with this input setup",
+                      1800);
+        return;
+    }
+    g_controller_ports_swapped = !g_controller_ports_swapped;
+    controller_port_swap_sync();
+    savestate_input_guard_arm();
+    host_osd_push(g_controller_ports_swapped ? "Controller 1 is in console port 2"
+                                             : "Controller 1 is in console port 1",
+                  1800);
+}
+
 /* Called from gpu_vblank_tick() at each simulated vblank. */
 #ifndef PSX_NO_DEBUG_TOOLS
 /* Headless has no present surface, but automated A/B runs still need the
@@ -8999,6 +9589,7 @@ static void toggle_live_pad_mode(int s) {
 static bool drain_host_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
+        if (steam_desktop_echo_event(ev)) continue;
         if (psx_local_mouse_event(ev)) continue;
         /* In-game overlay provider sees events first (host_overlay.h P3). */
         if (psx_host_input_sink_dispatch(&ev)) continue;
@@ -9056,6 +9647,11 @@ static bool drain_host_events() {
             }
             if (!key_repeat && host_keymap_match_event(HOST_KEYMAP_OPEN_LAUNCHER, key, scancode, mod) &&
                 !savestate_menu_open && !psx_rewind_is_open() && psx_runtime_menu_open()) continue;
+            if (!key_repeat && mouse_seat_configured() && !psx_netplay_active() &&
+                host_keymap_match_event(HOST_KEYMAP_MOUSE_CAPTURE, key, scancode, mod)) {
+                mouse_capture_toggle();
+                continue;
+            }
             if (key == SDLK_ESCAPE && psx_netplay_active()) {
                 netplay_soft_exit("netplay_escape");
                 return false;
@@ -9078,6 +9674,12 @@ static bool drain_host_events() {
                                              (int)mod)) {
                 psx_local_mouse_reset();
                 savestate_menu_toggle(key);
+            }
+            else if (!key_repeat &&
+                     host_keymap_match_event(HOST_KEYMAP_SWAP_CONTROLLER_PORTS,
+                                             (int)key, (int)scancode,
+                                             (int)mod)) {
+                controller_port_swap_toggle();
             }
             else if (key == SDLK_c && (mod & KMOD_CTRL)) {
                 const int rc = psx_disc_tray_cycle(0, PSX_DISC_TRAY_ORIGIN_HOTKEY_REINSERT);
@@ -9646,7 +10248,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 #endif
     host_frame_stamp((uint32_t)s_frame_count, (uint32_t)g_dirty_ram_insns_run, stamp_static_checks);
 
-    psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+    psx_local_mouse_begin(sdl_window, !mouse_seat_configured() && local_mouse_live(override));
     {
         /* Outside every debug guard on purpose: production must be measurable. */
         extern uint64_t s_frame_count;
@@ -9815,6 +10417,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         fast_forward_toggle_poll_buttons();
         psx_rewind_note_frame();
         psx_rewind_present_tick((uint32_t)SDL_GetTicks());
+        mouse_capture_sync();
         if (psx_runtime_menu_is_open()) runtime_menu_host_loop();
         if (savestate_menu_open)
             savestate_menu_host_pause_loop();
@@ -9910,31 +10513,28 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     int logical_load_active = fntrace_is_game_started() &&
         (cdrom_load_in_progress() || cdrom_savestate_cd_wait_active());
     int load_run_value = 0;
-    static int load_run = 0;
-    static int release_run = 0;
+    static TurboLoadsGate s_turbo_gate;
     if (g_turbo_loads_enabled && !psx_netplay_active() &&
         !psx_selfcheck_resim_active()) {
-        /* Require a short sustained predicate on entry, then retain turbo over
-         * a short false gap after it has engaged. Netplay / selfcheck keep
-         * wall-pacing off via their own gates; turbo engage hysteresis must
-         * not leak host ambient across resim passes. */
-        if (logical_load_active) {
-            if (load_run < (1 << 20)) load_run++;
-            if (load_run >= TURBO_LOADS_ENGAGE_FRAMES || release_run > 0) {
-                turbo_loads_active = 1;
-                release_run = g_turbo_load_release_frames;
-            }
-        } else {
-            load_run = 0;
-            if (release_run > 0) {
-                turbo_loads_active = 1;
-                release_run--;
-            }
-        }
-        load_run_value = load_run;
+        /* Engage only for sustained data loads (turbo_loads_gate.h). The old
+         * rule engaged on any read held for 4 vblanks plus the burst tail, so
+         * short reads while the player has control ran accelerated with few
+         * presents. XA-ADPCM streaming, CD-DA and FMV (24-bit display) never
+         * count. Netplay / selfcheck keep wall-pacing off via their own gates;
+         * the gate state must not leak host ambient across resim passes. */
+        const int started = fntrace_is_game_started();
+        const int media = gpu_display_is_depth24();
+        const int data_read = started && !media && cdrom_data_load_read_now();
+        const int load_hold = started && !media && cdrom_load_in_progress() &&
+                              !cdrom_xa_mode_enabled();
+        if (started && cdrom_savestate_cd_wait_active())
+            turbo_loads_active = 1;   /* post-load CD wait: unchanged */
+        else
+            turbo_loads_active = turbo_loads_gate_step(&s_turbo_gate, data_read, load_hold,
+                                                       g_turbo_load_release_frames);
+        load_run_value = turbo_loads_gate_window_reads(&s_turbo_gate);
     } else {
-        load_run = 0;
-        release_run = 0;
+        turbo_loads_gate_reset(&s_turbo_gate);
     }
     /* HLE boot-skip window: from reset until the game entry PC first
      * dispatches, run unpaced so the (shell-skipped) BIOS kernel init +
@@ -10004,7 +10604,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         uint8_t host_keys[SDL_NUM_SCANCODES];
         psx_keybinds_host_keys(keys, host_keys);
         const bool kb_turbo = host_hotkey_input_focused() &&
-            host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState());
+            host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState()) &&
+            !steam_desktop_echo_guard();
         manual_turbo_requested = g_manual_turbo_latched || (!g_fast_forward_toggle_mode &&
             (kb_turbo || hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD,
                                              g_hotkey_pad_fast_forward)));
@@ -10723,11 +11324,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         netplay_note_present();
         const Uint64 freq = SDL_GetPerformanceFrequency();
         const Uint64 present_ms = (t1 >= t0 && freq) ? ((t1 - t0) * 1000u) / freq : 0;
-        if (!g_present_vsync_disabled && present_ms > 250) {
-            g_present_slow_count++;
-            if (g_present_slow_count >= 3 &&
+        if (!psx_present_vsync_disabled() && present_ms > 250) {
+            if (psx_present_note_slow() >= 3 &&
                 SDL_RenderSetVSync(sdl_renderer, 0) == 0) {
-                g_present_vsync_disabled = 1;
+                psx_present_disable_vsync();
             }
         }
     }
@@ -11666,9 +12266,8 @@ static PSXRecompV4::NetplayDiscExpect netplay_expect_for_disc(
     const std::filesystem::path& disc) {
     PSXRecompV4::NetplayDiscExpect e = g_netplay_disc_expect;
     if (!g_disc_netplay_fps.empty()) {
-        const auto it =
-            g_disc_netplay_fps.find(uppercase_ascii(disc.stem().string()));
-        if (it != g_disc_netplay_fps.end()) e.required_disc_fp = it->second;
+        e.required_disc_fp = PSXRecompV4::disc_roster_value(
+            g_disc_metadata_roster, g_disc_netplay_fps, disc, e.required_disc_fp);
     }
     return e;
 }
@@ -11697,6 +12296,12 @@ namespace {
     int ae_bios_verify(const char* bios_path, RecompLauncherCBiosVerify* out) {
         if (!out) return 0;
         std::memset(out, 0, sizeof(*out));
+        /* What this row says goes into the run report at every way out: a
+         * launcher that blocks Play ends as "launcher closed". */
+        struct RowNote {
+            const RecompLauncherCBiosVerify* row;
+            ~RowNote() { psx_start_note_launcher("bios", row->detail); }
+        } row_note{out};
         /* Empty path = use bundled OpenBIOS when this title allows it.
          * Never needs_regen: switching to OpenBIOS is always a hot-swap. */
         if (!bios_path || !bios_path[0]) {
@@ -12004,6 +12609,49 @@ namespace {
         std::snprintf(out->serial, sizeof(out->serial), "%s", serial.c_str());
         std::snprintf(out->region, sizeof(out->region), "%s", id.region.c_str());
         out->iso_ok = id.has_header ? 1 : 0;
+        /* A set, and an image its disc list does not know (another file name,
+         * another folder): no serial is expected for it, so nothing was
+         * checked. A copy of one of the set's discs must stay accepted;
+         * another game's disc was called verified and PLAY was lit. It is
+         * judged by its serial against every serial of the set. An image
+         * that IS in the disc list is judged by its own entry, as before. */
+        const PSXRecompV4::DiscSetSerial set_serial =
+            PSXRecompV4::disc_roster_outside_list(
+                g_disc_metadata_roster, g_disc_serials,
+                std::filesystem::path(disc_path), id.expected_serial_given,
+                id.opened && id.has_header, id.detected_serial);
+        /* Wrong disc: what was read is none of the list's serials, and
+         * that includes a disc on which no serial was found. */
+        const bool set_wrong_disc = PSXRecompV4::disc_roster_wrong_disc(set_serial);
+#if defined(RECOMP_LAUNCHER_HAS_SERIAL_STATUS)
+        /* Whether the serial is one this build lists. The launcher
+         * ticked the Serial row for any serial, so a disc of another release
+         * looked right and the only sentence on the panel was the online-play
+         * note. */
+        if (id.expected_serial_given) {
+            /* The row shows what was read from the disc, never the serial
+             * that was expected: a disc with no readable serial, or a file
+             * that did not open, showed the right serial with a tick. */
+            if (!id.serial_matches)
+                std::snprintf(out->serial, sizeof(out->serial), "%s",
+                              id.detected_serial.c_str());
+            /* A disc that did not open says nothing more: its ISO header row
+             * is the reason. */
+            if (id.opened && id.has_header) {
+                out->serial_status = id.serial_matches ? RECOMP_SERIAL_LISTED
+                                                       : RECOMP_SERIAL_NOT_LISTED;
+                std::snprintf(out->expected_serials, sizeof(out->expected_serials),
+                              "%s", expect_serial.c_str());
+            }
+        } else if (set_serial != PSXRecompV4::DiscSetSerial::NotJudged) {
+            /* The image outside the set's disc list: the row's mark, and the
+             * whole list of the set for the sentence. */
+            out->serial_status = set_serial == PSXRecompV4::DiscSetSerial::Listed
+                                     ? RECOMP_SERIAL_LISTED : RECOMP_SERIAL_NOT_LISTED;
+            std::snprintf(out->expected_serials, sizeof(out->expected_serials), "%s",
+                          PSXRecompV4::disc_roster_serial_list(g_disc_serials).c_str());
+        }
+#endif
         if (g_lnch_netplay_available) {
             out->track_count = id.track_count;
             out->netplay_ok = id.netplay_ok ? 1 : 0;
@@ -12023,15 +12671,26 @@ namespace {
         // netplay-capable titles; ordinary offline disc verification is
         // strictly serial/header/optional-CRC based.
         if (!id.opened || !id.has_header)                            out->verdict = 3; // bad
-        else if (id.expected_serial_given && !id.serial_matches)     out->verdict = 3; // wrong disc
+        else if ((id.expected_serial_given && !id.serial_matches) ||
+                 set_wrong_disc)                                     out->verdict = 3; // wrong disc
         else if (id.expected_crc_given && id.crc_computed && !id.crc_matches) out->verdict = 2; // warn
         else if (g_lnch_netplay_available && !id.netplay_ok)         out->verdict = 2; // TOC/cue
         else                                                          out->verdict = 1; // ok
         const auto resolved = PSXRecompV4::resolve_disc_path(disc_path);
         const auto companion = PSXRecompV4::check_sbi_setup(resolved.data, resolved.mount);
 #if defined(RECOMP_LAUNCHER_HAS_SBI_STATUS)
-        out->sbi_status = !companion.required ? RECOMP_SBI_NA :
-                         companion.ready ? RECOMP_SBI_OK : RECOMP_SBI_MISSING;
+        if (companion.required) {
+            out->sbi_status = companion.ready ? RECOMP_SBI_OK : RECOMP_SBI_MISSING;
+        } else {
+            /* A CHD (or a revision without a data-track rule) never matches the
+             * size/hash rule, so fall back to the LibCrypt serial list: the row
+             * is OK only when the disc mounted with its .sbi loaded, Missing
+             * otherwise (absent, malformed, or the disc did not mount). */
+            const bool listed = !PSXRecompV4::missing_sbi_warning(
+                resolved.mount, id.detected_serial, false).empty();
+            out->sbi_status = !listed ? RECOMP_SBI_NA
+                            : (id.toc_opened && id.sbi_loaded) ? RECOMP_SBI_OK : RECOMP_SBI_MISSING;
+        }
 #endif
         static std::string last_companion_warning;
         if (!companion.ready) {
@@ -12043,6 +12702,8 @@ namespace {
         } else {
             last_companion_warning.clear();
         }
+        if (companion.ready && !id.sbi_warning.empty() && out->verdict == 1)
+            out->verdict = 2; // Warning only: no new pressing/companion gate.
         // Enforce original image policy in the selection badge, including
         // when every mod is disabled. PLAY is guarded again before boot.
         std::string identity_error;
@@ -12052,6 +12713,37 @@ namespace {
             g_session_netplay_disc_ok = false;
             std::snprintf(out->netplay_detail, sizeof(out->netplay_detail),
                           "%s", identity_error.c_str());
+        }
+        {
+            /* The row's verdict and its reason, for the run report: a red
+             * row blocks Play, and the start then ends as "launcher closed".
+             *
+             * An image outside the disc list of a build with a serial list
+             * has no single expected serial: it is refused for carrying none
+             * of the list's. The row then names the list, and
+             * gives that reason, not the online-play note, which is true of
+             * another game's disc too and is not why it is refused. */
+            const std::string expected_for_row = id.expected_serial_given
+                ? expect_serial
+                : set_serial != PSXRecompV4::DiscSetSerial::NotJudged
+                    ? PSXRecompV4::disc_roster_serial_list(g_disc_serials)
+                    : std::string();
+            const char* why =
+                !identity_error.empty() ? identity_error.c_str()
+                : !companion.ready ? companion.message.c_str()
+                : !id.detail.empty() ? id.detail.c_str()
+                : ((id.expected_serial_given && !id.serial_matches) || set_wrong_disc)
+                    ? "the disc does not carry the expected serial"
+                : !id.sbi_warning.empty() ? id.sbi_warning.c_str()
+                : id.netplay_detail.c_str();
+            char row[PSX_START_LAUNCHER_ROW_CAP];
+            std::snprintf(row, sizeof(row),
+                          "verdict=%s serial=%s expected=%s tracks=%d%s%s",
+                          out->verdict == 1 ? "ok"
+                              : out->verdict == 2 ? "warning" : "refused",
+                          id.detected_serial.c_str(), expected_for_row.c_str(),
+                          id.track_count, why[0] ? "; " : "", why);
+            psx_start_note_launcher("disc", row);
         }
         return 1;
     }
@@ -12297,6 +12989,7 @@ namespace {
     static int ae_np_lan_settle_session_bios(char* out, size_t out_cap, uint32_t* out_crc,
                                              char* why, size_t why_cap);
     static void ae_np_append_lan_bios_join(char* msg, size_t msg_cap, int* io_off);
+    static std::string ae_np_lan_game_name(void);
     static int ae_np_parse_lan_bios_tail(char* p, int* prefer_open, int* can_open,
                                         int* can_scph);
 
@@ -13078,7 +13771,7 @@ namespace {
         g_lnch_lan_my_slot = 0;
         AeLanLobbyState state;
         state.name = name && name[0] ? name : "LAN Lobby";
-        state.game = g_lnch_netplay_game_name.empty() ? "PSX" : g_lnch_netplay_game_name;
+        state.game = ae_np_lan_game_name();
         state.endpoint = endpoint && endpoint[0] ? endpoint : "127.0.0.1:7777";
         state.host_name = psx_lobby_display_name();
         if (state.host_name.empty()) state.host_name = "Host";
@@ -13147,12 +13840,28 @@ namespace {
         return false;
     }
 
+    /* This title's lobby game name ([game] name; "PSX" when the config has
+     * none) as one line of a JOIN or of the room file: a control character
+     * would end the line early, and the host reads at most a lobby name. */
+    static std::string ae_np_lan_game_name(void) {
+        std::string name = g_lnch_netplay_game_name.empty() ? "PSX" : g_lnch_netplay_game_name;
+        for (char& c : name)
+            if ((unsigned char)c < 0x20 || c == 0x7f) c = ' ';
+        if (name.size() >= PSX_LOBBY_NAME_LEN) name.resize(PSX_LOBBY_NAME_LEN - 1);
+        return name;
+    }
+
+    /* The same-machine room file, as something to offer or join. The file
+     * sits beside the exe, and the programs of a multi-program set share that
+     * folder: a room another title wrote there is not this title's room. */
     static bool ae_np_read_lan_file_state(AeLanLobbyState* state) {
         if (!state) return false;
         const bool prior = g_lnch_remote_lan;
         g_lnch_remote_lan = false;
         const bool ok = ae_np_read_lan_state(state);
         g_lnch_remote_lan = prior;
+        if (ok && !netplay_lan_game_ok(ae_np_lan_game_name().c_str(), state->game.c_str()))
+            return false;
         return ok;
     }
 
@@ -13441,7 +14150,7 @@ namespace {
         std::string me = psx_lobby_display_name();
         if (me.empty()) me = "Player";
         const char* my_id = ae_np_lan_local_player_id();
-        char msg[448];
+        char msg[640]; /* id, name, password, the BIOS tail, version, game name */
         int off = std::snprintf(msg, sizeof(msg), "MOTK3 JOIN\n%s\n%s\n%s\n", my_id,
                                 me.c_str(), password ? password : "");
         ae_np_append_lan_bios_join(msg, sizeof(msg), &off);
@@ -13468,6 +14177,11 @@ namespace {
             if (std::strncmp(buf, "MOTK1 ERR\n", 10) == 0) {
                 const char* code = buf + 10;
                 if (std::strncmp(code, "bad_password", 12) == 0) return -2;
+                /* The launcher shows last_error on its status line. */
+                if (std::strncmp(code, "version_mismatch", 16) == 0)
+                    psx_lobby_set_last_error(NETPLAY_LAN_VERSION_GUEST_TEXT);
+                else if (std::strncmp(code, "game_mismatch", 13) == 0)
+                    psx_lobby_set_last_error(NETPLAY_LAN_GAME_GUEST_TEXT);
                 return -1;
             }
             if (std::strncmp(buf, "MOTK3 UPDATE\n", 13) == 0) {
@@ -13936,6 +14650,51 @@ namespace {
                                         "%s\n", crc);
             if (c > 0) *io_off += c;
         }
+        /* Line 7: this build's lobby version. A LAN room has no server to
+         * compare versions, so the host does. Older hosts stop after the
+         * CRC. */
+        if (*io_off > 0 && (size_t)*io_off < msg_cap) {
+            const int v = std::snprintf(msg + *io_off, msg_cap - (size_t)*io_off,
+                                        "%s\n", psx_lobby_game_version());
+            if (v > 0 && (size_t)v < msg_cap - (size_t)*io_off) *io_off += v;
+        }
+        /* Line 8: this title's lobby game name. The version is the same for
+         * every title on one framework commit, so the host compares this
+         * too. Older hosts stop before it. */
+        if (*io_off > 0 && (size_t)*io_off < msg_cap) {
+            const int g = std::snprintf(msg + *io_off, msg_cap - (size_t)*io_off,
+                                        "%s\n", ae_np_lan_game_name().c_str());
+            if (g > 0 && (size_t)g < msg_cap - (size_t)*io_off) *io_off += g;
+        }
+    }
+
+    /* The host's checks for a LAN / Direct IP JOIN, which the online server
+     * makes for an online room: the guest's build (line 7 of the tail) and
+     * its game (line 8) must be the host's. A refused guest gets MOTK1 ERR
+     * version_mismatch or game_mismatch; the host's status line says why
+     * nobody arrived. A guest that sends no game line is refused, not taken
+     * on trust. Returns true when the guest may be seated. */
+    static bool ae_np_lan_join_identity_ok(const char* tail, const sockaddr_in& from) {
+        char guest[PSX_LOBBY_VERSION_LEN];
+        netplay_lan_join_version(tail, guest, sizeof(guest));
+        if (!netplay_lan_version_ok(psx_lobby_game_version(), guest)) {
+            std::fprintf(stderr, "netplay: LAN join refused: guest build \"%s\", this build \"%s\"\n",
+                         guest[0] ? guest : "(none)", psx_lobby_game_version());
+            ae_np_lan_udp_sendto(from, "MOTK1 ERR\nversion_mismatch\n");
+            psx_lobby_set_last_error(NETPLAY_LAN_VERSION_HOST_TEXT);
+            return false;
+        }
+        char game[PSX_LOBBY_NAME_LEN];
+        netplay_lan_join_game(tail, game, sizeof(game));
+        const std::string mine = ae_np_lan_game_name();
+        if (!netplay_lan_game_ok(mine.c_str(), game)) {
+            std::fprintf(stderr, "netplay: LAN join refused: guest game \"%s\", this game \"%s\"\n",
+                         game[0] ? game : "(none)", mine.c_str());
+            ae_np_lan_udp_sendto(from, "MOTK1 ERR\ngame_mismatch\n");
+            psx_lobby_set_last_error(NETPLAY_LAN_GAME_HOST_TEXT);
+            return false;
+        }
+        return true;
     }
 
     /* Optional JOIN retail CRC: line 6 of the tail, after the three bios and
@@ -14017,8 +14776,10 @@ namespace {
         std::snprintf(out, cap, "%s", in ? in : "");
     }
 
+#include "launcher_player_settings.inc"
+
     static const RecompLauncherCModProvider* ae_mod_provider(void) {
-        return PSXRecompV4::mod_runtime_launcher_provider();
+        return player_settings_provider(PSXRecompV4::mod_runtime_launcher_provider());
     }
 
     static int ae_mod_package_get_by_id(const char* id,
@@ -15113,7 +15874,7 @@ namespace {
                     if (inet_pton(AF_INET, host, &to.sin_addr) == 1) {
                         std::string me = psx_lobby_display_name();
                         if (me.empty()) me = "Player";
-                        char msg[448];
+                        char msg[640];
                         int off = std::snprintf(
                             msg, sizeof(msg), "MOTK3 JOIN\n%s\n%s\n%s\n",
                             ae_np_lan_local_player_id(), me.c_str(),
@@ -15209,6 +15970,7 @@ namespace {
                     ae_np_lan_udp_sendto(from, "MOTK1 ERR\nbad_password\n");
                     continue;
                 }
+                if (!ae_np_lan_join_identity_ok(bios_tail, from)) continue;
                 const int slot = ae_np_lan_seat_guest(st, player_id, name);
                 if (slot < 0) {
                     ae_np_lan_udp_sendto(from, "MOTK1 ERR\nfull\n");
@@ -15255,6 +16017,9 @@ namespace {
                     ae_np_lan_udp_sendto(from, "MOTK1 ERR\nbad_password\n");
                     continue;
                 }
+                /* A legacy JOIN carries no version and no game name, so it
+                 * is refused: by build on a release host, by game on any. */
+                if (!ae_np_lan_join_identity_ok(nullptr, from)) continue;
                 /* Legacy JOIN: synthesize an id from peer addr so same-name
                  * clients still get distinct seats + (2)/(3) labels. */
                 char synth_id[48];
@@ -15673,6 +16438,10 @@ namespace {
             }
             if (std::strncmp(buf, "MOTK1 KICK\n", 11) == 0 ||
                 std::strncmp(buf, "MOTK1 ERR\n", 10) == 0) {
+                if (std::strncmp(buf, "MOTK1 ERR\nversion_mismatch", 26) == 0)
+                    psx_lobby_set_last_error(NETPLAY_LAN_VERSION_GUEST_TEXT);
+                else if (std::strncmp(buf, "MOTK1 ERR\ngame_mismatch", 23) == 0)
+                    psx_lobby_set_last_error(NETPLAY_LAN_GAME_GUEST_TEXT);
                 g_lnch_joined_lan = false;
                 g_lnch_remote_lan = false;
                 g_lnch_lan_endpoint.clear();
@@ -17222,6 +17991,12 @@ namespace {
         (void)ws_offered_b;
         (void)ws_ultrawide_offered_b;
         launcher_profile_apply("psx", gi);
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_MOUSE_CAP)
+        gi->has_native_mouse = 1;
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_PERIPHERAL_CAPS)
+        gi->has_native_guncon=1; gi->has_native_negcon=1;
+#endif
+#endif
         psx_launcher_hide_mod_owned_rows(gi);
 #if defined(RECOMP_LAUNCHER_HAS_ARTWORK_GALLERY)
         /* A regional package keeps its covers beside the shared entry, not
@@ -17312,7 +18087,7 @@ namespace {
 #if defined(PSX_MEMORY_CARD_MANAGER) && defined(RECOMP_LAUNCHER_HAS_CARD_MANAGER)
         gi->card_manager = psx_card_manager::launcher_service();
 #endif
-        gi->mods = PSXRecompV4::mod_runtime_launcher_provider();
+        gi->mods = player_settings_provider(PSXRecompV4::mod_runtime_launcher_provider());
         gi->bios_verify = ae_bios_verify;
         /* Launcher window icon: the SAME file psx_apply_window_icon() puts on
          * the game window (assets/psxrecomp.png beside the exe, which
@@ -17477,6 +18252,7 @@ std::atomic<int> g_ovl_pause_wanted{0};
 bool g_ovl_pause_held = false;
 std::atomic<int> g_ovl_reload_binds{0};
 std::atomic<int> g_ovl_exit{0};            /* PSX_MENU_EXIT_* + 1; 0 = none */
+std::atomic<int> g_ovl_state_req{0};       /* menu save/load: slot + 1, | 0x100 = save; 0 = none */
 bool g_ovl_video_pending = false;
 PsxHostVideoSettings g_ovl_video_post{};
 PsxHostVideoSettings g_ovl_video_current{}, g_ovl_video_boot{};
@@ -17503,6 +18279,9 @@ bool g_ovl_ls_pending = false;
 RecompLauncherCSettings g_ovl_ls_post{};
 #endif
 std::string g_ovl_argv0, g_ovl_name, g_ovl_keybinds, g_ovl_config, g_ovl_assets;
+std::string g_ovl_disc_path;
+bool g_ovl_lock_mode = false, g_ovl_lock_device = false;
+int g_ovl_locked_modes[PSX_MAX_PLAYERS]{};
 
 bool ovl_open(void) { return g_ovl && g_ovl->is_open && g_ovl->is_open(g_ovl->ctx); }
 
@@ -17594,6 +18373,30 @@ int disc_cycle_now(int n) { const PsxMenuDiscOps* d = psx_menu_disc_ops(); retur
  * queued, -1 when there is no disc to change to, or the policy's netplay
  * refusal up front. */
 std::atomic<int> g_ovl_disc_req{0};
+/* Save states from the menu: the hotkey menu's slots and rules
+ * (savestate_submit_slot), applied on the main thread. */
+int mh_state_slot_count(void) { return SAVESTATE_SLOTS; }
+int mh_state_available(void) {
+    return !mh_netplay_active() && !savestate_title_blocked() && psx_mod_netplay_savestates_supported() ? 1 : 0;
+}
+int mh_state_info(int slot, long long* mtime) {
+    if (slot < 0 || slot >= SAVESTATE_SLOTS || !savestate_slot_exists(slot)) return 0;
+    int64_t t = 0;
+    if (mtime) *mtime = savestate_slot_mtime(slot, &t) ? (long long)t : 0;
+    return 1;
+}
+int mh_state_thumb(int slot, unsigned* argb, int w, int h) {
+    if (slot < 0 || slot >= SAVESTATE_SLOTS || !argb || w <= 0 || h <= 0) return 0;
+    return savestate_read_thumb(slot, reinterpret_cast<uint32_t*>(argb), w, h);
+}
+int mh_state_request(int slot, int save) {
+    if (slot < 0 || slot >= SAVESTATE_SLOTS || !mh_state_available()) return 0;
+    if (!save && !savestate_slot_exists(slot)) return 0;
+    g_ovl_state_req = (slot + 1) | (save ? 0x100 : 0);
+    return 1;
+}
+int mh_state_save(int slot) { return mh_state_request(slot, 1); }
+int mh_state_load(int slot) { return mh_state_request(slot, 0); }
 int mh_disc_insert(int n) {
     if (n < 1 || n > mh_disc_count()) return -1;
     if (psx_netplay_active()) return 3;  /* PSX_DISC_TRAY_ERR_NETPLAY */
@@ -17623,6 +18426,7 @@ void mh_launcher_settings_get(RecompLauncherCSettings* out) {
     mh_video_get(&v);
     RecompLauncherCSettings& ls = *out;
     ls.fullscreen = v.fullscreen;
+    ls.volume = host_volume_get();
     ls.frame_generation = v.frame_generation;
     ls.renderer = v.renderer;
     ls.vsync = psx_vsync_to_launcher(v.vsync);
@@ -17633,8 +18437,14 @@ void mh_launcher_settings_get(RecompLauncherCSettings* out) {
     ls.jogcon_force_feedback = psx_jogcon_ffb_player_enabled();
 #endif
     for (int i = 0; i < PSX_MAX_PLAYERS && i < RECOMP_LAUNCHER_MAX_PLAYERS; ++i) {
-        ls.player_src[i] = g_players[i].kind;
-        ls.pad_mode[i] = PSXRecompV4::PAD_MODE_ANALOG;
+        /* An adopted pad is not the seat's configured device: the launcher
+         * keeps showing (and saving) Keyboard. */
+        ls.player_src[i] = g_players[i].adopted_pad ? 1 : g_players[i].kind;
+        ls.pad_mode[i] = g_players[i].mode;
+        ls.deadzone[i] = (g_players[i].deadzone * 100 + 16383) / 32767;
+        std::snprintf(ls.player_gamepad_guid[i], sizeof ls.player_gamepad_guid[i],
+                      "%s", g_players[i].guid);
+        ls.player_gamepad_instance[i] = g_players[i].preferred_instance;
     }
 }
 unsigned mh_launcher_settings_apply(const RecompLauncherCSettings* s) {
@@ -17651,16 +18461,32 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
     if (!out) return;
     RecompLauncherCGameInfo& gi = *out;
     launcher_profile_apply("psx", &gi);
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_MOUSE_CAP)
+    gi.has_native_mouse = 1;
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_PERIPHERAL_CAPS)
+        gi.has_native_guncon=1; gi.has_native_negcon=1;
+#endif
+#endif
     psx_launcher_hide_mod_owned_rows(&gi);
     gi.name = g_ovl_name.c_str();
     gi.keybinds_path = g_ovl_keybinds.c_str();
     gi.config_path = g_ovl_config.c_str();
     gi.num_players = PSX_MAX_PLAYERS < 4 ? PSX_MAX_PLAYERS : 4;
+    gi.pad_mode_selectable = !g_ovl_lock_mode;
+    gi.lock_device = g_ovl_lock_device;
+    gi.locked_pad_mode = g_ovl_lock_mode ? g_ovl_locked_modes[0] : 0;
+    gi.disc_verify = ae_disc_verify;
+    static RecompLauncherCDisc mounted{};
+    mounted.number = 1;
+    mounted.label = "Game disc";
+    mounted.path = g_ovl_disc_path.c_str();
+    gi.discs = &mounted;
+    gi.num_discs = g_ovl_disc_path.empty() ? 0 : 1;
     gi.renderer_labels = kOvlRenderers;
     gi.num_renderers = g_launcher_vulkan_available ? 3 : 2;
     gi.has_render_pipeline = 1;
     gi.has_vsync = 1;
-    gi.mods = PSXRecompV4::mod_runtime_launcher_provider();
+    gi.mods = player_settings_provider(PSXRecompV4::mod_runtime_launcher_provider());
 #if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
     /* The same lobby the pre-game launcher drives, so the menu can host/join. */
     gi.netplay_supported = g_lnch_netplay_available ? 1 : 0;
@@ -17668,6 +18494,282 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
 #endif
 }
 #endif  /* RECOMP_LAUNCHER */
+
+/* Session rows of the in-game menu (PsxMenuHost session_*): window size,
+ * volume, the controller 1 port and a same-disc reinsert. The provider may
+ * call from its draw thread, so a change is posted here and applied on the
+ * main thread at the next host_pause_service; until then get answers the
+ * posted value, so the row does not jump back. */
+std::atomic<int> g_ovl_sess_scale{0}, g_ovl_sess_volume{-1}, g_ovl_sess_port{-1},
+    g_ovl_sess_reinsert{0};
+/* Restart game: the next relaunch is a cold boot. */
+std::atomic<int> g_ovl_restart_cold{0};
+/* The look rows. Each is one mod feature or option, or one runtime [video]
+ * setting; every change is saved (mods/state.toml, settings.toml) as the
+ * launcher would save it. A row answers its posted value until the session
+ * ends, so a change that waits for the restart does not jump back. */
+struct OvlLookRow { const char* p; const char* f; const char* o; const char* const* values; int n; };
+const char* const kOvlIres[] = {"1x", "2x", "3x", "4x", "5x", "6x", "8x"};
+const char* const kOvlOnOff[] = {"off", "on"};
+const char* const kOvlSmooth[] = {"default", "smooth", "sharp"};
+const char* const kOvlTexture[] = {"default", "nearest", "bilinear", "xbr"};
+const char* const kOvlPgxp = "psx.enhancement.pgxp";
+const char* const kOvlCrt = "psx.enhancement.crt-filter";
+const char* const kOvlImage = "psx.enhancement.image-filtering";
+const char* const kOvlIresPkg = "psx.enhancement.internal-resolution";
+const OvlLookRow* ovl_look_row(int setting) {
+    static const OvlLookRow rows[] = {
+        {kOvlIresPkg, "internal-resolution", "resolution", kOvlIres, 7},
+        {kOvlPgxp, "pgxp", nullptr, nullptr, 2},
+        {kOvlCrt, "crt-filter", nullptr, nullptr, 2},
+        {nullptr, nullptr, nullptr, nullptr, 3},  /* antialiasing: runtime */
+        {kOvlCrt, "crt-filter", "scanlines", kOvlOnOff, 2},
+        {kOvlImage, "image-filtering", "smoothing", kOvlSmooth, 3},
+        {kOvlImage, "image-filtering", "texture_filtering", kOvlTexture, 4},
+    };
+    if (setting < PSX_MENU_SESSION_INTERNAL_RESOLUTION || setting > PSX_MENU_SESSION_TEXTURE_FILTERING)
+        return nullptr;
+    return &rows[setting - PSX_MENU_SESSION_INTERNAL_RESOLUTION];
+}
+// Catalog shape is fixed for a session. Publish capabilities on the main
+// thread rather than traversing mutable mod state from the provider thread.
+std::atomic<bool> g_ovl_look_available[PSX_MENU_SESSION_DITHERING + 1];
+void ovl_look_catalog_snapshot(void) {
+    for (auto& available : g_ovl_look_available) available = false;
+    const auto* mods = PSXRecompV4::mod_runtime_launcher_provider();
+    if (!mods || !mods->feature_count || !mods->feature_get) return;
+    for (int setting=PSX_MENU_SESSION_INTERNAL_RESOLUTION;
+         setting<=PSX_MENU_SESSION_TEXTURE_FILTERING; ++setting) {
+        const OvlLookRow* row=ovl_look_row(setting);
+        if (!row || !row->p) continue;
+        for (int i=0; i<mods->feature_count(mods->ctx); ++i) {
+            RecompLauncherCModFeature feature{};
+            if (!mods->feature_get(mods->ctx,i,&feature) ||
+                !feature.package_id || !feature.id ||
+                std::strcmp(feature.package_id,row->p) || std::strcmp(feature.id,row->f)) continue;
+            if (!row->o) { g_ovl_look_available[setting]=true; break; }
+            if (!mods->feature_option_get) break;
+            for (int j=0; j<feature.option_count; ++j) {
+                RecompLauncherCModOption option{};
+                if (mods->feature_option_get(mods->ctx,row->p,row->f,j,&option) &&
+                    option.id && !std::strcmp(option.id,row->o)) {
+                    g_ovl_look_available[setting]=true;
+                    break;
+                }
+            }
+            break;
+        }
+    }
+}
+bool ovl_look_catalog_available(int setting) {
+    const OvlLookRow* row=ovl_look_row(setting);
+    return !row || !row->p || g_ovl_look_available[setting].load();
+}
+std::atomic<int> g_ovl_look_posted[PSX_MENU_SESSION_DITHERING + 1];
+std::atomic<bool> g_ovl_look_posted_init{false};
+void ovl_look_posted_reset(void) {
+    ovl_look_catalog_snapshot();
+    for (auto& v : g_ovl_look_posted) v = -1;
+    g_ovl_look_posted_init = true;
+}
+std::atomic<int> g_ovl_sess_aa{-1}, g_ovl_sess_dither{-1};
+int ovl_look_get(int setting, int* out) {
+    if (!g_ovl_look_posted_init || !ovl_look_catalog_available(setting)) return 0;
+    const int posted = g_ovl_look_posted[setting].load();
+    if (posted >= 0) { *out = posted; return 1; }
+    switch (setting) {
+    case PSX_MENU_SESSION_ANTIALIASING: *out = g_video_post_aa; return 1;
+    case PSX_MENU_SESSION_DITHERING: *out = gl_renderer_dithering(); return 1;
+    }
+    const OvlLookRow* row = ovl_look_row(setting);
+    if (!row) return 0;
+    if (!row->o) { *out = psx_mod_feature_selected(row->p, row->f); return 1; }
+    /* A feature that is off shows its first choice (1x, Off, Game default). */
+    if (!psx_mod_feature_selected(row->p, row->f)) { *out = 0; return 1; }
+    char value[64];
+    if (!psx_mod_option_value(row->p, row->f, row->o, value, sizeof value)) { *out = 0; return 1; }
+    for (int i = 0; i < row->n; ++i)
+        if (!std::strcmp(value, row->values[i])) { *out = i; return 1; }
+    *out = 0;
+    return 1;
+}
+int ovl_look_set(int setting, int value) {
+    if (!g_ovl_look_posted_init || !ovl_look_catalog_available(setting)) return 0;
+    int rc = 1;
+    switch (setting) {
+    case PSX_MENU_SESSION_ANTIALIASING:
+        if (value < 0 || value > 2) return 0;
+        g_ovl_sess_aa = value;
+        break;
+    case PSX_MENU_SESSION_DITHERING:
+        if (value < 0 || value > 2) return 0;
+        g_ovl_sess_dither = value;
+        break;
+    default: {
+        const OvlLookRow* row = ovl_look_row(setting);
+        if (!row || value < 0 || value >= row->n) return 0;
+        if (!row->o) {
+            /* A feature switch runs from the next session. */
+            if (!mh_mod_set(row->p, row->f, nullptr, value ? "true" : "false") &&
+                psx_netplay_active())
+                return 0;
+            rc = (value != 0) == (psx_mod_feature_active(row->p, row->f) != 0)
+                     ? 1 : PSX_MENU_SESSION_AT_RESTART;
+            break;
+        }
+        /* An option of a feature that is off turns the feature on too (which
+         * waits for the restart), except Off/1x/Game default, which leaves it. */
+        const bool active = psx_mod_feature_active(row->p, row->f) != 0;
+        if (!psx_mod_feature_selected(row->p, row->f)) {
+            if (value == 0) break;
+            if (psx_netplay_active()) return 0;
+            (void)mh_mod_set(row->p, row->f, nullptr, "true");
+        }
+        const int live = mh_mod_set(row->p, row->f, row->o, row->values[value]);
+        if (!live && psx_netplay_active()) return 0;
+        rc = live && active ? 1 : PSX_MENU_SESSION_AT_RESTART;
+        break;
+    }
+    }
+    g_ovl_look_posted[setting] = value;
+    return rc;
+}
+/* Main thread: the runtime [video] rows, applied live for this session (the
+ * title's config.toml [video] keeps the default; settings.toml has no player
+ * key for them). */
+void ovl_look_service(void) {
+    const int aa = g_ovl_sess_aa.exchange(-1);
+    const int dither = g_ovl_sess_dither.exchange(-1);
+    if (aa < 0 && dither < 0) return;
+    if (aa >= 0) { g_video_post_aa = aa; (void)gl_renderer_set_post_aa(aa); }
+    if (dither >= 0) { g_video_dithering = dither; gl_renderer_set_dithering(dither); }
+}
+
+int ovl_window_scale_now(void) {
+    int w = g_video_win_w;
+    if (w <= 0 && sdl_window) SDL_GetWindowSize(sdl_window, &w, nullptr);
+    return std::max(1, std::min(4, (w + 160) / 320));
+}
+int mh_session_enabled(int setting) {
+    if (!ovl_look_catalog_available(setting)) return 0;
+    switch (setting) {
+    case PSX_MENU_SESSION_WINDOW_SCALE: return sdl_window && s_window_fullscreen.mode == 0;
+    case PSX_MENU_SESSION_VOLUME: return 1;
+    case PSX_MENU_SESSION_CONTROLLER_PORT: return controller_port_swap_available() ? 1 : 0;
+    case PSX_MENU_SESSION_REINSERT_DISC: return !psx_netplay_active() && cdrom_has_disc();
+    case PSX_MENU_SESSION_RESTART_GAME:
+    case PSX_MENU_SESSION_PGXP:
+    case PSX_MENU_SESSION_CRT_FILTER: return !psx_netplay_active();
+    case PSX_MENU_SESSION_INTERNAL_RESOLUTION:
+    case PSX_MENU_SESSION_ANTIALIASING:
+    case PSX_MENU_SESSION_SCANLINES:
+    case PSX_MENU_SESSION_SMOOTHING:
+    case PSX_MENU_SESSION_TEXTURE_FILTERING:
+    case PSX_MENU_SESSION_DITHERING: return 1;
+    }
+    return 0;
+}
+int mh_session_get(int setting, int* out) {
+    if (!out) return 0;
+    switch (setting) {
+    case PSX_MENU_SESSION_WINDOW_SCALE: {
+        const int posted = g_ovl_sess_scale.load();
+        *out = posted ? posted : ovl_window_scale_now();
+        return 1;
+    }
+    case PSX_MENU_SESSION_VOLUME: {
+        const int posted = g_ovl_sess_volume.load();
+        *out = posted >= 0 ? posted : host_volume_get();
+        return 1;
+    }
+    case PSX_MENU_SESSION_CONTROLLER_PORT: {
+        const int posted = g_ovl_sess_port.load();
+        *out = posted >= 0 ? posted : (g_controller_ports_swapped ? 1 : 0);
+        return 1;
+    }
+    }
+    if (setting >= PSX_MENU_SESSION_INTERNAL_RESOLUTION && setting <= PSX_MENU_SESSION_DITHERING)
+        return ovl_look_get(setting, out);
+    return 0;
+}
+int mh_session_set(int setting, int value) {
+    if (!mh_session_enabled(setting)) return 0;
+    switch (setting) {
+    case PSX_MENU_SESSION_WINDOW_SCALE:
+        if (value < 1 || value > 4) return 0;
+        g_ovl_sess_scale = value;
+        return 1;
+    case PSX_MENU_SESSION_VOLUME:
+        if (value < 0 || value > 100) return 0;
+        g_ovl_sess_volume = value;
+        return 1;
+    case PSX_MENU_SESSION_CONTROLLER_PORT:
+        if (value != 0 && value != 1) return 0;
+        g_ovl_sess_port = value;
+        return 1;
+    case PSX_MENU_SESSION_REINSERT_DISC:
+        if (value != 1) return 0;
+        g_ovl_sess_reinsert = 1;
+        return 1;
+    case PSX_MENU_SESSION_RESTART_GAME:
+        if (value != 1) return 0;
+        g_ovl_restart_cold = 1;
+        return 1;
+    }
+    if (setting >= PSX_MENU_SESSION_INTERNAL_RESOLUTION && setting <= PSX_MENU_SESSION_DITHERING)
+        return ovl_look_set(setting, value);
+    return 0;
+}
+/* Main thread: apply what the menu posted. The launcher reads the window
+ * width and volume back when the session returns to it, so they are kept the
+ * way a launcher change is; the port swap is host state, as with Ctrl+F6. */
+void ovl_session_service(void) {
+    if (const int scale = g_ovl_sess_scale.exchange(0)) {
+        if (sdl_window && s_window_fullscreen.mode == 0) {
+            const int w = scale * 320;
+            SDL_SetWindowSize(sdl_window, w,
+                              w * g_video_aspect_den / std::max(1, g_video_aspect_num));
+            g_video_win_w = w;
+        }
+    }
+    const int volume = g_ovl_sess_volume.exchange(-1);
+    if (volume >= 0) host_volume_set(volume);
+    const int port = g_ovl_sess_port.exchange(-1);
+    if (port >= 0 && (port != 0) != g_controller_ports_swapped) controller_port_swap_toggle();
+    if (g_ovl_sess_reinsert.exchange(0)) {
+        const int rc = disc_cycle_now(0);
+        host_osd_push(rc == 0 ? "Current disc reinserted"
+                              : "Disc changes are unavailable in this game mode.", 1800);
+    }
+    ovl_look_service();
+}
+/* The disc this session booted (the launcher's choice included), for the
+ * menu's restart straight back into the game. */
+std::string g_ovl_session_disc;
+/* Restart into the game: the original arguments, then --no-launcher and the
+ * mounted disc (a later --disc wins), so a quick restart neither shows the
+ * launcher nor falls back to disc 1 of a multi-disc game. */
+void ovl_relaunch_into_game(void) {
+    /* The relaunched process inherits this environment. A start from a save
+     * state or a replay (PSX_LOAD_SLOT, PSX_REPLAY_FILE, set by the launcher's
+     * Start from or by the player) would repeat at every restart; Restart game
+     * is a cold boot, so it drops them. A settings restart keeps them. */
+    if (g_ovl_restart_cold.exchange(0)) {
+        for (const char* name : {"PSX_LOAD_SLOT", "PSX_REPLAY_FILE"}) {
+#if defined(_WIN32)
+            _putenv_s(name, "");
+#else
+            unsetenv(name);
+#endif
+        }
+    }
+    std::string disc;
+    const int mounted = mh_disc_mounted();
+    if (mounted > 0 && mh_disc_path(mounted)) disc = mh_disc_path(mounted);
+    if (disc.empty()) disc = g_ovl_session_disc;
+    const char* extra[3] = {"--no-launcher", "--disc", disc.c_str()};
+    psx_relaunch_self_with(g_main_argc, g_main_argv, extra, disc.empty() ? 1 : 3);
+}
 
 PsxMenuHost g_menu_host = {
     PSX_MENU_ABI_VERSION, mh_set_paused, mh_netplay_active, mh_video_get, mh_video_apply,
@@ -17682,6 +18784,8 @@ PsxMenuHost g_menu_host = {
 #endif
     nullptr,
     0,
+    mh_state_slot_count, mh_state_available, mh_state_info, mh_state_thumb, mh_state_save, mh_state_load,
+    mh_session_get, mh_session_set, mh_session_enabled,
 };
 
 int ovl_sink(const void* ev, void*) { return g_ovl && g_ovl->event ? g_ovl->event(g_ovl->ctx, ev) : 0; }
@@ -17696,7 +18800,9 @@ void ovl_draw(int w, int h, void*) { if (g_ovl && g_ovl->draw) g_ovl->draw(g_ovl
 #endif
 #endif
 
-static void recomp_overlay_setup(const char* argv0, const std::string& title) {
+static void recomp_overlay_setup(const char* argv0, const std::string& title,
+                                 const std::string& disc, bool lock_mode, bool lock_device,
+                                 const int* locked_modes) {
     const char* e = std::getenv("PSX_OVERLAY");
     const PsxMenuProvider* p = psx_menu_provider();
     g_menu_host.default_selection = 0;
@@ -17716,6 +18822,10 @@ static void recomp_overlay_setup(const char* argv0, const std::string& title) {
     if (!p || g_ovl_on || !g_gl_active || g_headless || (e && *e == '0')) return;
     const std::filesystem::path dir = exe_dir_from_argv(argv0);
     g_ovl_name = title;
+    g_ovl_disc_path = disc;
+    g_ovl_lock_mode = lock_mode;
+    g_ovl_lock_device = lock_device;
+    for (int i = 0; i < PSX_MAX_PLAYERS; ++i) g_ovl_locked_modes[i] = locked_modes[i];
     g_ovl_argv0 = argv0 ? argv0 : "";
     g_ovl_keybinds = (dir / "keybinds.ini").string();
     g_ovl_config = (dir / "config.ini").string();
@@ -17740,12 +18850,18 @@ extern "C" int psx_debug_menu_host_json(char* out, size_t cap) {
         "\"provider\":\"%s\",\"attached\":%d,\"default_selection\":%d,\"open\":%d,"
         "\"paused\":%d,\"pause_depth\":%d,\"ui_capture\":%d,\"netplay\":%d,"
         "\"internal_resolution\":%d,\"fullscreen\":%d,"
-        "\"render_thread\":%d,\"frame_generation\":%d,\"disc_count\":%d,\"disc_mounted\":%d",
+        "\"render_thread\":%d,\"frame_generation\":%d,\"disc_count\":%d,\"disc_mounted\":%d,"
+        "\"volume\":%d,\"p1_deadzone\":%d,\"p2_device\":%d,"
+        "\"p1_cross_scancode\":%d,\"p1_cross_button\":%d",
         p && p->name ? p->name : "", g_ovl_on ? 1 : 0, g_menu_host.default_selection,
         ovl_open() ? 1 : 0, g_ovl_pause_held ? 1 : 0, psx_host_pause_depth(),
         psx_host_ui_capture_active(), mh_netplay_active(), v.internal_resolution,
         v.fullscreen, v.render_thread, v.frame_generation, mh_disc_count(),
-        mh_disc_mounted());
+        mh_disc_mounted(), host_volume_get(), g_players[0].deadzone,
+        g_players[1].kind,
+        (int)psx_keybinds_get()->player[0].cross,
+        controller_map[4].sources.empty() || controller_map[4].sources[0].kind != ControllerSource::Kind::Button
+            ? -1 : controller_map[4].sources[0].id);
 }
 
 #ifndef PSX_NO_DEBUG_TOOLS
@@ -17778,6 +18894,7 @@ static void recomp_overlay_detach(void) {
 static void host_pause_service(void) {
     if (!g_ovl_on) return;
     mh_refresh_snapshot();
+    ovl_session_service();
     if (const int disc = g_ovl_disc_req.exchange(0)) {
         const int rc = disc_cycle_now(disc);
         if (rc != PSX_DISC_TRAY_OK) {
@@ -17808,6 +18925,51 @@ static void host_pause_service(void) {
     if (have_video) (void)psx_video_apply_live(&video);
 #if defined(RECOMP_LAUNCHER)
     if (have_ls) {
+        const auto settings_path = exe_dir_from_argv(g_ovl_argv0.c_str()) / "settings.toml";
+        auto settings = PSXRecompV4::load_user_settings(settings_path);
+        bool controls_changed = false;
+        for (int i = 0; i < PSX_MAX_PLAYERS && i < RECOMP_LAUNCHER_MAX_PLAYERS; ++i) {
+            PlayerInput& p = g_players[i];
+            const int kind = std::max(0, std::min(2, post.player_src[i]));
+            const int configured_kind = p.kind;
+            const std::string guid = kind == 2 ? post.player_gamepad_guid[i] : "";
+            const int instance = kind == 2 ? post.player_gamepad_instance[i] : -1;
+            const int mode = PSXRecompV4::resolve_player_mode_after_launcher(
+                post.pad_mode[i], g_ovl_lock_mode, g_ovl_locked_modes[i],
+                g_mod_controller_mode_override[i]);
+            const int deadzone = std::max(0, std::min(100, post.deadzone[i])) * 32767 / 100;
+            const bool device_changed = !g_ovl_lock_device &&
+                (configured_kind != kind || (kind == 2 &&
+                 (guid != p.guid || instance != p.preferred_instance)));
+            // Netplay owns guest pad types; a local device change must not alter them.
+            const bool mode_changed = !psx_netplay_active() && p.mode != mode;
+            const bool deadzone_changed = (p.deadzone * 100 + 16383) / 32767 != post.deadzone[i];
+            if (!device_changed && !mode_changed && !deadzone_changed) continue;
+            const std::string device = kind == 0 ? "none" : kind == 1 ? "keyboard" :
+                                       guid.empty() ? "gamepad" : guid;
+            if (device_changed) {
+                close_player(p);
+                set_player_device(p, device, p.mode);
+                p.preferred_instance = instance;
+            }
+            if (mode_changed) p.mode = mode;
+            if (deadzone_changed) p.deadzone = deadzone;
+            if (i < PSXRecompV4::UserSettings::kMaxControllerPlayers) {
+                if (device_changed) { settings.p_device[i] = device; settings.has_p_device[i] = true; }
+                settings.p_mode[i] = p.mode; settings.has_p_mode[i] = true;
+                settings.p_deadzone[i] = p.deadzone; settings.has_p_deadzone[i] = true;
+            }
+            controls_changed = true;
+        }
+        if (controls_changed) {
+            refresh_player_devices();
+            controller_deadzone = g_players[0].deadzone;
+        }
+        const bool volume_changed = post.volume != host_volume_get();
+        if (volume_changed) { settings.volume = post.volume; settings.has_volume = true; }
+        if ((controls_changed || volume_changed) && !settings.parse_error)
+            (void)PSXRecompV4::save_user_settings(settings_path, settings);
+        host_volume_set(post.volume);
         const PsxHostVideoSettings v = ovl_video_from(post);
         (void)psx_video_apply_live(&v);
 #if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK) && \
@@ -17836,6 +18998,10 @@ static void host_pause_service(void) {
             }
         }
         (void)psx_mod_save_selection();
+    }
+    if (const int req = g_ovl_state_req.exchange(0)) {
+        const int slot = (req & 0xff) - 1;
+        (void)savestate_submit_slot(slot, (req & 0x100) ? 1 : 0);
     }
     if (g_ovl_reload_binds.exchange(0)) {
         psx_keybinds_init(g_ovl_argv0.c_str());
@@ -17869,6 +19035,21 @@ static void host_pause_service(void) {
              * provider's own lobby view asking once its match started) keeps
              * the launch and resumes the room; any other request from a local
              * game is a plain return: the launcher opens as at boot. */
+#if !(defined(RECOMP_LAUNCHER) && defined(PSX_HAS_LOBBY_CLIENT))
+            /* No in-process frontend loop in this build (it lives with the
+             * lobby client): relaunch with --launcher, so the launcher opens
+             * as at boot even when skip_launcher is set. */
+            if (!psx_netplay_active()) {
+                std::fprintf(stdout, "psxrecomp: in-game menu -> relaunch to the launcher\n");
+                std::fflush(stdout);
+                psx_crash_trace_set_exit_origin("menu_to_launcher");
+                shutdown_runtime();
+                const char* extra[1] = {"--launcher"};
+                psx_relaunch_self_with(g_main_argc, g_main_argv, extra, 1);
+                std::fprintf(stderr, "psxrecomp: relaunch failed (%s)\n", std::strerror(errno));
+                std::exit(0);
+            }
+#endif
             bool for_launch = false;
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
             for_launch = g_lnch_netplay_available && g_lnch_netplay_callbacks.launch_pending &&
@@ -17890,12 +19071,12 @@ static void host_pause_service(void) {
             return;
         }
         if (how == PSX_MENU_EXIT_RELAUNCH) {
-            std::fprintf(stdout, "psxrecomp: in-game menu -> relaunch for restart-only settings\n");
+            std::fprintf(stdout, "psxrecomp: in-game menu -> relaunch into the game\n");
             std::fflush(stdout);
             psx_crash_trace_set_exit_origin("menu_relaunch");
             shutdown_runtime();
             std::fprintf(stderr, "psxrecomp: relaunching\n");
-            psx_relaunch_self(g_main_argc, g_main_argv);
+            ovl_relaunch_into_game();
             std::fprintf(stderr, "psxrecomp: relaunch failed (%s)\n", std::strerror(errno));
             std::exit(0); /* relaunch failed: leave rather than run torn down */
         }
@@ -17909,7 +19090,64 @@ static void host_pause_service(void) {
     }
 }
 
+static int g_player_title_select_allowed=1;
+#include "player_startup_settings.inc"
+
+/* Live display and audio rows of the in-game menu (psx_runtime_menu.h). The
+ * launcher reads the same globals back when the session returns to it, so a
+ * change made here is kept the way a launcher change is. */
+static int runtime_menu_window_width(void) {
+    int w = g_video_win_w;
+    if (w <= 0 && sdl_window) SDL_GetWindowSize(sdl_window, &w, nullptr);
+    return w;
+}
+static int runtime_menu_setting_get(void*, int setting, int* value_out) {
+    switch (setting) {
+    case PSX_MENU_SETTING_FULLSCREEN:
+        *value_out = s_window_fullscreen.mode;
+        return 1;
+    case PSX_MENU_SETTING_WINDOW_SCALE:
+        *value_out = std::max(1, std::min(4, (runtime_menu_window_width() + 160) / 320));
+        return 1;
+    case PSX_MENU_SETTING_VOLUME:
+        *value_out = host_volume_get();
+        return 1;
+    }
+    return 0;
+}
+static int runtime_menu_setting_set(void*, int setting, int value) {
+    switch (setting) {
+    case PSX_MENU_SETTING_FULLSCREEN:
+        if (!sdl_window || value < 0 || value > 2) return 0;
+        if (psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, value) != 0) return 0;
+        g_fullscreen = value;
+        apply_present_cadence();
+        return 1;
+    case PSX_MENU_SETTING_WINDOW_SCALE: {
+        if (!sdl_window || s_window_fullscreen.mode != 0 || value < 1 || value > 4) return 0;
+        const int w = value * 320;
+        SDL_SetWindowSize(sdl_window, w, w * g_video_aspect_den / std::max(1, g_video_aspect_num));
+        g_video_win_w = w;
+        return 1;
+    }
+    case PSX_MENU_SETTING_VOLUME:
+        if (value < 0 || value > 100) return 0;
+        host_volume_set(value);
+        return 1;
+    }
+    return 0;
+}
+static int runtime_menu_setting_enabled(void*, int setting) {
+    /* Fullscreen owns the window size; leave windowed mode to resize. */
+    if (setting == PSX_MENU_SETTING_WINDOW_SCALE) return s_window_fullscreen.mode == 0;
+    return 1;
+}
+static const PsxRuntimeMenuHost kRuntimeMenuHost = {
+    nullptr, runtime_menu_setting_get, runtime_menu_setting_set, runtime_menu_setting_enabled,
+};
+
 int main(int argc, char** argv) {
+    psx_disc_warning_set("");
     g_main_argc = argc;
     g_main_argv = argv;
     /* Reject retired selections before starting a regional child, launcher,
@@ -17994,6 +19232,8 @@ int main(int argc, char** argv) {
     /* Install crash handlers early so they catch issues during init too.
      * Writes psx_last_run_report.json on signal/SEH/atexit/fail-fast. */
     psx_crash_trace_install_handlers();
+    bios_phase_report_install();
+    g_fntrace_game_load_hook = dirty_ram_pc_table_game_load;
 #if defined(RECOMP_LAUNCHER)
     launcher_boot_timing_mark("host:crash_handlers");
 #endif
@@ -18178,6 +19418,9 @@ int main(int argc, char** argv) {
             force_no_launcher = true;
         }
     }
+    /* The settings file is not read yet; its skip_launcher is added below. */
+    s_start_interactive =
+        start_is_interactive(force_launcher, force_no_launcher, false);
 
     /* Test hook: a hidden game window that still runs the launcher (and its
      * in-game menu), unlike --hidden-window. */
@@ -18202,8 +19445,11 @@ int main(int argc, char** argv) {
         }
     }
     if (!game_config_path) {
-        std::filesystem::path default_game_config =
-            resolve_existing_runtime_path(PSX_DEFAULT_GAME_CONFIG_PATH, argv[0]);
+        /* This exe's own config wins over the build's default name. */
+        std::filesystem::path default_game_config = exe_specific_game_config(argv[0]);
+        if (default_game_config.empty())
+            default_game_config =
+                resolve_existing_runtime_path(PSX_DEFAULT_GAME_CONFIG_PATH, argv[0]);
         if (!default_game_config.empty()) {
             default_game_config_storage = default_game_config.string();
             game_config_path = default_game_config_storage.c_str();
@@ -18260,7 +19506,7 @@ int main(int argc, char** argv) {
      * activation plugins apply them after launcher/settings resolution. */
     constexpr bool ws_offered = false;
     constexpr bool ws_ultrawide_offered = false;
-    constexpr bool frame_interpolation_offered = false;
+
     constexpr bool skip_fmv_offered = false;
     /* Load acceleration is likewise mod-owned (Fast Loading / CD Speed). The
      * former game.toml `offer_turbo_loads` opt-out is deprecated and ignored:
@@ -18302,10 +19548,20 @@ int main(int argc, char** argv) {
     bool       fast_boot     = false;  /* DEPRECATED alias: HLE boot-skip only */
     bool       bios_hle      = false;  /* HLE kernel-service tier (bios_hle.c) */
     bool       bios_hle_keep_intro = false;
+    /* The three above as the game's game.toml states them, before
+     * settings.toml and the launcher change them: a netplay session boots
+     * with these (netplay_boot_mode_settle). */
+    bool       game_fast_boot = false;
+    bool       game_bios_hle  = false;
+    bool       game_bios_hle_keep_intro = false;
     /* Text-image guard source, captured at config load; armed after the disc
      * path is resolved (arm_text_image_guard). */
     std::string text_guard_exe_path;
     uint32_t    text_guard_load_addr = 0;
+    /* Did the player's settings.toml set fast_boot / bios_hle? The launcher
+     * has no control for either, so it writes them back only then. */
+    bool       settings_chose_fast_boot = false;
+    bool       settings_chose_bios_hle  = false;
 
     /* Overlay cache init is deferred until after the launcher window so ABI
      * preflight / resident DLL loads do not delay first paint. */
@@ -18364,28 +19620,27 @@ int main(int argc, char** argv) {
                 (settings_profile && settings_profile->settings_package_id) ? 1 : 0;
             PSXRecompV4::mod_runtime_set_netplay_content_negotiation(
                 g_netplay_content_negotiation != 0);
-            game_discs = gc.discs;
-            /* Per-disc serial gate, shared by the launch-time disc check and
-             * the launcher's disc verdict. Keyed by the image's uppercased
-             * stem so a .cue and its .bin agree. */
-            g_disc_serials.clear();
-            for (size_t i = 0;
-                 i < gc.discs.size() && i < gc.disc_serials.size(); ++i) {
-                if (gc.disc_serials[i].empty()) continue;
-                g_disc_serials[uppercase_ascii(gc.discs[i].stem().string())] =
-                    gc.disc_serials[i];
-            }
-            /* Same keying for the per-disc netplay TOC fingerprints. */
-            g_disc_netplay_fps.clear();
-            for (size_t i = 0;
-                 i < gc.discs.size() && i < gc.netplay_required_disc_fps.size();
-                 ++i) {
-                if (gc.netplay_required_disc_fps[i].empty()) continue;
-                g_disc_netplay_fps[uppercase_ascii(gc.discs[i].stem().string())] =
-                    gc.netplay_required_disc_fps[i];
-            }
-            if (!gc.discs.empty()) resolved_disc = gc.discs.front();
+            /* The metadata vectors always describe the whole set. game_discs
+             * is what this build may mount: every disc, or, for a program of
+             * a multi-program set, its own discs ([game] program_discs). */
+            g_disc_metadata_roster = gc.discs;
+            g_disc_serials = gc.disc_serials;
+            g_disc_netplay_fps = gc.netplay_required_disc_fps;
+            g_program_discs = gc.program_discs;
+            game_discs = PSXRecompV4::disc_roster_program_subset(
+                gc.discs, g_program_discs);
+            if (!g_program_discs.empty())
+                std::fprintf(stdout,
+                    "psxrecomp: program of a %zu-disc set; this build boots %zu "
+                    "of them (first: set disc %d)\n",
+                    gc.discs.size(), game_discs.size(), g_program_discs.front());
+            if (!game_discs.empty()) resolved_disc = game_discs.front();
             if (gc.runtime.has_memcard_dir)  memcard_dir   = gc.runtime.memcard_dir;
+            g_fast_loading_optout = gc.runtime.fast_loading_optout;
+            /* settings.toml may name the cards of this install with one climb
+             * ("../saves") when the exe folder is one level below this root:
+             * the layout of a setup install. */
+            PSXRecompV4::set_user_settings_install_root(gc.project_root);
             if (gc.runtime.has_window_title) window_title  = gc.runtime.window_title;
             if (gc.runtime.has_debug_port)   debug_port    = gc.runtime.debug_port;
             /* On-the-fly string translation / localization (framework feature —
@@ -18524,10 +19779,13 @@ int main(int argc, char** argv) {
             g_video_aspect_den = gc.runtime.video_aspect_den;
             g_fov_scale = psx_projection_scale_load_config(game_config_path);
             g_low_latency_input = gc.runtime.video_low_latency_input ? 1 : 0;
+            g_player_texture_window_batching=gc.runtime.video_texture_window_batching ? 1 : 0;
+            gl_renderer_set_texture_window_batching(g_player_texture_window_batching);
             gl_renderer_set_texture_window_batching(
                 gc.runtime.video_texture_window_batching ? 1 : 0);
             g_render_thread = gc.runtime.video_render_thread ? 1 : 0;
             g_offer_render_pipeline = gc.runtime.video_offer_render_pipeline;
+            g_offer_frame_interpolation=gc.runtime.video_offer_frame_interpolation;
             g_launcher_quick_controls = gc.runtime.launcher_quick_controls;
             g_frame_generation = 0; /* retired legacy presentation */
             g_frame_generation_method = gc.runtime.video_frame_generation_method;
@@ -18916,6 +20174,9 @@ int main(int argc, char** argv) {
             fast_boot     = gc.runtime.fast_boot;
             bios_hle      = gc.runtime.bios_hle;
             bios_hle_keep_intro = gc.runtime.bios_hle_keep_intro;
+            game_fast_boot = fast_boot;
+            game_bios_hle  = bios_hle;
+            game_bios_hle_keep_intro = bios_hle_keep_intro;
 #if defined(RECOMP_LAUNCHER)
             PSXRecompV4::mod_runtime_set_hide_hidden_features(
                 gc.runtime.hide_hidden_mod_features);
@@ -19000,6 +20261,11 @@ int main(int argc, char** argv) {
         } catch (const std::exception& ex) {
             std::fprintf(stderr, "psxrecomp: failed to load --game %s: %s\n",
                          game_config_path, ex.what());
+            psx_start_refusal_set("config_unreadable",
+                "Configuration could not be read",
+                (std::string("This program could not read its configuration file and cannot start.\n\n") +
+                 game_config_path + "\n\n" + ex.what()).c_str());
+            psx_crash_trace_set_exit_origin("start_refused");
             return 1;
         }
     }
@@ -19027,7 +20293,10 @@ int main(int argc, char** argv) {
 #endif
         PSXRecompV4::UserSettings us =
             PSXRecompV4::load_user_settings(settings_path);
+        if (us.has_volume) host_volume_set(us.volume);
         user_settings_has_renderer = us.has_renderer;
+        g_player_title_select_allowed=g_title_select_shortcuts;
+        apply_extra_player_settings(us,bios_hle_keep_intro,resolved_audio_buffer_ms);
         if (us.parse_error) {
             /* The file exists but is not valid TOML: every setting in it (the
              * user's renderer choice, BIOS/disc paths, ...) is being ignored,
@@ -19050,6 +20319,10 @@ int main(int argc, char** argv) {
                 "again from the launcher (a fresh settings.toml will be written).");
         }
         if (us.has_skip_launcher)  skip_launcher_setting = us.skip_launcher;
+        /* A start that skips the launcher by this setting alone is scripted
+         * too: a refusal must not open a box there. */
+        s_start_interactive = start_is_interactive(
+            force_launcher, force_no_launcher, skip_launcher_setting);
         if (us.has_renderer) {
             if (us.renderer == 2 && !vulkan_offered) {
                 g_video_renderer = 1;
@@ -19102,8 +20375,23 @@ int main(int argc, char** argv) {
                 "DEPRECATED and ignored; enable the \"Fast Loading (host "
                 "pacing)\" mod instead. The stale key is dropped on the next "
                 "settings save.\n");
+        /* settings.toml overrides game.toml for these two only when the player
+         * wrote them. A file from before settings_format 2 holds them because
+         * the launcher echoed whatever was in force at every save; that echo
+         * then outlived a later change of bios_hle in the game's game.toml,
+         * and two netplay peers of one build could boot in different BIOS
+         * modes. The loader has already dropped such lines: say so once. */
+        if (us.boot_keys_were_echoes)
+            std::fprintf(stdout,
+                "psxrecomp: settings.toml holds fast_boot/bios_hle lines that "
+                "an earlier launcher wrote by itself; they are ignored and the "
+                "game's own values are used. The lines are dropped on the next "
+                "settings save. To choose a value yourself, add the line again "
+                "after that save.\n");
         if (us.has_fast_boot)      fast_boot = us.fast_boot;
         if (us.has_bios_hle)       bios_hle  = us.bios_hle;
+        settings_chose_fast_boot = us.has_fast_boot;
+        settings_chose_bios_hle  = us.has_bios_hle;
         if (us.has_fullscreen)     g_fullscreen      = us.fullscreen;
         if (us.has_aspect_ratio) {
             g_video_aspect_num = us.aspect_num;
@@ -19167,11 +20455,25 @@ int main(int argc, char** argv) {
                 if (idx >= 0) selected_disc_index = idx + 1;
             }
         }
+        /* The programs of a multi-program set share this settings file, so
+         * [disc] path can name the disc the OTHER program last mounted. This
+         * build boots only its own discs: fall back to its own selected (or
+         * first) disc instead of mounting another program's. */
+        if (!disc_override_path && !game_discs.empty() &&
+            disc_belongs_to_other_program(resolved_disc)) {
+            const int own = std::min(std::max(selected_disc_index, 1),
+                                     (int)game_discs.size());
+            std::fprintf(stdout,
+                "psxrecomp: the remembered disc belongs to another program of "
+                "this set; mounting this program's own disc instead\n");
+            selected_disc_index = own;
+            resolved_disc = normalize_disc_path_for_launch(game_discs[own - 1]);
+        }
         /* Relative [memcard] values anchor on the exe directory; the
          * per-game options file also lives in memcard_dir. */
-        if (us.has_memcard_dir)   memcard_dir   = anchor_on_exe_dir(argv[0], us.memcard_dir);
-        if (us.has_memcard1_path) memcard1_path = anchor_on_exe_dir(argv[0], us.memcard1_path);
-        if (us.has_memcard2_path) memcard2_path = anchor_on_exe_dir(argv[0], us.memcard2_path);
+        if (us.has_memcard_dir)   memcard_dir   = anchor_card_path(argv[0], us.memcard_dir);
+        if (us.has_memcard1_path) memcard1_path = anchor_card_path(argv[0], us.memcard1_path);
+        if (us.has_memcard2_path) memcard2_path = anchor_card_path(argv[0], us.memcard2_path);
         if (us.has_memcard1_enabled) memcard1_enabled = us.memcard1_enabled;
         if (us.has_memcard2_enabled) memcard2_enabled = us.memcard2_enabled;
         if (us.has_multitap_enabled) multitap_enabled = us.multitap_enabled;
@@ -19194,6 +20496,14 @@ int main(int argc, char** argv) {
                 if (us.has_p_deadzone[i]) player_deadzone[i] = us.p_deadzone[i];
             }
             if (us.has_deadzone) resolved_deadzone = us.deadzone;
+        }
+        if (us.has_mouse_sensitivity) {
+            g_mouse_sensitivity = us.mouse_sensitivity;
+            g_mouse_sensitivity_set = true;
+        }
+        if (us.has_mouse_capture) {
+            g_mouse_capture_wanted = us.mouse_capture;
+            g_mouse_capture_set = true;
         }
         apply_offline_pad_count(game_players, multitap_enabled);
         if (us.has_low_latency_input) g_low_latency_input = us.low_latency_input ? 1 : 0;
@@ -19257,13 +20567,11 @@ int main(int argc, char** argv) {
             "ignoring the legacy value\n");
         g_turbo_loads_enabled = 0;
     }
-    /* Treat presentation interpolation the same way when a title moves it to
-     * Mods. Both the boolean and target rate are cleared so launcher-less
-     * starts cannot revive an old generic Settings selection. */
-    if (!frame_interpolation_offered &&
-        (g_frame_interpolation || g_frame_interpolation_fps)) {
+    /* Legacy image interpolation is retired. Clear persisted selections before
+     * launcher-less starts as well as before seeding the launcher. */
+    if (g_frame_interpolation || g_frame_interpolation_fps) {
         std::fprintf(stdout,
-            "psxrecomp: Frame interpolation is mod-owned for this title; "
+            "psxrecomp: Legacy frame interpolation is retired; "
             "ignoring the legacy Settings value\n");
         g_frame_interpolation = 0; /* retired legacy presentation */
         g_frame_interpolation_fps = 0;
@@ -19290,9 +20598,12 @@ int main(int argc, char** argv) {
      * PSX_LOW_LATENCY_INPUT=0/1 ; PSX_VSYNC=1(vsync)/0(immediate)/-1(adaptive)
      * (vsync XOR wall-clock pacer — vsync clocks only ~60 Hz panels);
      * PSX_FRAME_INTERPOLATION=0/1; PSX_FRAME_INTERPOLATION_FPS=0|90+. */
+    auto apply_player_presentation_environment = [&]() {
     if (const char *e = std::getenv("PSX_LOW_LATENCY_INPUT")) g_low_latency_input = atoi(e) ? 1 : 0;
     if (const char *e = std::getenv("PSX_VSYNC"))             g_video_vsync       = atoi(e);
     /* Legacy image-blending environment switches are retired. */
+    };
+    apply_player_presentation_environment();
 
     /* Apply writable-state isolation before game-options and launcher setup,
      * not with the later renderer/port overrides. Explicit slot paths from a
@@ -19310,7 +20621,9 @@ int main(int argc, char** argv) {
             std::fprintf(stderr,
                 "psxrecomp: cannot create --memcard-dir %s: %s\n",
                 memcard_dir.string().c_str(), memcard_ec.message().c_str());
-            return 1;
+            return refuse_start("memcard_dir", "Save folder could not be created",
+                "The folder for memory cards could not be created, so the game cannot start.\n\n" +
+                memcard_dir.string() + "\n\n" + memcard_ec.message());
         }
         std::fprintf(stdout, "psxrecomp: CLI writable-state directory = %s\n",
                      memcard_dir.string().c_str());
@@ -19490,8 +20803,11 @@ int main(int argc, char** argv) {
             if (cf.is_open() && std::getline(cf, line)) {
                 while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' '))
                     line.pop_back();
-                std::error_code cec;
-                if (!line.empty() && std::filesystem::exists(line, cec)) tk_compiler = line;
+            }
+            tk_compiler = resolve_overlay_compiler_path(tk_dir, line).string();
+            if (!line.empty() && std::filesystem::path(line).is_relative() && tk_compiler.empty()) {
+                throw std::runtime_error("bundled overlay compiler is missing: " +
+                                         (tk_dir / line).string());
             }
         }
         auto build_toolchain_cmd = [&](const char *compiler) {
@@ -19647,6 +20963,8 @@ int main(int argc, char** argv) {
                                            : "launcher first (no disc set up yet)");
         }
     }
+    player_settings_configure(exe_dir_from_argv(argv[0])/"settings.toml",
+        player_settings_baseline(fast_boot,bios_hle,bios_hle_keep_intro,resolved_audio_buffer_ms,memcard_dir));
     const bool want_launcher =
         force_launcher ||
         (!std::getenv("PSX_NO_LAUNCHER") && !force_no_launcher && !skip_launcher_setting);
@@ -19682,6 +21000,7 @@ int main(int argc, char** argv) {
             /* Netplay session BIOS is match-only; never overwrite seed/bios.cfg. */
             std::filesystem::path match_session_bios_path;
             bool match_session_bios_set = false;
+            seed.volume = host_volume_get(); seed.has_volume = true;
             seed.vsync = g_video_vsync; seed.has_vsync = true;
             seed.renderer = g_video_renderer;             seed.has_renderer = true;
             /* No Internal resolution / Supersampling round trip: the built-in
@@ -19696,8 +21015,12 @@ int main(int argc, char** argv) {
             seed.has_auto_skip_fmv = skip_fmv_offered;
             seed.turbo_loads = (g_turbo_loads_enabled != 0);
             seed.has_turbo_loads = turbo_loads_offered;
-            seed.fast_boot = fast_boot;                   seed.has_fast_boot = true;
-            seed.bios_hle  = bios_hle;                    seed.has_bios_hle  = true;
+            /* No launcher control exists for these two: write them back only
+             * when the player's file set them. Marked present always, they
+             * were a write-only latch over game.toml (the same fault as
+             * turbo_loads, MegaManX6Recomp#14). */
+            seed.fast_boot = fast_boot;  seed.has_fast_boot = settings_chose_fast_boot;
+            seed.bios_hle  = bios_hle;   seed.has_bios_hle  = settings_chose_bios_hle;
             seed.fullscreen = g_fullscreen;                seed.has_fullscreen = true;
             seed.frame_interpolation = (g_frame_interpolation != 0);
             seed.has_frame_interpolation = true;
@@ -19778,6 +21101,11 @@ int main(int argc, char** argv) {
             seed.memcard2_enabled = memcard2_enabled; seed.has_memcard2_enabled = true;
             seed.multitap_enabled = multitap_enabled; seed.has_multitap_enabled = true;
             seed.multitap_analog = multitap_analog; seed.has_multitap_analog = true;
+            /* No launcher control yet: carry hand-edited mouse keys through. */
+            seed.mouse_sensitivity = g_mouse_sensitivity;
+            seed.has_mouse_sensitivity = g_mouse_sensitivity_set;
+            seed.mouse_capture = g_mouse_capture_wanted;
+            seed.has_mouse_capture = g_mouse_capture_set;
             if (!memcard1_path.empty()) { seed.memcard1_path = memcard1_path; seed.has_memcard1_path = true; }
             if (!memcard2_path.empty()) { seed.memcard2_path = memcard2_path; seed.has_memcard2_path = true; }
             seed.language = resolved_language; seed.has_language = true;
@@ -19834,7 +21162,7 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < n; ++i) {
                     const std::string& d = player_device[i];
                     ls.player_src[i] =
-                        PSXRecompV4::launcher_source_from_device(d);
+                        PSXRecompV4::launcher_source_from_device(d, kLauncherNativeMouse, kLauncherNativeGuncon);
                     /* Round to the nearest launcher percent. Truncation turned a
                      * saved 20% value (6553/32767) into 19%, which the launcher's
                      * 5% normalization then silently reduced to 15%. */
@@ -19846,7 +21174,7 @@ int main(int argc, char** argv) {
                      * and the launcher then handed the lie back for us to
                      * persist. The keyboard's runtime behaviour does not
                      * depend on this value (effective_player_mode). */
-                    ls.pad_mode[i] = player_mode[i];
+                    ls.pad_mode[i] = PSXRecompV4::launcher_pad_mode_to_launcher(player_mode[i],kLauncherNegconMode);
                     ls.player_gamepad_guid[i][0] = '\0';
                     if (ls.player_src[i] == 2 && !d.empty() && d != "auto" &&
                         d != "gamepad" && d != "controller") {
@@ -19997,6 +21325,12 @@ int main(int argc, char** argv) {
             }
 
             RecompLauncherCGameInfo gi{};
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_MOUSE_CAP)
+        gi.has_native_mouse = 1;
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_PERIPHERAL_CAPS)
+        gi.has_native_guncon=1; gi.has_native_negcon=1;
+#endif
+#endif
             ae_fill_psx_launcher_game_info(
                 &gi,
                 game_name.empty() ? nullptr : game_name.c_str(),
@@ -20178,10 +21512,18 @@ int main(int argc, char** argv) {
                         player_instance[i] = ls.player_src[i] == 2
                             ? ls.player_gamepad_instance[i] : 0;
 #endif
-                        if (ls.player_src[i] == 1) {
+                        if (ls.player_src[i] == 4 && kLauncherNativeGuncon) {
+                            player_device[i]="guncon";
+                        } else if (ls.player_src[i] == 3 && kLauncherNativeMouse) {
+                            player_device[i] = "mouse";
+                        } else if (ls.player_src[i] == 1) {
                             player_device[i] = "keyboard";
                         } else if (ls.player_src[i] == 0) {
-                            player_device[i] = "none";
+                            /* A PS1 Mouse seat shows as None; left there, it
+                             * stays a mouse (launcher_device.h). */
+                            player_device[i] =
+                                PSXRecompV4::launcher_device_from_source(0, player_device[i],
+                                    kLauncherNativeMouse, kLauncherNativeGuncon);
                         } else if (ls.player_gamepad_guid[i][0]) {
                             player_device[i] = ls.player_gamepad_guid[i];
                         } else if (PSXRecompV4::launcher_source_from_device(
@@ -20201,7 +21543,7 @@ int main(int argc, char** argv) {
                          * depend on that to boot the declared pad type. */
                         player_mode[i] =
                             PSXRecompV4::resolve_player_mode_after_launcher(
-                                ls.pad_mode[i], ctrl_lock_mode,
+                                PSXRecompV4::launcher_pad_mode_from_launcher(ls.pad_mode[i],player_mode[i],kLauncherNegconMode), ctrl_lock_mode,
                                 ctrl_locked_mode[i],
                                 g_mod_controller_mode_override[i]);
                         player_deadzone[i] = ls.deadzone[i] * 32767 / 100;
@@ -20260,6 +21602,7 @@ int main(int argc, char** argv) {
                 seed.turbo_loads = ls.turbo_loads != 0;
                 seed.has_turbo_loads = turbo_loads_offered;
                 host_volume_set(ls.volume);
+                seed.volume = ls.volume; seed.has_volume = true;
                 /* Bundled-BIOS builds ignore any launcher-supplied path (the
                  * picker is hidden, but a stale settings file could still
                  * carry one) — resolve_bios_for_runtime would reject it and
@@ -20369,6 +21712,15 @@ int main(int argc, char** argv) {
                             "but no validated dump found — aborting launch (mixed "
                             "BIOS images would desync)\n",
                             (unsigned)g_lnch_session_bios_crc);
+                        char bios_why[240];
+                        std::snprintf(bios_why, sizeof(bios_why),
+                            "This match uses a retail PlayStation BIOS (CRC32 %08X), "
+                            "and no such BIOS file was found on this computer, so the "
+                            "match cannot start. Players on different BIOS images do "
+                            "not stay in step.",
+                            (unsigned)g_lnch_session_bios_crc);
+                        const int refused = refuse_start("netplay_session_bios",
+                            "Match could not start", bios_why);
                         match_session_bios_set = false;
                         ls.netplay_launch.enabled = 0;
                         g_lnch_pending_direct_launch = {};
@@ -20376,7 +21728,7 @@ int main(int argc, char** argv) {
                         if (overlay_init_thread.joinable())
                             overlay_init_thread.join();
                         SDL_Quit();
-                        return 1;
+                        return refused;
                     } else if (match_session_bios_path.empty()) {
                         std::fprintf(stdout,
                             "psxrecomp: netplay session BIOS = OpenBIOS "
@@ -20395,11 +21747,15 @@ int main(int argc, char** argv) {
             if (lr == 1) {
                 /* Keep settings changed and then dismissed with Quit. */
                 {
+                    player_settings_merge(seed);
                     PSXRecompV4::UserSettings save = seed;
                     (void)PSXRecompV4::save_user_settings(
                         exe_dir_from_argv(argv[0]) / "settings.toml", save);
                 }
                 std::fprintf(stdout, "psxrecomp: launcher closed; exiting.\n");
+                /* Not a refusal, but it ends before the first frame like one;
+                 * the report's launcher_status says what the rows showed. */
+                psx_crash_trace_set_exit_origin("launcher_closed");
                 if (overlay_init_thread.joinable())
                     overlay_init_thread.join();
                 SDL_Quit();
@@ -20414,6 +21770,7 @@ int main(int argc, char** argv) {
                                            : rui_initial_disc.c_str());
                 std::fprintf(stdout,
                              "psxrecomp: relaunch after generate/rebuild\n");
+                psx_crash_trace_set_exit_origin("setup_relaunch");
                 if (overlay_init_thread.joinable())
                     overlay_init_thread.join();
                 psx_game_codegen_relaunch_or_exit(disc_for_relaunch);
@@ -20471,6 +21828,16 @@ int main(int argc, char** argv) {
                 } else {
                     g_netplay_from_lobby = 0;
                 }
+                player_settings_merge(seed);
+                apply_extra_player_settings(seed,bios_hle_keep_intro,resolved_audio_buffer_ms);
+                if (seed.has_fov_scale) g_fov_scale=seed.fov_scale;
+                if (const char* e=std::getenv("PSX_GTE_FOV_SCALE")) {
+                    double value; if (psx_projection_scale_parse(e,&value)) g_fov_scale=value;
+                }
+                if (seed.has_low_latency_input) g_low_latency_input=seed.low_latency_input;
+                if (seed.has_mouse_sensitivity) { g_mouse_sensitivity=seed.mouse_sensitivity; g_mouse_sensitivity_set=1; }
+                if (seed.has_mouse_capture) { g_mouse_capture_wanted=seed.mouse_capture; g_mouse_capture_set=1; }
+                if (seed.has_memcard_dir && !cli_memcard_dir) memcard_dir=anchor_on_exe_dir(argv[0],seed.memcard_dir);
                 g_video_renderer  = seed.renderer;
                 /* Internal resolution (and with it dynamic resolution) was
                  * adopted with the write-back above. */
@@ -20543,8 +21910,8 @@ int main(int argc, char** argv) {
                 }
                 memcard1_enabled = seed.memcard1_enabled;
                 memcard2_enabled = seed.memcard2_enabled;
-                if (seed.has_memcard1_path) memcard1_path = anchor_on_exe_dir(argv[0], seed.memcard1_path);
-                if (seed.has_memcard2_path) memcard2_path = anchor_on_exe_dir(argv[0], seed.memcard2_path);
+                if (seed.has_memcard1_path) memcard1_path = anchor_card_path(argv[0], seed.memcard1_path);
+                if (seed.has_memcard2_path) memcard2_path = anchor_card_path(argv[0], seed.memcard2_path);
                 if (seed.has_language) resolved_language = seed.language;
                 {
                     const int n = std::min(PSX_MAX_PLAYERS,
@@ -20559,6 +21926,7 @@ int main(int argc, char** argv) {
                 g_video_win_w = seed.window_width;
                 /* Persist the user's choices next to the exe. */
                 {
+                    player_settings_merge(seed);
                     PSXRecompV4::UserSettings save = seed;
                     (void)PSXRecompV4::save_user_settings(
                         exe_dir_from_argv(argv[0]) / "settings.toml", save);
@@ -20577,18 +21945,31 @@ int main(int argc, char** argv) {
             } catch (const std::exception& ex) {
                 std::fprintf(stderr, "psxrecomp: overlay cache init failed: %s\n",
                              ex.what());
-                return 1;
+                return refuse_start("overlay_cache", "Game could not start",
+                    std::string("The cache of compiled game code could not be prepared, "
+                                "so the game cannot start.\n\n") + ex.what());
             }
         }
         timing.success();
     }
 
     if (game_config_path || disc_override_path || !resolved_disc.empty()) {
+        /* The disc check shows its own box for an image it cannot open or
+         * that lacks its .sbi; a cancelled picker shows none. */
+        const unsigned disc_messages = s_player_message_seq;
         resolved_disc = resolve_disc_for_runtime(
             resolved_disc, disc_override_path, game_id, argv[0]);
+        if (resolved_disc.empty() && !s_wrong_disc_sentence.empty()) {
+            /* The disc check has shown its box (a person's start) and printed
+             * its line; the report gets the kind and that sentence. */
+            return refuse_start("wrong_disc", "Disc verification failed",
+                                s_wrong_disc_sentence, disc_messages);
+        }
         if (game_config_path && resolved_disc.empty()) {
             std::fprintf(stderr, "psxrecomp: no disc image selected; exiting.\n");
-            return 1;
+            return refuse_start("no_disc", "No disc selected",
+                "No disc image was selected, so the game cannot start.",
+                disc_messages);
         }
     }
 
@@ -20605,12 +21986,15 @@ int main(int argc, char** argv) {
                                  ? "psxrecomp: cannot apply netplay mods: %s\n"
                                  : "psxrecomp: cannot clear mods for netplay: %s\n",
                              mod_error.c_str());
-                return 1;
+                return refuse_start("mods", "Mods could not be switched off",
+                    "A netplay match runs without mods, and they could not be "
+                    "switched off, so the match cannot start.\n\n" + mod_error);
             }
         } else if (!PSXRecompV4::mod_runtime_commit(resolved_disc, &mod_error)) {
             std::fprintf(stderr, "psxrecomp: cannot launch with selected mods: %s\n",
                          mod_error.c_str());
-            return 1;
+            return refuse_start("mods", "Mods could not be applied",
+                "The game cannot start with the selected mods.\n\n" + mod_error);
         }
         timing.success();
     }
@@ -20646,13 +22030,9 @@ int main(int argc, char** argv) {
         g_turbo_load_release_frames = TURBO_LOADS_RELEASE_FRAMES;
         if (!turbo_loads_offered)
             g_turbo_loads_enabled = 0;
-        /* The helper restores interpolation and Skip FMVs to their
-         * pre-activation values, which is only right while no launcher
-         * control owns them. */
-        static_assert(!frame_interpolation_offered && !skip_fmv_offered,
-                      "reset_mod_owned_presentation() would clobber a launcher "
-                      "setting; restore only when the feature is mod-owned");
+        /* Restore player presentation preferences before plugin activation. */
         reset_mod_owned_presentation();
+        apply_player_presentation_environment();
         /* Existing titles cache allocation handles across rematches. Preserve
          * those process-lifetime resources by default. A title declaring the
          * session-owned build contract recreates all handles on activation;
@@ -20702,7 +22082,10 @@ int main(int argc, char** argv) {
             if (g_mod_controller_mode_override[i] >= 0)
                 player_mode[i] = g_mod_controller_mode_override[i];
         }
-        if (g_mod_load_wall_multiplier >= 0) {
+        if (g_mod_load_wall_multiplier >= 0 && g_fast_loading_optout) {
+            std::fprintf(stdout, "psxrecomp: Fast Loading is off for this title "
+                         "(game.toml [runtime] fast_loading_optout)\n");
+        } else if (g_mod_load_wall_multiplier >= 0) {
             g_turbo_loads_enabled = 1;
             g_turbo_load_wall_multiplier = g_mod_load_wall_multiplier;
             g_turbo_load_release_frames = g_mod_load_release_frames;
@@ -20751,11 +22134,19 @@ int main(int argc, char** argv) {
         memcard2_path.clear();
     }
 
+    /* The BIOS check shows its own box for an image this build was not
+     * compiled from and for a setup program; a cancelled picker shows none. */
+    const unsigned bios_messages = s_player_message_seq;
     std::filesystem::path resolved_bios =
         resolve_bios_for_runtime(bios_path, argv[0], bios_explicit);
     if (resolved_bios.empty()) {
         std::fprintf(stderr, "psxrecomp: no BIOS selected; exiting.\n");
-        return 1;
+        /* A setup program links no game and no BIOS code: it cannot start a
+         * game at all, whatever BIOS file is chosen. */
+        return refuse_start(psx_bios_registry_count == 0 ? "setup_program" : "no_bios",
+            "No PlayStation BIOS selected",
+            "No PlayStation BIOS was selected, so the game cannot start.",
+            bios_messages);
     }
     /* memcard_dir was resolved to its default before the launcher (above). */
 
@@ -20774,6 +22165,8 @@ int main(int argc, char** argv) {
 session_reboot:
     /* A replay belongs to the session it started in. */
     replay_session_shutdown();
+    g_ovl_session_disc = resolved_disc.string();
+    ovl_look_posted_reset();
     /* A new backend/session must not inherit the prior applied settings or
      * a refused live request. Capture its boot baseline again on first read. */
     g_video_boot_valid = false;
@@ -20828,11 +22221,17 @@ session_reboot:
      * Rematch only rewrites bios_path_str — without re-activate, memory_init
      * loads new ROM bytes against the prior match's linked backend (e.g.
      * SCPH-1001 dump + sticky OPENBIOS) and dig0 never publishes cleanly. */
-    if (!validate_bios_for_launch(std::filesystem::path(bios_path_str))) {
-        std::fprintf(stderr, "psxrecomp: BIOS activate failed for %s%s\n",
-                     bios_path_str.c_str(),
-                     rematch_session ? " (rematch)" : "");
-        return 1;
+    {
+        const unsigned activate_messages = s_player_message_seq;
+        if (!validate_bios_for_launch(std::filesystem::path(bios_path_str))) {
+            std::fprintf(stderr, "psxrecomp: BIOS activate failed for %s%s\n",
+                         bios_path_str.c_str(),
+                         rematch_session ? " (rematch)" : "");
+            return refuse_start("bios_mismatch", "PlayStation BIOS could not be used",
+                "The PlayStation BIOS could not be made active, so the game "
+                "cannot start.\n\n" + bios_path_str,
+                activate_messages);
+        }
     }
     if (rematch_session) {
         std::fprintf(stdout,
@@ -21027,6 +22426,8 @@ session_reboot:
      * stay the player's settings: the mod never leaks into a launcher seed.
      * With [video] pgxp_mod_only the mod is the one switch (pgxp_session.h). */
     PSXPgxpSessionConfig pgxp_cfg{};
+    pgxp_cfg.player_geometry_set=g_player_geometry_set;
+    pgxp_cfg.player_texture_set=g_player_texture_set;
     pgxp_cfg.video_geometry = g_video_geometry_correction;
     pgxp_cfg.video_texture = g_video_perspective_texturing;
     pgxp_cfg.video_cpu_mode = g_video_pgxp_cpu_mode;
@@ -21189,7 +22590,7 @@ session_reboot:
             const bool dev_p1 = (dev_any_input_enabled() && s == 0);
             const int mode = assert_sio_pad_profile(s, dev_p1);
             if (live_pad_mode(s)) sio_reset_dualshock(s);
-            else sio_set_pad_analog(s, pad_mode_boot_analog(mode), 0x80, 0x80, 0x80, 0x80);
+            else sio_set_pad_type(s, pad_type_boot_for_slot(s,g_players[s],mode), 0x80, 0x80, 0x80, 0x80);
         }
     }
     /* SPU float-shadow gate must be set before spu_init() (which runs
@@ -21219,8 +22620,10 @@ session_reboot:
         if (!r.note.empty())     detail += "\n\n" + r.note;
         detail += "\n\nIf this is a .cue, check that every FILE line it names "
                   "exists next to it; selecting the .bin directly also works.";
+        const unsigned mount_messages = s_player_message_seq;
         launcher_warning("Disc Could Not Be Mounted", detail);
-        return 1;
+        return refuse_start("disc_not_mounted", "Disc Could Not Be Mounted",
+                            detail, mount_messages);
     }
     /* Register the roster so the mounted image can still be changed once the
      * game runs (debug server `disc_select`). Take the current index from what
@@ -21237,11 +22640,23 @@ session_reboot:
         const int mounted = roster_index_for_disc(game_discs, disc_path_str);
         cdrom_disc_roster_set(roster.data(), (int)roster.size(),
                               mounted >= 0 ? mounted + 1 : selected_disc_index);
+        /* A program of a set names its states by set position, also after
+         * a disc change while it runs. */
+        cdrom_disc_scope_tokens_set(g_program_discs.data(),
+                                    (int)g_program_discs.size());
         /* --disc names a disc of the set, but the earlier index derivation is
          * skipped for an override, so selected_disc_index kept its default of
          * 1. That put the savestate disc token at _disc1 whatever was mounted,
          * which is the mix-up savestate_set_disc_scope() exists to prevent. */
         if (mounted >= 0) selected_disc_index = mounted + 1;
+        /* A slot may show a state another disc of the set left there; loading
+         * it mounts that disc. A recorded input replay restores its baseline
+         * from the mounted disc's file, so it sees only that disc. */
+        std::vector<int> state_discs;
+        if (!g_program_discs.empty()) state_discs=g_program_discs;
+        else for (int i = 1; i <= (int)roster.size(); ++i) state_discs.push_back(i);
+        savestate_set_disc_roster(state_discs.data(), (int)state_discs.size());
+        savestate_set_cross_disc(std::getenv("PSX_DIAGNOSTIC_REPLAY") == nullptr);
     }
     if (game_discs.size() > 1) {
         mod_runtime_set_mounted_disc_resolver(
@@ -21267,7 +22682,13 @@ session_reboot:
         char message[64];
         snprintf(message, sizeof message, "Disc %d inserted", disc);
         host_osd_push(message, 2500);
+        /* The warning describes the disc in the drive: read the new disc's
+         * serial, and whether its SBI loaded, as the launch does. */
+        note_mounted_disc_warning(path, PSXRecompV4::identify_disc(
+            path, "", /*expected_crc*/0, /*has_expected_crc*/false,
+            /*compute_crc*/false).detected_serial);
     }, &disc_menu_session);
+    psx_runtime_menu_set_host(&kRuntimeMenuHost);
     psx_runtime_menu_init();
     for (const auto& route : warm_cd_routes) {
         cdrom_register_warm_route(route.arm_lba, route.lbas.data(),
@@ -21301,6 +22722,7 @@ session_reboot:
         const auto ident = PSXRecompV4::identify_disc(
             disc_path_str, expected_serial, expected_crc,
             has_crc, /*compute_crc*/false);
+        note_mounted_disc_warning(disc_path_str, ident.detected_serial);
         if (ident.region == "PAL") {
             cdrom_set_disc_scex("SCEE");
             power_on_pal = 1;
@@ -21347,6 +22769,32 @@ session_reboot:
                          "instant budget %d/frame)\n",
                          divisor, cdrom_get_instant_rate());
     }
+    /* The programs of a multi-program set share the memory cards. Each keeps
+     * them in memory and writes them back, so only one may run at a time
+     * (program_set_lock.h). Any failure to establish exclusivity refuses
+     * safely. A session reboot finds the lock already held by us. */
+    if (!g_program_discs.empty()) {
+        std::error_code lock_dir_ec;   /* a first run has no saves folder yet */
+        std::filesystem::create_directories(memcard_dir, lock_dir_ec);
+    }
+    if (!g_program_discs.empty()) {
+        const int lock_result=psx_program_set_lock_acquire(memcard_dir_str.c_str());
+        if (lock_result < 0)
+            return refuse_start("program_set_lock", "Memory cards unavailable",
+                "Exclusive access to this game's shared memory cards could not be "
+                "established. Check the saves folder's permissions and try again.",
+                s_player_message_seq);
+        if (lock_result == 0) {
+            const unsigned lock_messages = s_player_message_seq;
+            launcher_warning("Already running",
+                "Another program of this game is running from this folder. They "
+                "share the same memory cards, so only one can run at a time.\n\n"
+                "Close the other one, then start this one again.");
+            return refuse_start("already_running", "Already running", "",
+                                lock_messages);
+        }
+    }
+
     {
         std::string mc1 = memcard1_path.string();
         std::string mc2 = memcard2_path.string();
@@ -21459,6 +22907,8 @@ session_reboot:
      * -> zero input (PS5 DualSense works regardless: its HIDAPI driver is on by
      * default). Enable the HIDAPI Xbox driver so HIDAPI handles Xbox pads too. */
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_XBOX, "1");
+    /* Direct launches also need SDL's opt-in Steam Controller driver. */
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
     if (!SDL_WasInit(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER)) {
     /* Per-monitor DPI awareness, BEFORE any SDL_Init.
      *
@@ -21480,7 +22930,9 @@ session_reboot:
 #endif
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
             std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
-            return 1;
+            return refuse_start("video_init", "Game window could not be opened",
+                std::string("The video system could not be started, so the game "
+                            "cannot start.\n\nSDL_Init: ") + SDL_GetError());
         }
     }
     load_input_config(argv[0]);
@@ -21576,7 +23028,9 @@ session_reboot:
     );
     if (!sdl_window) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
-        return 1;
+        return refuse_start("video_init", "Game window could not be opened",
+            std::string("The game window could not be created, so the game "
+                        "cannot start.\n\nSDL_CreateWindow: ") + SDL_GetError());
     }
     psx_apply_window_icon(sdl_window, argv[0]);
     s_window_fullscreen = {};
@@ -21642,7 +23096,8 @@ session_reboot:
         g_gl_active = (gl_renderer_init_context(sdl_window) != 0);
         dynres_setup();
         psx_video_current(&g_video_boot);  /* boot snapshot for restart-only rows */
-        recomp_overlay_setup(argv[0], s_picker_game_name);
+        recomp_overlay_setup(argv[0], s_picker_game_name, disc_path_str,
+                             ctrl_lock_mode, ctrl_lock_device, ctrl_locked_mode);
         if (dbg_live_scale && g_gl_active) {
             if (!dynres_requested()) g_dynres.active = false;
             const int ceil_s = gl_renderer_dynamic_resolution_ceiling();
@@ -21775,7 +23230,9 @@ session_reboot:
         sdl_renderer = SDL_CreateRenderer(sdl_window, -1, SDL_RENDERER_ACCELERATED);
     if (!sdl_renderer) {
         std::fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
-        return 1;
+        return refuse_start("video_init", "Game window could not be opened",
+            std::string("The picture output could not be created, so the game "
+                        "cannot start.\n\nSDL_CreateRenderer: ") + SDL_GetError());
     }
 
     /* Present in a logical space of the configured aspect (640x480 at native
@@ -21803,7 +23260,10 @@ session_reboot:
                 (size_t)640 * tex_scale * PSX_DISPLAY_PRESENT_MAX_HEIGHT *
                 tex_scale)) {
             std::fprintf(stderr, "failed to allocate %dx staging buffer\n", tex_scale);
-            return 1;
+            return refuse_start("video_init", "Game window could not be opened",
+                "There was not enough memory for the picture at " +
+                std::to_string(tex_scale) + "x internal resolution, so the game "
+                "cannot start. Choose a lower resolution.");
         }
     }
 
@@ -21813,7 +23273,9 @@ session_reboot:
             640 * tex_scale,
             (int)PSX_DISPLAY_PRESENT_MAX_HEIGHT * tex_scale) != 0) {
         std::fprintf(stderr, "SDL_CreateTexture failed: %s\n", SDL_GetError());
-        return 1;
+        return refuse_start("video_init", "Game window could not be opened",
+            std::string("The picture surface could not be created, so the game "
+                        "cannot start.\n\nSDL_CreateTexture: ") + SDL_GetError());
     }
   }
     log_present_cadence();
@@ -21864,13 +23326,22 @@ session_reboot:
                         nid.netplay_detail.empty()
                             ? "TOC fingerprint missing or policy failed"
                             : nid.netplay_detail.c_str());
-                    return 1;
+                    return refuse_start("netplay_disc", "Disc not valid for online play",
+                        "This disc image cannot be used for online play, so the "
+                        "match cannot start.\n\n" +
+                        (nid.netplay_detail.empty()
+                             ? std::string("Its track list could not be read or does "
+                                           "not match the disc this build needs.")
+                             : nid.netplay_detail));
                 }
             } else if (!g_session_netplay_disc_ok || g_session_disc_fp.empty()) {
                 std::fprintf(stderr,
                     "psxrecomp: netplay refused — no verified disc TOC "
                     "fingerprint (mount the supported .cue dump)\n");
-                return 1;
+                return refuse_start("netplay_disc", "Disc not valid for online play",
+                    "Online play needs a verified disc image and none is selected, "
+                    "so the match cannot start. Select the disc image this build "
+                    "needs, with its .cue file.");
             }
         }
         /* Transport role and gameplay slot are independent. An empty peer
@@ -21882,7 +23353,9 @@ session_reboot:
                 "(bind='%s' peer='%s' session=%u)\n",
                 net_cfg.bind_hostport, net_cfg.peer_hostport,
                 (unsigned)net_cfg.session_id);
-            return 1;
+            return refuse_start("netplay_address", "Match could not start",
+                "No address to listen on was given for this match, so it "
+                "cannot start.");
         }
         /* Resolve which host PlayerInput feeds this peer's net sample.
          * Auto (-1): always prefer dashboard P1 ("PLAYER N / NETPLAY") — that
@@ -22007,10 +23480,33 @@ session_reboot:
      * aliases the boot-skip alone. Env overrides: PSX_BIOS_HLE /
      * PSX_BIOS_HLE_KEEP_INTRO ('0' = off, anything else = on). */
     {
+        /* How this session boots. Offline it is the player's choice (the
+         * game's game.toml, then settings.toml, then the launcher). The peers
+         * of a netplay match must boot the same way, and nothing compares it:
+         * a peer whose settings.toml still held bios_hle = true from an older
+         * build met a fresh peer on false, the match started (the boot digest
+         * at tick 0 is the same in both modes) and the cores forked for good
+         * at sim 22. So a match takes all three values from the game's
+         * game.toml, which both peers of one build share, and says so to a
+         * player who had chosen otherwise. The player's choice is not
+         * changed: it applies again offline, also in this process. The two
+         * environment variables stay test overrides on top (set them on both
+         * peers). */
+        NetplayBootMode boot = { bios_hle ? 1 : 0, bios_hle_keep_intro ? 1 : 0,
+                                 fast_boot ? 1 : 0 };
+        if (net_cfg.enabled) {
+            const NetplayBootMode game = { game_bios_hle ? 1 : 0,
+                                           game_bios_hle_keep_intro ? 1 : 0,
+                                           game_fast_boot ? 1 : 0 };
+            if (netplay_boot_mode_settle(&game, &boot)) {
+                std::fprintf(stdout, "psxrecomp: %s\n", NETPLAY_BOOT_MODE_NOTICE);
+                host_osd_push(NETPLAY_BOOT_MODE_NOTICE, 8000);
+            }
+        }
         if (const char* e = std::getenv("PSX_BIOS_HLE"))
-            bios_hle = (e[0] && e[0] != '0');
+            boot.bios_hle = (e[0] && e[0] != '0');
         if (const char* e = std::getenv("PSX_BIOS_HLE_KEEP_INTRO"))
-            bios_hle_keep_intro = (e[0] && e[0] != '0');
+            boot.keep_intro = (e[0] && e[0] != '0');
         /* The two axes (kernel-call HLE, boot-skip) have DIFFERENT per-image
          * requirements, so they are decided in ONE pure place —
          * psx_bios_hle_plan(), runtime/src/bios_hle_plan.c. Conflating them
@@ -22018,9 +23514,9 @@ session_reboot:
          * boot-skip needs only shell_entry_phys, so refusing the former must
          * not silently cancel the latter. */
         PsxBiosHleRequest req;
-        req.bios_hle               = bios_hle ? 1 : 0;
-        req.keep_intro             = bios_hle_keep_intro ? 1 : 0;
-        req.fast_boot              = fast_boot ? 1 : 0;
+        req.bios_hle               = boot.bios_hle;
+        req.keep_intro             = boot.keep_intro;
+        req.fast_boot              = boot.fast_boot;
         req.have_deliver_event_ret = (psx_bios_image.deliver_event_ret != 0);
         req.have_shell_entry       = (psx_bios_image.shell_entry_phys != 0);
         req.have_game_entry        = (game_entry_pc != 0);
@@ -22083,8 +23579,17 @@ session_reboot:
          * believes it is still reading disc 2 -- and nothing in the slot list
          * would say so, because every disc of a set shares one entry_pc, which
          * is the key the slot files already use. Single-disc titles pass 0 and
-         * keep their existing filenames untouched. */
-        savestate_set_disc_scope(game_discs.size() > 1 ? selected_disc_index : 0);
+         * keep their existing filenames untouched.
+         *
+         * A program of a multi-program set shares the saves folder with the
+         * set's other programs, and two of them can share an entry_pc (Rival
+         * Schools). Its states take the disc's position in the SET, so they
+         * never collide with another program's. */
+        savestate_set_disc_scope(
+            !g_program_discs.empty()
+                ? PSXRecompV4::disc_roster_program_set_position(
+                      g_program_discs, selected_disc_index)
+                : (game_discs.size() > 1 ? selected_disc_index : 0));
         savestate_configure(memcard_dir.string().c_str(),
                             memory_get_bios_checksum(), game_entry_pc,
                             bios_token, openbios_ws);
@@ -22147,6 +23652,10 @@ session_reboot:
     psx_netplay_bind_cpu(&cpu);
     /* Solo rollback resim self-check (PSX_RB_SELFCHECK=1, offline only). */
     psx_selfcheck_init(&cpu, memory_get_bios_checksum(), game_entry_pc);
+
+    /* The game runs from here: nothing refused this start, and what the
+     * launcher's rows said is no longer why anything ended. */
+    psx_start_refusal_reset();
 
     /* Execute. */
     std::fprintf(stdout, "psxrecomp runtime: executing from PC=0x%08X\n", cpu.pc);
@@ -22530,8 +24039,8 @@ soft_return_lobby:
         ls.frame_generation = g_frame_generation_pref;
 #endif
         ls.vsync = psx_vsync_to_launcher(launcher_vsync_preference());
-        ls.frame_interp = g_frame_interpolation ? 1 : 0;
-        ls.frame_interp_fps = g_frame_interpolation_fps;
+        ls.frame_interp = g_mod_owned_baseline.captured ? g_mod_owned_baseline.values.frame_interpolation : g_frame_interpolation;
+        ls.frame_interp_fps = g_mod_owned_baseline.captured ? g_mod_owned_baseline.values.frame_interpolation_fps : g_frame_interpolation_fps;
         ls.assist_fast_forward_multiplier = (int)std::lround(g_fast_forward_preference * 10.0);
         ls.fast_forward_toggle_mode = g_fast_forward_toggle_mode ? 1 : 0;
         ls.auto_skip_fmv = (skip_fmv_offered && g_auto_skip_fmv) ? 1 : 0;
@@ -22619,11 +24128,11 @@ soft_return_lobby:
             for (int i = 0; i < n; ++i) {
                 const std::string& d = player_device[i];
                 ls.player_src[i] =
-                    PSXRecompV4::launcher_source_from_device(d);
+                    PSXRecompV4::launcher_source_from_device(d, kLauncherNativeMouse, kLauncherNativeGuncon);
                 ls.deadzone[i] =
                     (player_deadzone[i] * 100 + 32767 / 2) / 32767;
                 /* Verbatim, as in the first launcher entry above. */
-                ls.pad_mode[i] = player_mode[i];
+                ls.pad_mode[i] = PSXRecompV4::launcher_pad_mode_to_launcher(player_mode[i],kLauncherNegconMode);
                 ls.player_gamepad_guid[i][0] = '\0';
                 if (ls.player_src[i] == 2 && !d.empty() && d != "auto" &&
                     d != "gamepad" && d != "controller") {
@@ -22656,6 +24165,12 @@ soft_return_lobby:
         }
 
         RecompLauncherCGameInfo gi{};
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_MOUSE_CAP)
+        gi.has_native_mouse = 1;
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_PERIPHERAL_CAPS)
+        gi.has_native_guncon=1; gi.has_native_negcon=1;
+#endif
+#endif
         ae_fill_psx_launcher_game_info(
             &gi,
             game_name.empty() ? nullptr : game_name.c_str(),
@@ -22801,10 +24316,16 @@ soft_return_lobby:
                     player_instance[i] = ls.player_src[i] == 2
                         ? ls.player_gamepad_instance[i] : 0;
 #endif
-                    if (ls.player_src[i] == 1) {
+                    if (ls.player_src[i] == 4 && kLauncherNativeGuncon) {
+                            player_device[i]="guncon";
+                        } else if (ls.player_src[i] == 3 && kLauncherNativeMouse) {
+                            player_device[i] = "mouse";
+                        } else if (ls.player_src[i] == 1) {
                         player_device[i] = "keyboard";
                     } else if (ls.player_src[i] == 0) {
-                        player_device[i] = "none";
+                        player_device[i] =
+                            PSXRecompV4::launcher_device_from_source(0, player_device[i],
+                                kLauncherNativeMouse, kLauncherNativeGuncon);
                     } else if (ls.player_gamepad_guid[i][0]) {
                         player_device[i] = ls.player_gamepad_guid[i];
                     } else if (PSXRecompV4::launcher_source_from_device(
@@ -22817,7 +24338,7 @@ soft_return_lobby:
                      * and applies the new session's override over this. */
                     player_mode[i] =
                         PSXRecompV4::resolve_player_mode_after_launcher(
-                            ls.pad_mode[i], ctrl_lock_mode,
+                            PSXRecompV4::launcher_pad_mode_from_launcher(ls.pad_mode[i],player_mode[i],kLauncherNegconMode), ctrl_lock_mode,
                             ctrl_locked_mode[i],
                             g_mod_controller_mode_override[i]);
                     player_deadzone[i] = ls.deadzone[i] * 32767 / 100;
@@ -22830,6 +24351,7 @@ soft_return_lobby:
                     exe_dir_from_argv(argv[0]) / "settings.toml";
                 PSXRecompV4::UserSettings us =
                     PSXRecompV4::load_user_settings(settings_path);
+                apply_extra_player_settings(us,bios_hle_keep_intro,resolved_audio_buffer_ms);
                 const int un = std::min(PSX_MAX_PLAYERS,
                                         PSXRecompV4::UserSettings::kMaxControllerPlayers);
                 for (int i = 0; i < un; ++i) {
@@ -22974,6 +24496,7 @@ soft_return_lobby:
             g_frame_interpolation_fps = ls.frame_interp_fps;
             g_video_vsync = psx_vsync_from_launcher(ls.vsync, launcher_vsync_preference());
             g_mod_owned_baseline.values.video_vsync = g_video_vsync;
+            psx_mod_session_baseline_set_frame_interpolation(&g_mod_owned_baseline,g_frame_interpolation,g_frame_interpolation_fps);
             apply_present_cadence();
             g_fast_forward_preference = psx_fast_forward_preference(ls.assist_fast_forward_multiplier / 10.0);
             g_fast_forward_toggle_mode = ls.fast_forward_toggle_mode != 0;

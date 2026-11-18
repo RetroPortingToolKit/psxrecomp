@@ -441,6 +441,20 @@ class ToolchainStagingTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(staged))
         self.assertEqual(rs.co.codegen_hash(os.path.dirname(staged)), 0xecd487f7)
 
+    def test_stages_the_emitter_build_codegen_hash_header(self):
+        """The recompiler build writes the header beside its emitters; that
+        copy names the hash the staged emitters bake and must win over (or
+        stand in for) the include tree's."""
+        os.remove(os.path.join(self.include, 'overlay_codegen_hash.h'))
+        touch(os.path.join(self.recomp, 'runtime', 'include',
+                           'overlay_codegen_hash.h'),
+              '#define PSX_OVERLAY_CODEGEN_HASH 0x0badc0deu\n')
+        rs.stage_toolchain(self.stage, self.recomp, self.tools, self.include,
+                           self.cache, platform_tag='win',
+                           mingw_bin=self.mingw, log=lambda *_a: None)
+        staged = os.path.join(self.stage, 'overlay_toolchain', 'include')
+        self.assertEqual(rs.co.codegen_hash(staged), 0x0badc0de)
+
     def test_include_tree_without_a_codegen_hash_fails_loudly(self):
         """An unbuilt include tree would ship a toolchain whose every
         player-side BIOS build is refused on load, and nothing in the package

@@ -119,6 +119,46 @@
 #include <stdatomic.h>
 #include "png_write.h"   /* png_write_rgb — present_shot readback */
 
+/* GL_BLEND / GL_STENCIL_TEST enable state, cached. A glIsEnabled() is a
+ * round trip to the driver: with NVIDIA's threaded optimization it waits for
+ * the driver's worker thread to drain every command queued before it. The
+ * PGXP depth pass (depth_restore_ex) asked for both caps after each batch, and
+ * on R4's 18x race that wait was ~45% of the render thread's wall time. Every
+ * toggle of these two caps on the main context goes through this file (the
+ * #defines below; gl_postfx.inc is included here; the present thread's context
+ * never touches them; ImGui restores what it changes), so a cached value is
+ * exact. -1 = unknown: the next query asks GL once. Reset on context creation.
+ * PSX_GL_CAP_CACHE=0 asks GL every time, as before. */
+static signed char s_glcap_blend = -1, s_glcap_stencil = -1;
+static int s_glcap_on = -1;
+static signed char *glcap_slot(GLenum cap) {
+    if (s_glcap_on < 0) {
+        const char *e = getenv("PSX_GL_CAP_CACHE");
+        s_glcap_on = (e && *e) ? (*e != '0') : 1;
+    }
+    if (!s_glcap_on) return NULL;
+    return cap == GL_BLEND ? &s_glcap_blend : cap == GL_STENCIL_TEST ? &s_glcap_stencil : NULL;
+}
+static inline void glcap_enable(GLenum cap) {
+    signed char *c = glcap_slot(cap);
+    glEnable(cap);
+    if (c) *c = 1;
+}
+static inline void glcap_disable(GLenum cap) {
+    signed char *c = glcap_slot(cap);
+    glDisable(cap);
+    if (c) *c = 0;
+}
+static inline GLboolean glcap_is_enabled(GLenum cap) {
+    signed char *c = glcap_slot(cap);
+    if (!c) return glIsEnabled(cap);
+    if (*c < 0) *c = glIsEnabled(cap) ? 1 : 0;
+    return (GLboolean)*c;
+}
+static inline void glcap_forget(void) { s_glcap_blend = s_glcap_stencil = -1; }
+#define glEnable(cap)    glcap_enable(cap)
+#define glDisable(cap)   glcap_disable(cap)
+#define glIsEnabled(cap) glcap_is_enabled(cap)
 
 #ifndef GL_BGRA
 #define GL_BGRA 0x80E1
@@ -468,7 +508,7 @@ enum {
     RTH_WIDE_RECOVERY, RTH_INTERP_SUSPENDED, RTH_PRESENT_VRAM,
     RTH_PRESENT_WIDE, RTH_STATE, RTH_PEEK, RTH_RING_CAPTURE, RTH_DYN_STEP,
     RTH_FRAME, RTH_FG_SRC, RTH_DEPTH, RTH_HD_NOTE, RTH_DITHER, RTH_WIDE_FEEDBACK,
-    RTH_PRESENTATION_CAPTURE
+    RTH_PRESENTATION_CAPTURE, RTH_VRAM_SYNC_COPY
 };
 /* GP0(A0) whose payload gpu.c is still streaming into its array (the
  * facade's vram_upload_open, emulation thread), tracked whatever the HD
@@ -1947,6 +1987,12 @@ static const char *TEX_FS =
     "  vec3 k = vec3(float(raw & 31), float((raw >> 5) & 31), float((raw >> 10) & 31));\n"
     "  return u_accurate != 0 ? k * (8.0 / 255.0) : k / 31.0;\n"
     "}\n"
+    "int neighbour_texel(ivec2 base, ivec2 p){\n"
+    "  /* Clamp in the base texel's page before fetch_texel wraps: a neighbour\n"
+    "   * past u/v=255 must not wrap to 0 and blend the far side of the prim. */\n"
+    "  if ((v_twin & 1023) == 0){ ivec2 pg=base & ivec2(~255); p=clamp(p,pg+v_limits.xy,pg+v_limits.zw); }\n"
+    "  return fetch_texel(p.x,p.y);\n"
+    "}\n"
     "int stable_texel(ivec2 p){\n"
     "  /* Clamp before wrap, so a footprint left of u=0 cannot pick up u=255. */\n"
     "  if ((v_twin & 1023) == 0) p=clamp(p,v_limits.xy,v_limits.zw);\n"
@@ -2096,9 +2142,12 @@ static const char *TEX_FS =
     "    vec4 hd=fmode!=0 ? hd_texel_filtered(uv,dx,dy) : hd_texel(uv);\n"
     "    rgb=hd.rgb;\n"
     "    if(v_hd_mode==1){\n"
+    "      /* Replacement alpha owns coverage; native holes must not punch\n"
+    "       * the low-resolution silhouette through the HD artwork. Keep\n"
+    "       * the native STP bit for the primitive's blend classification. */\n"
     "      if(hd.a==0.0) discard;\n"
     "      int native=fetch_texel(int(floor(uv.x)),int(floor(uv.y)));\n"
-    "      if(native==0) discard; stp=(native>>15)&1;\n"
+    "      stp=(native>>15)&1;\n"
     "    } else if(v_hd_mode==2){\n"
     "      if(hd.a<128.0/255.0) discard; stp=0;\n"
     "    } else if(v_hd_mode==4){\n"
@@ -2146,9 +2195,10 @@ static const char *TEX_FS =
     "    fx = abs(fx); fy = abs(fy);\n"
     "    int c00 = fetch_texel(iu, iv);\n"
     "    if (c00 == 0) discard;\n"
-    "    int c10 = fetch_texel(iu + sx, iv);\n"
-    "    int c01 = fetch_texel(iu, iv + sy);\n"
-    "    int c11 = fetch_texel(iu + sx, iv + sy);\n"
+    "    ivec2 b = ivec2(iu, iv);\n"
+    "    int c10 = neighbour_texel(b, ivec2(iu + sx, iv));\n"
+    "    int c01 = neighbour_texel(b, ivec2(iu, iv + sy));\n"
+    "    int c11 = neighbour_texel(b, ivec2(iu + sx, iv + sy));\n"
     "    float w00 = (c00 == 0 ? 0.0 : 1.0) * (1.0 - fx) * (1.0 - fy);\n"
     "    float w10 = (c10 == 0 ? 0.0 : 1.0) * fx * (1.0 - fy);\n"
     "    float w01 = (c01 == 0 ? 0.0 : 1.0) * (1.0 - fx) * fy;\n"
@@ -3623,14 +3673,29 @@ static GLuint hd_gl_texture(const GpuHdTextureImage* image) {
     return texture->texture;
 }
 
+/* Sampler units are program state, not batch state. This retains the old
+ * per-batch writes for exact-output comparisons. */
+static int sampler_units_once_on(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("PSX_GL_SAMPLER_UNITS_ONCE");
+        enabled = !(e && !strcmp(e, "0"));
+    }
+    return enabled;
+}
 static void bind_textured_resources(GLuint source, GLuint palette, GLuint hd) {
     p_glActiveTexture(PSXGL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, source); p_glUniform1i(s_uVram, 0);
+    glBindTexture(GL_TEXTURE_2D, source);
     p_glActiveTexture(PSXGL_TEXTURE0 + 1);
-    glBindTexture(GL_TEXTURE_2D, palette); p_glUniform1i(s_uPalette, 1);
+    glBindTexture(GL_TEXTURE_2D, palette);
     p_glActiveTexture(PSXGL_TEXTURE0 + 2);
-    glBindTexture(GL_TEXTURE_2D, hd ? hd : s_up_tex); p_glUniform1i(s_uHdTexture, 2);
+    glBindTexture(GL_TEXTURE_2D, hd ? hd : s_up_tex);
     p_glActiveTexture(PSXGL_TEXTURE0);
+    if (!sampler_units_once_on()) {
+        p_glUniform1i(s_uVram, 0);
+        p_glUniform1i(s_uPalette, 1);
+        p_glUniform1i(s_uHdTexture, 2);
+    }
 }
 static int   s_tb_twin[4] = {0, 0, 0, 0};
 static uint64_t s_batch_total = 0, s_batch_reason[8];
@@ -3727,14 +3792,22 @@ static int bcls_passes(int semi, int b3d) {
     if (b3d == 0) return BCLS_CLEAR;
     return BCLS_CLEAR | BCLS_SET;
 }
-/* DRAW (an untextured draw set up with blend `semi`, mask_stencil_ex(mask,
+/* Mode 2 is the full draw-area depth rectangle emitted by depth_clear_now.
+ * Its queued surface scissor already clips it to the same pixels. A hardware
+ * clear writes the same far depth without shading two screen-sized triangles;
+ * keep the record in painter order, including tile and wide replay. Colour
+ * and stencil are untouched. The real-GL depth fixture compares all three
+ * attachments with the former draw at native, 4x and 9x scale.
+ *
+ * DRAW (an untextured draw set up with blend `semi`, mask_stencil_ex(mask,
  * check) and PGXP depth mode `dmode`; b3d as above), then (mask on) its
  * marking passes. GEO semi modes 1 and 3 add. A semi-transparent primitive
  * does not clear: what shows through it (a lamp under a fog or shade quad)
  * keeps glowing. */
 #define BCLS_DRAW(semi, dmode, mask, check, b3d, DRAW) do {                    \
-        DRAW;                                                                 \
-        if (s_bcls_on && (dmode) != 2 && !0) {                     \
+        if ((dmode) == 2) { glClearDepth(1.0); glClear(GL_DEPTH_BUFFER_BIT); } \
+        else { DRAW; }                                                         \
+        if (s_bcls_on && (dmode) != 2) {                                       \
             const int bcls_p_ = bcls_passes((semi), (b3d));                   \
             bcls_begin(0, (semi) == 1 || (semi) == 3);                        \
             if (bcls_p_ & BCLS_CLEAR) { bcls_pass(0, 2); DRAW; }              \
@@ -4019,8 +4092,10 @@ static void hiw_replay_wide(void) {
             p_glUseProgram(s_tex_prog);
             p_glUniform1f(s_tex_uShift, s_shift_hi);
             p_glUniform1f(s_tex_uXhalf, (float)g_wide_w / 2.0f);
-            p_glUniform1i(s_uVram, 0);
-            p_glUniform1i(s_uPalette, 1);
+            if (!sampler_units_once_on()) {
+                p_glUniform1i(s_uVram, 0);
+                p_glUniform1i(s_uPalette, 1);
+            }
             p_glActiveTexture(PSXGL_TEXTURE0);
             bound = c->wfbo;
             cur = 0;
@@ -4108,7 +4183,7 @@ static void hiw_flush_queue(void) {
                 p_glUniform1f(s_tex_uShift, s_shift_hi);
                 p_glUniform1f(s_tex_uXoff, (float)(-T->x0));
                 p_glUniform1f(s_tex_uXhalf, (float)ww / 2.0f);
-                p_glUniform1i(s_uVram, 0);
+                if (!sampler_units_once_on()) p_glUniform1i(s_uVram, 0);
                 p_glActiveTexture(PSXGL_TEXTURE0);
                 bound = 1;
             }
@@ -6174,6 +6249,12 @@ static int init_gpu_raster(void) {
     accurate_apply_uniforms();
     s_uLimits   = p_glGetUniformLocation(s_tex_prog, "u_limits");
     s_uHdTexture = p_glGetUniformLocation(s_tex_prog, "u_hd_texture");
+    if (sampler_units_once_on()) {
+        p_glUseProgram(s_tex_prog);
+        p_glUniform1i(s_uVram, 0);
+        p_glUniform1i(s_uPalette, 1);
+        p_glUniform1i(s_uHdTexture, 2);
+    }
     s_tex_uBcls = p_glGetUniformLocation(s_tex_prog, "u_bcls");
     s_geo_uBcls = p_glGetUniformLocation(s_geo_prog, "u_bcls");
     s_geo_uBadd = p_glGetUniformLocation(s_geo_prog, "u_badd");
@@ -6519,6 +6600,7 @@ int gl_renderer_init_context(SDL_Window *win) {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
     s_ctx = SDL_GL_CreateContext(win);
+    glcap_forget();
     if (!s_ctx) { fprintf(stdout, "psxrecomp: GL context creation failed (%s)\n", SDL_GetError()); return 0; }
     if (SDL_GL_MakeCurrent(win, s_ctx) != 0) { fprintf(stdout, "psxrecomp: MakeCurrent failed (%s)\n", SDL_GetError()); SDL_GL_DeleteContext(s_ctx); s_ctx=NULL; return 0; }
     /* Swap interval: 1=vsync (tear-free, default), 0=immediate (lowest display
@@ -6586,8 +6668,28 @@ int gl_renderer_init_context(SDL_Window *win) {
 /* Set the GL swap interval (vsync mode): 1=vsync, 0=immediate, -1=adaptive.
  * Safe to call before or after context creation; applies live when a context
  * exists. Adaptive falls back to vsync if unsupported. */
+/* Vsync self-heal state, shared with the SDL_Renderer present in main.cpp
+ * and reported by freeze_heartbeat.c. Defined here because every product
+ * build links this renderer, and the GL test harnesses link it without
+ * main.cpp. Once tripped, driver vsync stays off. */
+static _Atomic uint32_t s_present_slow_count;
+static _Atomic int s_present_vsync_disabled;
+uint32_t psx_present_slow_count(void) {
+    return atomic_load_explicit(&s_present_slow_count, memory_order_relaxed);
+}
+uint32_t psx_present_note_slow(void) {
+    return atomic_fetch_add_explicit(&s_present_slow_count, 1u, memory_order_relaxed) + 1u;
+}
+int psx_present_vsync_disabled(void) {
+    return atomic_load_explicit(&s_present_vsync_disabled, memory_order_relaxed);
+}
+void psx_present_disable_vsync(void) {
+    atomic_store_explicit(&s_present_vsync_disabled, 1, memory_order_relaxed);
+}
+
 void gl_renderer_set_swap_interval(int interval) {
     GL_RT_SYNC("set_swap_interval");
+    if (psx_present_vsync_disabled()) interval = 0;
     s_swap_interval = interval;
     s_pt_interval_gen++;   /* the present thread's context applies it */
     if (s_ctx) {
@@ -9239,13 +9341,32 @@ void gl_renderer_swap_timing_json(char *out, int cap) {
                          (unsigned long long)atomic_load(&s_swap_gap_ms[i]));
     if (used < cap) snprintf(out + used, (size_t)(cap - used), "]");
 }
+/* A wedged Windows/NVIDIA swap queue can block a swap for about 1.5 s per
+ * present: audio keeps playing while emulation and input look frozen. The
+ * SDL_Renderer present in main.cpp already drops driver vsync after three
+ * such presents; apply the same rule to the OpenGL swap. It runs on the
+ * thread that owns the current context, so the interval change lands on that
+ * context. The wall-clock pacer keeps the frame rate once vsync is off. */
+static void gl_swap_self_heal(Uint64 t0) {
+    const Uint64 t1 = SDL_GetPerformanceCounter();
+    const Uint64 freq = SDL_GetPerformanceFrequency();
+    const Uint64 swap_ms = (t1 >= t0 && freq) ? ((t1 - t0) * 1000u) / freq : 0;
+    if (psx_present_vsync_disabled() || s_swap_interval == 0 || swap_ms <= 250) return;
+    if (psx_present_note_slow() >= 3 && SDL_GL_SetSwapInterval(0) == 0) {
+        psx_present_disable_vsync();
+        fprintf(stderr, "psxrecomp: OpenGL swap blocked repeatedly; disabled driver vsync\n");
+    }
+}
+
 static void gl_window_swap(void) {
+    const Uint64 swap_t0 = SDL_GetPerformanceCounter();
 #if defined(PSX_SDL3)
     psx_video_telemetry_present(SDL_GL_SwapWindow(s_win) ? 1 : 0);
 #else
     SDL_GL_SwapWindow(s_win);
     psx_video_telemetry_present(-1); // SDL2 exposes no swap result.
 #endif
+    gl_swap_self_heal(swap_t0);
     if (s_swap_timing < 0) {
         const char *env = getenv("PSX_PRESENT_TIMING");
         s_swap_timing = env && env[0] == '1';
@@ -9264,7 +9385,10 @@ static void *pt_cb_present(void *user, int slot, void *ready) {
     (void)user;
     if (s_ptp_interval_gen != s_pt_interval_gen) {
         s_ptp_interval_gen = s_pt_interval_gen;
-        if (SDL_GL_SetSwapInterval(s_swap_interval) != 0 && s_swap_interval < 0)
+        /* A context rebind re-applies the interval; keep a tripped
+         * self-heal's vsync off. */
+        const int interval = psx_present_vsync_disabled() ? 0 : s_swap_interval;
+        if (SDL_GL_SetSwapInterval(interval) != 0 && interval < 0)
             SDL_GL_SetSwapInterval(1);
     }
     if (ready) { p_glWaitSync(ready, 0, PT_TIMEOUT_IGNORED); p_glDeleteSync(ready); }
@@ -10672,6 +10796,7 @@ static const GpuRenderBackend GL_BACKEND = {
     .wide_dump_full = glb_wide_dump_full,
     .set_depth_triangle = glb_set_depth_triangle,
     .wide_feedback_rect = glb_wide_feedback_rect,
+    .display_mode_changed = depth24_upload_policy,
 };
 
 /* ==== Render thread: recording, replay, hand-off ===========================
@@ -11235,6 +11360,25 @@ static void rtb_vram_upload_open(int open) {
 static void rtb_hd_texture_note(int op, int x, int y, int w, int h, int sx, int sy) {
     RTH_DIRECT_OR(RTH_REC(RTH_HD_NOTE, 0, op, x, y, w, h, sx, sy)); hd_note_exec(op, x, y, w, h, sx, sy); }
 static void rtb_vram_transfer_out(int x, int y, int w, int h, uint16_t *d) {
+    if (!d || w <= 0 || h <= 0) return;
+    /* Under HD authority, native rasterization already produced the exact
+     * guest pixels in the render owner's private CPU buffer. Publish them in
+     * command order without migrating the GL context (and flushing the driver)
+     * for a CPU memcpy. Main waits before reading the published buffer, and
+     * cannot enqueue later guest work until the transfer has returned. */
+    if (s_hd_native_authority && rth_record_mode()) {
+        RTH_REC(RTH_VRAM_SYNC_COPY, 0, 0);
+        rt_drain();
+        if (x == 0 && y == 0 && w == VRAM_W && h == VRAM_H) {
+            memcpy(d, s_rth_vram_pub, (size_t)VRAM_W * VRAM_H * sizeof(uint16_t));
+            return;
+        }
+        for (int j = 0; j < h; ++j)
+            for (int i = 0; i < w; ++i)
+                d[(size_t)j * w + i] =
+                    s_rth_vram_pub[((y + j) & 511) * VRAM_W + ((x + i) & 1023)];
+        return;
+    }
     GL_RT_SYNC("vram_transfer_out"); glb_vram_transfer_out(x, y, w, h, d); }
 static void rtb_set_draw_area(int x1, int y1, int x2, int y2) {
     if (rth_record_mode()) {
@@ -11318,6 +11462,13 @@ static int rtb_wide_dump_full(uint32_t *out, int cap, int *ow, int *oh, int base
     return glb_wide_dump_full(out, cap, ow, oh, base_x);
 }
 
+/* A GP1 transition must retire queued render-thread work before it moves
+ * VRAM ownership. */
+static void rtb_display_mode_changed(void) {
+    GL_RT_SYNC("display_mode_changed");
+    depth24_upload_policy();
+}
+
 static const GpuRenderBackend GL_RT_BACKEND = {
     .name = "opengl",
     .init = rtb_init, .set_scale = rtb_set_scale, .scale = rtb_scale,
@@ -11351,6 +11502,7 @@ static const GpuRenderBackend GL_RT_BACKEND = {
     .hd_texture_note = rtb_hd_texture_note,
     .vram_upload_open = rtb_vram_upload_open,
     .wide_feedback_rect = rtb_wide_feedback_rect,
+    .display_mode_changed = rtb_display_mode_changed,
 };
 
 /* ---- replay (render thread) ---------------------------------------------- */
@@ -11452,6 +11604,9 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
         memcpy(s_dyn_rth_disp, v + 1, sizeof s_dyn_rth_disp);
         (void)dyn_apply(v[0]);
         s_dyn_rth_disp_valid = 0;
+        break;
+    case RTH_VRAM_SYNC_COPY:
+        memcpy(s_rth_vram_pub, s_vram, (size_t)VRAM_W * VRAM_H * sizeof(uint16_t));
         break;
     case RTH_PEEK: {
         uint64_t ptr = (uint64_t)(uint32_t)v[4] | ((uint64_t)(uint32_t)v[5] << 32);

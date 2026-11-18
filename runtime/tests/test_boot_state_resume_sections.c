@@ -224,7 +224,15 @@ int main(void) {
         refused_word(on, on_len, BS_SEC_CPU_EXEC, 5, 32, &cpu, "CPU_EXEC rt 32");
         refused_word(on, on_len, BS_SEC_CPU_EXEC, 7, 2, &cpu, "CPU_EXEC age 2");
         refused_word(on, on_len, BS_SEC_CPU_EXEC, 8, 2, &cpu, "CPU_EXEC armed 2");
-        refused_word(on, on_len, BS_SEC_CPU_EXEC, 8, 0, &cpu, "CPU_EXEC age without armed");
+        /* A retired load leaves age 1 with armed 0; the next load re-arms
+         * with age 0, so the state is live and must load as it was saved. */
+        x = malloc(on_len); assert(x); memcpy(x, on, on_len);
+        put32(test_find_section(x, on_len, BS_SEC_CPU_EXEC, NULL, NULL) + 4 * 8, 0);
+        clobber_live(&cpu);
+        assert(load(x, on_len, &cpu));
+        assert(fixture_ld.age == 1 && fixture_ld.armed == 0 && fixture_ld.rt == 7 &&
+               fixture_ld_from_state);
+        free(x);
         refused_word(on, on_len, BS_SEC_SCHED, 1, 1, &cpu, "SCHED reserved word");
         refused_word(on, on_len, BS_SEC_SCHED, 0, TCB_BASE + 0x10u, &cpu, "SCHED TCB misaligned");
         refused_word(on, on_len, BS_SEC_SCHED, 0, TCB_BASE + TCB_SIZE, &cpu, "SCHED TCB past table");

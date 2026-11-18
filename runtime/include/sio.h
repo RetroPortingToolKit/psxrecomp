@@ -121,6 +121,13 @@ int  sio_get_multitap(void);
 /* phys_port: 0 = console Port 1, 1 = console Port 2. Default 0. */
 void sio_set_multitap_port(int phys_port);
 int  sio_get_multitap_port(void);
+/* Swap which console port each of the first two pads answers on: logical
+ * pad 0 on Port 2 and logical pad 1 on Port 1, as if the plugs were swapped.
+ * The pads keep their buttons, type and rumble; memory cards stay on their
+ * ports. Works in a one-player build: pad 0 moves to Port 2 and Port 1 is
+ * empty. Ignored while a multitap is on. Host state, not saved in a state. */
+void sio_set_pads_swapped(int swapped);
+int  sio_get_pads_swapped(void);
 /* Tomba-only legacy pad config path ([controller] legacy_pad_config). */
 void sio_set_legacy_cfg(int enabled);
 int  sio_get_legacy_cfg(void);
@@ -236,6 +243,24 @@ int sio_get_pad_connected(int slot);
 int sio_get_pad_analog(int slot);
 int sio_get_pad_config_capable(int slot);
 void sio_get_pad_sticks(int slot, uint8_t out[4]);
+
+/* Native PS1 Mouse port. Device kind is a host preference, retained across
+ * sio_init; default pad ports retain their existing wire/snapshot layout. */
+#define SIO_DEVICE_PAD 0
+#define SIO_DEVICE_MOUSE 1
+#define SIO_DEVICE_GUNCON 3
+#define SIO_GUNCON_NO_LIGHT_X 0x0001u
+#define SIO_GUNCON_NO_LIGHT_Y 0x000Au
+/* Native GunCon: active-low A/trigger/B and little-endian 8-MHz X/scanline Y. */
+void sio_set_guncon_state(int slot,uint16_t buttons,uint16_t x,uint16_t y);
+#define SIO_MOUSE_ACCUM_MAX 1024
+void sio_set_port_device(int slot, int kind);
+int sio_get_port_device(int slot);
+/* Relative counts: +X right, +Y down. Each poll drains at most one signed byte
+ * per axis; accumulated excess carries, bounded to +/-1024 counts. */
+void sio_mouse_add_motion(int slot, int dx, int dy);
+void sio_set_mouse_buttons(int slot, int left, int right);
+void sio_mouse_clear_motion(int slot);
 
 /* ---- SIO byte-level trace ring buffer ----
  * 1M entries × ~28 B ≈ 32 MB.  At ~600 byte/sec that's ~30 min of history. */

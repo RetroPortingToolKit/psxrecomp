@@ -4,6 +4,7 @@
 
 #include "psx_sdl.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
@@ -16,6 +17,7 @@
 extern "C" int overlay_capture_test_write_state(void);
 extern "C" unsigned overlay_capture_test_write_attempts(void);
 extern "C" int overlay_capture_test_provider_pending(void);
+extern "C" const char *overlay_capture_test_copy_file(const char *src, const char *dst);
 
 extern "C" {
 uint32_t g_dirty_ram_exec_pc_bitmap[DIRTY_RAM_EXEC_BITMAP_WORDS]{};
@@ -72,24 +74,36 @@ void set_dirty_page(uint32_t phys) {
     g_dirty_pages[page >> 5] |= 1u << (page & 31u);
 }
 
-bool wait_for_failed_write() {
-    for (int i = 0; i < 200; ++i) {
+/* The snapshot is written on a worker thread, and the test polls for its
+ * result. The poll used to stop after 200 tries of 5 ms, about one second. On
+ * a loaded host at lowered priority the worker had not finished by then, and
+ * the test failed with nothing wrong in the code under test. The wait now
+ * ends when the state is there, as before, or after a ceiling far above any
+ * honest run. A run that reaches the ceiling still fails. */
+constexpr std::chrono::seconds kWaitCeiling(120);
+
+template <typename Ready>
+bool wait_until(Ready ready) {
+    const auto deadline = std::chrono::steady_clock::now() + kWaitCeiling;
+    for (;;) {
         overlay_autocapture_tick();
-        if (overlay_capture_test_write_state() == 0 &&
-            overlay_capture_test_write_attempts() >= 1u)
-            return true;
+        if (ready()) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
         SDL_Delay(5);
     }
-    return false;
+}
+
+bool wait_for_failed_write() {
+    return wait_until([] {
+        return overlay_capture_test_write_state() == 0 &&
+               overlay_capture_test_write_attempts() >= 1u;
+    });
 }
 
 bool wait_for_provider_pending() {
-    for (int i = 0; i < 200; ++i) {
-        overlay_autocapture_tick();
-        if (overlay_capture_test_provider_pending()) return true;
-        SDL_Delay(5);
-    }
-    return false;
+    return wait_until([] {
+        return overlay_capture_test_provider_pending() != 0;
+    });
 }
 
 std::string read_all(const std::filesystem::path &path) {
@@ -225,9 +239,27 @@ int main() {
         return fail("dispatch_entry_segments does not name each entry's segments "
                     "(or kept a cleared epoch's segment)", root);
 
+    /* A failed history copy names the call and its error code. */
+    const std::string missing = (root / "missing-snapshot.json").string();
+    const std::string tmp = (root / "history.tmp").string();
+    const std::string open_failure = overlay_capture_test_copy_file(missing.c_str(), tmp.c_str());
+    if (open_failure.find("open the snapshot to copy it: errno 2 (") != 0)
+        return fail("a missing snapshot does not name the open and errno 2", root);
+    const std::string snapshot = (root / "snapshot.json").string();
+    std::ofstream(snapshot, std::ios::binary) << "{}";
+    const std::string no_dir = (root / "no-such-dir" / "history.tmp").string();
+    const std::string create_failure =
+        overlay_capture_test_copy_file(snapshot.c_str(), no_dir.c_str());
+    if (create_failure.find("create the history temp file: errno 2 (") != 0)
+        return fail("a missing history folder does not name the create and errno 2", root);
+    if (std::string(overlay_capture_test_copy_file(snapshot.c_str(), tmp.c_str())) != "" ||
+        read_all(tmp) != "{}")
+        return fail("a good history copy reports a failure or loses bytes", root);
+
     overlay_capture_wait_pending();
     std::filesystem::remove_all(root, ignored);
     SDL_Quit();
-    std::puts("PASS: periodic capture and provider failures retain additive epochs");
+    std::puts("PASS: periodic capture and provider failures retain additive epochs; "
+              "copy failures name the call and errno");
     return 0;
 }

@@ -53,7 +53,7 @@ int main() {
     check(valid, "ordinary generated sub-Q has valid CRC");
     check(subq[0] == 0x41 && subq[1] == 0x01 && subq[2] == 0x01,
           "generated data-track identity is correct");
-    check(subq[6] == 0x00 && subq[7] == 0x02 && subq[8] == 0x01,
+    check(subq[6] == 0x00 && subq[7] == 0x00 && subq[8] == 0x02 && subq[9] == 0x01,
           "generated absolute position includes the 150-sector lead-in");
     reader.Close();
 

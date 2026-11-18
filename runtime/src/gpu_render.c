@@ -311,3 +311,8 @@ int gr_wide_dump_full(uint32_t *out, int cap_pixels, int *ow, int *oh, int base_
         return g_b->wide_dump_full(out, cap_pixels, ow, oh, base_x);
     return 0;
 }
+
+/* GP1 display registers are already updated by the caller. */
+void gr_display_mode_changed(void) {
+    if (g_b->display_mode_changed) g_b->display_mode_changed();
+}

@@ -109,6 +109,7 @@ void mdec_snapshot_write(uint8_t *p) { (void)p; }
 
 int  psx_get_in_exception(void) { return 0; }
 int  psx_netplay_active(void) { return 0; }
+void psx_kernel_bless_note_range(uint32_t phys, uint32_t len) { (void)phys; (void)len; }
 int  psx_netplay_is_resimulating(void) { return 0; }
 void psx_netplay_local_view_clear(void) {}
 int  psx_netplay_local_view_shed(void) { return 0; }

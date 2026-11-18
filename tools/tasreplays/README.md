@@ -10,10 +10,13 @@ These standalone Python tools compare captured observations. They do not run a g
 
 The original CPU watcher compares PC, SR, Cause, EPC, HI, LO and GPR1–31. Raw GPR0 is retained but is outside that comparison. Sparse-image passivity checks require the caller's actual input endpoint; no title-specific length is assumed.
 
+The checkpoint tools drive and check checkpoint capture and resume in a debug build (`docs/TAS_CHECKPOINTS.md`). `run_checkpoint.py` runs a game command once with capture and an optional resume. `compare_boot_states.py` compares two state images section by section. `compare_checkpoint_runs.py` compares a resumed run with an uninterrupted one at every later capture. `verify_checkpoint_cohort.py` records cold runs, three resumes and a timer-2 negative control, and checks them all. `test_checkpoint_tools.py` runs them against a stand-in game.
+
 Run the synthetic controls without retail files or optional Python packages:
 
 ```console
 python3 -B tools/tasreplays/test_stream_compare.py
+python3 -B tools/tasreplays/test_checkpoint_tools.py
 ```
 
 The controls exercise complete comparisons, missing/truncated records, delayed writers, CPU/register and RAM divergences, original RAM-only scope, and segment gaps/overlaps/content changes. A passing fixture does not establish a title result, a compatible emulator build, hardware accuracy or snapshot restore qualification.
