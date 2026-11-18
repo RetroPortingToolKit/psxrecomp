@@ -193,6 +193,10 @@ static constexpr bool kLauncherNativeMouse = false;
 #endif
 #include "launcher_vsync.h"
 #include "launcher_profile.h"  /* per-system variant profile (theme/caps bundle) */
+#if __has_include("launcher_theme_overrides.h")
+#include "launcher_theme_overrides.h" /* game colors staged by LAUNCHER_THEME */
+#define PSX_HAS_GAME_THEME 1
+#endif
 #include "launcher_boot_timing.h" /* PSX_LAUNCHER_BOOT_TIMING stamps */
 #if defined(PSX_MEMORY_CARD_MANAGER) && defined(RECOMP_LAUNCHER_HAS_CARD_MANAGER)
 #include "psx_card_manager/launcher_service.hpp"
@@ -19901,6 +19905,12 @@ int main(int argc, char** argv) {
         std::filesystem::path settings_path =
             exe_dir_from_argv(argv[0]) / "settings.toml";
 #if defined(RECOMP_LAUNCHER)
+#if defined(PSX_HAS_GAME_THEME)
+        /* Loaded here, not only in the launcher, so --no-launcher keeps the
+         * game colors in the in-game menu. */
+        launcher_theme_load_game_overrides(
+            (exe_dir_from_argv(argv[0]) / "assets" / "theme_game.ini").string().c_str());
+#endif
         g_lnch_settings_path = settings_path;
         g_overlay_settings_path = settings_path;
 #endif
