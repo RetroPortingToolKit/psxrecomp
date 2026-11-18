@@ -21993,8 +21993,6 @@ session_reboot:
     PSXPgxpSessionConfig pgxp_cfg{};
     pgxp_cfg.player_geometry_set=g_player_geometry_set;
     pgxp_cfg.player_texture_set=g_player_texture_set;
-    pgxp_cfg.player_cpu_mode_set = g_player_pgxp_cpu_set;
-    pgxp_cfg.player_culling = g_player_pgxp_culling;
     pgxp_cfg.video_geometry = g_video_geometry_correction;
     pgxp_cfg.video_texture = g_video_perspective_texturing;
     pgxp_cfg.video_cpu_mode = g_video_pgxp_cpu_mode;
@@ -22007,6 +22005,10 @@ session_reboot:
     /* Precise culling changes guest NCLIP results from host-only shadows, so
      * a netplay match holds it off whatever the settings say. */
     pgxp_cfg.netplay = net_cfg.enabled ? 1 : 0;
+    /* The player's CPU-mode choice and precise culling: both are read by
+     * psx_pgxp_session_arm alongside the fields above. */
+    pgxp_cfg.player_cpu_mode_set = g_player_pgxp_cpu_set,
+        pgxp_cfg.player_culling = g_player_pgxp_culling;
     PSXPgxpSessionInputs pgxp_in{};
     const PSXPgxpSessionArm pgxp_arm = psx_pgxp_session_arm(&pgxp_cfg, &pgxp_in);
     if (pgxp_in.env_geometry >= 0) g_video_geometry_correction = pgxp_in.env_geometry;
