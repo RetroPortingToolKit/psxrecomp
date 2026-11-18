@@ -30,7 +30,16 @@ namespace PSXRecompV4 {
 namespace {
 
 constexpr uint32_t kMinFormatVersion = 1;
-constexpr uint32_t kMaxFormatVersion = 13;
+constexpr uint32_t kMaxFormatVersion = 14;
+
+/* A mod may only point the launcher at a file inside the game folder. */
+static bool status_file_path_ok(const std::string& text) {
+    const std::filesystem::path path(text);
+    if (text.empty() || path.is_absolute() || path.has_root_name()) return false;
+    for (const auto& part : path)
+        if (part == "..") return false;
+    return true;
+}
 constexpr uint64_t kMaxArchiveBytes = 256ull * 1024ull * 1024ull;
 constexpr uint32_t kMaxArchiveFiles = 4096;
 
@@ -1924,6 +1933,15 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                     if (toml::find<std::string>(v, "vsync") != "off")
                         throw std::runtime_error("feature vsync must be \"off\"");
                     feature.vsync_off = true;
+                }
+                if (v.contains("status_file")) {
+                    if (out.format_version < 14)
+                        throw std::runtime_error(
+                            "feature status_file requires format_version 14");
+                    feature.status_file = toml::find<std::string>(v, "status_file");
+                    if (!status_file_path_ok(feature.status_file))
+                        throw std::runtime_error(
+                            "feature status_file must be a relative path inside the game folder");
                 }
                 feature.channel = out.channel;
                 if (v.contains("channel")) {
@@ -4533,3 +4551,21 @@ extern "C" int psx_mod_register_savestate_plugin(
     return id &&
         PSXRecompV4::mod_register_savestate_plugin(id, callback) ? 1 : 0;
 }
+
+namespace PSXRecompV4 {
+
+constexpr size_t kStatusTextMax = 255;
+
+std::string mod_feature_status_text(const std::filesystem::path& exe_dir,
+                                    const std::string& status_file) {
+    std::ifstream in(exe_dir / std::filesystem::path(status_file), std::ios::binary);
+    std::string line;
+    if (!in || !std::getline(in, line)) return {};
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.size() <= kStatusTextMax) return line;
+    size_t cut = kStatusTextMax;
+    while (cut > 0 && ((unsigned char)line[cut] & 0xC0) == 0x80) --cut;  // no split UTF-8
+    return line.substr(0, cut);
+}
+
+} // namespace PSXRecompV4
