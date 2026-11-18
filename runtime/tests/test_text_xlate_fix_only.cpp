@@ -25,6 +25,7 @@ void gr_vram_write(int x, int y, uint16_t pixel) {
     g_vram[static_cast<size_t>(y) * 1024u + static_cast<size_t>(x)] = pixel;
 }
 void dirty_ram_text_bless(uint32_t, const uint8_t*, uint32_t) {}
+void psx_kernel_bless_note_range(uint32_t, uint32_t) {}
 }
 
 static bool set_test_language(void) {

@@ -1,8 +1,10 @@
 // SYSTEM.CNF beyond 16 MiB wins over unrelated early cdrom: strings.
+// The launcher's SBI row and the missing-SBI warning agree.
 #include "disc_identity.h"
 #include "disc_content_hash.h"
 #include <cassert>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -12,7 +14,8 @@ namespace fs=std::filesystem;
 static void both32(uint8_t* p,uint32_t value) {
     for(unsigned i=0;i<4;i++) {p[i]=(uint8_t)(value>>(8*i));p[7-i]=p[i];}
 }
-static void fixture(const fs::path& path,bool raw) {
+static void fixture(const fs::path& path,bool raw,
+                    const std::string& boot="SLPS_009.98",bool with_decoy=true) {
     const unsigned unit=raw?2352:2048,offset=raw?24:0;
     std::ofstream file(path,std::ios::binary);
     file.seekp(10000ull*unit-1);file.put(0);
@@ -29,14 +32,14 @@ static void fixture(const fs::path& path,bool raw) {
     auto* root=pvd.data()+156;root[0]=34;both32(root+2,20);both32(root+10,2048);
     root[25]=2;root[28]=root[31]=root[32]=1;
     write(16,pvd);
-    const std::string cnf="BOOT = cdrom:SLPS_009.98;1\r\n";
+    const std::string cnf="BOOT = cdrom:"+boot+";1\r\n";
     std::vector<uint8_t> directory(2048);
     directory[0]=46;both32(directory.data()+2,9000);both32(directory.data()+10,(uint32_t)cnf.size());
     directory[28]=directory[31]=1;directory[32]=12;
     std::memcpy(directory.data()+33,"SYSTEM.CNF;1",12);write(20,directory);
     write(9000,std::vector<uint8_t>(cnf.begin(),cnf.end()));
     const std::string decoy="BOOT = cdrom:SLUS_999.99;1\r\n";
-    write(40,std::vector<uint8_t>(decoy.begin(),decoy.end()));
+    if(with_decoy) write(40,std::vector<uint8_t>(decoy.begin(),decoy.end()));
 }
 // An uncompressed CHD v5 fixture with one MODE2_RAW track. The libchdr
 // decoder is the independent format reader; expected identity is the raw BIN.
@@ -60,10 +63,93 @@ static void raw_chd(const fs::path& raw,const fs::path& output) {
     std::ifstream source(raw,std::ios::binary);std::vector<char> sector(unit);
     for(unsigned i=0;i<frames;i++){source.read(sector.data(),2352);file.write(sector.data(),sector.size());}
 }
+// Puts a copy of the boot line where the decoy would go, so an image whose TOC
+// cannot be mounted still names its serial to the early scan.
+static void early_boot_line(const fs::path& path,bool raw,const std::string& boot) {
+    const unsigned unit=raw?2352:2048,offset=raw?24:0;
+    const std::string cnf="BOOT = cdrom:"+boot+";1\r\n";
+    std::fstream file(path,std::ios::binary|std::ios::in|std::ios::out);
+    file.seekp(40ull*unit+offset);file.write(cnf.data(),cnf.size());
+}
+// The launcher's SBI File row is OK only when the disc mounted with its SBI
+// loaded (ae_disc_verify: toc_opened && sbi_loaded). The missing-SBI warning
+// must say the same, whether the disc is unlisted, has no .sbi, has a good one,
+// or has one the reader cannot take (empty, wrong magic, cut short): that
+// last case leaves the TOC unmounted, and the warning used to read it as
+// "loaded".
+enum class Companion {none,good,empty,bad_magic,cut_short};
+static void write_companion(const fs::path& path,Companion kind) {
+    std::vector<uint8_t> bytes;
+    switch(kind) {
+    case Companion::none: return;
+    case Companion::good:       // SBI\0, then one record: MSF 00:02:20, type 1, ten Q bytes
+        bytes={'S','B','I',0,0x00,0x02,0x20,0x01,0x41,0x01,0x01,0x00,0x02,0x20,0x00,0x00,0x00,0x00};break;
+    case Companion::empty:      bytes={'S','B','I',0};break;
+    case Companion::bad_magic:  bytes={'N','O','P','E',0x00,0x02,0x20,0x01,0x41,0x01,0x01,0x00,0x02,0x20,0x00,0x00,0x00,0x00};break;
+    case Companion::cut_short:  bytes={'S','B','I',0,0x00,0x02,0x20,0x01,0x41};break;
+    }
+    std::ofstream file(path,std::ios::binary);
+    file.write((const char*)bytes.data(),bytes.size());
+}
+static void sbi_row_and_warning(const fs::path& root) {
+    struct Case {const char* name;bool listed;Companion companion;bool extra_track;
+                 int toc;int loaded;};   // toc, loaded: 1/0 expected, -1 = only agreement
+    const Case cases[]={
+        {"unlisted-no-sbi",    false,Companion::none,     false, 1,0},
+        {"no-sbi",             true, Companion::none,     false, 1,0},
+        {"good-sbi",           true, Companion::good,     false, 1,1},
+        {"empty-sbi",          true, Companion::empty,    false, 0,0},
+        {"bad-magic-sbi",      true, Companion::bad_magic,false, 0,0},
+        {"cut-short-sbi",      true, Companion::cut_short,false, 0,0},
+        {"unlisted-empty-sbi", false,Companion::empty,    false, 0,0},
+        {"track-missing",      true, Companion::none,     true, -1,-1},
+        {"track-missing-sbi",  true, Companion::good,     true, -1,-1},
+    };
+    // SLES-01301 is on kKnownLibcryptSerials; SLPS-00998 is not.
+    std::setvbuf(stdout,nullptr,_IONBF,0);
+    int misses=0;
+    const auto listed=root/"listed.bin",plain=root/"plain.bin";
+    fixture(listed,true,"SLES_013.01",false);early_boot_line(listed,true,"SLES_013.01");
+    fixture(plain,true,"SLPS_009.98",false);early_boot_line(plain,true,"SLPS_009.98");
+    const std::string cue_main="FILE \"disc.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n";
+    const std::string cue_track="FILE \"disc.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n"
+                                "FILE \"missing track 02.bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n";
+    for(const Case& c:cases) {
+        const auto dir=root/c.name;fs::create_directory(dir);
+        fs::copy_file(c.listed?listed:plain,dir/"disc.bin");
+        {std::ofstream cue(dir/"disc.cue",std::ios::binary);cue<<(c.extra_track?cue_track:cue_main);}
+        write_companion(dir/"disc.sbi",c.companion);
+        for(const char* pick:{"disc.cue","disc.bin"}) {
+            const auto id=PSXRecompV4::identify_disc(dir/pick,"",0,false,false);
+            const bool row_ok=id.toc_opened&&id.sbi_loaded;   // the row ae_disc_verify draws
+            std::printf("sbi case %-18s pick=%-8s toc_opened=%d sbi_loaded=%d row_ok=%d warning=%s\n",
+                        c.name,pick,id.toc_opened,id.sbi_loaded,row_ok,
+                        id.sbi_warning.empty()?"(none)":id.sbi_warning.substr(0,22).c_str());
+            // Count every miss so that one run lists them all, then assert once.
+            auto expect=[&](bool ok,const char* what) {
+                if(!ok) {++misses;std::printf("  MISS %s\n",what);}
+            };
+            expect(id.opened && id.has_header,"image opens with an ISO header");
+            expect(id.detected_serial==(c.listed?"SLES-01301":"SLPS-00998"),"boot serial");
+            if(c.toc>=0) expect(id.toc_opened==(c.toc==1),"toc_opened");
+            if(c.loaded>=0) expect(id.sbi_loaded==(c.loaded==1),"sbi_loaded");
+            if(c.listed) {   // warning exactly when the row is not OK
+                expect(id.sbi_warning.empty()==row_ok,"row and warning agree");
+                if(!row_ok) expect(id.sbi_warning.find("Missing SBI: SLES-01301")==0,"warning text");
+            } else {
+                expect(id.sbi_warning.empty(),"no warning for a serial off the list");
+            }
+        }
+        fs::remove_all(dir);
+    }
+    fs::remove(listed);fs::remove(plain);
+    assert(misses==0);
+}
 int main() {
     auto root=fs::temp_directory_path()/ ("psx-disc-identity-"+std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directory(root);
+    sbi_row_and_warning(root);   // removes what it writes
     for(bool raw:{false,true}) {
         auto image=root/(raw?"disc.bin":"disc.iso");fixture(image,raw);
         auto id=PSXRecompV4::identify_disc(image,"",0,false,false);
@@ -125,6 +211,36 @@ int main() {
         assert(!PSXRecompV4::required_disc_content_matches(root/"missing.bin",required,&error));
         assert(!PSXRecompV4::required_disc_content_matches({},required,&error));
         assert(PSXRecompV4::required_disc_content_matches(image,{},&error));
+    }
+    struct SerialCase {const char* boot;const char* serial;const char* region;};
+    const SerialCase serials[]={
+        {"SLUSP012.06","SLUS-01206","NTSC-U"},
+        {"SLUSP013.46","SLUS-01346","NTSC-U"},
+        {"\\folder\\slusp012.06","SLUS-01206","NTSC-U"},
+        {"SLUS_005.94","SLUS-00594","NTSC-U"},
+        {"SLUS-01206","SLUS-01206","NTSC-U"},
+        {"sles_123.45","SLES-12345","PAL"},
+        {"SLPS_009.98","SLPS-00998","NTSC-J"},
+        {"SLUSP012.0X","",""},
+        {"SLUSPP012.06","",""},
+        {"ABCDP012.06","",""},
+        {"PSX.EXE","",""},
+    };
+    for(bool raw:{false,true}) {
+        const auto image=root/(raw?"disc.bin":"disc.iso");
+        for(const auto& entry:serials) {
+            fixture(image,raw,entry.boot,false);
+            const auto id=PSXRecompV4::identify_disc(image,"",0,false,false);
+            assert(id.opened && id.has_header);
+            if(id.detected_serial!=entry.serial || id.region!=entry.region)
+                std::fprintf(stderr,"raw=%d boot=%s serial=%s region=%s expected=%s/%s\n",
+                    raw,entry.boot,id.detected_serial.c_str(),id.region.c_str(),entry.serial,entry.region);
+            assert(id.detected_serial==entry.serial && id.region==entry.region);
+            if(*entry.serial) {
+                assert(PSXRecompV4::identify_disc(image,entry.serial,0,false,false).serial_matches);
+                assert(!PSXRecompV4::identify_disc(image,"SLUS-88888",0,false,false).serial_matches);
+            }
+        }
     }
     fs::remove(root/"disc.iso");fs::remove(root/"disc.bin");fs::remove(root);
 }

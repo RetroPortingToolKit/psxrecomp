@@ -152,7 +152,9 @@ static std::string read_text(const fs::path& p) {
 /* The look the built-in mods own is not a settings.toml key any more. A file
  * from before that change still loads -- its old keys are ignored, never an
  * error that would throw away the player's other settings -- and the next
- * save drops them, so they cannot come back as a hidden override. */
+ * save drops them, so they cannot come back as a hidden override. Automatic
+ * resolution, its floor, the supersample multiplier and the two PGXP visual
+ * corrections are launcher settings again: a save keeps exactly those. */
 static void test_retired_player_look_keys() {
     fs::path p = write_temp("psxrecomp_retired_look.toml",
         "[video]\n"
@@ -191,13 +193,18 @@ static void test_retired_player_look_keys() {
     check(PSXRecompV4::save_user_settings(out, us), "save_user_settings writes");
     const std::string text = read_text(out);
     for (const char* key : {"antialiasing", "texture_filtering", "fmv_filter", "crt_filter",
-                            "scanlines", "scanline_strength", "geometry_correction",
-                            "perspective_texturing", "quality_", "rewind =", "rewind_depth",
-                            "rewind_interval", "spu_hq", "dynamic_resolution",
-                            "supersampling", "internal_resolution", "supersample",
+                            "scanlines", "scanline_strength", "quality_", "rewind =", "rewind_depth",
+                            "rewind_interval", "spu_hq", "supersampling", "internal_resolution",
                             "frequency", "[audio]"})
         check(text.find(key) == std::string::npos,
               (std::string("a save drops the retired key ") + key).c_str());
+    /* Whole lines, so dynamic_resolution cannot match dynamic_resolution_min
+     * and supersample cannot match supersampling. */
+    for (const char* line : {"\ngeometry_correction = true\n", "\nperspective_texturing = true\n",
+                             "\ndynamic_resolution = true\n", "\ndynamic_resolution_min = \"1080p\"\n",
+                             "\nsupersample = 1.5\n"})
+        check(text.find(line) != std::string::npos,
+              (std::string("a save keeps the player setting ") + line).c_str());
     check(text.find("renderer") != std::string::npos &&
           text.find("window_width      = 1600") != std::string::npos, "a save keeps the rest");
     fs::remove(out);
@@ -343,7 +350,13 @@ static void test_window_width_settings() {
     auto us = PSXRecompV4::load_user_settings(p);
     check(us.has_window_width && us.window_width == 7680,
           "settings.toml window_width accepts 7680 (was capped at 3840)");
+    us.window_width = 320;
+    check(PSXRecompV4::save_user_settings(p, us), "save the live menu's 1x window");
+    auto one = PSXRecompV4::load_user_settings(p);
+    check(one.has_window_width && one.window_width == 320,
+          "the live menu's 1x window survives the next launch");
     fs::remove(p);
+
 }
 
 /* [video] texture_window_batching: a game.toml-only OpenGL batching opt-in

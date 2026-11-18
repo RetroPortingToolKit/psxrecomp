@@ -3,3 +3,18 @@
 static constexpr SbiRequirement kSbiRequirements[] = {
     {712491360ULL, "dc3f29d7f7046fbdc85e8c376721a8880567f0cda309a52ee5da875ae9e40157", "ada8877a2a964eff2743d53cc043be0b7b148469b60de82fd1069f32700670eb", "Resident Evil 3: Nemesis", "SLES-02529"},
 };
+// Warning-only serials; no pressing or companion hash qualification.
+static constexpr const char* kKnownLibcryptSerials[] = {
+    "SCES-02105",
+    "SLES-01301",
+    "SLES-02328",
+    "SLES-02529",
+    "SLES-02965",
+    "SLES-03324",
+    "SLES-03530",
+    "SLES-12328",
+    "SLES-12965",
+    "SLES-22328",
+    "SLES-22965",
+    "SLES-32965",
+};

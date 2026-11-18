@@ -32,6 +32,10 @@ void psx_snapshot_host_call_restore(unsigned depth);
 
 void interrupts_init(void);
 
+/* Syscall-to-delivery control. Explicit handler switches must not be deferred. */
+int psx_exception_nest_depth(void);
+void psx_note_changethread_in_handler_switch(void);
+
 /* Save-state restore: re-anchor host-only IRQ pacing after psx_cycle_count is
  * overwritten from a snapshot. Clears absolute-cycle cooldowns / deferred
  * switches that would otherwise strand delivery until the restored clock
@@ -123,6 +127,8 @@ uint32_t cycles_to_next_event(void);
 
 /* Query whether we are currently inside an exception handler dispatch. */
 int psx_get_in_exception(void);
+/* Nonzero while an in-exception thread switch waits for a site-0 poll. */
+int psx_deferred_switch_is_pending(void);
 
 /* Most recent block-leader IRQ-check guest PC / compiled resume latch.
  * Used by the post-savestate freeze probe (vblank-time "where was the game"). */

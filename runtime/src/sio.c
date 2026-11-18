@@ -37,6 +37,11 @@ static uint16_t sio_stat;
 static uint16_t sio_mode;
 static uint16_t sio_ctrl;
 static uint16_t sio_baud;
+/* SIO1 (serial port, 0x1F801050..5F). No device is attached; MODE, CTRL and
+ * BAUD are plain latches so a driver reads back what it programmed. */
+static uint16_t sio1_mode;
+static uint16_t sio1_ctrl;
+static uint16_t sio1_baud;
 static uint32_t sio_debug_poll_counter;
 
 static void sio_debug_poll_maybe(void) {
@@ -97,6 +102,8 @@ static uint8_t pad_connected = 0;
 static int sio_multitap_enabled = 0;
 /* Physical SIO port hosting the tap: 0 = console Port 1, 1 = Port 2. */
 static int sio_multitap_port = 0;
+/* Host port swap (sio_set_pads_swapped): pads 0 and 1 trade console ports. */
+static int sio_pads_swapped = 0;
 /* Opt-in DualShock on tap seats (default off — faithful digital taps). */
 static int sio_multitap_analog_hack = 0;
 
@@ -179,6 +186,17 @@ static int8_t pad_type_req[PSX_MAX_PLAYERS] = {
     PSX_PAD_INIT(-1)
 };
 
+/* Device kind per logical slot: SIO_DEVICE_PAD (0, the default)
+ * or a native peripheral. sio_init keeps the selected host device; snapshots
+ * restore its guest-visible unread motion, buttons, payload and device kind. */
+static PSX_BSS uint8_t pad_device_kind[PSX_MAX_PLAYERS];
+/* PS1 Mouse (PSX-SPX "Controllers - Mouse"): motion not yet read, per axis
+ * (X right-positive, Y down-positive), and the buttons (bit0 left, bit1
+ * right; 1 = pressed). */
+static PSX_BSS int16_t mouse_motion[PSX_MAX_PLAYERS][2];
+static PSX_BSS uint8_t mouse_buttons[PSX_MAX_PLAYERS];
+static PSX_BSS uint8_t guncon_data[PSX_MAX_PLAYERS][6];
+
 /* ---- Logical pad ↔ physical SIO port mapping ----
  *
  * Multitap off (default / PSX_MAX_PLAYERS==2):
@@ -231,7 +249,8 @@ static int pad_logical_for_port(int phys_port) {
             return (sio_multitap_port == 0) ? 0 : 1;
         return mtap_standalone_logical();
     }
-    return phys_port;
+    const int logical = sio_pads_swapped ? phys_port ^ 1 : phys_port;
+    return logical < PSX_MAX_PLAYERS ? logical : -1;
 }
 
 /* Physical port answers when a device is present. Multitap itself is present
@@ -243,7 +262,8 @@ static int pad_port_has_device(int phys_port) {
         if (phys_port == sio_multitap_port) return 1;
         return (pad_connected & (1u << mtap_standalone_logical())) ? 1 : 0;
     }
-    return (pad_connected & (1u << phys_port)) ? 1 : 0;
+    const int logical = pad_logical_for_port(phys_port);
+    return (logical >= 0 && (pad_connected & (1u << logical))) ? 1 : 0;
 }
 
 static int selected_is_mtap_port(void) {
@@ -271,7 +291,55 @@ static void mtap_finish_42(void) {
     }
 }
 
+static int slot_is_mouse(int logical) {
+    return logical >= 0 && logical < PSX_MAX_PLAYERS &&
+           pad_device_kind[logical] == SIO_DEVICE_MOUSE;
+}
+
+/* One reply byte of motion: at most -128..+127; the rest stays for the next
+ * read (host policy; PSX-SPX does not say what the mouse does past a byte). */
+static uint8_t mouse_take_axis(int16_t *pending) {
+    int v = *pending;
+    if (v > 127) v = 127;
+    if (v < -128) v = -128;
+    *pending = (int16_t)(*pending - v);
+    return (uint8_t)(int8_t)v;
+}
+
+/* The mouse's four data bytes after its 12h 5Ah ID: FFh; buttons
+ * with bits 0-1 = 0, bit 2 = right, bit 3 = left (0 = pressed), bits 4-7 = 1;
+ * then dX and dY. Reporting motion consumes it. */
+static void mouse_fill_data(int logical, uint8_t out[4]) {
+    out[0] = 0xFF;
+    out[1] = (uint8_t)(0xF0u |
+                       ((mouse_buttons[logical] & 2u) ? 0x00u : 0x04u) |
+                       ((mouse_buttons[logical] & 1u) ? 0x00u : 0x08u));
+    out[2] = mouse_take_axis(&mouse_motion[logical][0]);
+    out[3] = mouse_take_axis(&mouse_motion[logical][1]);
+}
+
+static int slot_is_guncon(int logical) {
+    return logical >= 0 && logical < PSX_MAX_PLAYERS &&
+           pad_device_kind[logical] == SIO_DEVICE_GUNCON;
+}
+
+/* Bits the GunCon halfword never drives: all but A (3), trigger (13) and
+ * B (14) are always 1 (PSX-SPX). */
+#define GUNCON_UNUSED_BITS 0x9FF7u
+
+/* Idle GunCon: nothing pressed, "no light" (X=0001h, Y=000Ah). */
+static void guncon_reset(int logical) {
+    guncon_data[logical][0] = 0xFF;
+    guncon_data[logical][1] = 0xFF;
+    guncon_data[logical][2] = (uint8_t)(SIO_GUNCON_NO_LIGHT_X & 0xFF);
+    guncon_data[logical][3] = (uint8_t)(SIO_GUNCON_NO_LIGHT_X >> 8);
+    guncon_data[logical][4] = (uint8_t)(SIO_GUNCON_NO_LIGHT_Y & 0xFF);
+    guncon_data[logical][5] = (uint8_t)(SIO_GUNCON_NO_LIGHT_Y >> 8);
+}
+
 static uint8_t pad_protocol_id(int logical) {
+    if (slot_is_mouse(logical)) return 0x12;
+    if (slot_is_guncon(logical)) return 0x63;
     if (pad_in_config[logical]) return 0xF3;
     if (pad_analog[logical] == SIO_PAD_JOGCON) return 0xE3;
     if (pad_analog[logical] == SIO_PAD_NEGCON) return 0x23;
@@ -320,6 +388,16 @@ static void pad_fill_status8(int logical, uint8_t out[8]) {
         !(pad_connected & (1u << logical))) {
         memset(out, 0xFF, 8);
         return;
+    }
+    if (slot_is_mouse(logical)) {
+        out[0] = 0x12;
+        out[1] = 0x5A;
+        mouse_fill_data(logical, &out[2]);
+        out[6] = out[7] = 0xFF;
+        return;
+    }
+    if (slot_is_guncon(logical)) {
+        out[0]=0x63; out[1]=0x5a; memcpy(out+2,guncon_data[logical],6); return;
     }
     const uint8_t id = pad_protocol_id(logical);
     const uint16_t btn = pad_buttons[logical];
@@ -854,6 +932,9 @@ void sio_init(void) {
     sio_mode = 0;
     sio_ctrl = 0;
     sio_baud = 0;
+    sio1_mode = 0;
+    sio1_ctrl = 0;
+    sio1_baud = 0;
     pad_state = PAD_IDLE;
     pad_response_len = 0;
     pad_response_idx = 0;
@@ -876,6 +957,11 @@ void sio_init(void) {
         pad_type_req[i] = -1;
         analog_mode_locked[i] = 0;
         pad_supports_config[i] = 1;
+        /* The device kind is a host preference and stays; its motion and
+         * buttons are power-on state. */
+        mouse_motion[i][0] = mouse_motion[i][1] = 0;
+        mouse_buttons[i] = 0;
+        guncon_reset(i);
     }
     pad_connected = 0;
     /* Multitap enable/port are host preferences — leave them alone across
@@ -965,6 +1051,14 @@ void sio_set_multitap_port(int phys_port) {
 #endif
 }
 
+void sio_set_pads_swapped(int swapped) {
+    sio_pads_swapped = swapped ? 1 : 0;
+}
+
+int sio_get_pads_swapped(void) {
+    return sio_pads_swapped;
+}
+
 int sio_get_multitap_port(void) {
 #if PSX_MAX_PLAYERS >= 5
     return sio_multitap_port;
@@ -1017,6 +1111,7 @@ void sio_netplay_canonicalize_session_pads(int slot_count)
         sio_set_multitap(1);
     else
         sio_set_multitap(0);
+    sio_pads_swapped = 0;
 
     /* Idle the pad bus — dig0 snaps otherwise capture mid-poll FSM / response
      * bytes that differ when peers finish present dig at different host times. */
@@ -1035,6 +1130,8 @@ void sio_netplay_canonicalize_session_pads(int slot_count)
         active_device = DEV_NONE;
 
     for (i = 0; i < PSX_MAX_PLAYERS; i++) {
+        /* Netplay carries pad blobs only; every seat is a pad on every peer. */
+        sio_set_port_device(i, SIO_DEVICE_PAD);
         if (i < slot_count) {
             sio_connect_pad(i);
             /* Immediate digital — sio_request_pad_type is deferred and left
@@ -1296,6 +1393,63 @@ void sio_get_pad_sticks(int slot, uint8_t out[4]) {
     out[2] = pad_stick[slot][2]; out[3] = pad_stick[slot][3];
 }
 
+void sio_set_guncon_state(int slot, uint16_t buttons, uint16_t x, uint16_t y) {
+    if (!slot_is_guncon(slot)) return;
+    buttons |= GUNCON_UNUSED_BITS;
+    guncon_data[slot][0] = (uint8_t)(buttons & 0xFF);
+    guncon_data[slot][1] = (uint8_t)(buttons >> 8);
+    guncon_data[slot][2] = (uint8_t)(x & 0xFF);
+    guncon_data[slot][3] = (uint8_t)(x >> 8);
+    guncon_data[slot][4] = (uint8_t)(y & 0xFF);
+    guncon_data[slot][5] = (uint8_t)(y >> 8);
+}
+
+void sio_set_port_device(int slot, int kind) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
+    const uint8_t k = (kind == SIO_DEVICE_MOUSE || kind == SIO_DEVICE_GUNCON) ? (uint8_t)kind : SIO_DEVICE_PAD;
+    /* Re-asserting the same kind (hotplug, route refresh) must not disturb a
+     * DualShock's config latch or rumble map. */
+    if (pad_device_kind[slot] == k) return;
+    pad_device_kind[slot] = k;
+    /* A different plug: nothing of the old device's state carries over. */
+    mouse_motion[slot][0] = mouse_motion[slot][1] = 0;
+    mouse_buttons[slot] = 0;
+    guncon_reset(slot);
+    pad_in_config[slot] = 0;
+    pad_type_req[slot] = -1;
+    analog_mode_locked[slot] = 0;
+    memset(pad_rumble_map[slot], 0xFF, sizeof(pad_rumble_map[slot]));
+    pad_rumble_small[slot] = 0;
+    pad_rumble_large[slot] = 0;
+}
+
+int sio_get_port_device(int slot) {
+    return (slot >= 0 && slot < PSX_MAX_PLAYERS) ? pad_device_kind[slot]
+                                                 : SIO_DEVICE_PAD;
+}
+
+static int16_t mouse_clamp_pending(long long v) {
+    if (v > SIO_MOUSE_ACCUM_MAX) v = SIO_MOUSE_ACCUM_MAX;
+    if (v < -SIO_MOUSE_ACCUM_MAX) v = -SIO_MOUSE_ACCUM_MAX;
+    return (int16_t)v;
+}
+
+void sio_mouse_add_motion(int slot, int dx, int dy) {
+    if (!slot_is_mouse(slot)) return;
+    mouse_motion[slot][0] = mouse_clamp_pending((long long)mouse_motion[slot][0] + dx);
+    mouse_motion[slot][1] = mouse_clamp_pending((long long)mouse_motion[slot][1] + dy);
+}
+
+void sio_set_mouse_buttons(int slot, int left, int right) {
+    if (!slot_is_mouse(slot)) return;
+    mouse_buttons[slot] = (uint8_t)((left ? 1u : 0u) | (right ? 2u : 0u));
+}
+
+void sio_mouse_clear_motion(int slot) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
+    mouse_motion[slot][0] = mouse_motion[slot][1] = 0;
+}
+
 /* ── LEGACY pad-config compatibility (Tomba "Hybrid" controller) ─────────────
  *
  * Why this exists, and why it is explicitly LEGACY:
@@ -1463,6 +1617,39 @@ static void pad_process_byte(uint8_t tx_byte) {
             sio_rx_data = 0xFF;
             break;
         }
+        if (slot_is_guncon(lp)) {
+            if (tx_byte == 0x42) {
+                pad_response[0]=0x63; pad_response[1]=0x5a;
+                memcpy(pad_response+2,guncon_data[lp],6);
+                pad_response_len=8; pad_state=PAD_SEND_RESPONSE;
+                sio_rx_data=pad_response[0]; sio_stat |= SIO_STAT_ACK;
+            } else {
+                sio_rx_data=0xff; pad_state=PAD_IDLE;
+                pad_response_len=0; pad_response_idx=0; pad_current_cmd=0;
+            }
+            break;
+        }
+        if (slot_is_mouse(lp)) {
+            /* PS1 Mouse: it answers only the 42h read, with 12h 5Ah and four
+             * data bytes. It has no config mode; any other command gets hi-z
+             * and no /ACK, like a plain digital pad (explicit unsupported-command policy). */
+            if (tx_byte == 0x42) {
+                pad_response[0] = 0x12;
+                pad_response[1] = 0x5A;
+                mouse_fill_data(lp, &pad_response[2]);
+                pad_response_len = 6;
+                pad_state = PAD_SEND_RESPONSE;
+                sio_rx_data = pad_response[0];
+                sio_stat |= SIO_STAT_ACK;
+            } else {
+                pad_state = PAD_IDLE;
+                pad_response_len = 0;
+                pad_response_idx = 0;
+                pad_current_cmd = 0;
+                sio_rx_data = 0xFF;
+            }
+            break;
+        }
         /* Controller ID reported as the first response byte. Real hardware
          * reports the config ID (0xF3) ONLY while in config mode; otherwise the
          * normal mode ID (0x41 digital / 0x73 DualShock / 0xE3 JogCon). */
@@ -1595,7 +1782,8 @@ static void pad_process_byte(uint8_t tx_byte) {
              * responses; only valid while in config mode (a digital pad ignores
              * them, handled by the else branch below). */
             static const uint8_t r_def[8] = { 0xF3,0x5A,0x00,0x00,0x00,0x00,0x00,0x00 };
-            static const uint8_t r_45[8]  = { 0xF3,0x5A,0x03,0x02,0x01,0x02,0x01,0x00 };
+            /* 0x45 "query model": type 01 (DualShock), 02, analog flag, 02 01 00. */
+            static const uint8_t r_45[8]  = { 0xF3,0x5A,0x01,0x02,0x00,0x02,0x01,0x00 };
             static const uint8_t r_46[8]  = { 0xF3,0x5A,0x00,0x00,0x01,0x02,0x00,0x0A };
             static const uint8_t r_47[8]  = { 0xF3,0x5A,0x00,0x00,0x02,0x00,0x01,0x00 };
             static const uint8_t r_4c[8]  = { 0xF3,0x5A,0x00,0x00,0x00,0x04,0x00,0x00 };
@@ -1617,7 +1805,8 @@ static void pad_process_byte(uint8_t tx_byte) {
                         { 0xF3, 0x5A, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00 };
                     memcpy(pad_response, jogcon_45, sizeof(jogcon_45));
                 } else {
-                    pad_response[3] = pad_analog[lp] ? 0x01 : 0x00;
+                    /* The analog flag is the fifth byte; [3] is the constant 02. */
+                    pad_response[4] = pad_analog[lp] ? 0x01 : 0x00;
                 }
             }
             /* JogCon config commands are not the DualShock's canned tables:
@@ -1647,6 +1836,18 @@ static void pad_process_byte(uint8_t tx_byte) {
             pad_state = PAD_SEND_RESPONSE;
             sio_rx_data = pad_response[0];
             sio_stat |= SIO_STAT_ACK;
+        } else if (ds && !g_pad_legacy_cfg && pad_analog[lp] != SIO_PAD_JOGCON &&
+                   (tx_byte == 0x44 || tx_byte == 0x45 || tx_byte == 0x46 ||
+                    tx_byte == 0x47 || tx_byte == 0x4C || tx_byte == 0x4D)) {
+            /* A DualShock config command OUTSIDE config mode: the pad answers
+             * the command byte with its ID, then gives no /ACK, so the
+             * transaction ends (FF 41 in digital mode). 48h-4Bh and 4Fh keep
+             * the hi-z answer below. */
+            pad_state = PAD_IDLE;
+            pad_response_len = 0;
+            pad_response_idx = 0;
+            pad_current_cmd = 0;
+            sio_rx_data = cur_id;
         } else {
             /* Unsupported command: end the transaction without ACK. A plain
              * digital pad still returns the ID shifted during this byte. */
@@ -1694,6 +1895,21 @@ static void pad_process_byte(uint8_t tx_byte) {
                         if (tx_byte == 0x00) pad_response[5] = 0x04;
                         else if (tx_byte == 0x01) pad_response[4] = 0x03;
                     }
+                } else if (!g_pad_legacy_cfg && pad_response_idx == 2 &&
+                           tx_byte != 0x00 &&
+                           (pad_current_cmd == 0x46 || pad_current_cmd == 0x47 ||
+                            pad_current_cmd == 0x4C)) {
+                    /* DualShock 0x46, 0x47 and 0x4C choose their reply by the
+                     * data byte that arrives with response index 2. The canned
+                     * tables hold the 00 variant; 46 01 and 4C 01 have their own
+                     * reply, and any other byte answers zeros. */
+                    static const uint8_t ds_46_01[5] = { 0x00,0x01,0x01,0x01,0x14 };
+                    static const uint8_t ds_4c_01[5] = { 0x00,0x00,0x07,0x00,0x00 };
+                    static const uint8_t ds_zero[5]  = { 0x00,0x00,0x00,0x00,0x00 };
+                    const uint8_t *v = ds_zero;
+                    if (tx_byte == 0x01 && pad_current_cmd == 0x46) v = ds_46_01;
+                    else if (tx_byte == 0x01 && pad_current_cmd == 0x4C) v = ds_4c_01;
+                    memcpy(&pad_response[3], v, 5);
                 }
                 /* The six data bytes after 0x42's leading 0x00 occupy response
                  * indexes 2..7. Route each through the map negotiated by 0x4D. */
@@ -2249,6 +2465,15 @@ uint32_t sio_read(uint32_t addr) {
     case 0x1F80104E: /* SIO_BAUD */
         return sio_baud;
 
+    case 0x1F801058: /* SIO1_MODE */
+        return sio1_mode;
+
+    case 0x1F80105A: /* SIO1_CTRL */
+        return sio1_ctrl;
+
+    case 0x1F80105E: /* SIO1_BAUD */
+        return sio1_baud;
+
     default:
         return 0;
     }
@@ -2599,6 +2824,18 @@ void sio_write(uint32_t addr, uint32_t value) {
         sr_record(SR_EVT_BAUD_WRITE, (uint8_t)(value & 0xFF), (uint8_t)((value >> 8) & 0xFF));
         break;
 
+    case 0x1F801058: /* SIO1_MODE */
+        sio1_mode = (uint16_t)value;
+        break;
+
+    case 0x1F80105A: /* SIO1_CTRL: ACK (bit 4) and RESET (bit 6) are strobes */
+        sio1_ctrl = (uint16_t)value & (uint16_t)~(SIO_CTRL_ACK | SIO_CTRL_RESET);
+        break;
+
+    case 0x1F80105E: /* SIO1_BAUD */
+        sio1_baud = (uint16_t)value;
+        break;
+
     default:
         break;
     }
@@ -2761,8 +2998,16 @@ static void sio_fire_ack_irq(void) {
     }
 
     /* The device IRQ latch is independent of INTC acknowledgement. Do not
-     * queue an ACK for replay when the guest later clears I_STAT.7. */
+     * queue an ACK for replay when the guest later clears I_STAT.7. I_STAT
+     * bit 7 is raised only on the 0->1 edge of JOY_STAT bit 9: while the latch
+     * is still set, a new /ACK does not re-raise IRQ7, even if the guest has
+     * cleared I_STAT bit 7. */
     sio_pending_ack_irq_en = 0;
+    if (sio_stat & SIO_STAT_IRQ) {
+        if (!sio_shift_active && !sio_tx_buffered && !sio_pending_ack)
+            g_sio_timing_active = 0;
+        return;
+    }
     sio_stat |= SIO_STAT_IRQ;
 
     uint32_t i_stat_before = i_stat;
@@ -2932,11 +3177,14 @@ void sio_tick(int cycles) {
             sio_irq_pending = 0;
             sio_stat |= SIO_STAT_ACK;
             sio_ack_visible_reads = 2;
-            sio_stat |= SIO_STAT_IRQ;
             /* Restore TX_RDY — the byte transfer is complete.
              * This unblocks the BIOS pad polling loop that spins
              * on TX_RDY before writing the next byte. */
             sio_stat |= SIO_STAT_TX_RDY | SIO_STAT_TX_EMPTY;
+            /* IRQ7 only on the 0->1 edge of JOY_STAT bit 9; see
+             * sio_fire_ack_irq. */
+            if (sio_stat & SIO_STAT_IRQ) return;
+            sio_stat |= SIO_STAT_IRQ;
             uint32_t i_stat_before = i_stat;
             psx_irq_raise(IRQ_SIO0, 1); /* SIO shift IRQ */
             event_ring_record_aux(EV_DEQ, (uint8_t)SRC_SIO, 1u); /* SIO shift IRQ fired */
@@ -3023,7 +3271,9 @@ static int sio_r_mcslot(PstR *r, McSlotState *s) {
 static int sio_snap_emit_regs(PstW *w) {
     return pst_w_u8(w, sio_tx_data) && pst_w_u8(w, sio_rx_data) &&
            pst_w_u16(w, sio_stat) && pst_w_u16(w, sio_mode) &&
-           pst_w_u16(w, sio_ctrl) && pst_w_u16(w, sio_baud);
+           pst_w_u16(w, sio_ctrl) && pst_w_u16(w, sio_baud) &&
+           pst_w_u16(w, sio1_mode) && pst_w_u16(w, sio1_ctrl) &&
+           pst_w_u16(w, sio1_baud);
 }
 
 static int sio_snap_emit_pads(PstW *w) {
@@ -3115,6 +3365,17 @@ static void sio_pad_mode_legacy_defaults(void) {
     }
 }
 
+/* Unread peripheral input is state: a completed mouse poll consumes motion. */
+static int sio_snap_emit_peripherals(PstW *w) {
+    if (!pst_w_bytes(w, pad_device_kind, sizeof(pad_device_kind)) ||
+        !pst_w_bytes(w, mouse_buttons, sizeof(mouse_buttons)) ||
+        !pst_w_bytes(w, guncon_data, sizeof(guncon_data))) return 0;
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s)
+        for (int axis = 0; axis < 2; ++axis)
+            if (!pst_w_i16(w, mouse_motion[s][axis])) return 0;
+    return pst_w_bytes(w, pad_response + 8, sizeof(pad_response) - 8);
+}
+
 static int sio_snap_emit_fsm(PstW *w) {
     return sio_snap_emit_fsm_pace(w) && sio_snap_emit_fsm_meta(w);
 }
@@ -3122,12 +3383,13 @@ static int sio_snap_emit_fsm(PstW *w) {
 static int sio_snap_emit(PstW *w) {
     return sio_snap_emit_regs(w) && sio_snap_emit_pads(w) &&
            sio_snap_emit_mc(w) && sio_snap_emit_fsm(w) && sio_snap_emit_rumble(w) &&
-           sio_snap_emit_jogcon(w) && sio_snap_emit_pad_mode(w);
+           sio_snap_emit_jogcon(w) && sio_snap_emit_pad_mode(w) &&
+           sio_snap_emit_peripherals(w);
 }
 
 /* Cumulative section end offsets in the snapshot wire:
  * out[0]=regs, out[1]=pads, out[2]=memcard, out[3]=fsm_pace (netplay),
- * out[4]=full including fsm metadata, rumble, JogCon and pad-mode state. */
+ * out[4]=full including fsm metadata, rumble, JogCon, pad-mode and peripherals. */
 void sio_snapshot_section_ends(uint32_t out[5]) {
     PstW w;
     pst_w_init(&w, NULL, 0);
@@ -3143,21 +3405,30 @@ void sio_snapshot_section_ends(uint32_t out[5]) {
     (void)sio_snap_emit_rumble(&w);
     (void)sio_snap_emit_jogcon(&w);
     (void)sio_snap_emit_pad_mode(&w);
+    (void)sio_snap_emit_peripherals(&w);
     out[4] = (uint32_t)w.written;
 }
 
+uint32_t sio_snapshot_bytes(void);
+
 static int sio_snap_parse(PstR *r) {
+    const int full_response = (size_t)(r->end - r->p) == sio_snapshot_bytes();
     /* A real state load invalidates input history; restoring a render-only
      * checkpoint must not discard host presses captured by normal polling. */
     if (!g_psx_render_pass_active)
         for(int slot=0;slot<PSX_MAX_PLAYERS;++slot)
             digital_pad_history_reset(&pad_input_history[slot],pad_buttons[slot]);
+    memset(mouse_motion, 0, sizeof(mouse_motion));
+    memset(mouse_buttons, 0, sizeof(mouse_buttons));
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s) guncon_reset(s);
     uint32_t u;
     int32_t i;
     int16_t tr;
     if (!pst_r_u8(r, &sio_tx_data) || !pst_r_u8(r, &sio_rx_data) ||
         !pst_r_u16(r, &sio_stat) || !pst_r_u16(r, &sio_mode) ||
-        !pst_r_u16(r, &sio_ctrl) || !pst_r_u16(r, &sio_baud))
+        !pst_r_u16(r, &sio_ctrl) || !pst_r_u16(r, &sio_baud) ||
+        !pst_r_u16(r, &sio1_mode) || !pst_r_u16(r, &sio1_ctrl) ||
+        !pst_r_u16(r, &sio1_baud))
         return 0;
     if (!pst_r_bytes(r, pad_analog, PSX_MAX_PLAYERS) || !pst_r_u8(r, &pad_connected) ||
         !pst_r_u32(r, &u) || !pst_r_i32(r, &i) ||
@@ -3168,9 +3439,10 @@ static int sio_snap_parse(PstR *r) {
     pad_state = (PadState)u;
     selected_slot = (int)i;
     pad_active_logical = pad_logical_for_port(selected_slot);
-    /* Multitap bulk responses are 34 bytes; snap only stores 8. Abort an
-     * in-flight bulk restore rather than feed a truncated frame. */
-    if (pad_response_len > 8) {
+    /* Older snapshots have only eight response bytes; abort a longer
+     * legacy transfer rather than feed a truncated GunCon/multitap frame. */
+    if (pad_response_len > sizeof(pad_response) ||
+        (!full_response && pad_response_len > 8)) {
         pad_state = PAD_IDLE;
         pad_response_len = 0;
         pad_response_idx = 0;
@@ -3278,6 +3550,17 @@ static int sio_snap_parse(PstR *r) {
         if (pad_analog_device[s] != SIO_PAD_JOGCON)
             pad_analog_device[s] = SIO_PAD_DUALSHOCK;
     }
+    if (r->p == r->end) return 1; /* Pre-peripheral snapshot. */
+    if (!pst_r_bytes(r, pad_device_kind, sizeof(pad_device_kind)) ||
+        !pst_r_bytes(r, mouse_buttons, sizeof(mouse_buttons)) ||
+        !pst_r_bytes(r, guncon_data, sizeof(guncon_data))) return 0;
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
+        if (pad_device_kind[s] != SIO_DEVICE_MOUSE &&
+            pad_device_kind[s] != SIO_DEVICE_GUNCON) pad_device_kind[s] = SIO_DEVICE_PAD;
+        for (int axis = 0; axis < 2; ++axis)
+            if (!pst_r_i16(r, &mouse_motion[s][axis])) return 0;
+    }
+    if (!pst_r_bytes(r, pad_response + 8, sizeof(pad_response) - 8)) return 0;
     if (r->p != r->end) return 0;
     return 1;
 }
@@ -3300,7 +3583,10 @@ void sio_snapshot_write(uint8_t *p) {
  * cannot fail sio_snapshot_read (the parser only reads fixed-width fields, and
  * both accepted lengths end exactly where one of its two layouts ends). */
 int sio_snapshot_validate(const uint8_t *p, uint32_t len) {
-    const uint32_t current = sio_snapshot_bytes();
+    const uint32_t peripheral_bytes = (uint32_t)(sizeof(pad_device_kind) +
+        sizeof(mouse_buttons) + sizeof(guncon_data) + sizeof(mouse_motion) +
+        sizeof(pad_response) - 8);
+    const uint32_t current = sio_snapshot_bytes() - peripheral_bytes;
     const uint32_t rumble_bytes = (uint32_t)(sizeof(pad_rumble_map) +
                                   sizeof(pad_rumble_small) +
                                   sizeof(pad_rumble_large));
@@ -3308,7 +3594,7 @@ int sio_snapshot_validate(const uint8_t *p, uint32_t len) {
                                   sizeof(pad_jogcon_motor_command));
     const uint32_t mode_bytes = (uint32_t)(sizeof(analog_mode_locked) +
                                 sizeof(pad_analog_device));
-    return p && (len == current ||
+    return p && (len == current + peripheral_bytes || len == current ||
                  (len < current && len + mode_bytes == current) ||
                  (len < current && len + mode_bytes + jogcon_bytes == current) ||
                  (len < current &&

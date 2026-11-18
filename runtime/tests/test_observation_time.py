@@ -24,6 +24,8 @@ def main():
     parser.add_argument('--ninja', required=True)
     parser.add_argument('--edge-assembly-only', action='store_true')
     parser.add_argument('--clock-only', action='store_true')
+    parser.add_argument('--gpu-status-only', action='store_true',
+                        help='run the lazy frame-clock/production GPUSTAT integration product')
     parser.add_argument('--materialize-only', action='store_true',
                         help='run affected cold-edge/upcoming-charge clock products only')
     parser.add_argument('--overlay-charge-source', type=Path)
@@ -36,6 +38,16 @@ def main():
             '#define PSX_OBSERVATION_WAIT_SITE(pc) ((pc) == 0x8002E6C0u)\n'
             '#define PSX_OBSERVATION_WAIT_SITE_VALUES 0x8002E6C0u\n'
             '#define PSX_OBSERVATION_WAIT_SITE_COUNT 1u\n')
+        if args.gpu_status_only:
+            exe = temp/'gpustat-clock.exe'
+            run([args.cc, '-std=c11', '-O2', '-fwhole-program',
+                 '-DPSX_NO_DEBUG_TOOLS', '-DPSX_ENABLE_BLOCK_CYCLES=1',
+                 '-DPSX_OBSERVATION_TIME=1', '-DPSX_CLOCK_REAL_GPU=1',
+                 '-I'+str(inc), '-I'+str(temp),
+                 str(root/'runtime/tests/test_psx_cycle_event_boundaries.c'),
+                 '-o', str(exe)])
+            run([str(exe)])
+            return
         if args.materialize_only:
             for opt in ['0', '2']:
                 exe = temp/f'materialized-clock-{opt}.exe'

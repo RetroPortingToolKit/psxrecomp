@@ -50,6 +50,35 @@ static std::vector<uint8_t> cat(std::vector<uint8_t> a, const std::vector<uint8_
     return a;
 }
 
+// CRC-16/CCITT of the ten Q bytes, inverted, as the Red Book stores it.
+static uint16_t q_crc(const uint8_t* q) {
+    uint16_t crc = 0;
+    for (int i = 0; i < 10; ++i) {
+        crc ^= (uint16_t)(q[i] << 8);
+        for (int bit = 0; bit < 8; ++bit)
+            crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+    }
+    return (uint16_t)~crc;
+}
+
+static void check_subq(const PS1::ISOReader& r, uint32_t lba, const uint8_t* want) {
+    uint8_t q[12] = {};
+    bool valid = false;
+    CHECK(r.ReadSubChannelQ(lba, q, &valid) && valid);
+    for (int i = 0; i < 10; ++i) {
+        if (q[i] != want[i]) {
+            std::printf("FAIL sub-Q lba %u byte %d: %02X != %02X\n", lba, i, q[i], want[i]);
+            ++g_failures;
+        }
+    }
+    const uint16_t crc = q_crc(want);
+    if (q[10] != (uint8_t)(crc >> 8) || q[11] != (uint8_t)crc) {
+        std::printf("FAIL sub-Q lba %u CRC %02X %02X != %02X %02X\n", lba, q[10], q[11],
+                    (unsigned)(crc >> 8), (unsigned)(crc & 0xFF));
+        ++g_failures;
+    }
+}
+
 // Every observable of the two mounts must agree.
 static void check_same_disc(const fs::path& a_cue, const fs::path& b_cue) {
     PS1::ISOReader a, b;
@@ -116,6 +145,19 @@ int main() {
         CHECK(r.ReadRawSector(18, raw) && raw[0] == 0x62);
         uint8_t user[2048];
         CHECK(r.ReadSector(11, user) && user[0] == 0x00);
+        // Generated sub-Q. A pregap sector (INDEX 00) belongs to the track it
+        // precedes and counts down to INDEX 01. Byte 6 is the reserved zero
+        // between the relative and absolute positions, and the CRC is stored
+        // high byte first.
+        const uint8_t want_pregap[10] = {0x01, 0x02, 0x00, 0x00, 0x00, 0x02,
+                                         0x00, 0x00, 0x02, 0x11};
+        const uint8_t want_index1[10] = {0x01, 0x02, 0x01, 0x00, 0x00, 0x00,
+                                         0x00, 0x00, 0x02, 0x13};
+        const uint8_t want_data[10]   = {0x41, 0x01, 0x01, 0x00, 0x00, 0x09,
+                                         0x00, 0x00, 0x02, 0x09};
+        check_subq(r, 11, want_pregap);
+        check_subq(r, 13, want_index1);
+        check_subq(r, 9, want_data);
     }
 
     // The same physical disc, with the pregap stored in the file as INDEX 00.

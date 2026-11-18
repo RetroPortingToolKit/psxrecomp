@@ -23,6 +23,7 @@
 /* No mod hooks are active in this interpreter fixture. */
 uint32_t g_psx_mod_instruction_hooks = 0;
 uint32_t g_psx_mod_function_entry_hooks = 0;
+int g_psx_mod_immediate_live = 0;
 
 int dirty_ram_dispatch(CPUState *cpu, uint32_t addr, uint32_t stop_addr);
 extern uint64_t g_dirty_ram_blocks_run;   /* one per interpreter hand-back */
@@ -76,6 +77,7 @@ uint32_t psx_overlay_resident_crc_at(uint32_t phys, int *valid) {
     (void)phys; *valid = 0; return 0;
 }
 int psx_mod_function_entry(CPUState *cpu, uint32_t addr) { (void)cpu; (void)addr; return 0; }
+int psx_mod_try_function_replacement(CPUState *cpu, uint32_t addr) { (void)cpu; (void)addr; return 0; }
 /* [[draw_distance.clamp]] is off: fixture_link would stub this data symbol as a
  * function, whose code bytes read as non-zero and run the clamp lookup. */
 int g_psx_draw_distance_clamp_live = 0;

@@ -32,3 +32,17 @@ ls_get = function_body(source, "void mh_launcher_settings_get(RecompLauncherCSet
 require("internal_resolution" not in ls_get and "supersample" not in ls_get,
         "settings_get hands the Settings view no internal resolution")
 print("menu launcher callbacks: draw-thread safe PASS")
+
+# The provider may run on the draw thread. Absent mod rows cannot post fake
+# edits/restarts, and capability discovery must stay in main-thread startup.
+cap = function_body(source, "void ovl_look_catalog_snapshot(void)")
+require("feature_get" in cap and "feature_option_get" in cap,
+        "look capabilities require the actual catalog feature and option")
+for sig in ("int ovl_look_get(int setting, int* out)",
+            "int ovl_look_set(int setting, int value)",
+            "int mh_session_enabled(int setting)"):
+    body = function_body(source, sig)
+    require("ovl_look_catalog_available(setting)" in body,
+            f"{sig}: missing catalog capability refusal")
+    require("ovl_look_catalog_snapshot" not in body and "ovl_look_posted_reset" not in body,
+            f"{sig}: draw thread must not inspect mutable catalog state")

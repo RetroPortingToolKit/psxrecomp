@@ -15,6 +15,16 @@ int main(int argc, char **argv) {
     FILE *f;
 
     if (argc != 2 && argc != 3) return 2;
+    if (argc == 3 && strcmp(argv[2], "--expect-overflow") == 0) {
+        memset(cfg, 'x', sizeof cfg);
+        check(source_stateio_config_digest_hex(cfg) == 0 && cfg[0] == '\0',
+              "an overflowing configuration refuses with no digest");
+        check(source_stateio_config_digest_accepts("not-a-digest") == 0,
+              "an overflowing configuration never accepts a stored digest");
+        if (failures) return 1;
+        puts("config=refused");
+        return 0;
+    }
 
     /* self-hash of this test executable resolves and is stable */
     check(source_stateio_exe_sha256(a) == 1 && strlen(a) == 64, "exe hash resolves");

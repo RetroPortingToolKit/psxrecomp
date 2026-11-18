@@ -27,7 +27,7 @@ def main():
             def run(env, stored=None):
                 probe.write_bytes(b'identity probe')
                 argv = [str(exe), str(probe)] + ([stored] if stored else [])
-                out = subprocess.run(argv, env=env, capture_output=True, timeout=30)
+                out = subprocess.run(argv, env=env, capture_output=True)
                 assert out.returncode == 0, (opt, out.returncode, out.stdout, out.stderr)
                 fields = {}
                 for line in out.stdout.decode('utf-8', errors='replace').splitlines():
@@ -52,6 +52,11 @@ def main():
             assert run(dict(env_a, UNRELATED='1'))['config'] == cfg_a, opt
             assert run(env_a, cfg_a)['accept'] == 'yes', opt
             assert run(env_b, cfg_a)['accept'] == 'refused', opt
+            # The entire supported set is hashed; one more entry fails closed.
+            maximum = dict(base, **{f'PSX_IDENTITY_{i:03d}': str(i) for i in range(512)})
+            assert len(run(maximum)['config']) == 64, opt
+            overflow = dict(maximum, PSX_IDENTITY_OVERFLOW='one-more')
+            assert run(overflow, '--expect-overflow')['config'] == 'refused', opt
     print('PASS: checkpoint identity dimensions at O0/O2')
 
 

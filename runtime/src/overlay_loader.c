@@ -5,6 +5,7 @@
 #include "overlay_backend.h"
 #include "crc32.h"
 #include "dirty_ram_interp.h"
+#include "interp_report.h"
 #include "interrupts.h"
 #include "mod_plugins.h"
 #include "debug_server.h"
@@ -527,6 +528,11 @@ static uint64_t s_load_last_us   = 0;
 static int      s_valid_count    = 0;   /* candidates currently VALID         */
 static uint64_t s_disp_native    = 0;
 static uint64_t s_disp_interp    = 0;
+static uint64_t s_disp_miss[2][PSX_INTERP_MISS_REASONS];
+static void record_interp_miss(uint32_t phys,int reason) {
+    s_disp_miss[phys < DIRTY_RAM_KERNEL_WINDOW_END ? 1 : 0][reason]++;
+}
+
 /* Small diagnostic-only native-owner sampler. A logical softlock can continue
  * presenting at 60 Hz while executing a tiny bad native loop, so FPS alone is
  * not correctness evidence. This is enabled only with the existing runtime
@@ -675,6 +681,14 @@ typedef struct {
 } StaticMatchCache;
 
 static StaticMatchCache s_static_match_cache[STATIC_MATCH_CACHE_CAP];
+/* Union of every [lo_min, hi_max) ever stored in the cache (it only
+ * widens, so it stays a superset after evictions). A PC outside it cannot be
+ * spanned by any entry: psx_overlay_resident_crc_at() answers without the
+ * 16,384-entry scan. CMR2 runs its self-modified boot-EXE renderer through the
+ * dirty interpreter and paid that scan on every external entry (39 of 60 host
+ * stack samples in a race, 0.55x). Same answer, O(1). */
+static uint32_t s_static_span_lo = 0xFFFFFFFFu, s_static_span_hi = 0u;
+static uint64_t s_resident_crc_scans = 0;   /* full-cache scans (tests) */
 static uint8_t s_static_match_victim[STATIC_MATCH_CACHE_SETS];
 
 /* Main-RAM offset of a variant code range, through the one geometry contract
@@ -781,6 +795,8 @@ int psx_overlay_static_code_matches(const uint32_t *lo_len_pairs,
         entry->matches = matches;
         entry->lo_min = lo_min;
         entry->hi_max = hi_max;
+        if (lo_min < s_static_span_lo) s_static_span_lo = lo_min;
+        if (hi_max > s_static_span_hi) s_static_span_hi = hi_max;
     }
     return matches;
 }
@@ -811,6 +827,11 @@ uint32_t psx_overlay_resident_crc_at(uint32_t phys, int *valid) {
         if (valid) *valid = 0;
         return s_last_crc;
     }
+    if (phys < s_static_span_lo || phys >= s_static_span_hi) {  /* no cached variant can span it */
+        if (valid) *valid = 0;
+        return s_last_crc;
+    }
+    s_resident_crc_scans++;
     for (uint32_t i = 0; i < STATIC_MATCH_CACHE_CAP; i++) {
         const StaticMatchCache *e = &s_static_match_cache[i];
         if (!e->ranges || phys < e->lo_min || phys >= e->hi_max)
@@ -832,6 +853,8 @@ uint32_t psx_overlay_resident_crc_at(uint32_t phys, int *valid) {
     if (valid) *valid = 0;
     return stale ? stale : s_last_crc;
 }
+
+uint64_t overlay_loader_resident_crc_scans(void) { return s_resident_crc_scans; }
 
 void overlay_loader_static_match_stats(uint64_t *rehashes,
                                        uint64_t *crc_misses,
@@ -4080,18 +4103,18 @@ static int overlay_loader_dispatch_seg(CPUState *cpu, uint32_t addr) {
     const uint32_t phys = addr & 0x1FFFFFFFu;
     const uint32_t seg = addr & 0xE0000000u;
     if (psx_code_segment_index(addr) < 0) {
-        s_disp_interp++;
+        record_interp_miss(phys,PSX_MISS_OUTSIDE_WINDOW); s_disp_interp++;
         return 0;
     }
     /* Generated and interpreted backends both invoke configured function-entry
      * hooks, but cached overlay shards predate that contract. Keep a hooked
      * entry on the interpreter so native overlay execution cannot bypass it. */
     if (psx_mod_function_entry_has_hook(addr)) {
-        s_disp_interp++;
+        record_interp_miss(phys,PSX_MISS_MOD_ENTRY_HOOK); s_disp_interp++;
         return 0;
     }
     if (overlay_cache_window_contains(phys) && lazy_miss_cached(addr)) {
-        s_disp_interp++;
+        record_interp_miss(phys,PSX_MISS_CACHED); s_disp_interp++;
         return 0;
     }
     int lazy_loaded = 0;
@@ -4165,7 +4188,7 @@ retry_candidates:
             if (_probe) s_cps_probe_matched = matched;
             if (matched) {
                 if (c->state != ENTRY_VALID) { c->state = ENTRY_VALID; s_valid_count++; }
-                if (c->device_touch)   { if (_probe) s_cps_probe_outcome = 3; s_disp_interp++; return 0; }
+                if (c->device_touch)   { if (_probe) s_cps_probe_outcome = 3; record_interp_miss(phys,PSX_MISS_DEVICE_TOUCH); s_disp_interp++; return 0; }
                 /* Diff instrument — same contract as the entry chain's want_diff
                  * gate below. A continuation re-entry must NOT run native blind
                  * while its candidate is still inside the verify budget: CPS
@@ -4187,14 +4210,14 @@ retry_candidates:
                     if (want_diff && (s_diff_addr || c->diff_passes < OVERLAY_DIFF_BUDGET)) {
                         if (_probe) s_cps_probe_outcome = 5;
                         s_diffgate_interp++;
-                        s_disp_interp++;
+                        record_interp_miss(phys,PSX_MISS_DIFF_GATE); s_disp_interp++;
                         return 0;
                     }
                     if (!s_native_exec || overlay_native_blocked(c->addr) || overlay_native_blocked(addr))
-                                           { if (_probe) s_cps_probe_outcome = 4; s_would_run_native++; s_disp_interp++; return 0; }
+                                           { if (_probe) s_cps_probe_outcome = 4; s_would_run_native++; record_interp_miss(phys,PSX_MISS_NATIVE_OFF); s_disp_interp++; return 0; }
 #ifndef PSX_NO_DEBUG_TOOLS
                     if (!native_rank_allows(c, addr))
-                                           { if (_probe) s_cps_probe_outcome = 7; s_would_run_native++; s_disp_interp++; return 0; }
+                                           { if (_probe) s_cps_probe_outcome = 7; s_would_run_native++; record_interp_miss(phys,PSX_MISS_RANK); s_disp_interp++; return 0; }
 #endif
                 }
                 if (_probe) s_cps_probe_outcome = 2;
@@ -4230,7 +4253,7 @@ retry_candidates:
                 s_native_inprogress = prev_inprogress;
                 if (g_native_bad_entry) {  /* foreign interior entry: fail closed to interp */
                     g_native_bad_entry = 0;
-                    s_disp_native--; s_disp_interp++;
+                    s_disp_native--; record_interp_miss(phys,PSX_MISS_BAD_ENTRY); s_disp_interp++;
                     return 0;            /* cpu->pc was restored to the requested PC */
                 }
                 return 1;
@@ -4285,7 +4308,7 @@ retry_candidates:
             /* Device-touching functions never run their shard: the shadow diff
              * can't safely double-execute MMIO/SIO/DMA to validate them, so they
              * always fall to the interpreter (the authoritative single path). */
-            if (c->device_touch) { s_disp_interp++; return 0; }
+            if (c->device_touch) { record_interp_miss(phys,PSX_MISS_DEVICE_TOUCH); s_disp_interp++; return 0; }
             /* Same-state differential: run native+interp from identical state,
              * compare, keep the interp result. Takes precedence over the A/B
              * toggle. Verify-budget: once a candidate has passed cleanly enough
@@ -4322,7 +4345,7 @@ retry_candidates:
                 extern int psx_get_in_exception(void);
                 if (psx_get_in_exception()) {
                     s_diffgate_interp++;
-                    s_disp_interp++;
+                    record_interp_miss(phys,PSX_MISS_DIFF_GATE); s_disp_interp++;
                     return 0;
                 }
                 run_shadow_diff(cpu, c, addr);
@@ -4334,10 +4357,10 @@ retry_candidates:
              * handles it. The per-function blocklist forces the same interp
              * routing for one function only (bisection localization). */
             if (!s_native_exec || overlay_native_blocked(c->addr))
-                { s_would_run_native++; s_disp_interp++; return 0; }
+                { s_would_run_native++; record_interp_miss(phys,PSX_MISS_NATIVE_OFF); s_disp_interp++; return 0; }
 #ifndef PSX_NO_DEBUG_TOOLS
             if (!native_rank_allows(c, addr))
-                { s_would_run_native++; s_disp_interp++; return 0; }
+                { s_would_run_native++; record_interp_miss(phys,PSX_MISS_RANK); s_disp_interp++; return 0; }
 #endif
 
             /* Record into the always-on ring BEFORE the call; mark in-progress
@@ -4382,7 +4405,7 @@ retry_candidates:
             s_native_inprogress = prev_inprogress;   /* restore (nested calls) */
             if (g_native_bad_entry) {  /* foreign interior entry: fail closed to interp */
                 g_native_bad_entry = 0;
-                s_disp_native--; s_disp_interp++;
+                s_disp_native--; record_interp_miss(phys,PSX_MISS_BAD_ENTRY); s_disp_interp++;
                 return 0;            /* cpu->pc was restored to the requested PC */
             }
             return 1;
@@ -4409,9 +4432,10 @@ retry_candidates:
     }
 
     if (overlay_cache_window_contains(phys)) lazy_miss_record(addr);
-    s_disp_interp++;
+    record_interp_miss(phys,(overlay_cache_window_contains(phys) ? (head >= 0 || loaded_range_ci >= 0 ? PSX_MISS_STALE_BYTES : PSX_MISS_NO_UNIT) : PSX_MISS_OUTSIDE_WINDOW)); s_disp_interp++;
     return 0;
 }
+
 
 /* ---- Self-modification of an actively-executing entry (§8.5) ------------ */
 /* Lazy re-hash on the NEXT dispatch is too late if a native function modifies
@@ -4445,6 +4469,12 @@ void overlay_loader_active_write_check(uint32_t phys, uint32_t size) {
 }
 
 /* ---- Status getters (signatures preserved for debug_server.c) ---------- */
+
+void overlay_loader_get_miss_reasons(uint64_t above_kernel[PSX_INTERP_MISS_REASONS],
+                                     uint64_t kernel[PSX_INTERP_MISS_REASONS]) {
+    if(above_kernel) memcpy(above_kernel,s_disp_miss[0],sizeof(s_disp_miss[0]));
+    if(kernel) memcpy(kernel,s_disp_miss[1],sizeof(s_disp_miss[1]));
+}
 
 void overlay_loader_get_counters(uint32_t *loads, uint32_t *invalidations,
                                  uint32_t *unregistered,
@@ -4691,6 +4721,7 @@ static void run_shadow_diff_legacy(CPUState *cpu, Candidate *c, uint32_t addr) {
 
     *cpu = cpu0;
     memcpy(ram,  s_ram0,  SHADOW_RAM_SIZE);
+    psx_kernel_bless_note_range(0u, SHADOW_RAM_SIZE);   /* raw RAM write */
     memcpy(spad, s_spad0, SHADOW_SPAD_SIZE);
     uint32_t stop_ra = cpu->gpr[31];   /* entry $ra = the function's return point */
     /* Arm the own-interior native route for the NATIVE pass only (see
@@ -4798,6 +4829,7 @@ static void run_shadow_diff_legacy(CPUState *cpu, Candidate *c, uint32_t addr) {
      * spurious in-progress unwind wedges the guest). */
     *cpu = cpuI;
     memcpy(ram,  s_ramI,  SHADOW_RAM_SIZE);
+    psx_kernel_bless_note_range(0u, SHADOW_RAM_SIZE);   /* raw RAM write */
     memcpy(spad, s_spadI, SHADOW_SPAD_SIZE);
     g_psx_call_bail = 0;
     s_native_exec  = sv;

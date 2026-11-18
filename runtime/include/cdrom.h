@@ -19,6 +19,8 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len);
  * drive and render nothing -- a black screen with no explanation. Callers that
  * passed a real path must check this and report. */
 int cdrom_has_disc(void);
+/* Was an SBI companion loaded into the currently mounted reader? */
+int cdrom_has_sbi(void);
 /* Disc license region for GetID ("SCEE"/"SCEA"/"SCEI"); derived from the
  * mounted disc's boot serial at launch. Defaults to "SCEA" (SCPH1001). */
 void cdrom_set_disc_scex(const char scex[4]);
@@ -72,6 +74,11 @@ void cdrom_warm_route_stats_json(char* out, int cap);
  * Diagnostics only: recording never changes CD scheduling or delivery. */
 void cdrom_timing_reset(void);
 void cdrom_timing_stats_json(char* out, int cap);
+/* Read streams of this process: how many started, how many ended before
+ * their first sector, and the longest run of those in a row. The run report
+ * carries them (psx_last_run_report.json "cdrom"), so a game whose reads
+ * never deliver can be found from a release build. Diagnostics only. */
+void cdrom_silent_read_stats(uint32_t *starts, uint32_t *silent, uint32_t *longest_run);
 int cdrom_get_delivered_lba(void);
 /* Presentation-only stream identity. Advances on a successful SetLoc or
  * seek, independent of host time; not part of emulated controller state. */
@@ -110,6 +117,28 @@ int  cdrom_disc_roster_count(void);
 int  cdrom_disc_selected(void);
 const char *cdrom_disc_roster_path(int index_1based);
 int  cdrom_disc_select(int index_1based);
+/* The save-state disc token of each roster entry, when it is not the entry's
+ * roster index: a program of a multi-program set mounts only its own discs,
+ * and its states take each disc's position in the whole set. A token of 0,
+ * or no table (count 0), keeps the roster index. */
+void cdrom_disc_scope_tokens_set(const int *tokens, int count);
+
+/* Put another disc of the roster in the drive for a save-state load, without
+ * a lid event.
+ *
+ * A save state restores the drive's registers and buffers but not the image
+ * the drive reads, so a state taken on another disc of the set needs that
+ * disc mounted before it is applied. Unlike cdrom_disc_select() this changes
+ * no guest-visible drive state: the load that follows restores it, and a
+ * refused load must leave the running game as it was.
+ *
+ * cdrom_disc_restore_begin() opens the roster image and makes it the mounted
+ * disc; the previous image stays open. It returns 0, and changes nothing,
+ * when the index is outside the roster, the image will not open or a begin is
+ * already open. cdrom_disc_restore_end(1) keeps the new disc and releases the
+ * previous image; cdrom_disc_restore_end(0) puts the previous image back. */
+int  cdrom_disc_restore_begin(int index_1based);
+void cdrom_disc_restore_end(int keep);
 
 /* TOC of the image currently mounted; 0 when the drive is empty. Two images
  * of a set have different TOCs, so this is how a caller confirms that a disc
@@ -152,6 +181,8 @@ int cdrom_load_in_progress(void);
 /* Physical non-XA data-read command state, without the logical load gap
  * bridge used by cdrom_load_in_progress(). Diagnostics only. */
 int cdrom_data_read_active(void);
+int cdrom_data_load_read_now(void);   /* data sectors now: not XA audio, not CD-DA */
+int cdrom_xa_mode_enabled(void);      /* SetMode bit 6 (XA-ADPCM) */
 
 /* boot_state / netplay digest — full controller FSM (sector FIFOs included). */
 uint32_t cdrom_snapshot_bytes(void);
