@@ -441,6 +441,14 @@ if(BUILD_TESTING)
     target_include_directories(cli_boot_path_test PRIVATE src)
     add_test(NAME cli_boot_path_test COMMAND cli_boot_path_test)
 
+    add_executable(ps1_exe_padding_test
+        tests/ps1_exe_padding_test.cpp
+        src/ps1_exe_parser.cpp
+    )
+    target_include_directories(ps1_exe_padding_test PRIVATE src include)
+    target_link_libraries(ps1_exe_padding_test PRIVATE fmt)
+    add_test(NAME ps1_exe_padding_test COMMAND ps1_exe_padding_test)
+
     add_executable(recompiler_patch_test
         tests/recompiler_patch_test.cpp
         src/ps1_exe_parser.cpp
@@ -1449,6 +1457,7 @@ if(BUILD_TESTING)
                 render_pass_guards
                 pal_cadence_host_refresh
                 sdl3_main_single_include
+                setup_install_card_path_wiring
                 spu_sample_scheduler_default
                 vk_build_default
                 vk_color_self_barrier

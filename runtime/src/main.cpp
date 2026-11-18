@@ -161,7 +161,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "disc_content_hash.h"
 #include "sbi_setup.h"
 #include "disc_path.h"
-#include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
+#include "disc_boot_image.h" /* text-image guard: the boot EXE on the disc */
 #include "psx_keybinds.h"
 #include "host_overlay.h"
 #include "psx_disc_tray.h"
@@ -364,73 +364,22 @@ static void arm_text_image_guard(const std::string &exe_path,
         }
     }
     /* 2. Extract the boot EXE from the disc image. */
-    if (!disc_path.empty()) {
-        PS1::ISOReader iso;
-        if (iso.Open(disc_path)) {
-            /* The boot filename: basename of the game.toml exe field (it names
-             * the same file the recompiler consumed, which came off this disc);
-             * fall back to the SYSTEM.CNF BOOT token for configs whose local
-             * name differs from the disc name. */
-            std::string boot_name;
-            if (!exe_path.empty()) {
-                const size_t slash = exe_path.find_last_of("/\\");
-                boot_name = (slash == std::string::npos)
-                                ? exe_path : exe_path.substr(slash + 1);
-            }
-            PS1::ISOFileEntry ent;
-            if (boot_name.empty() || !iso.FindFile(boot_name, ent)) {
-                /* SYSTEM.CNF: `BOOT = cdrom:\SCUS_944.23;1` */
-                uint8_t cnf[2048] = {0};
-                size_t n = iso.ReadFile("SYSTEM.CNF", cnf, sizeof(cnf) - 1);
-                if (n > 0) {
-                    std::string text((const char *)cnf, n);
-                    std::string lower = text;
-                    for (char &c : lower) c = (char)std::tolower((unsigned char)c);
-                    const size_t key = lower.find("cdrom:");
-                    if (key != std::string::npos) {
-                        size_t j = key + 6;
-                        while (j < text.size() && (text[j] == '\\' || text[j] == '/')) j++;
-                        std::string tok;
-                        while (j < text.size()) {
-                            char c = text[j];
-                            if (c == ';' || c == '\r' || c == '\n' || c == ' ' ||
-                                c == '\t' || c == '\0') break;
-                            tok += c; j++;
-                            if (tok.size() > 64) break;
-                        }
-                        const size_t s2 = tok.find_last_of("\\/");
-                        if (s2 != std::string::npos) tok = tok.substr(s2 + 1);
-                        if (!tok.empty() && iso.FindFile(tok, ent)) boot_name = tok;
-                    }
-                }
-            }
-            if (!boot_name.empty() && iso.FindFile(boot_name, ent) &&
-                ent.size > 2048) {
-                uint8_t *file = (uint8_t *)std::malloc(ent.size);
-                if (file) {
-                    size_t got = iso.ReadFile(boot_name, file, ent.size);
-                    if (got > 2048) {
-                        uint32_t img_len = (uint32_t)(got - 2048);
-                        uint8_t *img = (uint8_t *)std::malloc(img_len);
-                        if (img) {
-                            memcpy(img, file + 2048, img_len);
-                            std::free(file);
-                            dirty_ram_register_text_image(phys_lo, img, img_len);
-                            std::fprintf(stdout,
-                                "psxrecomp: text image guard armed (0x%08X..0x%08X, disc %s)\n",
-                                load_address, load_address + img_len,
-                                boot_name.c_str());
-                            return;
-                        }
-                    }
-                    std::free(file);
-                }
-            }
+    {
+        uint32_t img_len = 0;
+        std::string boot_name;
+        uint8_t *img = psx_read_disc_boot_image(exe_path, disc_path, &img_len, &boot_name);
+        if (img) {
+            dirty_ram_register_text_image(phys_lo, img, img_len);
+            std::fprintf(stdout,
+                "psxrecomp: text image guard armed (0x%08X..0x%08X, disc %s)\n",
+                load_address, load_address + img_len, boot_name.c_str());
+            return;
         }
     }
     std::fprintf(stdout,
         "psxrecomp: WARNING: text image guard NOT armed (no local EXE, no disc "
-        "boot EXE) — native text dispatch will be conservative\n");
+        "boot EXE) — no statically compiled game function will run; the game's "
+        "own code is interpreted\n");
 }
 
 /* dma.c */
@@ -2911,6 +2860,16 @@ static std::filesystem::path anchor_on_exe_dir(const char* argv0,
                                                const std::filesystem::path& p) {
     if (p.empty()) return p;
     return PSXRecompV4::host_resolve(exe_dir_from_argv(argv0), p);
+}
+
+/* The same for a [memcard] value. A setup install keeps its cards one level
+ * above the exe folder and stores them as "../saves", so a relative value can
+ * hold a climb: fold it, and the card folder reads as <root>/saves everywhere
+ * it is shown or compared. An absolute value is returned unchanged. */
+static std::filesystem::path anchor_card_path(const char* argv0,
+                                              const std::filesystem::path& p) {
+    if (p.empty() || PSXRecompV4::host_path_is_absolute(p)) return p;
+    return anchor_on_exe_dir(argv0, p).lexically_normal();
 }
 
 static std::filesystem::path read_cached_path(const char* argv0, const char* filename) {
@@ -18199,6 +18158,10 @@ int main(int argc, char** argv) {
             }
             if (!gc.discs.empty()) resolved_disc = gc.discs.front();
             if (gc.runtime.has_memcard_dir)  memcard_dir   = gc.runtime.memcard_dir;
+            /* settings.toml may name the cards of this install with one climb
+             * ("../saves") when the exe folder is one level below this root:
+             * the layout of a setup install. */
+            PSXRecompV4::set_user_settings_install_root(gc.project_root);
             if (gc.runtime.has_window_title) window_title  = gc.runtime.window_title;
             if (gc.runtime.has_debug_port)   debug_port    = gc.runtime.debug_port;
             /* On-the-fly string translation / localization (framework feature —
@@ -18987,9 +18950,9 @@ int main(int argc, char** argv) {
         }
         /* Relative [memcard] values anchor on the exe directory; the
          * per-game options file also lives in memcard_dir. */
-        if (us.has_memcard_dir)   memcard_dir   = anchor_on_exe_dir(argv[0], us.memcard_dir);
-        if (us.has_memcard1_path) memcard1_path = anchor_on_exe_dir(argv[0], us.memcard1_path);
-        if (us.has_memcard2_path) memcard2_path = anchor_on_exe_dir(argv[0], us.memcard2_path);
+        if (us.has_memcard_dir)   memcard_dir   = anchor_card_path(argv[0], us.memcard_dir);
+        if (us.has_memcard1_path) memcard1_path = anchor_card_path(argv[0], us.memcard1_path);
+        if (us.has_memcard2_path) memcard2_path = anchor_card_path(argv[0], us.memcard2_path);
         if (us.has_memcard1_enabled) memcard1_enabled = us.memcard1_enabled;
         if (us.has_memcard2_enabled) memcard2_enabled = us.memcard2_enabled;
         if (us.has_multitap_enabled) multitap_enabled = us.multitap_enabled;
@@ -20371,8 +20334,8 @@ int main(int argc, char** argv) {
                 }
                 memcard1_enabled = seed.memcard1_enabled;
                 memcard2_enabled = seed.memcard2_enabled;
-                if (seed.has_memcard1_path) memcard1_path = anchor_on_exe_dir(argv[0], seed.memcard1_path);
-                if (seed.has_memcard2_path) memcard2_path = anchor_on_exe_dir(argv[0], seed.memcard2_path);
+                if (seed.has_memcard1_path) memcard1_path = anchor_card_path(argv[0], seed.memcard1_path);
+                if (seed.has_memcard2_path) memcard2_path = anchor_card_path(argv[0], seed.memcard2_path);
                 if (seed.has_language) resolved_language = seed.language;
                 {
                     const int n = std::min(PSX_MAX_PLAYERS,

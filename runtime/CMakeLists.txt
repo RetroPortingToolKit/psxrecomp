@@ -1083,6 +1083,10 @@ if(BUILD_TESTING)
     target_link_libraries(host_keymap_test PRIVATE ${PSX_SDL_LIBRARIES})
     add_test(NAME host_keymap_test COMMAND host_keymap_test)
 
+    add_executable(host_osd_wrap_test tests/test_host_osd_wrap.c)
+    target_include_directories(host_osd_wrap_test PRIVATE include)
+    add_test(NAME host_osd_wrap_test COMMAND host_osd_wrap_test)
+
     add_executable(host_osd_diagnostics_test
         tests/test_host_osd_diagnostics.c src/host_osd.c)
     target_include_directories(host_osd_diagnostics_test PRIVATE
@@ -1852,6 +1856,19 @@ if(BUILD_TESTING)
     target_include_directories(iso_reader_sbi_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
     target_link_libraries(iso_reader_sbi_test PRIVATE chdr-static)
     add_test(NAME iso_reader_sbi_test COMMAND iso_reader_sbi_test)
+
+    # The boot executable is read from where SYSTEM.CNF says it is,
+    # also in a subdirectory of the disc. The text image guard has no reference
+    # image without it, and then no statically compiled game function runs.
+    add_executable(disc_boot_image_test
+        tests/test_disc_boot_image.cpp
+        src/disc_boot_image.cpp
+        src/iso_reader.cpp
+        src/cue_sheet.cpp)
+    target_include_directories(disc_boot_image_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
+    target_link_libraries(disc_boot_image_test PRIVATE chdr-static)
+    add_test(NAME disc_boot_image_test COMMAND disc_boot_image_test
+        ${CMAKE_CURRENT_BINARY_DIR})
 
     add_executable(mod_packages_test
         tests/test_mod_packages.cpp
