@@ -52,17 +52,20 @@ void replay_identity_set_product(const char *disc_serial, const char *disc_path,
 
 static int file_sha256(const char *path, uint8_t out[32])
 {
+    const size_t chunk_bytes = (size_t)1 << 16;
     FILE *f = fopen(path, "rb");
-    unsigned char *buf;
+    uint8_t *chunk = f ? (uint8_t *)malloc(chunk_bytes) : NULL;
     size_t n;
     int failed;
     psx_sha256_ctx ctx;
-    if (!f) return 0;
-    if (!(buf = (unsigned char *)malloc(1u << 16))) { fclose(f); return 0; }
+    if (!chunk) {
+        if (f) fclose(f);
+        return 0;
+    }
     psx_sha256_init(&ctx);
-    while ((n = fread(buf, 1, 1u << 16, f)) > 0) psx_sha256_update(&ctx, buf, n);
+    while ((n = fread(chunk, 1, chunk_bytes, f)) > 0) psx_sha256_update(&ctx, chunk, n);
     failed = ferror(f);
-    free(buf);
+    free(chunk);
     fclose(f);
     if (failed) return 0;
     psx_sha256_final(&ctx, out);
