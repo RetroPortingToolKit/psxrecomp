@@ -832,6 +832,28 @@ def ensure_framework(
     return framework_root(project_root)
 
 
+def retail_bios_profile(fw: Path, recomp: dict[str, Any]) -> tuple[str, str]:
+    """(stem, framework-relative ROM path) of the retail BIOS profile to build.
+
+    The title's [recompiler] bios_config names the profile its host links
+    (psxrecomp/bios/SCPH5552.toml for a PAL title). Without one, or when it
+    names OpenBIOS, the retail profile is SCPH1001. The ROM path is the
+    profile's [program] rom, where psxrecomp-bios loads the dump from.
+    """
+    cfg = str(recomp.get("bios_config") or "").strip().replace("\\", "/")
+    stem = Path(cfg).stem if cfg else ""
+    if not stem or stem == "OpenBIOS":
+        stem = "SCPH1001"
+    rom = ""
+    profile = fw / "bios" / f"{stem}.toml"
+    if profile.is_file():
+        program = parse_toml_simple(
+            profile.read_text(encoding="utf-8", errors="replace")
+        ).get("program") or {}
+        rom = str(program.get("rom") or "").strip()
+    return stem, rom or f"bios/{stem}.BIN"
+
+
 def bios_backend_present(fw: Path, stem: str) -> bool:
     dispatch = fw / "generated" / f"{stem}_dispatch.c"
     full = fw / "generated" / f"{stem}_full.c"
@@ -1238,6 +1260,7 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
 
     bios_arg = (getattr(args, "bios", None) or "").strip()
     staged_retail = False
+    retail_stem, retail_rom = retail_bios_profile(fw, recomp)
     if bios_arg:
         bios_path = Path(bios_arg).expanduser()
         if not bios_path.is_absolute():
@@ -1247,9 +1270,11 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
         if not bios_path.is_file():
             progress.error(f"BIOS not found: {bios_path}", code=EXIT_USAGE)
             return EXIT_USAGE
-        dest = fw / "bios" / "SCPH1001.BIN"
-        progress.phase("bios", pct=0.15, message="Staging retail BIOS dump...")
-        progress.log(f"generate --bios {bios_path}")
+        dest = fw / retail_rom
+        progress.phase(
+            "bios", pct=0.15, message=f"Staging retail BIOS dump ({retail_stem})..."
+        )
+        progress.log(f"generate --bios {bios_path} -> {retail_rom}")
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.resolve() != bios_path.resolve():
@@ -1258,26 +1283,26 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
             progress.error(f"failed to stage BIOS: {exc}", code=EXIT_ERROR)
             return EXIT_ERROR
         try:
-            if args.force_bios or not bios_backend_present(fw, "SCPH1001"):
+            if args.force_bios or not bios_backend_present(fw, retail_stem):
                 progress.phase(
-                    "bios", pct=0.2, message="Generating SCPH1001 BIOS C..."
+                    "bios", pct=0.2, message=f"Generating {retail_stem} BIOS C..."
                 )
                 regen_bios_profile(
-                    project_root, "bios/SCPH1001.toml", progress=progress
+                    project_root, f"bios/{retail_stem}.toml", progress=progress
                 )
             else:
                 progress.log(
-                    "SCPH1001 backend already present — skipping bios regen "
+                    f"{retail_stem} backend already present — skipping bios regen "
                     "(pass --force-bios to regenerate)"
                 )
             staged_retail = True
         except Exception as exc:  # noqa: BLE001
             progress.error(str(exc), code=EXIT_ERROR)
             return EXIT_ERROR
-    elif not openbios_allowed and not bios_backend_present(fw, "SCPH1001"):
+    elif not openbios_allowed and not bios_backend_present(fw, retail_stem):
         progress.error(
-            "This title requires a retail BIOS dump. Pass --bios SCPH1001.BIN "
-            "(or pick one in the setup wizard).",
+            f"This title requires a retail BIOS dump ({retail_stem}). Pass "
+            "--bios <dump> (or pick one in the setup wizard).",
             code=EXIT_USAGE,
         )
         return EXIT_USAGE
@@ -2489,7 +2514,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument(
         "--bios",
         default="",
-        help="optional retail BIOS dump (staged as bios/SCPH1001.BIN + regen)",
+        help="optional retail BIOS dump (staged where the title's BIOS profile, "
+        "SCPH1001 by default, loads it, then regenerated)",
     )
     g.add_argument(
         "--force-bios",
