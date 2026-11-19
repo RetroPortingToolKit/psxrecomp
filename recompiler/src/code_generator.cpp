@@ -358,14 +358,13 @@ std::string CodeGenerator::translate_addiu(uint32_t instr) {
     uint32_t rt = get_rt(instr);
     int16_t imm = get_imm16(instr);
 
+    if (rt == 0) {
+        return "/* nop: write to $zero */";
+    }
+
     // Optimize: loading immediate into register (from $zero)
     if (rs == 0) {
         return fmt::format("{} = {};", reg_name(rt), imm);
-    }
-
-    // Optimize: don't assign to $zero
-    if (config_.optimize_zero_reg && rt == 0) {
-        return "/* nop: write to $zero */";
     }
 
     return fmt::format("{} = {} + {};", reg_name(rt), reg_name(rs), imm);
@@ -2159,11 +2158,12 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                         // MFC0 is a delayed load (Beetle: LDAbsorb=0, LDWhich=rt) — no
                         // give-back cycles, but it sets ReadFudge=rt so a load in the next
                         // slot gets no fudge. §1+DO_LDS ran in the block's psx_cyc_step.
-                        code = fmt::format(
-                            "{} = cpu->cop0[{}];"
+                        code = rt == 0 ? fmt::format("(void)cpu->cop0[{}];", rd)
+                                       : fmt::format("{} = cpu->cop0[{}];", reg_name(rt), rd);
+                        code += fmt::format(
                             "\n#ifdef PSX_ENABLE_BLOCK_CYCLES\n    cpu->ld_absorb = 0u; cpu->ld_which_t = {}u;\n#endif"
                             "  /* mfc0 (delayed load) */",
-                            reg_name(rt), rd, rt);
+                            rt);
                     } else if (cop_op == 0x04) { // MTC0 - move to COP0
                         code = fmt::format("cpu->cop0[{}] = {};  /* mtc0 */", rd, reg_name(rt));
                     } else if (cop_op == 0x10 && (instr & 0x3F) == 0x10) { // RFE
