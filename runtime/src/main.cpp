@@ -18173,6 +18173,7 @@ const OvlLookRow* ovl_look_row(int setting) {
 std::atomic<bool> g_ovl_look_available[PSX_MENU_SESSION_DITHERING + 1];
 void ovl_look_catalog_snapshot(void) {
     for (auto& available : g_ovl_look_available) available = false;
+#if defined(RECOMP_LAUNCHER)
     const auto* mods = PSXRecompV4::mod_runtime_launcher_provider();
     if (!mods || !mods->feature_count || !mods->feature_get) return;
     for (int setting=PSX_MENU_SESSION_INTERNAL_RESOLUTION;
@@ -18197,6 +18198,7 @@ void ovl_look_catalog_snapshot(void) {
             break;
         }
     }
+#endif  /* no launcher: no mod catalog, so no mod-owned row is offered */
 }
 bool ovl_look_catalog_available(int setting) {
     const OvlLookRow* row=ovl_look_row(setting);
