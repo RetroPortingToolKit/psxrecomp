@@ -32,6 +32,8 @@ def main():
                                 str(runtime / 'src/static_code_validity.c'),
                                 str(runtime / 'src/psx_ram_geometry.c'),
                                 str(runtime / 'src/kernel_patch_ranges.c'),
+                                str(runtime / 'src/text_source_guard.c'),
+                                str(runtime / 'src/crc32.c'),
                                 str(work / 'stubs.c'), str(work / 'trace.c'),
                                 '-Wl,--gc-sections', '-o', str(exe)], check=True)
                 env = {k: v for k, v in os.environ.items() if not k.upper().startswith('PSX_')}
