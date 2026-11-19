@@ -2217,7 +2217,7 @@ irq_deliver_eval:
 
     if (!(cpu->cop0[COP0_SR] & 0x01)) {
         uint32_t sr2 = cpu->cop0[COP0_SR];
-        cpu->cop0[COP0_SR] = (sr2 & 0xFFFFFFC0u) | ((sr2 >> 2) & 0x0Fu);
+        cpu->cop0[COP0_SR] = (sr2 & 0xFFFFFFF0u) | ((sr2 >> 2) & 0x0Fu);
     }
 
     /* Nested delivery: a level-2 exit must leave level-1 flagged. */

@@ -1034,7 +1034,7 @@ bool FullFunctionEmitter::emit_function(
                     if (pb.kind == "jr") {
                         // Emit RFE SR pop without return.
                         out += "    { uint32_t sr = cpu->cop0[12]; "
-                               "cpu->cop0[12] = (sr & 0xFFFFFFC0u) | ((sr >> 2) & 0x0Fu); } /* rfe */\n";
+                               "cpu->cop0[12] = (sr & 0xFFFFFFF0u) | ((sr >> 2) & 0x0Fu); } /* rfe */\n";
                         // Fix B: arm the host exception-return escape (the jr below sets
                         // cpu->pc = real EPC; the trampoline's psx_rfe_escape_check then
                         // unwinds to psx_check_interrupts iff we're in the synchronous
