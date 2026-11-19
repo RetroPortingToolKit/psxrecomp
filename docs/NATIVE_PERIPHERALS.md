@@ -15,6 +15,17 @@ Mouse sensitivity accepts values from 0.05 through 10. Invalid values keep the
 default. Ctrl+F10 releases or captures the pointer; change `MouseCapture` in
 `config.ini`'s `[KeyMap]` section to rebind it. F10 keeps its existing launcher
 action. Losing focus or opening a host menu releases capture and clears input.
+Short clicks that end between host input samples reach the next guest poll.
+Unpolled clicks expire after a quarter second of guest time.
+
+### Rescue Shot
+
+Build the title with the shared runtime and select **PS1 Mouse** for Player 1
+in the launcher. Keep `p1_device = "mouse"` if the launcher already saved that
+choice. The title can drop the original mouse patches and the
+`supports_ps_mouse` entry from `game.toml` when switching to the shared runtime.
+In the guest menus, check pointer movement and clicks. In a stage, check
+aiming in both directions, single shots, repeated left clicks, and release.
 
 Use `p1_device = "guncon"` for absolute pointer aiming. Its coordinates follow
 the guest display ranges and the displayed image's letterbox. The default
