@@ -196,7 +196,7 @@ static PSX_BSS uint8_t pad_device_kind[PSX_MAX_PLAYERS];
 static PSX_BSS int16_t mouse_motion[PSX_MAX_PLAYERS][2];
 static PSX_BSS uint8_t mouse_buttons[PSX_MAX_PLAYERS];
 static PSX_BSS uint8_t mouse_pressed[PSX_MAX_PLAYERS];
-static PSX_BSS uint64_t mouse_press_cycle[PSX_MAX_PLAYERS];
+static PSX_BSS uint64_t mouse_press_cycle[PSX_MAX_PLAYERS][2];
 
 /* Drop clicks left unread for a quarter second of guest time. */
 #define MOUSE_PRESS_TIMEOUT_CYCLES (33868800u / 4u)
@@ -317,11 +317,17 @@ static uint8_t mouse_take_axis(int16_t *pending) {
  * then dX and dY. Reporting motion consumes it. */
 static void mouse_fill_data(int logical, uint8_t out[4]) {
     uint8_t buttons = mouse_buttons[logical];
-    if (mouse_pressed[logical] &&
-        psx_get_cycle_count() - mouse_press_cycle[logical] < MOUSE_PRESS_TIMEOUT_CYCLES)
-        buttons |= mouse_pressed[logical];
-    mouse_pressed[logical] = 0;
-    mouse_press_cycle[logical] = 0;
+    if (mouse_pressed[logical]) {
+        const uint64_t now = psx_get_cycle_count();
+        for (unsigned button = 0; button < 2; ++button) {
+            const uint8_t bit = (uint8_t)(1u << button);
+            if ((mouse_pressed[logical] & bit) &&
+                now - mouse_press_cycle[logical][button] < MOUSE_PRESS_TIMEOUT_CYCLES)
+                buttons |= bit;
+        }
+        mouse_pressed[logical] = 0;
+        memset(mouse_press_cycle[logical], 0, sizeof mouse_press_cycle[logical]);
+    }
     out[0] = 0xFF;
     out[1] = (uint8_t)(0xF0u |
                        ((buttons & 2u) ? 0x00u : 0x04u) |
@@ -1180,7 +1186,7 @@ void sio_set_pad_connected(int slot, int connected) {
     } else {
         pad_connected &= (uint8_t)~(1u << slot);
         mouse_pressed[slot] = 0;
-        mouse_press_cycle[slot] = 0;
+        memset(mouse_press_cycle[slot], 0, sizeof mouse_press_cycle[slot]);
         pad_rumble_small[slot] = 0;
         pad_rumble_large[slot] = 0;
         pad_jogcon_last_steering[slot] = 0;
@@ -1456,10 +1462,14 @@ void sio_set_mouse_buttons(int slot, int left, int right) {
 void sio_mouse_latch_press(int slot, int left, int right) {
     if (!slot_is_mouse(slot) || !(pad_connected & (1u << slot))) return;
     const uint64_t now = psx_get_cycle_count();
-    if (now - mouse_press_cycle[slot] >= MOUSE_PRESS_TIMEOUT_CYCLES)
-        mouse_pressed[slot] = 0;
-    mouse_pressed[slot] |= (uint8_t)((left ? 1u : 0u) | (right ? 2u : 0u));
-    mouse_press_cycle[slot] = now;
+    if (left) {
+        mouse_pressed[slot] |= 1u;
+        mouse_press_cycle[slot][0] = now;
+    }
+    if (right) {
+        mouse_pressed[slot] |= 2u;
+        mouse_press_cycle[slot][1] = now;
+    }
 }
 
 void sio_mouse_clear_motion(int slot) {
@@ -1471,7 +1481,7 @@ void sio_mouse_clear_input(int slot) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
     sio_mouse_clear_motion(slot);
     mouse_buttons[slot] = mouse_pressed[slot] = 0;
-    mouse_press_cycle[slot] = 0;
+    memset(mouse_press_cycle[slot], 0, sizeof mouse_press_cycle[slot]);
 }
 
 /* ── LEGACY pad-config compatibility (Tomba "Hybrid" controller) ─────────────
@@ -3396,7 +3406,8 @@ static int sio_snap_emit_peripherals(PstW *w) {
         !pst_w_bytes(w, guncon_data, sizeof(guncon_data))) return 0;
     for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
         if (!pst_w_u8(w, mouse_pressed[s]) ||
-            !pst_w_u64(w, mouse_press_cycle[s])) return 0;
+            !pst_w_u64(w, mouse_press_cycle[s][0]) ||
+            !pst_w_u64(w, mouse_press_cycle[s][1])) return 0;
         for (int axis = 0; axis < 2; ++axis)
             if (!pst_w_i16(w, mouse_motion[s][axis])) return 0;
     }
@@ -3587,7 +3598,8 @@ static int sio_snap_parse(PstR *r) {
         if (pad_device_kind[s] != SIO_DEVICE_MOUSE &&
             pad_device_kind[s] != SIO_DEVICE_GUNCON) pad_device_kind[s] = SIO_DEVICE_PAD;
         if (!pst_r_u8(r, &mouse_pressed[s]) ||
-            !pst_r_u64(r, &mouse_press_cycle[s])) return 0;
+            !pst_r_u64(r, &mouse_press_cycle[s][0]) ||
+            !pst_r_u64(r, &mouse_press_cycle[s][1])) return 0;
         for (int axis = 0; axis < 2; ++axis)
             if (!pst_r_i16(r, &mouse_motion[s][axis])) return 0;
     }

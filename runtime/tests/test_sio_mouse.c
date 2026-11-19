@@ -149,6 +149,11 @@ int main(void) {
     clock_now += 33868800u / 4u;
     EXPECT(0,"stale click is dropped",   0xFF,0x12,0x5A,0xFF,0xFC,0x00,0x00);
     sio_mouse_latch_press(0,1,0);
+    clock_now += 33868800u / 8u;
+    sio_mouse_latch_press(0,0,1);
+    clock_now += 33868800u / 8u;
+    EXPECT(0,"right click does not refresh expired left",0xFF,0x12,0x5A,0xFF,0xF8,0x00,0x00);
+    sio_mouse_latch_press(0,1,0);
     sio_mouse_clear_input(0);
     EXPECT(0,"capture release clears clicks", 0xFF,0x12,0x5A,0xFF,0xFC,0x00,0x00);
 
