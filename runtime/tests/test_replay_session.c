@@ -1,6 +1,7 @@
 /* Replay recording and playback against stub host hooks: the anchor load,
  * the per-vblank P1 feed, the digest and END checks, takeover, power-on with
- * cards, the identity refusals, and recordings that play back in sync. */
+ * cards, the identity refusals, recordings that play back in sync, and the
+ * compiled code held fixed from the start of each replay to its end. */
 #include "replay_session.h"
 #include "replay_identity.h"
 #include <stdio.h>
@@ -65,6 +66,16 @@ int replay_host_cards_install(const uint8_t *images, uint32_t mask)
     return 1;
 }
 void replay_host_cards_restore(void) { s_cards_out++; }
+/* Compiled code held fixed: frozen while a replay records or plays. */
+static int s_can_freeze = 1, s_freezes, s_thaws;
+int replay_host_code_freeze(void)
+{
+    if (!s_can_freeze) return 0;
+    s_freezes++;
+    return 1;
+}
+void replay_host_code_thaw(void) { s_thaws++; }
+static int frozen(void) { return s_freezes - s_thaws; }
 const uint8_t *replay_host_ram(void) { return s_ram; }
 uint64_t replay_host_cycle(void) { return s_cycle; }
 int replay_host_state_digest(uint32_t out[4])
@@ -260,6 +271,7 @@ int main(void)
     write_replay(0, s_digest);
     CHECK(replay_session_play_file(REPLAY) == 1);
     CHECK(replay_session_state() == REPLAY_LOADING && s_loads == 1);
+    CHECK(frozen() == 1);
     CHECK(s_anchor_size == 64 && s_anchor_first == 0xA5);
     CHECK(s_settings_in == 1 && !strcmp(s_settings, "cd_speed=2\n"));
     CHECK(!replay_session_owns_p1());
@@ -270,6 +282,7 @@ int main(void)
     CHECK(replay_session_digests_checked() == 3);
     CHECK(s_settings_out == 1 && s_cards_in == 0);
     CHECK(verdict_has("\"result\": \"in_sync\"") && verdict_has("\"frames_played\": 130"));
+    CHECK(frozen() == 0);
 
     /* AV alone differs: reported, still in sync. */
     reset_host();
@@ -346,6 +359,7 @@ int main(void)
     CHECK(replay_session_state() == REPLAY_IDLE && s_settings_out == 1);
     CHECK(verdict_has("\"player_build\": \"f123456789abcdef0123456789abcdef01234567\""));
     CHECK(replay_session_play_file("replay_session_missing.psxrpl") == 0);
+    CHECK(frozen() == 0);
 
     /* Anchored recording: arms, waits for the anchor, records each boundary's
      * live word, and plays back in sync from that anchor. */
@@ -354,10 +368,12 @@ int main(void)
     s_anchor_take = 0;
     CHECK(replay_session_record_to(REPLAY) == 1);
     CHECK(replay_session_state() == REPLAY_ARMING && s_anchor_requests == 1);
+    CHECK(frozen() == 1);
     CHECK(replay_session_record_to(REPLAY) == 0); /* one at a time */
     CHECK(replay_session_boundary(0xFFFFu, centre, &b, s) == 0); /* anchor pending */
     s_anchor_take = 1;
     CHECK(record(75, 0) == 75);
+    CHECK(frozen() == 0);
     {
         ReplayFileInfo info;
         static ReplayStep steps[128];
@@ -394,6 +410,21 @@ int main(void)
     CHECK(replay_session_record_to(REPLAY) == 1);
     replay_session_shutdown(); /* armed, nothing recorded: no file */
     CHECK(replay_session_state() == REPLAY_IDLE && replay_session_play_file(REPLAY) == 0);
+    CHECK(frozen() == 0);
+
+    /* A host that cannot hold its compiled code refuses to play or record,
+     * and nothing is left frozen. */
+    reset_host();
+    write_replay(0, s_digest);
+    s_can_freeze = 0;
+    CHECK(replay_session_play_file(REPLAY) == 0 && replay_session_state() == REPLAY_IDLE);
+    CHECK(s_settings_in == 0 && verdict_has("overlay compiler"));
+    remove(REPLAY);
+    CHECK(replay_session_record_to(REPLAY) == 0 && replay_session_state() == REPLAY_IDLE);
+    s_at_power_on = 1;
+    CHECK(replay_session_record_power_on(REPLAY) == 0 && replay_session_state() == REPLAY_IDLE);
+    s_can_freeze = 1;
+    CHECK(frozen() == 0 && s_freezes > 0);
 
     remove(REPLAY);
     remove(VERDICT);

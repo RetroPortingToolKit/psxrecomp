@@ -30,6 +30,14 @@ static unsigned s_digests_checked, s_div_parts;
 static uint32_t s_div_frame;
 static int s_diverged;
 static int s_power_on, s_cards_installed;
+/* 1 while this session holds the host's compiled-code set fixed. */
+static int s_code_frozen;
+
+static void code_thaw(void)
+{
+    if (s_code_frozen) replay_host_code_thaw();
+    s_code_frozen = 0;
+}
 
 /* What the verdict file reports. */
 static char s_verdict_path[PATH_BYTES];
@@ -126,6 +134,7 @@ static void end_playback(ReplayResult result, const char *osd)
     s_settings_switched = 0;
     if (s_cards_installed) replay_host_cards_restore();
     s_cards_installed = 0;
+    code_thaw();
     free(s_steps);
     s_steps = NULL;
     free(s_digests);
@@ -213,6 +222,8 @@ int replay_session_play_file(const char *path)
         match = replay_identity_check(&info->id, info->product, &player, product, why, sizeof why);
         if (match == REPLAY_IDENTITY_REFUSE) error = why;
     }
+    /* Code that changes at a host-timed frame changes the guest's timing. */
+    if (!error && !(s_code_frozen = replay_host_code_freeze())) error = "the overlay compiler cannot be paused";
     if (error) {
         char e[256];
         snprintf(e, sizeof e, "%s", error);
@@ -419,6 +430,7 @@ static void free_recording(void)
     s_rec_power_on = 0;
     s_frames = s_rec_steps = 0;
     s_stop_requested = 0;
+    code_thaw();
 }
 
 static int refuse_record(const char *why)
@@ -474,6 +486,10 @@ static int begin_recording(const char *path, int power_on)
     if (power_on && !replay_host_cards_capture(s_rec_cards, &s_rec_cards_mask)) {
         free_recording();
         return refuse_record("the memory cards cannot be read");
+    }
+    if (!(s_code_frozen = replay_host_code_freeze())) {
+        free_recording();
+        return refuse_record("the overlay compiler cannot be paused");
     }
     if (!power_on && !replay_host_request_anchor()) {
         free_recording();

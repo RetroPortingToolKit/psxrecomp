@@ -10020,6 +10020,26 @@ extern "C" int replay_host_cards_install(const uint8_t *images, uint32_t mask) {
     return memcard_replay_begin(images, mask) == 0;
 }
 extern "C" void replay_host_cards_restore(void) { memcard_replay_end(); }
+/* An overlay compile publishes its code at the first frame after it finishes
+ * on the host, so a recording and its playback would switch code at
+ * different frames. A replay keeps the code it starts with; a compile still
+ * running is stopped and its output discarded. A session already sealed
+ * (netplay) stays sealed. */
+static bool s_replay_code_froze_compiler = false;
+extern "C" int replay_host_code_freeze(void) {
+    s_replay_code_froze_compiler = false;
+    if (autocompile_session_interpreted_sealed()) return 1;
+    if (!autocompile_session_set_interpreted(1)) {
+        autocompile_shutdown();
+        if (!autocompile_session_set_interpreted(1)) return 0;
+    }
+    s_replay_code_froze_compiler = true;
+    return 1;
+}
+extern "C" void replay_host_code_thaw(void) {
+    if (s_replay_code_froze_compiler) (void)autocompile_session_set_interpreted(0);
+    s_replay_code_froze_compiler = false;
+}
 
 extern "C" const uint8_t *replay_host_ram(void) { return g_psx_ram; }
 extern "C" uint64_t replay_host_cycle(void) { return psx_cycle_count; }

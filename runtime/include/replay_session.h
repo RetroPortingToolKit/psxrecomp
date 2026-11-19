@@ -112,6 +112,11 @@ void replay_host_settings_restore(void);
  * the inserted ones are read). Its writes stay in memory. 0 on failure. */
 int replay_host_cards_install(const uint8_t *images, uint32_t mask);
 void replay_host_cards_restore(void);
+/* Hold the compiled-code set fixed while a replay records or plays: no
+ * overlay compile may publish new code at a host-timed frame. 0 when the
+ * host cannot hold it. Thaw is called once for each successful freeze. */
+int replay_host_code_freeze(void);
+void replay_host_code_thaw(void);
 /* 0 with the reason when this session cannot record: netplay, a
  * multitap, a port without a pad, memory cards the format cannot hold. */
 int replay_host_can_record(char *why, size_t cap);
