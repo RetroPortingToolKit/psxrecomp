@@ -46,17 +46,23 @@ def make_project(root: Path, bios_config: str) -> Path:
     return dump
 
 
-def run_generate(root: Path, dump: Path):
+def run_generate(root: Path, dump: Path, expected_error: str | None = None):
     """Run cmd_generate up to the emitter lookup; return the regenerated profiles."""
     args = cli.build_parser().parse_args(
         ["generate", "--config", str(root / "game.toml"), "--bios", str(dump)])
     regen = Mock()
+    progress = Mock()
     with patch.object(cli, "activate_embedded_toolchain", Mock()), \
          patch.object(cli, "ensure_emitters", Mock()), \
          patch.object(cli, "regen_bios_profile", regen), \
          patch.object(cli, "find_emitters", Mock(side_effect=_Stop)):
-        with unittest.TestCase().assertRaises(_Stop):
-            cli.cmd_generate(args, Mock())
+        if expected_error is None:
+            with unittest.TestCase().assertRaises(_Stop):
+                cli.cmd_generate(args, progress)
+        else:
+            assert cli.cmd_generate(args, progress) == cli.EXIT_USAGE
+            assert expected_error in progress.error.call_args.args[0]
+            assert not regen.called
     return [call.args[1] for call in regen.call_args_list]
 
 
@@ -82,6 +88,31 @@ class GenerateBiosProfileTests(unittest.TestCase):
             root = Path(temporary)
             dump = make_project(root, "psxrecomp/bios/OpenBIOS.toml")
             self.assertEqual(run_generate(root, dump), ["bios/SCPH1001.toml"])
+
+    def test_wrong_dump_leaves_the_existing_bios_intact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dump = make_project(root, "psxrecomp/bios/SCPH5552.toml")
+            profiles = root / "psxrecomp" / "bios"
+            profile = profiles / "SCPH5552.toml"
+            profile.write_text(
+                profile.read_text(encoding="utf-8")
+                + '[program.image]\nsha256 = "' + "0" * 64 + '"\n',
+                encoding="utf-8",
+            )
+            staged = profiles / "EUR-PSX-SCPH5552.bin"
+            staged.write_bytes(b"existing BIOS")
+            run_generate(root, dump, "BIOS dump does not match SCPH5552")
+            self.assertEqual(staged.read_bytes(), b"existing BIOS")
+
+    def test_rom_path_stays_under_the_bios_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dump = make_project(root, "psxrecomp/bios/SCPH5552.toml")
+            profile = root / "psxrecomp" / "bios" / "SCPH5552.toml"
+            profile.write_text('[program]\nrom = "../unexpected.bin"\n', encoding="utf-8")
+            run_generate(root, dump, "BIOS ROM path must resolve inside")
+            self.assertFalse((root / "unexpected.bin").exists())
 
 
 if __name__ == "__main__":

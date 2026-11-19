@@ -832,8 +832,8 @@ def ensure_framework(
     return framework_root(project_root)
 
 
-def retail_bios_profile(fw: Path, recomp: dict[str, Any]) -> tuple[str, str]:
-    """(stem, framework-relative ROM path) of the retail BIOS profile to build.
+def retail_bios_profile(fw: Path, recomp: dict[str, Any]) -> tuple[str, Path, str]:
+    """Return the retail profile stem, staging destination and pinned SHA-256.
 
     The title's [recompiler] bios_config names the profile its host links
     (psxrecomp/bios/SCPH5552.toml for a PAL title). Without one, or when it
@@ -844,14 +844,15 @@ def retail_bios_profile(fw: Path, recomp: dict[str, Any]) -> tuple[str, str]:
     stem = Path(cfg).stem if cfg else ""
     if not stem or stem == "OpenBIOS":
         stem = "SCPH1001"
-    rom = ""
-    profile = fw / "bios" / f"{stem}.toml"
-    if profile.is_file():
-        program = parse_toml_simple(
-            profile.read_text(encoding="utf-8", errors="replace")
-        ).get("program") or {}
-        rom = str(program.get("rom") or "").strip()
-    return stem, rom or f"bios/{stem}.BIN"
+    profiles = fw.resolve() / "bios"
+    profile = profiles / f"{stem}.toml"
+    data = parse_toml_simple(profile.read_text(encoding="utf-8"))
+    rom = Path(str(data.get("program", {}).get("rom") or ""))
+    destination = (fw / rom).resolve()
+    if rom.anchor or not destination.is_relative_to(profiles) or destination == profiles:
+        raise ValueError(f"BIOS ROM path must resolve inside the framework's bios folder: {rom}")
+    digest = str(data.get("program.image", {}).get("sha256") or "").lower()
+    return stem, destination, digest
 
 
 def bios_backend_present(fw: Path, stem: str) -> bool:
@@ -1260,7 +1261,12 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
 
     bios_arg = (getattr(args, "bios", None) or "").strip()
     staged_retail = False
-    retail_stem, retail_rom = retail_bios_profile(fw, recomp)
+    if bios_arg or not openbios_allowed:
+        try:
+            retail_stem, retail_rom, retail_sha256 = retail_bios_profile(fw, recomp)
+        except (OSError, ValueError) as exc:
+            progress.error(f"Invalid retail BIOS profile: {exc}", code=EXIT_USAGE)
+            return EXIT_USAGE
     if bios_arg:
         bios_path = Path(bios_arg).expanduser()
         if not bios_path.is_absolute():
@@ -1270,15 +1276,22 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
         if not bios_path.is_file():
             progress.error(f"BIOS not found: {bios_path}", code=EXIT_USAGE)
             return EXIT_USAGE
-        dest = fw / retail_rom
         progress.phase(
             "bios", pct=0.15, message=f"Staging retail BIOS dump ({retail_stem})..."
         )
         progress.log(f"generate --bios {bios_path} -> {retail_rom}")
         try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if dest.resolve() != bios_path.resolve():
-                shutil.copy2(bios_path, dest)
+            if retail_sha256:
+                sha256 = hashlib.sha256()
+                with bios_path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(65536), b""):
+                        sha256.update(chunk)
+                if sha256.hexdigest() != retail_sha256:
+                    progress.error(f"BIOS dump does not match {retail_stem}", code=EXIT_USAGE)
+                    return EXIT_USAGE
+            retail_rom.parent.mkdir(parents=True, exist_ok=True)
+            if retail_rom != bios_path:
+                shutil.copy2(bios_path, retail_rom)
         except OSError as exc:
             progress.error(f"failed to stage BIOS: {exc}", code=EXIT_ERROR)
             return EXIT_ERROR
