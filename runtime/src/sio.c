@@ -195,6 +195,12 @@ static PSX_BSS uint8_t pad_device_kind[PSX_MAX_PLAYERS];
  * right; 1 = pressed). */
 static PSX_BSS int16_t mouse_motion[PSX_MAX_PLAYERS][2];
 static PSX_BSS uint8_t mouse_buttons[PSX_MAX_PLAYERS];
+static PSX_BSS uint8_t mouse_pressed[PSX_MAX_PLAYERS];
+static PSX_BSS uint64_t mouse_press_cycle[PSX_MAX_PLAYERS][2];
+
+/* Drop clicks left unread for a quarter second of guest time. */
+#define MOUSE_PRESS_TIMEOUT_CYCLES (33868800u / 4u)
+extern uint64_t psx_get_cycle_count(void);
 static PSX_BSS uint8_t guncon_data[PSX_MAX_PLAYERS][6];
 
 /* ---- Logical pad ↔ physical SIO port mapping ----
@@ -310,10 +316,22 @@ static uint8_t mouse_take_axis(int16_t *pending) {
  * with bits 0-1 = 0, bit 2 = right, bit 3 = left (0 = pressed), bits 4-7 = 1;
  * then dX and dY. Reporting motion consumes it. */
 static void mouse_fill_data(int logical, uint8_t out[4]) {
+    uint8_t buttons = mouse_buttons[logical];
+    if (mouse_pressed[logical]) {
+        const uint64_t now = psx_get_cycle_count();
+        for (unsigned button = 0; button < 2; ++button) {
+            const uint8_t bit = (uint8_t)(1u << button);
+            if ((mouse_pressed[logical] & bit) &&
+                now - mouse_press_cycle[logical][button] < MOUSE_PRESS_TIMEOUT_CYCLES)
+                buttons |= bit;
+        }
+        mouse_pressed[logical] = 0;
+        memset(mouse_press_cycle[logical], 0, sizeof mouse_press_cycle[logical]);
+    }
     out[0] = 0xFF;
     out[1] = (uint8_t)(0xF0u |
-                       ((mouse_buttons[logical] & 2u) ? 0x00u : 0x04u) |
-                       ((mouse_buttons[logical] & 1u) ? 0x00u : 0x08u));
+                       ((buttons & 2u) ? 0x00u : 0x04u) |
+                       ((buttons & 1u) ? 0x00u : 0x08u));
     out[2] = mouse_take_axis(&mouse_motion[logical][0]);
     out[3] = mouse_take_axis(&mouse_motion[logical][1]);
 }
@@ -959,8 +977,7 @@ void sio_init(void) {
         pad_supports_config[i] = 1;
         /* The device kind is a host preference and stays; its motion and
          * buttons are power-on state. */
-        mouse_motion[i][0] = mouse_motion[i][1] = 0;
-        mouse_buttons[i] = 0;
+        sio_mouse_clear_input(i);
         guncon_reset(i);
     }
     pad_connected = 0;
@@ -1168,6 +1185,8 @@ void sio_set_pad_connected(int slot, int connected) {
         pad_connected |= (uint8_t)(1u << slot);
     } else {
         pad_connected &= (uint8_t)~(1u << slot);
+        mouse_pressed[slot] = 0;
+        memset(mouse_press_cycle[slot], 0, sizeof mouse_press_cycle[slot]);
         pad_rumble_small[slot] = 0;
         pad_rumble_large[slot] = 0;
         pad_jogcon_last_steering[slot] = 0;
@@ -1408,8 +1427,7 @@ void sio_set_port_device(int slot, int kind) {
     if (pad_device_kind[slot] == k) return;
     pad_device_kind[slot] = k;
     /* A different plug: nothing of the old device's state carries over. */
-    mouse_motion[slot][0] = mouse_motion[slot][1] = 0;
-    mouse_buttons[slot] = 0;
+    sio_mouse_clear_input(slot);
     guncon_reset(slot);
     pad_in_config[slot] = 0;
     pad_type_req[slot] = -1;
@@ -1441,9 +1459,29 @@ void sio_set_mouse_buttons(int slot, int left, int right) {
     mouse_buttons[slot] = (uint8_t)((left ? 1u : 0u) | (right ? 2u : 0u));
 }
 
+void sio_mouse_latch_press(int slot, int left, int right) {
+    if (!slot_is_mouse(slot) || !(pad_connected & (1u << slot))) return;
+    const uint64_t now = psx_get_cycle_count();
+    if (left) {
+        mouse_pressed[slot] |= 1u;
+        mouse_press_cycle[slot][0] = now;
+    }
+    if (right) {
+        mouse_pressed[slot] |= 2u;
+        mouse_press_cycle[slot][1] = now;
+    }
+}
+
 void sio_mouse_clear_motion(int slot) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
     mouse_motion[slot][0] = mouse_motion[slot][1] = 0;
+}
+
+void sio_mouse_clear_input(int slot) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
+    sio_mouse_clear_motion(slot);
+    mouse_buttons[slot] = mouse_pressed[slot] = 0;
+    memset(mouse_press_cycle[slot], 0, sizeof mouse_press_cycle[slot]);
 }
 
 /* ── LEGACY pad-config compatibility (Tomba "Hybrid" controller) ─────────────
@@ -3366,9 +3404,13 @@ static int sio_snap_emit_peripherals(PstW *w) {
     if (!pst_w_bytes(w, pad_device_kind, sizeof(pad_device_kind)) ||
         !pst_w_bytes(w, mouse_buttons, sizeof(mouse_buttons)) ||
         !pst_w_bytes(w, guncon_data, sizeof(guncon_data))) return 0;
-    for (int s = 0; s < PSX_MAX_PLAYERS; ++s)
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
+        if (!pst_w_u8(w, mouse_pressed[s]) ||
+            !pst_w_u64(w, mouse_press_cycle[s][0]) ||
+            !pst_w_u64(w, mouse_press_cycle[s][1])) return 0;
         for (int axis = 0; axis < 2; ++axis)
             if (!pst_w_i16(w, mouse_motion[s][axis])) return 0;
+    }
     return pst_w_bytes(w, pad_response + 8, sizeof(pad_response) - 8);
 }
 
@@ -3416,6 +3458,8 @@ static int sio_snap_parse(PstR *r) {
             digital_pad_history_reset(&pad_input_history[slot],pad_buttons[slot]);
     memset(mouse_motion, 0, sizeof(mouse_motion));
     memset(mouse_buttons, 0, sizeof(mouse_buttons));
+    memset(mouse_pressed, 0, sizeof(mouse_pressed));
+    memset(mouse_press_cycle, 0, sizeof(mouse_press_cycle));
     for (int s = 0; s < PSX_MAX_PLAYERS; ++s) guncon_reset(s);
     uint32_t u;
     int32_t i;
@@ -3553,6 +3597,9 @@ static int sio_snap_parse(PstR *r) {
     for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
         if (pad_device_kind[s] != SIO_DEVICE_MOUSE &&
             pad_device_kind[s] != SIO_DEVICE_GUNCON) pad_device_kind[s] = SIO_DEVICE_PAD;
+        if (!pst_r_u8(r, &mouse_pressed[s]) ||
+            !pst_r_u64(r, &mouse_press_cycle[s][0]) ||
+            !pst_r_u64(r, &mouse_press_cycle[s][1])) return 0;
         for (int axis = 0; axis < 2; ++axis)
             if (!pst_r_i16(r, &mouse_motion[s][axis])) return 0;
     }
@@ -3581,6 +3628,7 @@ void sio_snapshot_write(uint8_t *p) {
 int sio_snapshot_validate(const uint8_t *p, uint32_t len) {
     const uint32_t peripheral_bytes = (uint32_t)(sizeof(pad_device_kind) +
         sizeof(mouse_buttons) + sizeof(guncon_data) + sizeof(mouse_motion) +
+        sizeof(mouse_pressed) + sizeof(mouse_press_cycle) +
         sizeof(pad_response) - 8);
     const uint32_t current = sio_snapshot_bytes() - peripheral_bytes;
     const uint32_t rumble_bytes = (uint32_t)(sizeof(pad_rumble_map) +

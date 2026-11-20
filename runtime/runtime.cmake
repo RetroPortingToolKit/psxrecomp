@@ -1568,6 +1568,7 @@ function(psxrecomp_add_runtime_target target)
         LAUNCHER_BOXART
         LAUNCHER_PAD
         LAUNCHER_BRAND
+        LAUNCHER_THEME
         EXE_NAME
         GAME_VERSION
         MAX_PLAYERS
@@ -2482,6 +2483,9 @@ function(psxrecomp_add_runtime_target target)
         if(PSXRT_LAUNCHER_BRAND)
             list(APPEND _psx_recomp_ui_args BRAND "${PSXRT_LAUNCHER_BRAND}")
         endif()
+        if(PSXRT_LAUNCHER_THEME)
+            list(APPEND _psx_recomp_ui_args THEME "${PSXRT_LAUNCHER_THEME}")
+        endif()
         recomp_target_launcher_ui(${target} ${_psx_recomp_ui_args})
         target_compile_definitions(${target} PRIVATE
             RECOMP_UI_PSX_HAS_REWIND=$<BOOL:${PSXRECOMP_HAS_RBENGINE_SNAP}>)
@@ -2809,6 +2813,7 @@ endfunction()
 #     CODEGEN_SETUP_SOURCES codegen_setup.c
 #     DEFAULT_GAME_CONFIG_PATH "game.toml"
 #     LAUNCHER_BOXART "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/img/boxart.tga"
+#     LAUNCHER_THEME "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/theme.ini" # optional game colors
 #     APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico"
 #     MAX_PLAYERS 2
 #     MEMCARD_SLOTS 1          # optional; title only uses memory card port 1

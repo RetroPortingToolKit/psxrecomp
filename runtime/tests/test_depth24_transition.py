@@ -87,6 +87,7 @@ static void upload_first_movie_word(uint16_t word) {
 }
 int main(void) {
     (void)g_b; (void)gr_display_mode_changed;
+    (void)s_fg_drawing; /* read by cpu_raster_required only while frame generation exists */
     fbo = 0x1234;
     gp1_display_mode(0x10);
     expect(syncs == 1 && cpu == 0x1234, "GP1(08h) entry synchronizes immediately");

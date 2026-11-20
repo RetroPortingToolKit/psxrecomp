@@ -193,6 +193,10 @@ static constexpr bool kLauncherNativeMouse = false;
 #endif
 #include "launcher_vsync.h"
 #include "launcher_profile.h"  /* per-system variant profile (theme/caps bundle) */
+#if __has_include("launcher_theme_overrides.h")
+#include "launcher_theme_overrides.h" /* game colors staged by LAUNCHER_THEME */
+#define PSX_HAS_GAME_THEME 1
+#endif
 #include "launcher_boot_timing.h" /* PSX_LAUNCHER_BOOT_TIMING stamps */
 #if defined(PSX_MEMORY_CARD_MANAGER) && defined(RECOMP_LAUNCHER_HAS_CARD_MANAGER)
 #include "psx_card_manager/launcher_service.hpp"
@@ -8966,6 +8970,10 @@ static bool mouse_seat_configured(void) {
 
 static void mouse_set_relative(bool on) {
     if (on == g_mouse_captured || !sdl_window) return;
+    if (!on) {
+        for (int s = 0; s < PSX_MAX_PLAYERS; ++s)
+            if (g_players[s].kind == 3) sio_mouse_clear_input(s);
+    }
 #if defined(PSX_SDL3)
     if (!SDL_SetWindowRelativeMouseMode(sdl_window, on)) return;
 #else
@@ -8985,6 +8993,19 @@ static bool mouse_capture_requested(void) {
 
 static void mouse_capture_sync(void) {
     mouse_set_relative(mouse_capture_requested());
+}
+
+static void latch_mouse_button_down(const SDL_MouseButtonEvent& event) {
+    const bool left = event.button == SDL_BUTTON_LEFT;
+    const bool right = event.button == SDL_BUTTON_RIGHT;
+    if ((!left && !right) || !g_mouse_captured || !sdl_window ||
+        event.windowID != SDL_GetWindowID(sdl_window) || event.which == SDL_TOUCH_MOUSEID ||
+        !mouse_capture_requested() || savestate_input_guard_active()) return;
+#if defined(PSX_SDL3)
+    if (event.which == SDL_PEN_MOUSEID) return;
+#endif
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s)
+        if (g_players[s].kind == 3) sio_mouse_latch_press(s, left, right);
 }
 
 static void mouse_capture_toggle(void) {
@@ -9032,8 +9053,7 @@ static void sample_mouse_ports(void) {
     for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
         if (g_players[s].kind != 3) continue;
         if (!live) {
-            sio_mouse_clear_motion(s);
-            sio_set_mouse_buttons(s, 0, 0);
+            sio_mouse_clear_input(s);
             continue;
         }
         sio_mouse_add_motion(s, dx, dy);
@@ -9613,6 +9633,8 @@ static bool drain_host_events() {
                 for (int s = 0; s < PSX_MAX_PLAYERS; ++s)
                     if (g_players[s].kind == 2 && g_players[s].instance == instance)
                         toggle_live_pad_mode(s);
+        } else if (ev.type == SDL_MOUSEBUTTONDOWN) {
+            latch_mouse_button_down(ev.button);
         } else if (ev.type == SDL_KEYDOWN) {
 #if defined(PSX_SDL3)
             const SDL_Keymod mod = ev.key.mod;
@@ -10036,7 +10058,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     direct_shortcut_claim_update();
     if (!g_headless) {
         /* Pump SDL events to prevent window freeze. */
-        psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+        psx_local_mouse_begin(sdl_window, !mouse_seat_configured() && local_mouse_live(override));
         if (!drain_host_events()) return ep;
         host_pause_service();
         runtime_menu_poll_toggle();
@@ -10456,7 +10478,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         if (g_low_latency_input && !psx_selfcheck_input_locked()) {
             SDL_GameControllerUpdate();  /* refresh pad state after the wait */
             if (psx_local_mouse_installed()) {
-                psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+                psx_local_mouse_begin(sdl_window, !mouse_seat_configured() && local_mouse_live(override));
                 if (!drain_host_events()) return ep;
                 /* The overlay may have opened during the pacer wait (its
                  * Start+Select chord): settle ui_capture before the pad
@@ -10466,7 +10488,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 if (savestate_menu_open) savestate_menu_host_pause_loop();
                 if (psx_rewind_is_open()) rewind_host_pause_loop();
                 if (psx_host_pause_depth() > 0) host_pause_loop();
-                psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+                psx_local_mouse_begin(sdl_window, !mouse_seat_configured() && local_mouse_live(override));
             } else {
                 SDL_PumpEvents(); // retain native timing when no policy exists
             }
@@ -18182,6 +18204,7 @@ const OvlLookRow* ovl_look_row(int setting) {
 std::atomic<bool> g_ovl_look_available[PSX_MENU_SESSION_DITHERING + 1];
 void ovl_look_catalog_snapshot(void) {
     for (auto& available : g_ovl_look_available) available = false;
+#if defined(RECOMP_LAUNCHER)
     const auto* mods = PSXRecompV4::mod_runtime_launcher_provider();
     if (!mods || !mods->feature_count || !mods->feature_get) return;
     for (int setting=PSX_MENU_SESSION_INTERNAL_RESOLUTION;
@@ -18206,6 +18229,7 @@ void ovl_look_catalog_snapshot(void) {
             break;
         }
     }
+#endif  /* no launcher: no mod catalog, so no mod-owned row is offered */
 }
 bool ovl_look_catalog_available(int setting) {
     const OvlLookRow* row=ovl_look_row(setting);
@@ -19928,6 +19952,12 @@ int main(int argc, char** argv) {
         std::filesystem::path settings_path =
             exe_dir_from_argv(argv[0]) / "settings.toml";
 #if defined(RECOMP_LAUNCHER)
+#if defined(PSX_HAS_GAME_THEME)
+        /* Loaded here, not only in the launcher, so --no-launcher keeps the
+         * game colors in the in-game menu. */
+        launcher_theme_load_game_overrides(
+            (exe_dir_from_argv(argv[0]) / "assets" / "theme_game.ini").string().c_str());
+#endif
         g_lnch_settings_path = settings_path;
         g_overlay_settings_path = settings_path;
 #endif

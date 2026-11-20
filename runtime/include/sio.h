@@ -259,7 +259,10 @@ int sio_get_port_device(int slot);
  * per axis; accumulated excess carries, bounded to +/-1024 counts. */
 void sio_mouse_add_motion(int slot, int dx, int dy);
 void sio_set_mouse_buttons(int slot, int left, int right);
+/* Report a short host press on the next guest poll even if already released. */
+void sio_mouse_latch_press(int slot, int left, int right);
 void sio_mouse_clear_motion(int slot);
+void sio_mouse_clear_input(int slot);
 
 /* ---- SIO byte-level trace ring buffer ----
  * 1M entries × ~28 B ≈ 32 MB.  At ~600 byte/sec that's ~30 min of history. */
