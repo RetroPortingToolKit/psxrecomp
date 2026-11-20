@@ -185,7 +185,7 @@ static uint64_t presentation_display_tick(void *user, uint64_t now) {
     const GeometryTiming timing = s_display_sample.timing;
     if (!timing.native_ns) return 0;
     const PsxPresentationSlot slot = s_display_sample.slot;
-    if (!s_pt_on || now >= slot.expires_ns ||
+    if (!s_pt_on || psx_host_ui_capture_active() || now >= slot.expires_ns ||
         timing.epoch != atomic_load(&s_display_rate_epoch)) {
         presentation_display_cancel();
         return 0;
@@ -241,7 +241,10 @@ static uint64_t presentation_display_tick(void *user, uint64_t now) {
     present_target_quad(s_pgpu_color, VRAM_W, VRAM_H, crop[0], crop[1], crop[2],
                         crop[3], s_display_sample.linear, lx, ly, lw, lh, 1, 1,
                         s_pgpu_scale);
+    psx_host_hud_draw(ww, wh);
+    psx_host_overlay_draw(ww, wh);
     if (rt_now_ns() >= slot.expires_ns || rt_has_pending_records() ||
+        psx_host_ui_capture_active() ||
         timing.epoch != atomic_load(&s_display_rate_epoch)) {
         presentation_display_cancel();
         return 0;

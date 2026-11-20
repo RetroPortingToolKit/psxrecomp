@@ -10041,7 +10041,7 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
     s_last_present_path = geometry?GL_PRES_GEOMETRY:GL_PRES_VRAM;
     s_last_dx = disp_x; s_last_dy = disp_y; s_last_dw = w; s_last_dh = h;
     coh_record(GL_COH_PRESENT, disp_x, disp_y, disp_x + w - 1, disp_y + h - 1);
-    if (geometry && !postfx_active() && !psx_host_overlay_has_draw() &&
+    if (geometry && !postfx_active() && !psx_host_ui_capture_active() &&
         !ov_needs_present() && !s_rth_ov.px[0] && !s_rth_ov.px[1] &&
         !s_rth_ov.px[2] && !s_rth_ov.px[3])
         presentation_display_arm(w, h, linear, force_4_3, geometry_crop);
