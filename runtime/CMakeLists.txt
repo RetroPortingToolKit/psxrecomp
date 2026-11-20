@@ -686,6 +686,9 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
                 --cc "${CMAKE_C_COMPILER}")
         endif()
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            add_test(NAME menu_exit_teardown_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_menu_exit_teardown.py"
+                --cc "${CMAKE_C_COMPILER}" --cxx "${CMAKE_CXX_COMPILER}")
             add_test(NAME resolved_pad_guard_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_resolved_pad_guard.py"
                 --cxx "${CMAKE_CXX_COMPILER}")
