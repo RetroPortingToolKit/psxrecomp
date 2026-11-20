@@ -10040,6 +10040,9 @@ extern "C" void replay_host_code_thaw(void) {
     if (s_replay_code_froze_compiler) (void)autocompile_session_set_interpreted(0);
     s_replay_code_froze_compiler = false;
 }
+/* The overlay cache units the loader has indexed: what a replay can run
+ * natively once the compiler is held. */
+extern "C" char *replay_host_code_set(unsigned *count) { return overlay_loader_code_set_lines(count); }
 
 extern "C" const uint8_t *replay_host_ram(void) { return g_psx_ram; }
 extern "C" uint64_t replay_host_cycle(void) { return psx_cycle_count; }

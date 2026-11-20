@@ -1,6 +1,7 @@
 /* Player replay recorder and player. See replay_session.h. */
 #include "replay_session.h"
 #include "replay_identity.h"
+#include "psx_sha256.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,58 @@ static void code_thaw(void)
     s_code_frozen = 0;
 }
 
+static int cmp_line(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* The CODE_SET entry for the host's code set now: count=, digest= (SHA-256
+ * over the sorted unit lines, each followed by '\n') and, when all of them
+ * fit as printable text, one unit= line each. 0 when the host names none. */
+static int code_set_text(char *out, size_t cap)
+{
+    unsigned count = 0, n = 0;
+    char *lines = replay_host_code_set(&count), *p, **v;
+    psx_sha256_ctx c;
+    uint8_t d[32];
+    size_t used, need;
+    int printable = 1;
+    out[0] = 0;
+    if (!lines) return 0;
+    if (!(v = (char **)malloc((count ? count : 1u) * sizeof *v))) {
+        free(lines);
+        return 0;
+    }
+    for (p = lines; *p && n < count;) {
+        char *e = strchr(p, '\n');
+        if (!e) break;
+        *e = 0;
+        v[n++] = p;
+        p = e + 1;
+    }
+    qsort(v, n, sizeof *v, cmp_line);
+    psx_sha256_init(&c);
+    for (unsigned i = 0; i < n; ++i) {
+        psx_sha256_update(&c, (const uint8_t *)v[i], strlen(v[i]));
+        psx_sha256_update(&c, (const uint8_t *)"\n", 1);
+    }
+    psx_sha256_final(&c, d);
+    used = (size_t)snprintf(out, cap, "count=%u\ndigest=", n);
+    for (unsigned k = 0; k < 32 && used < cap; ++k) used += (size_t)snprintf(out + used, cap - used, "%02x", d[k]);
+    if (used < cap) used += (size_t)snprintf(out + used, cap - used, "\n");
+    need = used;
+    for (unsigned i = 0; i < n; ++i) {
+        need += 6 + strlen(v[i]);
+        for (const char *q = v[i]; *q; ++q)
+            if ((unsigned char)*q < 0x20 || (unsigned char)*q > 0x7e) printable = 0;
+    }
+    if (printable && need < cap)
+        for (unsigned i = 0; i < n; ++i) used += (size_t)snprintf(out + used, cap - used, "unit=%s\n", v[i]);
+    free(v);
+    free(lines);
+    return 1;
+}
+
 /* What the verdict file reports. */
 static char s_verdict_path[PATH_BYTES];
 static char s_play_path[PATH_BYTES];
@@ -50,6 +103,9 @@ static int s_cross_platform;
 static uint64_t s_end_cycle, s_end_recorded_cycle;
 static unsigned s_end_pages;
 static int s_end_reached;
+/* The compiled-code sets: count and digest, "" when not named. */
+static char s_rec_code_count[16], s_rec_code_digest[72], s_player_code_count[16], s_player_code_digest[72];
+static int s_code_match = -1;   /* 1 same, 0 different, -1 not compared */
 
 ReplayState replay_session_state(void) { return s_state; }
 ReplayResult replay_session_last_result(void) { return s_result; }
@@ -121,6 +177,13 @@ static void write_verdict(ReplayResult result, const char *reason)
     fputs(",\n  \"player_codegen\": ", f); json_string(f, s_player_codegen);
     fprintf(f, ",\n  \"cross_platform\": %s", s_cross_platform ? "true" : "false");
     fprintf(f, ",\n  \"power_on\": %s", s_power_on ? "true" : "false");
+    fprintf(f, ",\n  \"recorded_code_units\": %s", s_rec_code_count[0] ? s_rec_code_count : "null");
+    fputs(",\n  \"recorded_code_digest\": ", f);
+    if (s_rec_code_digest[0]) json_string(f, s_rec_code_digest); else fputs("null", f);
+    fprintf(f, ",\n  \"player_code_units\": %s", s_player_code_count[0] ? s_player_code_count : "null");
+    fputs(",\n  \"player_code_digest\": ", f);
+    if (s_player_code_digest[0]) json_string(f, s_player_code_digest); else fputs("null", f);
+    fprintf(f, ",\n  \"code_set_match\": %s", s_code_match < 0 ? "null" : s_code_match ? "true" : "false");
     fputs(",\n  \"replay\": ", f); json_string(f, s_play_path);
     fputs(",\n  \"reason\": ", f); json_string(f, reason ? reason : "");
     fputs("\n}\n", f);
@@ -167,6 +230,45 @@ static void *read_at(FILE *f, long offset, size_t n)
     return p;
 }
 
+/* The count and digest of a CODE_SET entry; both "" unless well formed. */
+static void code_set_values(const char *text, char *count, size_t ccap, char *digest, size_t dcap)
+{
+    int ok;
+    replay_identity_line_value(text, "count", count, ccap);
+    replay_identity_line_value(text, "digest", digest, dcap);
+    ok = count[0] && strlen(count) < 10 && strlen(digest) == 64;
+    for (const char *q = count; ok && *q; ++q) ok = *q >= '0' && *q <= '9';
+    for (const char *q = digest; ok && *q; ++q) ok = (*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f');
+    if (!ok) count[0] = digest[0] = 0;
+}
+
+/* After the freeze: the code set the recording ran with against the one
+ * this player holds. A difference is reported and the replay plays on: a
+ * unit the replay never reaches changes nothing, and refusing would stop
+ * every replay between hosts whose caches grew differently. */
+static void compare_code_sets(const char *recorded)
+{
+    char now[REPLAY_FILE_CODE_SET_MAX + 1];
+    if (recorded && recorded[0])
+        code_set_values(recorded, s_rec_code_count, sizeof s_rec_code_count, s_rec_code_digest,
+                        sizeof s_rec_code_digest);
+    if (code_set_text(now, sizeof now))
+        code_set_values(now, s_player_code_count, sizeof s_player_code_count, s_player_code_digest,
+                        sizeof s_player_code_digest);
+    s_code_match = !s_rec_code_digest[0] || !s_player_code_digest[0] ? -1
+                   : !strcmp(s_rec_code_digest, s_player_code_digest);
+    fprintf(stdout, "replay_code_set: recorded=%s:%s player=%s:%s match=%s\n",
+            s_rec_code_count[0] ? s_rec_code_count : "-", s_rec_code_digest[0] ? s_rec_code_digest : "-",
+            s_player_code_count[0] ? s_player_code_count : "-",
+            s_player_code_digest[0] ? s_player_code_digest : "-",
+            s_code_match < 0 ? "-" : s_code_match ? "1" : "0");
+    if (s_code_match == 0)
+        fprintf(stderr,
+                "replay: compiled code differs from the recording: recorded %s units (digest %s), "
+                "this player %s units (digest %s); playing on, it may go out of sync\n",
+                s_rec_code_count, s_rec_code_digest, s_player_code_count, s_player_code_digest);
+}
+
 int replay_session_play_file(const char *path)
 {
     ReplayFileInfo *info = NULL;
@@ -186,6 +288,8 @@ int replay_session_play_file(const char *path)
     s_cross_platform = s_power_on = s_diverged = s_end_reached = 0;
     s_play_frame = s_play_frames = 0;
     s_digests_checked = s_div_parts = 0;
+    s_rec_code_count[0] = s_rec_code_digest[0] = s_player_code_count[0] = s_player_code_digest[0] = 0;
+    s_code_match = -1;
     if (!path || !(f = fopen(path, "rb"))) return refuse_play("cannot open the file");
     info = (ReplayFileInfo *)malloc(sizeof *info);
     steps = (ReplayStep *)calloc(REPLAY_FILE_MAX_STEPS, sizeof *steps);
@@ -230,6 +334,7 @@ int replay_session_play_file(const char *path)
         free(info); free(steps); free(anchor); free(cards); free(digests);
         return refuse_play(e);
     }
+    compare_code_sets(info->code_set);
     snprintf(s_rec_build, sizeof s_rec_build, "%s", info->id.build);
     snprintf(s_player_build, sizeof s_player_build, "%s", player.build);
     replay_identity_line_value(info->product, "exe_sha256", s_rec_exe, sizeof s_rec_exe);
@@ -279,6 +384,8 @@ int replay_session_play_file(const char *path)
         replay_host_osd("Replay from a different build: it may go out of sync", 2600);
         fprintf(stderr, "replay: recorded on build %s (exe %s), this is %s (exe %s)\n", s_rec_build,
                 s_rec_exe[0] ? s_rec_exe : "?", s_player_build, s_player_exe[0] ? s_player_exe : "?");
+    } else if (s_code_match == 0) {
+        replay_host_osd("Replay recorded with other compiled code: it may go out of sync", 2600);
     } else if (differs[0]) {
         char msg[640];
         snprintf(msg, sizeof msg, "Replay may go out of sync: different %s", differs);
@@ -407,6 +514,7 @@ static uint32_t s_frames, s_rec_steps;
 static ReplayIdentity s_rec_id;
 static char s_rec_settings[REPLAY_FILE_SETTINGS_MAX + 1];
 static char s_rec_product[REPLAY_FILE_PRODUCT_MAX + 1];
+static char s_rec_code_set[REPLAY_FILE_CODE_SET_MAX + 1];
 static uint8_t *s_anchor;
 static size_t s_anchor_size;
 /* RAM and cycle at the last recorded boundary: the END checkpoint, so a
@@ -428,6 +536,7 @@ static void free_recording(void)
     free(s_rec_digests); s_rec_digests = NULL; s_rec_digest_count = 0;
     free(s_rec_cards); s_rec_cards = NULL; s_rec_cards_mask = 0;
     s_rec_power_on = 0;
+    s_rec_code_set[0] = 0;
     s_frames = s_rec_steps = 0;
     s_stop_requested = 0;
     code_thaw();
@@ -497,6 +606,12 @@ static int begin_recording(const char *path, int power_on)
     }
     replay_host_settings_capture(s_rec_settings, sizeof s_rec_settings);
     replay_host_product(s_rec_product, sizeof s_rec_product);
+    /* The code the recording runs with, now that it is held fixed. */
+    if (code_set_text(s_rec_code_set, sizeof s_rec_code_set)) {
+        char count[16], digest[72];
+        code_set_values(s_rec_code_set, count, sizeof count, digest, sizeof digest);
+        fprintf(stdout, "replay_code_set: recorded=%s:%s\n", count, digest);
+    }
     snprintf(s_rec_path, sizeof s_rec_path, "%s", path);
     s_result = REPLAY_RESULT_NONE;
     if (!power_on) {
@@ -543,6 +658,7 @@ static const char *write_recording(const char *path)
         o.digests = (const uint32_t (*)[5])s_rec_digests;
         o.digest_count = s_rec_digest_count;
         o.product = s_rec_product[0] ? s_rec_product : NULL;
+        o.code_set = s_rec_code_set[0] ? s_rec_code_set : NULL;
         if (s_rec_power_on) {
             o.power_on = 1;
             o.cards_mask = s_rec_cards_mask;
@@ -561,7 +677,7 @@ static const char *write_recording(const char *path)
         if (r) fclose(r);
         if (!error && (info->frames != s_last_frame || info->anchor_length != s_anchor_size ||
                        info->digest_count != s_rec_digest_count || info->power_on != s_rec_power_on ||
-                       info->cards_mask != s_rec_cards_mask))
+                       info->cards_mask != s_rec_cards_mask || strcmp(info->code_set, s_rec_code_set)))
             error = "the replay does not read back identically";
         free(info);
         free(steps);

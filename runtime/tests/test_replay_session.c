@@ -4,6 +4,7 @@
  * compiled code held fixed from the start of each replay to its end. */
 #include "replay_session.h"
 #include "replay_identity.h"
+#include "psx_sha256.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,6 +77,18 @@ int replay_host_code_freeze(void)
 }
 void replay_host_code_thaw(void) { s_thaws++; }
 static int frozen(void) { return s_freezes - s_thaws; }
+/* The code set the host names, unsorted; NULL names none. */
+#define CODE_LINES "gcc/x/b.dll\ngcc/x/a.dll\n"
+static const char *s_code_lines = CODE_LINES;
+static unsigned s_code_count = 2;
+char *replay_host_code_set(unsigned *count)
+{
+    char *p;
+    if (!s_code_lines || !(p = (char *)malloc(strlen(s_code_lines) + 1))) return NULL;
+    strcpy(p, s_code_lines);
+    *count = s_code_count;
+    return p;
+}
 const uint8_t *replay_host_ram(void) { return s_ram; }
 uint64_t replay_host_cycle(void) { return s_cycle; }
 int replay_host_state_digest(uint32_t out[4])
@@ -178,6 +191,8 @@ static void reset_host(void)
     s_load_result = 0;
     identity(&s_player);
     s_player_product = "exe_sha256=aa\nplatform=windows-x64\n";
+    s_code_lines = CODE_LINES;
+    s_code_count = 2;
     remove(VERDICT);
 }
 
@@ -283,6 +298,10 @@ int main(void)
     CHECK(s_settings_out == 1 && s_cards_in == 0);
     CHECK(verdict_has("\"result\": \"in_sync\"") && verdict_has("\"frames_played\": 130"));
     CHECK(frozen() == 0);
+    /* A file without a code set (as older recorders wrote) plays as before
+     * and compares nothing. */
+    CHECK(verdict_has("\"recorded_code_units\": null") && verdict_has("\"recorded_code_digest\": null"));
+    CHECK(verdict_has("\"player_code_units\": 2") && verdict_has("\"code_set_match\": null"));
 
     /* AV alone differs: reported, still in sync. */
     reset_host();
@@ -383,8 +402,33 @@ int main(void)
         CHECK(info.frames == 75 && info.has_anchor && info.anchor_length == 48 && !info.power_on);
         CHECK(info.digest_count == 2 && !strcmp(info.settings, "cd_speed=1\n"));
         CHECK(strstr(info.product, "platform=windows-x64") != NULL);
+        {
+            /* The code set held at the start: sorted, digested, listed. */
+            static const char sorted[] = "gcc/x/a.dll\ngcc/x/b.dll\n";
+            char expect[256];
+            uint8_t d[32];
+            size_t n;
+            psx_sha256_compute((const uint8_t *)sorted, strlen(sorted), d);
+            n = (size_t)snprintf(expect, sizeof expect, "count=2\ndigest=");
+            for (unsigned k = 0; k < 32; ++k) n += (size_t)snprintf(expect + n, sizeof expect - n, "%02x", d[k]);
+            snprintf(expect + n, sizeof expect - n, "\nunit=gcc/x/a.dll\nunit=gcc/x/b.dll\n");
+            CHECK(!strcmp(info.code_set, expect));
+        }
     }
     CHECK(play_back(REPLAY, 75) && s_anchor_size == 48 && s_anchor_first == 0x5A);
+    CHECK(verdict_has("\"code_set_match\": true") && verdict_has("\"recorded_code_units\": 2"));
+    /* Another code set is reported, and the replay still plays. */
+    s_code_lines = "gcc/x/a.dll\n";
+    s_code_count = 1;
+    CHECK(play_back(REPLAY, 75));
+    CHECK(verdict_has("\"code_set_match\": false") && verdict_has("\"recorded_code_units\": 2") &&
+          verdict_has("\"player_code_units\": 1"));
+    /* A player that names no code set compares nothing. */
+    s_code_lines = NULL;
+    CHECK(play_back(REPLAY, 75));
+    CHECK(verdict_has("\"code_set_match\": null") && verdict_has("\"player_code_digest\": null"));
+    s_code_lines = CODE_LINES;
+    s_code_count = 2;
     CHECK(replay_session_record_to(REPLAY) == 0); /* the file exists */
 
     /* Power-on recording: only at boot; it keeps the inserted card, ends at

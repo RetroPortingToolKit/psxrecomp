@@ -129,6 +129,13 @@ void overlay_loader_rescan(void);
  * shard cache directory, so a toolchain staged from a different emitter writes where nobody reads. */
 unsigned overlay_loader_codegen_hash(void);
 
+/* The indexed native overlay units, one per line ('\n' after each, in index
+ * order): each path under <cache_dir>/<game_id>/ with '/' separators, e.g.
+ * "gcc/<arch-abi>/cg<ver>_<hash>_gc<config>_f<flavor>/<addr>_<crc>_<artifact>.dll".
+ * *count is the number of lines. malloc'd (the caller frees it); NULL when
+ * the loader is not active. A replay records it to name the code it ran. */
+char *overlay_loader_code_set_lines(unsigned *count);
+
 /* Two-phase live publication: the compile-output watcher maps a freshly
  * published image off the emulation thread, then the emulation thread performs
  * callback wiring, manifest validation, and candidate registration. The opaque

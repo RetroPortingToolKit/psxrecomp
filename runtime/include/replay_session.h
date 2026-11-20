@@ -82,7 +82,9 @@ unsigned replay_session_digests_checked(void);
 /* When set, every playback writes this JSON file when it ends: schema
  * "psxrecomp-replay-verdict/1", result (in_sync, diverged,
  * stopped_by_input, failed, incomplete), frames, first divergence, the
- * recorded and player builds and exe SHA-256s, power_on. NULL clears. */
+ * recorded and player builds and exe SHA-256s, power_on, and the recorded
+ * and player compiled-code sets (unit count and digest) with code_set_match
+ * (true, false, or null when the file or the host names none). NULL clears. */
 void replay_session_set_verdict_path(const char *path);
 
 /* Process exit, a disc change or a session restart: write a recording, or
@@ -117,6 +119,11 @@ void replay_host_cards_restore(void);
  * host cannot hold it. Thaw is called once for each successful freeze. */
 int replay_host_code_freeze(void);
 void replay_host_code_thaw(void);
+/* The native code units the host can run, one identity per line with '\n'
+ * after each, in any order (overlay_loader_code_set_lines); *count is the
+ * number of lines. malloc'd; NULL when the host has no code set to name.
+ * Read after the freeze, so it stays what the replay runs with. */
+char *replay_host_code_set(unsigned *count);
 /* 0 with the reason when this session cannot record: netplay, a
  * multitap, a port without a pad, memory cards the format cannot hold. */
 int replay_host_can_record(char *why, size_t cap);

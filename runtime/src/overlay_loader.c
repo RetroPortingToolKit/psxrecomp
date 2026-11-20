@@ -3359,6 +3359,29 @@ void overlay_loader_resync_validation_after_restore(void)
  * dll_already_loaded() makes the re-walk idempotent. */
 unsigned overlay_loader_codegen_hash(void) { return (unsigned)PSX_OVERLAY_CODEGEN_HASH; }
 
+char *overlay_loader_code_set_lines(unsigned *count) {
+    char prefix[600];
+    size_t prefix_len, cap = 1, used = 0;
+    char *out;
+    if (count) *count = 0;
+    if (!s_active) return NULL;
+    snprintf(prefix, sizeof(prefix), "%s/%s/", s_cache_dir, s_game_id);
+    prefix_len = strlen(prefix);
+    for (int i = 0; i < s_cache_idx_count; i++) cap += strlen(s_cache_idx[i].path) + 1;
+    if (!(out = (char *)malloc(cap))) return NULL;
+    for (int i = 0; i < s_cache_idx_count; i++) {
+        const char *p = s_cache_idx[i].path;
+        /* The part under the game's cache folder: tier, ABI, codegen tag,
+         * segment and immutable name. It is the same on every host. */
+        if (!strncmp(p, prefix, prefix_len)) p += prefix_len;
+        for (; *p; ++p) out[used++] = *p == '\\' ? '/' : *p;
+        out[used++] = '\n';
+    }
+    out[used] = 0;
+    if (count) *count = (unsigned)s_cache_idx_count;
+    return out;
+}
+
 void overlay_loader_rescan(void) {
     if (!s_active || !overlay_loads_allowed()) return;
     const uint64_t span_t0 = host_span_begin();
