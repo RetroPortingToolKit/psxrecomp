@@ -4429,6 +4429,10 @@ static void shutdown_runtime(void) {
     if (s_drc_ready) { rab_free(&s_drc); s_drc_ready = false; }
     close_controller();
     debug_server_shutdown();
+    if (g_vk_active) {
+        vk_renderer_shutdown();
+        g_vk_active = false;
+    }
 }
 
 /* Tear down the game window/GL/audio after a lobby soft-return. Leaves SDL
@@ -23570,7 +23574,6 @@ session_reboot:
 
     shutdown_runtime();
     if (g_gl_active) gl_renderer_shutdown();
-    if (g_vk_active) vk_renderer_shutdown();
     SDL_DestroyTexture(sdl_texture);   /* NULL-safe in GL mode */
     SDL_DestroyRenderer(sdl_renderer); /* NULL-safe in GL mode */
     SDL_DestroyWindow(sdl_window);
