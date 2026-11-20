@@ -27,8 +27,17 @@ The Ape development adapter captures skeletal, rigid, world, terrain and explici
 subdivision sources. Ordered asynchronous GPU snapshots prepare the midpoint
 between adjacent complete scenes. The ordinary repeated-buffer presentation can
 select that output after a nonblocking completion check. A missing or late pair
-keeps the native presentation deadline. This currently supplies the 60 FPS pilot;
-independent display-rate scheduling is not implemented.
+keeps the native presentation deadline. This supplies the fixed 60 FPS pilot.
+
+The opt-in display-rate pilot (`PSX_GEOMETRY_DISPLAY_RATE=1`) requires OpenGL
+with the render and present threads active and a title with a scene provider.
+After a qualified midpoint present, the render worker uses the active display
+interval to schedule additional samples of the same pair. It gives pending
+native records priority, estimates preparation cost, and reserves present
+queue space for the next native frame. A late output or an unavailable slot
+expires. At 120 and 144 Hz the current Ape producer has one eligible extra
+slot per scene pair. The debug render-thread report counts eligible spans
+and submitted extra frames separately.
 
 Focused scene/draw, source-transport and title-producer checks cover identity,
 discontinuities, clipping and state preservation. Actual-game 60 FPS checks have
@@ -39,7 +48,7 @@ surface preservation and full-resolution geometry PNG export. Broader scene cove
 remaining consumer migration are still open. No complete replacement release
 is claimed by these development checks.
 
-Pilot order is 60 FPS followed by display rate. Measure responsiveness against
+Measure display-rate responsiveness against
 the native baseline, targeting <=16.67 ms added median/p95 input-to-visible delay.
 If complete bracketing frames cannot satisfy that budget, revisit the design
 rather than introduce prediction or additional source-frame latency.

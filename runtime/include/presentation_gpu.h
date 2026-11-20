@@ -67,6 +67,13 @@ int psx_presentation_gpu_output_ready(uint64_t output_version);
 typedef int (*PsxPresentationProvider)(void *user,int display_x,int display_y,
     int width,int height,int repeated,int output_crop[4]);
 void psx_presentation_gpu_set_provider(PsxPresentationProvider provider,void *user);
+
+/* Optional companion to the ordinary midpoint provider. Runs on the GL owner
+ * in available time before a native deadline, using the same immutable pair.
+ * Return the private output version rendered for alpha, or zero on refusal.
+ * Passing NULL disables display-rate extras. */
+typedef uint64_t (*PsxPresentationPrepareFn)(void *user, double alpha);
+void psx_presentation_gpu_set_display_rate(PsxPresentationPrepareFn prepare);
 /* Debug/export only: RGBA bytes, row zero is native VRAM row y. This explicit
  * readback is never part of snapshot capture or regular intermediate rendering. */
 int psx_presentation_gpu_read_rgba(uint8_t *out, size_t capacity,

@@ -137,6 +137,125 @@ int psx_presentation_gpu_output_ready(uint64_t version) {
     const GLenum result=pgpu_client_wait(s_pgpu_output_fence,0,0);
     return result==0x911A || result==0x911C; /* ALREADY_SIGNALED / CONDITION_SATISFIED */
 }
+
+static PsxPresentationPrepareFn s_display_prepare;
+static struct {
+    GeometryTiming timing;
+    PsxPresentationSlot slot;
+    uint64_t version;
+    unsigned index;
+    int crop[4], linear, force_4_3, drawable_w, drawable_h;
+} s_display_sample;
+static uint64_t s_display_prepare_ns;
+
+static void presentation_display_cancel(void) {
+    s_display_sample.timing.native_ns = 0;
+    s_display_sample.version = 0;
+}
+
+void psx_presentation_gpu_set_display_rate(PsxPresentationPrepareFn prepare) {
+    GL_RT_SYNC("presentation_display_rate");
+    presentation_display_cancel();
+    s_display_prepare = prepare;
+    s_display_prepare_ns = 0;
+}
+
+static void presentation_display_arm(int w, int h, int linear, int force_4_3,
+                                     const int crop[4]) {
+    const GeometryTiming timing = s_geometry_replay_timing;
+    if (!s_display_prepare || !s_pt_on || !rt_on_render_thread() ||
+        !psx_presentation_extra_slot(timing.midpoint_ns, timing.native_ns,
+                                    timing.interval_ns, 1, &s_display_sample.slot)) return;
+    s_display_sample.timing = timing;
+    s_display_sample.index = 1;
+    s_display_sample.version = 0;
+    s_display_sample.linear = linear;
+    s_display_sample.force_4_3 = force_4_3;
+    s_display_sample.crop[0] = crop[0];
+    s_display_sample.crop[1] = crop[1];
+    s_display_sample.crop[2] = w;
+    s_display_sample.crop[3] = h;
+    SDL_GL_GetDrawableSize(s_win, &s_display_sample.drawable_w, &s_display_sample.drawable_h);
+    atomic_fetch_add(&s_display_rate_armed, 1);
+    rt_tick_at(rt_now_ns());
+}
+
+static uint64_t presentation_display_tick(void *user, uint64_t now) {
+    (void)user;
+    const GeometryTiming timing = s_display_sample.timing;
+    if (!timing.native_ns) return 0;
+    const PsxPresentationSlot slot = s_display_sample.slot;
+    if (!s_pt_on || now >= slot.expires_ns ||
+        timing.epoch != atomic_load(&s_display_rate_epoch)) {
+        presentation_display_cancel();
+        return 0;
+    }
+    if (rt_has_pending_records()) return now + 250000;
+
+    if (!s_display_sample.version) {
+        const uint64_t estimate = s_display_prepare_ns;
+        const uint64_t budget = estimate > 2000000 ? estimate : 2000000;
+        if (now >= slot.target_ns || slot.target_ns - now < budget) {
+            s_display_prepare_ns = estimate * 7 / 8;
+            presentation_display_cancel();
+            return 0;
+        }
+        s_display_sample.version = s_display_prepare(s_pgpu_provider_user, slot.alpha);
+        if (s_display_sample.version) glFlush();
+        const uint64_t elapsed = rt_now_ns() - now;
+        /* Follow spikes immediately, age back toward the observed cost slowly. */
+        const uint64_t smoothed = (budget * 7 + elapsed) / 8;
+        s_display_prepare_ns = elapsed > smoothed ? elapsed : smoothed;
+        if (!s_display_sample.version) {
+            presentation_display_cancel();
+            return 0;
+        }
+        return slot.target_ns;
+    }
+
+    if (now < slot.target_ns) return slot.target_ns;
+    if (!pt_optional_room() || !psx_presentation_gpu_output_ready(s_display_sample.version))
+        return now + 250000;
+
+    int ww = 0, wh = 0;
+    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    if (ww <= 0 || wh <= 0 || ww != s_display_sample.drawable_w ||
+        wh != s_display_sample.drawable_h || s_pgpu_scale != s_out_scale) {
+        presentation_display_cancel();
+        return 0;
+    }
+    int lx, ly, lw, lh;
+    if (s_display_sample.force_4_3)
+        letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
+    else
+        letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
+    const int *crop = s_display_sample.crop;
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, ww, wh);
+    if (lx || ly || lw != ww || lh != wh) {
+        glClearColor(0.f, 0.f, 0.f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    present_bezel(ww, wh, lx, ly, lw, lh);
+    present_target_quad(s_pgpu_color, VRAM_W, VRAM_H, crop[0], crop[1], crop[2],
+                        crop[3], s_display_sample.linear, lx, ly, lw, lh, 1, 1,
+                        s_pgpu_scale);
+    if (rt_now_ns() >= slot.expires_ns || rt_has_pending_records() ||
+        timing.epoch != atomic_load(&s_display_rate_epoch)) {
+        presentation_display_cancel();
+        return 0;
+    }
+    gl_present_swap();
+    atomic_fetch_add(&s_display_rate_submitted, 1);
+
+    s_display_sample.version = 0;
+    if (psx_presentation_extra_slot(timing.midpoint_ns, timing.native_ns,
+            timing.interval_ns, ++s_display_sample.index, &s_display_sample.slot))
+        return rt_now_ns();
+    presentation_display_cancel();
+    return 0;
+}
 static int presentation_gpu_source(int x,int y,int w,int h,int repeated,int crop[4],
     GLuint *fbo,GLuint *texture,int *scale) {
     if(!s_pgpu_provider || !pgpu_available() || psx_openxr_session_active() ||
@@ -435,6 +554,7 @@ int psx_presentation_gpu_read_rgba(uint8_t *out,size_t capacity,int x,int y,int 
     pgpu_state_restore(&saved);return 1;
 }
 static void presentation_gpu_shutdown(void) {
+    presentation_display_cancel();
     if(s_pgpu_history_preserve)s_pgpu_history_preserve();
     if(s_ctx) {
         if(s_pgpu_output_fence && p_glDeleteSync)p_glDeleteSync(s_pgpu_output_fence);
