@@ -26,7 +26,8 @@ inline constexpr const char kRewind[] = "Rewind";
 /* Game default, then every fixed scale. 4x is used when no choice is saved. */
 inline constexpr const char kInternalResolutionChoices[] =
     "default,1x,2x,3x,4x,5x,6x,7x,8x,9x,10x,11x,12x,13x,14x,15x,16x,"
-    "17x,18x,19x,20x,21x,22x,23x,24x,25x,26x,27x,28x,29x,30x,31x,32x";
+    "17x,18x,19x,20x,21x,22x,23x,24x,25x,26x,27x,28x,29x,30x,31x,32x,"
+    "native,720p,1080p,1440p,4k,5k,8k,display,auto";
 
 /* Runtime-only player overrides. Build addresses, timing constants, feature
  * declarations and operational compiler/cache settings are not preferences. */

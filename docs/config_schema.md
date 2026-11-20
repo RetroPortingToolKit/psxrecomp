@@ -806,10 +806,12 @@ Rewind, below).
 
 A `settings.toml` may still carry `supersampling`, `[audio] frequency` or the
 `quality_*` keys from older builds. They are ignored, never an error, and the
-next save drops them. A `mods.toml` that still selects a former setting mod
+next save drops them. A `mods/state.toml` that still selects a former setting mod
 package (`psx.enhancement.internal-resolution`, `crt-filter`,
 `image-filtering`, `enhanced-audio`, `post-processing`, `pgxp`,
-`psx.feature.rewind`) is ignored with one log line per package.
+`psx.feature.rewind`) has its effective choices preserved once into absent
+Settings keys. Existing Settings choices win; the retired packages stay
+inactive and the original mod state is untouched. See docs/PLAYER_SETTINGS.md.
 
 **Audio sample rate.** The host audio device opens at the runtime's built-in
 rate (44.1 kHz, the SPU's own). It is not a player setting: the launcher has no

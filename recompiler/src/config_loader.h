@@ -1592,6 +1592,9 @@ struct UserSettings {
     // Host master volume, independent of the emulated audio hardware.
     bool has_volume = false; int volume = 100;
     std::map<std::string,std::string> extra_player_settings;
+    // The retired built-in package choices have been consumed once. Keep this
+    // on ordinary launcher writes so dormant mod state cannot reapply them.
+    bool legacy_builtin_settings_migrated = false;
     // Set when the file existed but failed to parse as TOML: every field below
     // is defaults and the caller must warn loudly — silently dropping a user's
     // hand-edited settings looks like the settings "don't work", and a later

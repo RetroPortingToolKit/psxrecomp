@@ -3247,6 +3247,9 @@ UserSettings load_user_settings(const fs::path& path) {
         const auto n = toml::find<int64_t>(doc, "settings_format");
         if (n > 0 && n < 1000) s.settings_format = (int)n;
     });
+    if (doc.contains("legacy_builtin_settings_migrated")) try_get([&]{
+        s.legacy_builtin_settings_migrated=toml::find<bool>(doc,"legacy_builtin_settings_migrated");
+    });
 
     if (doc.contains("video")) {
         const toml::value& v = toml::find(doc, "video");
@@ -3675,6 +3678,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     // read as the player's own lines in a file of this format, and as an old
     // launcher's echo in a file without it.
     f << "settings_format = " << UserSettings::kFormat << "\n\n";
+    if (s.legacy_builtin_settings_migrated)
+        f << "legacy_builtin_settings_migrated = true\n\n";
 
     auto has_extra = [&](const char* section) {
         for (const auto& spec:kExtraPlayerSettings)

@@ -33,8 +33,10 @@ static int g_video_pgxp_cpu_mode;
  * (host_enhancements.c), observed instead of linked. */
 static PsxHostLook g_title_look={0,0,50,1,0,0,0,1};
 static std::map<std::string,std::string> g_host_enh_player;
+#ifndef PSX_PLAYER_SETTINGS_REAL_HOST
 extern "C" void psx_host_enh_player_clear(void) { g_host_enh_player.clear(); }
 extern "C" int psx_host_enh_player_set(const char* id,const char* value) { g_host_enh_player[id]=value; return 1; }
+#endif
 static bool g_jogcon_ffb_invert;
 static int g_title_select_shortcuts=1,g_player_title_select_allowed=1;
 static double g_fov_scale=1,g_mouse_sensitivity=1;
