@@ -1784,7 +1784,8 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
      * stripped from a release, or a builtin the title excludes). resolve()
      * never visits it and save_state() keeps it; say so once. The former
      * built-in setting mods are player settings now (settings.toml); their
-     * old selections are ignored, never migrated. */
+     * saved choices were preserved into absent Settings keys before startup
+     * applied player preferences; these retired packages stay inactive. */
     static const char* const kFormerSettingMods[] = {
         "psx.enhancement.internal-resolution", "psx.enhancement.crt-filter",
         "psx.enhancement.image-filtering",     "psx.enhancement.enhanced-audio",
@@ -1797,8 +1798,8 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
             if (dormant == id) former_setting = true;
         if (former_setting)
             std::fprintf(stdout,
-                         "psxrecomp: mod selection ignored: %s is a player "
-                         "setting now (Settings), not a mod\n",
+                         "psxrecomp: retired mod selection kept inactive: %s "
+                         "is now controlled by Settings\n",
                          dormant.c_str());
         else
             std::fprintf(stdout,

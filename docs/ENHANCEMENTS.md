@@ -1353,8 +1353,9 @@ Internal resolution (1x..32x, 4x when none is saved), the CRT filter and Image
 filtering sections and the Automatic resolution section on the Display page;
 vertex correction, perspective textures, CPU propagation and precise culling
 on the PGXP page; Enhanced audio and the Rewind section on the General page.
-The seven built-in packages and their plugins are gone. A saved selection of
-one of them is ignored with one log line. The title's `[video]` / `[audio]`
+The seven built-in packages and their plugins are gone. Startup preserves their
+saved effective choices once into absent Settings keys, without changing the
+original mod state; existing Settings choices win. The title's `[video]` / `[audio]`
 keys stay its baseline, and each session start still resolves the player's
 choices over it after mod activation (`host_enhancements.h`,
 `pgxp_session.h`). A title mod can still request PGXP (`pgxp_mod_request`) or

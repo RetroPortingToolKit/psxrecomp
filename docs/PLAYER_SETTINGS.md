@@ -46,11 +46,18 @@ whatever the choice. Precise culling needs vertex correction and never arms in
 netplay. Rewind needs a build with rewind support; without it the row says so.
 Netplay and environment restrictions still take precedence.
 
-A `mods.toml` that still selects one of the former mod packages
+A `mods/state.toml` that still selects one of the former mod packages
 (`psx.enhancement.internal-resolution`, `crt-filter`, `image-filtering`,
 `enhanced-audio`, `post-processing`, `pgxp`, `psx.feature.rewind`) does not
-fail: the runtime ignores the selection and logs one line per package,
-`psx.feature.rewind is a player setting now (Settings), not a mod`.
+fail: startup preserves its effective choices once into missing Settings keys.
+Existing Settings keys always win. Disabled presentation/audio/PGXP packages
+keep the title baseline; Internal Resolution Off keeps native 1x with automatic
+resolution off and supersampling at 1x, while its saved Game default keeps the
+title baseline. Legacy height presets, Match display and Auto remain valid
+resolution choices. Rewind Off remains off. The saved migration marker survives
+ordinary Settings writes, and later launches do not reapply dormant choices.
+The mod state, resources and native memory cards are left untouched; the retired
+packages stay inactive even when old copies are installed.
 
 The paired UI offers Faithful, Best and derived Custom states. Faithful uses
 native 1x resolution, sharp presentation, nearest texture/FMV filtering, normal
@@ -68,7 +75,7 @@ claim of higher simulation speed, widescreen support or compatibility for every
 title. The exact map is `launcher_psx_settings.inc` in the paired UI.
 
 Focused checks are `player_settings_provider_test`,
-`player_settings_composition`, `pgxp_player_preferences_test` and, with the
+`legacy_player_settings_test`, `player_settings_composition`, `pgxp_player_preferences_test` and, with the
 paired UI, `player_settings_presets_test`. The last check uses real built-in
 manifests, persistence/reload and software-rendered ImGui draw data; it does not
 test a retail game's rendering or gameplay.

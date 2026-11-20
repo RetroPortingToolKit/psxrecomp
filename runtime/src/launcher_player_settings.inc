@@ -91,6 +91,7 @@ void player_settings_merge(PlayerPreferences& seed) {
     /* A Settings edit is saved immediately. The launcher's older snapshot must
      * not erase it when Play or Quit persists the remaining controls. */
     const auto current=PSXRecompV4::load_user_settings(s_player_settings_path);
+    seed.legacy_builtin_settings_migrated=current.legacy_builtin_settings_migrated;
     seed.has_adaptive_view=current.has_adaptive_view; seed.adaptive_view=current.adaptive_view;
     seed.has_parappa_timing_mode=current.has_parappa_timing_mode; seed.parappa_timing_mode=current.parappa_timing_mode;
     seed.has_parappa_timing_extra_early=current.has_parappa_timing_extra_early; seed.parappa_timing_extra_early=current.parappa_timing_extra_early;
@@ -179,7 +180,12 @@ int player_settings_choice(void* context,const char* package,const char* feature
     std::string value;
     while (std::getline(list,value,',')) if (index--==0) {
         *out={}; std::snprintf(out->value,sizeof out->value,"%s",value.c_str());
-        std::snprintf(out->label,sizeof out->label,"%s",value.c_str()); return 1;
+        const char* label=value.c_str();
+        if (!std::strcmp(option,"video.internal_resolution")) {
+            if (value=="default") label="Game default";
+            else for (const auto& preset:k_psx_ir_presets) if (value==preset.id) label=preset.label;
+        }
+        std::snprintf(out->label,sizeof out->label,"%s",label); return 1;
     }
     return 0;
 }

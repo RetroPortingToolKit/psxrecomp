@@ -18727,6 +18727,7 @@ static void host_pause_service(void) {
 }
 
 static int g_player_title_select_allowed=1;
+#include "legacy_player_settings.h"
 #include "player_startup_settings.inc"
 
 /* Live display and audio rows of the in-game menu (psx_runtime_menu.h). The
@@ -19927,6 +19928,10 @@ int main(int argc, char** argv) {
         g_lnch_settings_path = settings_path;
         g_overlay_settings_path = settings_path;
 #endif
+        std::string preservation_error;
+        if (!PSXRecompV4::preserve_legacy_player_settings(settings_path,&preservation_error))
+            std::fprintf(stderr,"psxrecomp: legacy player settings were not preserved: %s\n",
+                         preservation_error.c_str());
         PSXRecompV4::UserSettings us =
             PSXRecompV4::load_user_settings(settings_path);
         if (us.has_volume) host_volume_set(us.volume);

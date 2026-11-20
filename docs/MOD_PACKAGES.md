@@ -1167,13 +1167,14 @@ immediates".
 Internal resolution, the CRT filter, image filtering, enhanced audio,
 post-processing, PGXP and rewind are player settings, not mods
 (docs/PLAYER_SETTINGS.md, docs/config_schema.md "The game's look"). The
-framework ships no package for them. A `mods.toml` that still selects
+framework ships no package for them. A `mods/state.toml` that still selects
 `psx.enhancement.internal-resolution`, `psx.enhancement.crt-filter`,
 `psx.enhancement.image-filtering`, `psx.enhancement.enhanced-audio`,
 `psx.enhancement.post-processing`, `psx.enhancement.pgxp` or
-`psx.feature.rewind` does not fail: the runtime ignores the selection and logs
-one line per package, for example
-`psxrecomp: mod selection ignored: psx.feature.rewind is a player setting now (Settings), not a mod`.
+`psx.feature.rewind` does not fail: startup preserves the old effective choices
+once into absent Settings keys, then keeps these retired packages inactive.
+Existing Settings choices win; see docs/PLAYER_SETTINGS.md for the exact Off
+and Game default behavior. The original mod state remains untouched.
 The built-in mods that remain are CD speed, fast loading, 8 MB RAM, HD
 textures, the bezel and the debug server.
 

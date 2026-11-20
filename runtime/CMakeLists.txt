@@ -85,6 +85,18 @@ if(BUILD_TESTING)
         target_compile_options(player_settings_provider_test PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG> $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
         add_test(NAME player_settings_provider_test COMMAND player_settings_provider_test)
+        add_executable(legacy_player_settings_test tests/test_legacy_player_settings.cpp
+            src/legacy_player_settings.cpp src/host_enhancements.c
+            src/mod_packages.cpp src/mod_media.cpp src/iso_reader.cpp src/cue_sheet.cpp
+            src/crc32.c src/psx_sha256.c
+            ../recompiler/src/config_loader.cpp ../recompiler/src/ps1_exe_parser.cpp)
+        target_include_directories(legacy_player_settings_test PRIVATE include ../recompiler/src
+            ../recompiler/include ../recompiler/lib/fmt/include ../recompiler/lib/toml11 "${RECOMP_UI_ROOT}/src")
+        target_compile_definitions(legacy_player_settings_test PRIVATE RECOMP_LAUNCHER FMT_HEADER_ONLY=1)
+        target_compile_options(legacy_player_settings_test PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG> $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+        target_link_libraries(legacy_player_settings_test PRIVATE chdr-static)
+        add_test(NAME legacy_player_settings_test COMMAND legacy_player_settings_test)
         if(EXISTS "${RECOMP_UI_ROOT}/tests/psx_settings_draw_test.cpp")
             # The runtime target included this inside its function scope.
             # Initialize UI source/asset variables in this fixture's scope too.
