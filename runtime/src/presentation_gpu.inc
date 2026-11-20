@@ -1,6 +1,15 @@
 /* Private presentation target and immutable GPU texture versions. This uses
  * ordinary PS1 material shaders, with independent programs/VAOs and owned
  * surfaces. No native render transaction, replay scope or temporal image cache. */
+#if defined(PSX_HAVE_VULKAN)
+#include "presentation_vk.h"
+#define PGPU_VULKAN_RETURN(expression) do { \
+    if (gr_backend() == GR_BACKEND_VULKAN) return (expression); \
+} while (0)
+#else
+#define PGPU_VULKAN_RETURN(expression) ((void)0)
+#endif
+
 #define PGPU_VERSIONS 16
 #define PGPU_HISTORY_VERSIONS 64
 typedef struct PgpuVersion {
@@ -125,11 +134,16 @@ static PgpuVersion *pgpu_version(uint64_t id) {
 }
 void psx_presentation_gpu_set_provider(PsxPresentationProvider provider,void *user) {
     GL_RT_SYNC("presentation_provider");s_pgpu_provider=provider;s_pgpu_provider_user=user;
+#if defined(PSX_HAVE_VULKAN)
+    vk_geometry_set_provider(provider,user);
+#endif
 }
 uint64_t psx_presentation_gpu_output_version(void) {
+    PGPU_VULKAN_RETURN(vk_geometry_output_version());
     GL_RT_SYNC("presentation_output_version");return s_pgpu_output?s_pgpu_output_version:0;
 }
 int psx_presentation_gpu_output_ready(uint64_t version) {
+    PGPU_VULKAN_RETURN(vk_geometry_output_ready(version));
     GL_RT_SYNC("presentation_output_ready");
     if(!s_pgpu_output || version!=s_pgpu_output_version || !s_pgpu_output_fence)return 0;
     if(!pgpu_client_wait)pgpu_client_wait=(PgpuClientWait)SDL_GL_GetProcAddress("glClientWaitSync");
@@ -154,6 +168,12 @@ static void presentation_display_cancel(void) {
 }
 
 void psx_presentation_gpu_set_display_rate(PsxPresentationPrepareFn prepare) {
+#if defined(PSX_HAVE_VULKAN)
+    if (gr_backend() == GR_BACKEND_VULKAN) {
+        vk_geometry_invalidate();
+        return;
+    }
+#endif
     GL_RT_SYNC("presentation_display_rate");
     presentation_display_cancel();
     s_display_prepare = prepare;
@@ -346,6 +366,7 @@ static uint64_t pgpu_snapshot_pool(PgpuVersion *pool,unsigned capacity) {
     pgpu_state_restore(&saved);return v->id;
 }
 uint64_t psx_presentation_gpu_snapshot(void) {
+    PGPU_VULKAN_RETURN(vk_geometry_snapshot());
     GL_RT_SYNC("presentation_snapshot");
     return pgpu_snapshot_pool(s_pgpu_versions,PGPU_VERSIONS);
 }
@@ -376,6 +397,15 @@ static int pgpu_snapshot_async(uint64_t previous,int history,
                       :psx_presentation_gpu_snapshot());return 1;
 }
 int psx_presentation_gpu_snapshot_async(PsxPresentationSnapshotReady ready,void *user) {
+#if defined(PSX_HAVE_VULKAN)
+    if (gr_backend() == GR_BACKEND_VULKAN) {
+        if (!ready) return 0;
+        const uint64_t version = vk_geometry_snapshot();
+        if (!version) return 0;
+        ready(user,version);
+        return 1;
+    }
+#endif
     return pgpu_snapshot_async(0,0,ready,user);
 }
 int psx_presentation_gpu_history_replace_async(uint64_t previous,
@@ -397,11 +427,15 @@ int psx_presentation_gpu_snapshot_read_vram(uint64_t id,uint16_t *out) {
     pgpu_state_restore(&saved);return 1;
 }
 int psx_presentation_gpu_retain(uint64_t id) {
+    PGPU_VULKAN_RETURN(vk_geometry_retain(id));
     GL_RT_SYNC("presentation_retain");
     PgpuVersion *v=pgpu_version(id);if(!v || v->references==UINT32_MAX)return 0;
     ++v->references;return 1;
 }
 void psx_presentation_gpu_release(uint64_t id) {
+#if defined(PSX_HAVE_VULKAN)
+    if (gr_backend() == GR_BACKEND_VULKAN) { vk_geometry_release(id); return; }
+#endif
     GL_RT_SYNC("presentation_release");PgpuVersion *v=pgpu_version(id);if(v)--v->references;
 }
 static int pgpu_validate(const PsxPresentationTriangle *tri,uint32_t count,
@@ -528,9 +562,11 @@ static int pgpu_render(const PsxPresentationTriangle *tri,uint32_t count,
 }
 int psx_presentation_gpu_render(const PsxPresentationTriangle *tri,uint32_t count,
     const PsxPresentationMaterial *mat,uint32_t materials) {
+    PGPU_VULKAN_RETURN(vk_geometry_render(tri,count,mat,materials));
     return pgpu_render(tri,count,mat,materials,0);
 }
 int psx_presentation_gpu_read_rgba(uint8_t *out,size_t capacity,int x,int y,int w,int h) {
+    PGPU_VULKAN_RETURN(vk_geometry_read_rgba(out,capacity,x,y,w,h));
     GL_RT_SYNC("presentation_read");
     if(!pgpu_available() || !s_pgpu_output || !out || x<0 || y<0 || w<=0 || h<=0 ||
         x>VRAM_W-w || y>VRAM_H-h || (size_t)w*h>capacity/4)return 0;

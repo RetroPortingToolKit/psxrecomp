@@ -20,9 +20,9 @@ typedef struct PsxPresentationMaterial {
     uint8_t filter; /* 0 nearest, 1 bilinear, 2 stable, 3 xBR */
 } PsxPresentationMaterial;
 
-/* Development renderer integration. All entry points serialize with the GL
- * owner, including ordered async snapshots below. They return
- * failure with a non-GL backend. The game continues on its ordinary presenter.
+/* Source-geometry integration for OpenGL and Vulkan. Calls serialize with
+ * the renderer owner. Vulkan records the copy inline in native command order.
+ * Unsupported backends return failure and keep ordinary presentation.
  * Snapshot copies stay on the GPU. No guest VRAM or GTE/CPU state is written.
  * A successful snapshot owns one reference; release every acquired reference.
  * Handles cannot revive after eviction or context recreation. */
@@ -30,7 +30,7 @@ uint64_t psx_presentation_gpu_snapshot(void);
 /* Transfer user to callback on success. The ordered render-thread record
  * captures resources before subsequent native drawing, then calls ready on
  * the GL owner. Bounded to four queued captures. Zero means no transfer.
- * With no render thread, executes immediately on the current GL owner. */
+ * With no render thread, executes on the current renderer owner. */
 typedef void (*PsxPresentationSnapshotReady)(void *user,uint64_t version);
 int psx_presentation_gpu_snapshot_async(PsxPresentationSnapshotReady ready,void *user);
 /* Full-VRAM forensic history owns a separate 64-version pool; the material
@@ -71,7 +71,7 @@ void psx_presentation_gpu_set_provider(PsxPresentationProvider provider,void *us
 /* Optional companion to the ordinary midpoint provider. Runs on the GL owner
  * in available time before a native deadline, using the same immutable pair.
  * Return the private output version rendered for alpha, or zero on refusal.
- * Passing NULL disables display-rate extras. */
+ * Display-rate extras currently require OpenGL. Passing NULL disables them. */
 typedef uint64_t (*PsxPresentationPrepareFn)(void *user, double alpha);
 void psx_presentation_gpu_set_display_rate(PsxPresentationPrepareFn prepare);
 /* Debug/export only: RGBA bytes, row zero is native VRAM row y. This explicit

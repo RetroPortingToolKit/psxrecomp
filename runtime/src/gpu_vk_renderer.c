@@ -52,6 +52,7 @@ const GpuRenderBackend *vk_backend_get(void) { return 0; }
 
 #else  /* PSX_HAVE_VULKAN */
 
+#include "presentation_vk.h"
 #include "psx_sdl.h"
 #if defined(PSX_SDL3)
 #include <SDL3/SDL_vulkan.h>
@@ -70,6 +71,7 @@ static int s_aspect_num = 4, s_aspect_den = 3;
 
 void vk_renderer_set_display_aspect(int num, int den) {
     if (num <= 0 || den <= 0) { num = 4; den = 3; }
+    if (num != s_aspect_num || den != s_aspect_den) vk_geometry_invalidate();
     s_aspect_num = num; s_aspect_den = den;
 }
 
@@ -136,6 +138,7 @@ static PFN_vkGetDeviceProcAddr   p_vkGetDeviceProcAddr;
     X(vkCreateFence) \
     X(vkDestroyFence) \
     X(vkWaitForFences) \
+    X(vkGetFenceStatus) \
     X(vkResetFences) \
     X(vkCmdPipelineBarrier) \
     X(vkCmdClearColorImage) \
@@ -358,10 +361,11 @@ static int s_ds_blit_idx;
 typedef struct {
     uint32_t present_idx;
     uint64_t present_qpc;
+    int aspect_num, aspect_den;
     uint32_t wait_us, acquire_us, present_us;
     uint32_t allocs, alloc_kb, oneshots, submits, syncs, pack_flushes,
              blits, upload_blocks, copy_rects, geo_flushes, tex_flushes,
-             wide_passes, wide_clears;
+             wide_passes, wide_clears, generated;
 } VkPerf;
 #define VK_PERF_RING 256
 static VkPerf s_perf_ring[VK_PERF_RING];
@@ -710,16 +714,20 @@ static void end_oneshot(VkCommandBuffer cb) {
     s_work_pending = 1;
 }
 
-static void flush_work(void) {
-    if (!s_work_cb) return;
-    p_vkEndCommandBuffer(s_work_cb);
+static int submit_work(VkFence fence) {
+    if (!s_work_cb) return 0;
+    const VkResult ended = p_vkEndCommandBuffer(s_work_cb);
     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1;
     si.pCommandBuffers = &s_work_cb;
-    p_vkQueueSubmit(s_queue, 1, &si, VK_NULL_HANDLE);
+    const VkResult submitted = ended == VK_SUCCESS
+        ? p_vkQueueSubmit(s_queue, 1, &si, fence) : ended;
     s_perf_cur.submits++;
     s_work_cb = VK_NULL_HANDLE;
+    return submitted == VK_SUCCESS;
 }
+
+static void flush_work(void) { (void)submit_work(VK_NULL_HANDLE); }
 
 /* Defer a staging buffer's destruction until the queue is next idle (its
  * copy may still be in flight). */
@@ -1150,9 +1158,8 @@ static int create_buffer_mapped(VkDeviceSize size, VkBuffer *buf, VkDeviceMemory
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (mi.memoryTypeIndex == UINT32_MAX || p_vkAllocateMemory(s_dev, &mi, NULL, mem) != VK_SUCCESS)
         return vk_die("vertex buffer memory failed");
-    p_vkBindBufferMemory(s_dev, *buf, *mem, 0);
-    p_vkMapMemory(s_dev, *mem, 0, size, 0, map);
-    return 1;
+    return p_vkBindBufferMemory(s_dev, *buf, *mem, 0) == VK_SUCCESS &&
+           p_vkMapMemory(s_dev, *mem, 0, size, 0, map) == VK_SUCCESS;
 }
 
 /* Build all render targets, samplers, descriptors, pipeline layouts and the
@@ -1543,9 +1550,14 @@ int vk_renderer_init_context(SDL_Window *win) {
 
 static void cpres_cache_free(void);   /* fwd: CPU-present resource cache */
 static void osd_staging_free(void);
+static void vk_geometry_shutdown(void);
+static int vk_geometry_source(int x, int y, int w, int h, int force_4_3,
+                              int crop[4], VkImage *image, VkImageView *view,
+                              VkImageLayout **layout);
 void vk_renderer_shutdown(void) {
     if (!s_dev) return;
     p_vkDeviceWaitIdle(s_dev);
+    vk_geometry_shutdown();
     destroy_driver_pipeline_cache(s_ctx_ok);
     pp_destroy_all();
     vk_gpu_sync_internal();   /* reclaim deferred staging before tearing down */
@@ -2028,6 +2040,12 @@ static int pp_draw(VkCommandBuffer cb, uint32_t idx, uint32_t fr, VkImageView sr
 int vk_renderer_present_vram(int disp_x, int disp_y, int w, int h,
                              int linear, int force_4_3) {
     if (!s_ctx_ok) return 0;
+    int crop[4] = {disp_x, disp_y, w, h};
+    VkImage image = s_vram_img;
+    VkImageView view = s_vram_view;
+    VkImageLayout *layout = &s_vram_layout;
+    const int generated = vk_geometry_source(disp_x, disp_y, w, h, force_4_3,
+                                              crop, &image, &view, &layout);
     flush_cpu_upload();   /* displayed VRAM may include pending CPU writes */
     flush_tex_batch(); flush_geometry(); gpu_sync();   /* drain all draws; VRAM in TRANSFER_SRC */
     VkImage sc; VkCommandBuffer cb; uint32_t idx, fr;
@@ -2035,17 +2053,20 @@ int vk_renderer_present_vram(int disp_x, int disp_y, int w, int h,
 
     int S = s_scale;
     VkOffset3D dst[2];
+    s_perf_cur.aspect_num = force_4_3 ? 4 : s_aspect_num;
+    s_perf_cur.aspect_den = force_4_3 ? 3 : s_aspect_den;
     letterbox((int)s_sc_extent.width, (int)s_sc_extent.height,
-              force_4_3 ? 4 : s_aspect_num, force_4_3 ? 3 : s_aspect_den, dst);
+              s_perf_cur.aspect_num, s_perf_cur.aspect_den, dst);
 
     /* Opaque shader present first (see pp_draw); blit only as the fallback. */
-    vram_to(cb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    int drawn = pp_draw(cb, idx, fr, s_vram_view, linear, dst,
-                        disp_x / (float)VRAM_W, disp_y / (float)VRAM_H,
-                        (disp_x + w) / (float)VRAM_W, (disp_y + h) / (float)VRAM_H);
-    vram_to(cb, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);   /* re-park */
+    img_to(cb, image, layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    int drawn = pp_draw(cb, idx, fr, view, linear, dst,
+                        crop[0] / (float)VRAM_W, crop[1] / (float)VRAM_H,
+                        (crop[0] + w) / (float)VRAM_W, (crop[1] + h) / (float)VRAM_H);
+    if (!generated) vram_to(cb, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     if (drawn) {
         finish_present(cb, sc, idx, fr);
+        s_perf_cur.generated = (uint32_t)generated;
         perf_snapshot_present();
         return 1;
     }
@@ -2059,25 +2080,27 @@ int vk_renderer_present_vram(int disp_x, int disp_y, int w, int h,
     VkImageBlit blit = {0};
     blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.srcSubresource.layerCount = 1;
-    blit.srcOffsets[0].x = disp_x * S;        blit.srcOffsets[0].y = disp_y * S;
-    blit.srcOffsets[1].x = (disp_x + w) * S;  blit.srcOffsets[1].y = (disp_y + h) * S;
+    blit.srcOffsets[0].x = crop[0] * S;        blit.srcOffsets[0].y = crop[1] * S;
+    blit.srcOffsets[1].x = (crop[0] + w) * S;  blit.srcOffsets[1].y = (crop[1] + h) * S;
     blit.srcOffsets[1].z = 1;
     blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.dstSubresource.layerCount = 1;
     blit.dstOffsets[0] = dst[0]; blit.dstOffsets[1] = dst[1];
 
-    /* VRAM image is parked in TRANSFER_SRC_OPTIMAL. */
-    p_vkCmdBlitImage(cb, s_vram_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    img_to(cb, image, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    p_vkCmdBlitImage(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                      sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      1, &blit, linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
 
     finish_present(cb, sc, idx, fr);
+    s_perf_cur.generated = (uint32_t)generated;
     perf_snapshot_present();
     return 1;
 }
 
 void vk_renderer_present_blank(void) {
     if (!s_ctx_ok) return;
+    vk_geometry_invalidate();
     flush_tex_batch(); flush_geometry(); gpu_sync();
     VkImage sc; VkCommandBuffer cb; uint32_t idx, fr;
     if (!acquire_present(&sc, &cb, &idx, &fr)) return;
@@ -2122,6 +2145,7 @@ static void cpres_cache_free(void) {
 void vk_renderer_present_cpu(const uint32_t *pixels, int src_w, int src_h,
                              int linear, int force_4_3) {
     (void)force_4_3;
+    vk_geometry_invalidate();
     if (!s_ctx_ok || !pixels || src_w <= 0 || src_h <= 0) { vk_renderer_present_blank(); return; }
     flush_tex_batch(); flush_geometry(); gpu_sync();
 
@@ -2269,13 +2293,15 @@ int vk_perf_json(char *out, int cap, int count) {
             "%s{\"f\":%u,\"qpc\":%llu,\"wait_us\":%u,\"acquire_us\":%u,\"present_us\":%u,"
             "\"alloc\":%u,\"alloc_kb\":%u,\"oneshot\":%u,\"submit\":%u,"
             "\"sync\":%u,\"pack\":%u,\"blit\":%u,\"upload\":%u,\"copy\":%u,"
-            "\"geo\":%u,\"tex\":%u,\"wide\":%u,\"wclr\":%u}",
+            "\"geo\":%u,\"tex\":%u,\"wide\":%u,\"wclr\":%u,\"generated\":%u,"
+            "\"aspect_num\":%d,\"aspect_den\":%d}",
             i ? "," : "",
             p->present_idx, (unsigned long long)p->present_qpc,
             p->wait_us, p->acquire_us, p->present_us,
             p->allocs, p->alloc_kb, p->oneshots, p->submits,
             p->syncs, p->pack_flushes, p->blits, p->upload_blocks, p->copy_rects,
-            p->geo_flushes, p->tex_flushes, p->wide_passes, p->wide_clears);
+            p->geo_flushes, p->tex_flushes, p->wide_passes, p->wide_clears, p->generated,
+            p->aspect_num, p->aspect_den);
         if (o >= cap - 256) break;
     }
     o += snprintf(out + o, cap - o, "]");
@@ -2836,6 +2862,7 @@ static void vkb_vram_transfer_in(int x, int y, int w, int h, const uint16_t *dat
 }
 
 void vk_renderer_restage_vram_after_savestate(void) {
+    vk_geometry_invalidate();
     if (!s_ctx_ok || !s_vram) return;
     s_up_nrects = 0;
     rect_clear(&s_d24_skip_fb);
@@ -3698,5 +3725,7 @@ static const GpuRenderBackend VK_BACKEND = {
  * the context exists; vk_renderer_init_context creates the device, and on
  * failure main.cpp switches the facade back to software. */
 const GpuRenderBackend *vk_backend_get(void) { return &VK_BACKEND; }
+
+#include "gpu_vk_geometry.inc"
 
 #endif /* PSX_HAVE_VULKAN */

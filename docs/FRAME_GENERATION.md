@@ -28,6 +28,10 @@ subdivision sources. Ordered asynchronous GPU snapshots prepare the midpoint
 between adjacent complete scenes. The ordinary repeated-buffer presentation can
 select that output after a nonblocking completion check. A missing or late pair
 keeps the native presentation deadline. This supplies the fixed 60 FPS pilot.
+Vulkan can also present the fixed midpoint using private color and depth-stencil
+attachments and ordered copies of raw VRAM for its retained textures. The
+ordinary Vulkan present selects an intermediate only when its fence is ready
+and the display region repeats.
 
 The opt-in display-rate pilot (`PSX_GEOMETRY_DISPLAY_RATE=1`) requires OpenGL
 with the render and present threads active and a title with a scene provider.
