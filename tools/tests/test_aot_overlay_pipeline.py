@@ -21,6 +21,25 @@ from test_bpe_container import MAGIC as BPE_MAGIC, container as bpe_container_by
 
 
 class ReleaseCompilerCacheTests(unittest.TestCase):
+    def test_release_rejects_cache_namespace_the_runtime_cannot_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / 'game-build'
+            tool = root / 'compiler-build'
+            exe = tool / 'psxrecomp-game'
+            header = runtime / 'psxrecomp_codegen_include/overlay_codegen_hash.h'
+            tool_header = tool / 'runtime/include/overlay_codegen_hash.h'
+            for path, tag in ((header, '12345678'), (tool_header, '87654321')):
+                path.parent.mkdir(parents=True)
+                path.write_text(f'#define PSX_OVERLAY_CODEGEN_HASH 0x{tag}u\n')
+            with mock.patch.object(pipeline.compiler, 'verify_recompiler_matches_tag') as verify:
+                with self.assertRaisesRegex(pipeline.ProfileError, 'Runtime reads codegen 12345678'):
+                    pipeline.require_release_codegen(runtime, exe)
+                verify.assert_not_called()
+                tool_header.write_text(header.read_text())
+                pipeline.require_release_codegen(runtime, exe)
+                verify.assert_called_once_with(str(exe), 0x12345678)
+
     def test_completed_recipes_survive_new_workspace_and_invalid_bytes_rebuild(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -893,6 +893,18 @@ def release_project_root(game_toml):
     return FRAMEWORK
 
 
+def require_release_codegen(runtime_build, recompiler):
+    """The whole-cache audit must target the namespace the built game reads."""
+    include = runtime_build / 'psxrecomp_codegen_include'
+    runtime_hash = compiler.codegen_hash(str(include))
+    require(runtime_hash, f'Built runtime codegen header is missing under {include}')
+    tool_hash = compiler.codegen_hash(str(FRAMEWORK / 'runtime/include'), str(recompiler))
+    require(tool_hash == runtime_hash,
+            f'Runtime reads codegen {runtime_hash:08x}, but the recompiler would publish '
+            f'{tool_hash:08x}. Build a matching psxrecomp-game before compiling overlays.')
+    compiler.verify_recompiler_matches_tag(str(recompiler), runtime_hash)
+
+
 def release_inputs(game_toml, recompiler, project_root, gcc, cps, flavor):
     import tomllib
     tools = FRAMEWORK / 'tools'
@@ -1220,6 +1232,8 @@ def run():
                 'Static AOT generation currently requires a flavor-0 runtime')
     import tomllib
     config, recompiler = args.game_toml.resolve(), args.recompiler.resolve()
+    if args.action == 'release' and args.runtime_build_dir:
+        require_release_codegen(args.runtime_build_dir.resolve(), recompiler)
     profile_path = args.profile.resolve()
     game_config = tomllib.loads(config.read_text(encoding='utf-8-sig'))
     profile = load_profile(profile_path, game_config)
