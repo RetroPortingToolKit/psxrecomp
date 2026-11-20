@@ -2499,6 +2499,10 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_executable(cdrom_read_motor_test tests/test_cdrom_read_motor.c)
     target_include_directories(cdrom_read_motor_test PRIVATE include src)
     add_test(NAME cdrom_read_motor_test COMMAND cdrom_read_motor_test)
+    # A response that comes due inside an exception handler waits for its return.
+    add_executable(cdrom_exception_hold_test tests/test_cdrom_exception_hold.c)
+    target_include_directories(cdrom_exception_hold_test PRIVATE include src)
+    add_test(NAME cdrom_exception_hold_test COMMAND cdrom_exception_hold_test)
 
     add_executable(cdrom_getlocl_test tests/test_cdrom_getlocl.c)
     target_include_directories(cdrom_getlocl_test PRIVATE include src)
