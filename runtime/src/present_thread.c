@@ -177,6 +177,19 @@ void pt_stop(void) {
 int pt_running(void) { return P.running; }
 int pt_current(void) { return P.running ? P.current : -1; }
 
+int pt_optional_room(void) {
+    if (!P.running) return 0;
+    mtx_lock(&P.mtx);
+    int free_count = 0, presenting = 0;
+    for (int i = 0; i < P.cfg.slots; ++i) {
+        free_count += P.state[i] == S_FREE;
+        presenting |= P.state[i] == S_PRESENTING;
+    }
+    const int room = free_count >= 2 && !presenting && P.q_len == 0;
+    mtx_unlock(&P.mtx);
+    return room;
+}
+
 int pt_submit(void *ready, void **next_done, uint64_t *wait_ns) {
     if (next_done) *next_done = NULL;
     if (wait_ns) *wait_ns = 0;

@@ -2639,6 +2639,7 @@ function(psxrecomp_add_runtime_target target)
             target_include_directories(${target} PRIVATE "${_vk_inc}")
         endif()
         target_compile_definitions(${target} PRIVATE PSX_HAVE_VULKAN=1)
+        target_sources(${target} PRIVATE ${PSXRECOMP_ROOT}/runtime/src/gpu_vk_pipeline_file.cpp)
         # Compile every shader under runtime/shaders/ to SPIR-V (glslc) and embed
         # them into one generated header (vk_shaders_spv.h) of uint32_t arrays, so
         # gpu_vk_renderer.c creates shader modules with no runtime file deps.

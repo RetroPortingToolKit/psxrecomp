@@ -10,6 +10,20 @@ int psx_presentation_phase(uint64_t earlier,uint64_t newer,uint64_t ready,
     return 1;
 }
 
+int psx_presentation_extra_slot(uint64_t midpoint, uint64_t native,
+    uint64_t display_interval, unsigned index, PsxPresentationSlot *slot) {
+    if (!slot || native <= midpoint || !display_interval || !index) return 0;
+    const uint64_t span = native - midpoint;
+    if (index > span / display_interval) return 0;
+    const uint64_t offset = display_interval * index;
+    const uint64_t reserve = display_interval / 2;
+    if (span - offset <= reserve) return 0;
+    slot->target_ns = midpoint + offset;
+    slot->expires_ns = slot->target_ns + reserve / 2;
+    slot->alpha = 0.5 + 0.5 * ((double)offset / (double)span);
+    return 1;
+}
+
 typedef struct Resource { size_t offset, size; } Resource;
 typedef struct Object { PsxPresentationObject data; uint32_t first; } Object;
 struct PsxPresentationScene {

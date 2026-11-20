@@ -3958,6 +3958,8 @@ static void refresh_host_display_cadence(int force_log, int force_probe) {
 
     g_host_refresh_display_idx = disp_idx;
     g_host_refresh_hz = host_hz;
+    if (display_changed || refresh_changed)
+        gl_renderer_invalidate_display_rate();
     g_frame_period_ms = g_guest_frame_period_ms;
     if (host_refresh_matches_guest_cadence()) {
         g_frame_period_ms = 1000.0 / host_hz;
@@ -4427,6 +4429,10 @@ static void shutdown_runtime(void) {
     if (s_drc_ready) { rab_free(&s_drc); s_drc_ready = false; }
     close_controller();
     debug_server_shutdown();
+    if (g_vk_active) {
+        vk_renderer_shutdown();
+        g_vk_active = false;
+    }
 }
 
 /* Tear down the game window/GL/audio after a lobby soft-return. Leaves SDL
@@ -10691,6 +10697,27 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                     return ep;
                 }
             } else {
+                static const bool display_rate = [] {
+                    const char *value = std::getenv("PSX_GEOMETRY_DISPLAY_RATE");
+                    return value && std::strcmp(value, "1") == 0;
+                }();
+                if (display_rate && g_render_thread && g_present_thread && !manual_turbo_active &&
+                    !turbo_load_paced && !fmv_frame && !psx_netplay_active() &&
+                    !psx_selfcheck_resim_active() && present_should_wall_pace() &&
+                    g_frame_period_ms > 0.0 && g_host_refresh_hz > 0.0 &&
+                    g_host_refresh_hz * g_frame_period_ms > 1000.0) {
+                    const uint64_t counter = SDL_GetPerformanceCounter();
+                    const uint64_t frequency = SDL_GetPerformanceFrequency();
+                    const uint64_t next = s_frame_pacer.next_deadline;
+                    const auto period_ns = (uint64_t)(g_frame_period_ms * 1e6);
+                    if (frequency && next > counter) {
+                        const auto remaining = (uint64_t)((double)(next - counter) * 1e9 / frequency);
+                        const uint64_t now = rt_now_ns();
+                        if (remaining <= period_ns && now >= period_ns)
+                            gl_renderer_set_display_rate_timing(now + remaining - period_ns,
+                                now + remaining, (uint64_t)(1e9 / g_host_refresh_hz));
+                    }
+                }
                 gl_renderer_present_vram((int)di.display_x, (int)di.display_y,
                                          (int)present_w, (int)h, g_video_aa ? 1 : 0,
                                          (fmv_frame || nw_pin) ? 1 : 0);
@@ -23547,7 +23574,6 @@ session_reboot:
 
     shutdown_runtime();
     if (g_gl_active) gl_renderer_shutdown();
-    if (g_vk_active) vk_renderer_shutdown();
     SDL_DestroyTexture(sdl_texture);   /* NULL-safe in GL mode */
     SDL_DestroyRenderer(sdl_renderer); /* NULL-safe in GL mode */
     SDL_DestroyWindow(sdl_window);
