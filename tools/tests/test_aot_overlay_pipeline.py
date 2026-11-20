@@ -12,11 +12,87 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import aot_compiler_cache as compiler_cache
 import aot_overlay_pipeline as pipeline
 import audit_aot_cache as auditor
 import indexed_lzss_pack as lzss_pack
 import prepared_files
 from test_bpe_container import MAGIC as BPE_MAGIC, container as bpe_container_bytes, encode_block
+
+
+class ReleaseCompilerCacheTests(unittest.TestCase):
+    def test_release_rejects_cache_namespace_the_runtime_cannot_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / 'game-build'
+            tool = root / 'compiler-build'
+            exe = tool / 'psxrecomp-game'
+            header = runtime / 'psxrecomp_codegen_include/overlay_codegen_hash.h'
+            tool_header = tool / 'runtime/include/overlay_codegen_hash.h'
+            for path, tag in ((header, '12345678'), (tool_header, '87654321')):
+                path.parent.mkdir(parents=True)
+                path.write_text(f'#define PSX_OVERLAY_CODEGEN_HASH 0x{tag}u\n')
+            with mock.patch.object(pipeline.compiler, 'verify_recompiler_matches_tag') as verify:
+                with self.assertRaisesRegex(pipeline.ProfileError, 'Runtime reads codegen 12345678'):
+                    pipeline.require_release_codegen(runtime, exe)
+                verify.assert_not_called()
+                tool_header.write_text(header.read_text())
+                pipeline.require_release_codegen(runtime, exe)
+                verify.assert_called_once_with(str(exe), 0x12345678)
+
+    def test_completed_recipes_survive_new_workspace_and_invalid_bytes_rebuild(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / 'game.toml'
+            inventory = dict(jobs=[dict(input='invented.json', name='image', recipe_sha256='first')])
+            relative = Path('TEST/gcc/platform/tag')
+            builds = []
+
+            def compile_fixture(command, **kwargs):
+                builds.append(command)
+                target = Path(command[command.index('--out-dir') + 1]) / relative
+                target.mkdir(parents=True)
+                (target / ('region' + pipeline.compiler.overlay_ext())).write_bytes(b'library')
+                (target / 'region.ranges').write_bytes(b'guarded ranges')
+                (target / 'region_patched.c').write_bytes(b'generated source')
+
+            with (
+                mock.patch.object(pipeline, 'release_inputs', return_value=('toolchain', 'context')),
+                mock.patch.object(pipeline.subprocess, 'run', side_effect=compile_fixture),
+            ):
+                for i in range(4):
+                    if i == 2:
+                        next((root / 'persistent').rglob('*.zip')).write_bytes(b'interrupted write')
+                    if i == 3:
+                        inventory['jobs'][0]['recipe_sha256'] = 'changed'
+                    result = pipeline.build(inventory, config, root / 'emitter', root / str(i),
+                                            'gcc', 1, reuse_dir=root / 'persistent')
+                    self.assertEqual((result / relative / 'region.ranges').read_bytes(), b'guarded ranges')
+                    self.assertFalse((result / relative / 'region_patched.c').exists())
+                    self.assertEqual(len(builds), (1, 1, 2, 3)[i])
+
+    def test_shared_guest_unit_keeps_references_and_has_no_dll_state(self):
+        preamble = 'int overlay_id(void) { return 13; }\n'
+        source = ('typedef struct CPUState CPUState;\n' + preamble +
+                  '/* Forward declarations */\n'
+                  'void func_80010400(CPUState* cpu);\n'
+                  'void func_80010004(CPUState* cpu);\n'
+                  'void func_80010004(CPUState* cpu)\n{\n    func_80010400(cpu);\n}\n'
+                  'void func_80010400(CPUState* cpu)\n{\n    (void)cpu;\n}\n'
+                  'PSX_OVERLAY_EXPORT uint64_t overlay_pair_id(void) {\n    return 1;\n}\n')
+        shim, units = compiler_cache.split_overlay(source, preamble)
+        self.assertEqual(len(units), 2)
+        self.assertIn(preamble, shim)
+        self.assertIn('void func_80010400(CPUState* cpu);', units[0])
+        self.assertNotIn(preamble, units[0])
+        changed = source.replace('    (void)cpu;', '    if (cpu) return;').replace('return 1;', 'return 2;')
+        next_shim, next_units = compiler_cache.split_overlay(changed, preamble)
+        self.assertEqual(units[0], next_units[0])
+        self.assertNotEqual(units[1], next_units[1])
+        self.assertNotEqual(shim, next_shim)
+        self.assertIsNone(compiler_cache.split_overlay(
+            source.replace('void func_80010004(CPUState* cpu)\n{',
+                           'static int state;\nvoid func_80010004(CPUState* cpu)\n{'), preamble))
 
 
 class PgxpReleaseNamespaceTests(unittest.TestCase):
@@ -75,7 +151,7 @@ class PgxpReleaseNamespaceTests(unittest.TestCase):
                     game_id='TEST', disc_hashes=dict(sha256='invented'))))
                 inventory = dict(game_id='TEST', profile_sha256='profile',
                     original_disc_sha256='disc', required_images=[],
-                    jobs=[dict(input='invented.json', name='image')])
+                    jobs=[dict(input='invented.json', name='image', recipe_sha256='recipe')])
                 commands = []
                 def compile_fixture(command, **kwargs):
                     commands.append(command)
@@ -91,6 +167,7 @@ class PgxpReleaseNamespaceTests(unittest.TestCase):
                      mock.patch.object(pipeline, 'extract', return_value=inventory), \
                      mock.patch.object(pipeline, 'audit', return_value={'published_pairs': 0}), \
                      mock.patch.object(pipeline, 'stage'), \
+                     mock.patch.object(pipeline, 'release_inputs', return_value=('toolchain', 'context')), \
                      mock.patch.object(pipeline.subprocess, 'run', side_effect=compile_fixture), \
                      contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(pipeline.run(), 0)

@@ -237622,7 +237622,7 @@ label_BFC209A0:
     psx_cyc_step(cpu, 0x0u);
 #endif
     /* 0xBFC20A50: 42000010  rfe */
-    { uint32_t sr = cpu->cop0[12]; cpu->cop0[12] = (sr & 0xFFFFFFC0u) | ((sr >> 2) & 0x0Fu); } /* rfe */
+    { uint32_t sr = cpu->cop0[12]; cpu->cop0[12] = (sr & 0xFFFFFFF0u) | ((sr >> 2) & 0x0Fu); } /* rfe */
     psx_rfe_mark_escape();
     PSX_BLOCK_EDGE(cpu, cpu->gpr[26]);
     cpu->pc = cpu->gpr[26]; return;
@@ -247676,7 +247676,7 @@ label_BFC21678:
     psx_cyc_step(cpu, 0x0u);
 #endif
     /* 0xBFC216A8: 42000010  rfe */
-    { uint32_t sr = cpu->cop0[12]; cpu->cop0[12] = (sr & 0xFFFFFFC0u) | ((sr >> 2) & 0x0Fu); } /* rfe */
+    { uint32_t sr = cpu->cop0[12]; cpu->cop0[12] = (sr & 0xFFFFFFF0u) | ((sr >> 2) & 0x0Fu); } /* rfe */
     psx_rfe_mark_escape();
     PSX_BLOCK_EDGE(cpu, cpu->gpr[26]);
     cpu->pc = cpu->gpr[26]; return;

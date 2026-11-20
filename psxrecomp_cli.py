@@ -832,6 +832,29 @@ def ensure_framework(
     return framework_root(project_root)
 
 
+def retail_bios_profile(fw: Path, recomp: dict[str, Any]) -> tuple[str, Path, str]:
+    """Return the retail profile stem, staging destination and pinned SHA-256.
+
+    The title's [recompiler] bios_config names the profile its host links
+    (psxrecomp/bios/SCPH5552.toml for a PAL title). Without one, or when it
+    names OpenBIOS, the retail profile is SCPH1001. The ROM path is the
+    profile's [program] rom, where psxrecomp-bios loads the dump from.
+    """
+    cfg = str(recomp.get("bios_config") or "").strip().replace("\\", "/")
+    stem = Path(cfg).stem if cfg else ""
+    if not stem or stem == "OpenBIOS":
+        stem = "SCPH1001"
+    profiles = fw.resolve() / "bios"
+    profile = profiles / f"{stem}.toml"
+    data = parse_toml_simple(profile.read_text(encoding="utf-8"))
+    rom = Path(str(data.get("program", {}).get("rom") or ""))
+    destination = (fw / rom).resolve()
+    if rom.anchor or not destination.is_relative_to(profiles) or destination == profiles:
+        raise ValueError(f"BIOS ROM path must resolve inside the framework's bios folder: {rom}")
+    digest = str(data.get("program.image", {}).get("sha256") or "").lower()
+    return stem, destination, digest
+
+
 def bios_backend_present(fw: Path, stem: str) -> bool:
     dispatch = fw / "generated" / f"{stem}_dispatch.c"
     full = fw / "generated" / f"{stem}_full.c"
@@ -1238,6 +1261,12 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
 
     bios_arg = (getattr(args, "bios", None) or "").strip()
     staged_retail = False
+    if bios_arg or not openbios_allowed:
+        try:
+            retail_stem, retail_rom, retail_sha256 = retail_bios_profile(fw, recomp)
+        except (OSError, ValueError) as exc:
+            progress.error(f"Invalid retail BIOS profile: {exc}", code=EXIT_USAGE)
+            return EXIT_USAGE
     if bios_arg:
         bios_path = Path(bios_arg).expanduser()
         if not bios_path.is_absolute():
@@ -1247,37 +1276,46 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
         if not bios_path.is_file():
             progress.error(f"BIOS not found: {bios_path}", code=EXIT_USAGE)
             return EXIT_USAGE
-        dest = fw / "bios" / "SCPH1001.BIN"
-        progress.phase("bios", pct=0.15, message="Staging retail BIOS dump...")
-        progress.log(f"generate --bios {bios_path}")
+        progress.phase(
+            "bios", pct=0.15, message=f"Staging retail BIOS dump ({retail_stem})..."
+        )
+        progress.log(f"generate --bios {bios_path} -> {retail_rom}")
         try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if dest.resolve() != bios_path.resolve():
-                shutil.copy2(bios_path, dest)
+            if retail_sha256:
+                sha256 = hashlib.sha256()
+                with bios_path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(65536), b""):
+                        sha256.update(chunk)
+                if sha256.hexdigest() != retail_sha256:
+                    progress.error(f"BIOS dump does not match {retail_stem}", code=EXIT_USAGE)
+                    return EXIT_USAGE
+            retail_rom.parent.mkdir(parents=True, exist_ok=True)
+            if retail_rom != bios_path:
+                shutil.copy2(bios_path, retail_rom)
         except OSError as exc:
             progress.error(f"failed to stage BIOS: {exc}", code=EXIT_ERROR)
             return EXIT_ERROR
         try:
-            if args.force_bios or not bios_backend_present(fw, "SCPH1001"):
+            if args.force_bios or not bios_backend_present(fw, retail_stem):
                 progress.phase(
-                    "bios", pct=0.2, message="Generating SCPH1001 BIOS C..."
+                    "bios", pct=0.2, message=f"Generating {retail_stem} BIOS C..."
                 )
                 regen_bios_profile(
-                    project_root, "bios/SCPH1001.toml", progress=progress
+                    project_root, f"bios/{retail_stem}.toml", progress=progress
                 )
             else:
                 progress.log(
-                    "SCPH1001 backend already present — skipping bios regen "
+                    f"{retail_stem} backend already present — skipping bios regen "
                     "(pass --force-bios to regenerate)"
                 )
             staged_retail = True
         except Exception as exc:  # noqa: BLE001
             progress.error(str(exc), code=EXIT_ERROR)
             return EXIT_ERROR
-    elif not openbios_allowed and not bios_backend_present(fw, "SCPH1001"):
+    elif not openbios_allowed and not bios_backend_present(fw, retail_stem):
         progress.error(
-            "This title requires a retail BIOS dump. Pass --bios SCPH1001.BIN "
-            "(or pick one in the setup wizard).",
+            f"This title requires a retail BIOS dump ({retail_stem}). Pass "
+            "--bios <dump> (or pick one in the setup wizard).",
             code=EXIT_USAGE,
         )
         return EXIT_USAGE
@@ -2489,7 +2527,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument(
         "--bios",
         default="",
-        help="optional retail BIOS dump (staged as bios/SCPH1001.BIN + regen)",
+        help="optional retail BIOS dump (staged where the title's BIOS profile, "
+        "SCPH1001 by default, loads it, then regenerated)",
     )
     g.add_argument(
         "--force-bios",

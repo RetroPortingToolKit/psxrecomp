@@ -3196,6 +3196,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
             add_test(NAME overlay_retry_c11_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_retry_c11.py --compiler ${CMAKE_C_COMPILER})
         endif()
         add_test(NAME setup_bios_assets_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_bios_assets.py)
+        add_test(NAME cli_generate_bios_profile_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli_generate_bios_profile.py)
         # The hand-over to the product forces the launcher for a player and
         # honours a headless start. Without recomp-ui or a C compiler it
         # cannot run and exits 77: "Skipped", not "Passed".

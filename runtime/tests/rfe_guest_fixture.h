@@ -249,7 +249,7 @@ static void fx_k_return_from_exception(CPUState *cpu) {
     cpu->cop0[12] = fx_read(FX_TCB_SR);
     cpu->gpr[26] = fx_read(FX_TCB_EPC);
     { uint32_t sr = cpu->cop0[12];
-      cpu->cop0[12] = (sr & 0xFFFFFFC0u) | ((sr >> 2) & 0x0Fu); } /* rfe */
+      cpu->cop0[12] = (sr & 0xFFFFFFF0u) | ((sr >> 2) & 0x0Fu); } /* rfe */
     psx_rfe_mark_escape();
     cpu->pc = cpu->gpr[26];
 }
