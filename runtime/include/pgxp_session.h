@@ -10,36 +10,33 @@
  * runtime/tests/test_pgxp_session.cpp links and drives the same way:
  *
  *   reset_mod_owned_presentation()  -> psx_pgxp_session_reset()
- *   mod_runtime_activate_plugins()  -> psx.enhancement.pgxp's activation
- *                                      records pgxp_mod_request(...)
+ *   mod_runtime_activate_plugins()  -> a title mod's activation may record
+ *                                      pgxp_mod_request(...)
  *   renderer setup (session_reboot) -> psx_pgxp_session_arm(&config, ...)
  *
  * The arm TAKES the mod request (reads and clears it), so a request lives only
  * from one session's activation to that session's arming. A later session
- * with an empty plan -- netplay clears it, or the player disabled the mod --
+ * with an empty plan -- netplay clears it, or the title mod is disabled --
  * cannot inherit it, even if the reset were skipped.
  *
  * Inputs, in order of precedence:
  *   1. env_*: the validation overrides PSX_GEOMETRY_CORRECTION,
  *      PSX_PERSPECTIVE_TEXTURING, PSX_PGXP_CPU_MODE and PSX_PGXP_CULLING (-1
  *      when unset, else 0 or 1). They win over everything, so an A/B run can
- *      switch PGXP off under an enabled mod.
- *   2. Explicit player vertex/texture preferences, when their *_set flag is
- *      present. These visual choices do not enable CPU propagation or culling.
- *   3. video_* OR mod_*: the [video] baseline (game.toml, then settings.toml
- *      and the launcher) and the psx.enhancement.pgxp request this session's
- *      activation recorded. Either one arms a correction. With mod_only
- *      ([video] pgxp_mod_only, a title that ships PGXP through the mod) the
- *      baseline is ignored; an explicit player visual preference still wins.
+ *      switch PGXP off under an enabled setting or mod.
+ *   2. The player's PGXP settings (settings.toml: video.geometry_correction,
+ *      video.perspective_texturing, video.pgxp_cpu_mode, video.pgxp_culling),
+ *      when present.
+ *   3. video_* OR mod_*: the [video] baseline (game.toml) and any request a
+ *      title mod's activation recorded. Either one arms a correction. With
+ *      mod_only ([video] pgxp_mod_only, a title that ships PGXP through its own
+ *      mod) the baseline is ignored; an explicit player setting still wins.
  *
- * The mod arms both geometry and texture correction; its CPU-mode option adds
- * tier-2 propagation and its culling option precise culling. Precise culling
- * changes guest-visible NCLIP results, so it has no [video] key (netplay does
- * not clear [video]); it needs geometry correction. A netplay session never
- * arms it, whatever the mod, the env override or the plan say: a published
- * netplay plan can carry the mod (content negotiation, MOD_PACKAGES.md), and
- * the shadows it reads are host-only state that a rollback load drops on one
- * peer and not the other, so the guest's NCLIP results would fork.
+ * Precise culling changes guest-visible NCLIP results, so only the player
+ * setting, a title mod or the env override arms it, and it needs geometry
+ * correction. A netplay session never arms it: the shadows it reads are
+ * host-only state that a rollback load drops on one peer and not the other,
+ * so the guest's NCLIP results would fork.
  */
 
 #ifdef __cplusplus
@@ -63,6 +60,8 @@ typedef struct PSXPgxpSessionInputs {
     int mod_geometry;
     int mod_texture;
     int player_geometry_set, player_texture_set;
+    int player_cpu_mode_set;   /* settings.toml video.pgxp_cpu_mode present */
+    int player_culling;        /* settings.toml video.pgxp_culling */
 } PSXPgxpSessionInputs;
 
 typedef struct PSXPgxpSessionArm {
@@ -91,10 +90,11 @@ static inline PSXPgxpSessionArm psx_pgxp_session_resolve(
                                         !chosen && use_video && in->video_texture,
                                         in->mod_enabled && (!chosen || in->mod_texture));
     arm.cpu_mode = psx_pgxp_session_pick(in->env_cpu_mode,
-                                         use_video && in->video_cpu_mode,
+                                         in->player_cpu_mode_set ? in->video_cpu_mode
+                                                                 : use_video && in->video_cpu_mode,
                                          in->mod_enabled && in->mod_cpu_mode);
     arm.culling = !in->netplay && arm.geometry &&
-                  psx_pgxp_session_pick(in->env_culling, 0,
+                  psx_pgxp_session_pick(in->env_culling, in->player_culling,
                                         in->mod_enabled && in->mod_culling);
     return arm;
 }
@@ -123,11 +123,13 @@ typedef struct PSXPgxpSessionConfig {
     int mod_only;
     int netplay;   /* this session is a netplay match: precise culling off */
     int player_geometry_set, player_texture_set;
+    int player_cpu_mode_set;
+    int player_culling;
 } PSXPgxpSessionConfig;
 
 /* Session start, before plugin activation: forget any mod request. */
 void psx_pgxp_session_reset(void);
-/* An enabled precision mod can choose geometry and textures independently. */
+/* A mod plugin can choose geometry and textures independently. */
 void psx_pgxp_session_request_corrections(int geometry, int texture);
 
 /* The renderer setup's arming, once per session after activation: reads the

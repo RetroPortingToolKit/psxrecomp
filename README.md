@@ -558,8 +558,9 @@ See [`docs/STRING_TRANSLATION.md`](docs/STRING_TRANSLATION.md); *Tsumu Light*
 
 Two optional fixes for the PS1's fixed-point geometry pipeline, off by default
 so the faithful look stays the baseline. A title sets them in `game.toml`
-as its baseline; a player switches them with the built-in PGXP Precision mod,
-and picks the internal resolution with the built-in Internal Resolution mod:
+as its baseline; a player switches them on the launcher's PGXP page, and
+picks the internal resolution on its Display page (player settings, not
+mods):
 
 ```toml
 [video]

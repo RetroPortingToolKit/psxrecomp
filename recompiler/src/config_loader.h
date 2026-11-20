@@ -656,9 +656,8 @@ struct RuntimeConfig {
     int                   video_pgxp_seam = 0;
     double                video_pgxp_depth_threshold = 4096.0;
 
-    // pgxp_mod_only: the title ships PGXP through the psx.enhancement.pgxp
-    // mod (typically a default-on override of it), which is then the one
-    // switch. The [video] geometry_correction / perspective_texturing /
+    // pgxp_mod_only: the title ships PGXP through its own mod, which is
+    // then the one switch. The [video] geometry_correction / perspective_texturing /
     // pgxp_cpu_mode values -- game.toml's and the player's settings.toml --
     // are not applied, and the launcher hides its Perspective textures row,
     // so the player is never shown a second control that does nothing or
@@ -1618,19 +1617,15 @@ struct UserSettings {
 
     // [video]
     bool has_renderer       = false; int  renderer       = DEFAULT_VIDEO_RENDERER; // 0=software,1=opengl,2=vulkan
-    // No supersampling / internal_resolution / supersample /
-    // dynamic_resolution keys: the built-in Internal Resolution mod
-    // (psx.enhancement.internal-resolution) owns the internal resolution,
-    // Auto (dynamic resolution) included, over the title's [video]
-    // baseline (runtime/include/host_enhancements.h). Old keys are ignored.
+    // internal_resolution, dynamic_resolution, dynamic_resolution_min and
+    // supersample are player settings kept in extra_player_settings
+    // (player_settings.h); the legacy supersampling key is ignored.
     // Window size: width in px; height is always width*3/4 (PSX 4:3). Applies to
     // both the launcher and the emulator window so they boot at the same size.
     bool has_window_width   = false; int  window_width   = 1280; // -> 1280x960
-    // No antialiasing / texture_filtering / fmv_filter / crt_filter /
-    // scanlines / scanline_strength / geometry_correction /
-    // perspective_texturing keys: the built-in CRT Filter, Image Filtering
-    // and PGXP Precision mods own them over the title's [video] baseline
-    // (runtime/include/host_enhancements.h). Old keys are ignored.
+    // antialiasing, texture_filtering, fmv_filter, crt_filter, scanlines,
+    // scanline_strength and the PGXP keys are player settings in
+    // extra_player_settings (player_settings.h).
     // [video] fov_scale: GTE projection-distance multiplier (1.0 = faithful).
     // Stored raw (int or float TOML); the runtime range-checks and warns.
     bool has_fov_scale = false; double fov_scale = 1.0;
@@ -1686,9 +1681,9 @@ struct UserSettings {
     // Preserved legacy field; no ordinary runtime consumer. No GUI checkbox
     // until an implemented adaptive-view behavior is available.
     bool has_adaptive_view  = false; bool adaptive_view  = false;
-    // Local rewind (on/off, buffer depth, interval) is the built-in Rewind
-    // mod (psx.feature.rewind); the old [video] rewind keys are ignored. Its
-    // controller hotkey stays here, under [hotkeys].
+    // Local rewind (on/off, buffer depth, interval) is a player setting in
+    // extra_player_settings (player_settings.h). Its controller hotkey stays
+    // here, under [hotkeys].
     // [hotkeys] controller-only host shortcuts. Values use recomp-ui's
     // RECOMP_LAUNCHER_PAD_* encoding (0 = unbound, 1+button, 100+axis).
     bool has_hotkey_pad_rewind = false; int hotkey_pad_rewind = 1272; /* select+r3 */
