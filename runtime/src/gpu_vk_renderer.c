@@ -152,6 +152,9 @@ static PFN_vkGetDeviceProcAddr   p_vkGetDeviceProcAddr;
     X(vkDestroyShaderModule) \
     X(vkCreatePipelineLayout) \
     X(vkDestroyPipelineLayout) \
+    X(vkCreatePipelineCache) \
+    X(vkGetPipelineCacheData) \
+    X(vkDestroyPipelineCache) \
     X(vkCreateGraphicsPipelines) \
     X(vkCreateComputePipelines) \
     X(vkDestroyPipeline) \
@@ -576,6 +579,96 @@ static void up_add_transfer(int x, int y, int w, int h) {
 
 /* ---- helpers ----------------------------------------------------------- */
 static void vk_log(const char *msg) { fprintf(stdout, "psxrecomp: vulkan: %s\n", msg); }
+
+/* Opt-in while we qualify first-use timing. Keep driver cache I/O outside
+ * steady-state rendering. Vulkan pipeline creation is renderer-owned. */
+#define VK_PIPELINE_FILE_LIMIT (16u * 1024u * 1024u)
+static VkPipelineCache s_driver_pipeline_cache;
+static char *s_pipeline_cache_directory;
+static char s_pipeline_cache_filename[64];
+static int s_trace_pipeline_creation;
+
+extern size_t vk_pipeline_file_read(const char *, const char *, void *, size_t);
+extern void vk_pipeline_file_write(const char *, const char *, const void *, size_t);
+
+static uint32_t pipeline_cache_u32(const unsigned char *data) {
+    return (uint32_t)data[0] | (uint32_t)data[1] << 8 |
+           (uint32_t)data[2] << 16 | (uint32_t)data[3] << 24;
+}
+
+static int pipeline_cache_matches(const unsigned char *data, size_t size,
+                                  const VkPhysicalDeviceProperties *properties) {
+    return size >= 16 + VK_UUID_SIZE &&
+           pipeline_cache_u32(data) == 16 + VK_UUID_SIZE &&
+           pipeline_cache_u32(data + 4) == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&
+           pipeline_cache_u32(data + 8) == properties->vendorID &&
+           pipeline_cache_u32(data + 12) == properties->deviceID &&
+           memcmp(data + 16, properties->pipelineCacheUUID, VK_UUID_SIZE) == 0;
+}
+
+static void create_driver_pipeline_cache(void) {
+    const char *trace = getenv("PSX_VK_PIPELINE_TRACE");
+    s_trace_pipeline_creation = trace && strcmp(trace, "1") == 0;
+    const char *enable = getenv("PSX_VK_PIPELINE_CACHE");
+    if (!enable || strcmp(enable, "1") != 0) return;
+
+    VkPhysicalDeviceProperties properties;
+    p_vkGetPhysicalDeviceProperties(s_phys, &properties);
+    int prefix = snprintf(s_pipeline_cache_filename, sizeof s_pipeline_cache_filename,
+                          "%08x-%08x-", properties.vendorID, properties.deviceID);
+    for (size_t i = 0; i < VK_UUID_SIZE; ++i)
+        snprintf(s_pipeline_cache_filename + prefix + 2 * i, 3, "%02x",
+                 (unsigned)properties.pipelineCacheUUID[i]);
+    const char *directory = getenv("PSX_VK_PIPELINE_CACHE_DIR");
+    s_pipeline_cache_directory = directory && *directory
+        ? SDL_strdup(directory) : SDL_GetPrefPath("retcomm", "psxrecomp");
+
+    VkPipelineCacheCreateInfo info = { VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+    unsigned char *data = s_pipeline_cache_directory ? malloc(VK_PIPELINE_FILE_LIMIT) : NULL;
+    if (data) {
+        const size_t size = vk_pipeline_file_read(s_pipeline_cache_directory,
+            s_pipeline_cache_filename, data, VK_PIPELINE_FILE_LIMIT);
+        if (pipeline_cache_matches(data, size, &properties)) {
+            info.initialDataSize = size;
+            info.pInitialData = data;
+        }
+    }
+    VkResult result = p_vkCreatePipelineCache(s_dev, &info, NULL, &s_driver_pipeline_cache);
+    if (result != VK_SUCCESS && info.initialDataSize) {
+        info.initialDataSize = 0;
+        info.pInitialData = NULL;
+        result = p_vkCreatePipelineCache(s_dev, &info, NULL, &s_driver_pipeline_cache);
+    }
+    if (result != VK_SUCCESS) s_driver_pipeline_cache = VK_NULL_HANDLE;
+    if (s_trace_pipeline_creation)
+        fprintf(stderr, "vk_pipeline_cache initialized=%d bytes=%zu\n",
+                s_driver_pipeline_cache != VK_NULL_HANDLE, info.initialDataSize);
+    free(data);
+}
+
+static void destroy_driver_pipeline_cache(int save) {
+    if (s_driver_pipeline_cache) {
+        size_t size = 0;
+        if (save && s_pipeline_cache_directory &&
+            p_vkGetPipelineCacheData(s_dev, s_driver_pipeline_cache, &size, NULL) == VK_SUCCESS &&
+            size && size <= VK_PIPELINE_FILE_LIMIT) {
+            void *data = malloc(size);
+            if (data && p_vkGetPipelineCacheData(s_dev, s_driver_pipeline_cache, &size, data) == VK_SUCCESS)
+                vk_pipeline_file_write(s_pipeline_cache_directory, s_pipeline_cache_filename, data, size);
+            free(data);
+        }
+        p_vkDestroyPipelineCache(s_dev, s_driver_pipeline_cache, NULL);
+        s_driver_pipeline_cache = VK_NULL_HANDLE;
+    }
+    SDL_free(s_pipeline_cache_directory);
+    s_pipeline_cache_directory = NULL;
+}
+
+static void trace_pipeline_creation(const char *kind, uint64_t start) {
+    if (s_trace_pipeline_creation)
+        fprintf(stderr, "vk_pipeline_create kind=%s present=%u us=%u\n",
+                kind, s_present_idx, perf_elapsed_us(start));
+}
 
 static int vk_die(const char *why) { fprintf(stdout, "psxrecomp: vulkan: %s\n", why); return 0; }
 
@@ -1243,7 +1336,9 @@ static int create_render_targets(void) {
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; ci.stage.module = cm; ci.stage.pName = "main";
         ci.layout = s_pl_pack;
-        VkResult r = p_vkCreateComputePipelines(s_dev, VK_NULL_HANDLE, 1, &ci, NULL, &s_pipe_pack);
+        const uint64_t started = s_trace_pipeline_creation ? SDL_GetPerformanceCounter() : 0;
+        VkResult r = p_vkCreateComputePipelines(s_dev, s_driver_pipeline_cache, 1, &ci, NULL, &s_pipe_pack);
+        trace_pipeline_creation("pack", started);
         p_vkDestroyShaderModule(s_dev, cm, NULL);
         if (r != VK_SUCCESS) return vk_die("pack pipeline failed");
     }
@@ -1376,7 +1471,10 @@ static VkPipeline get_pipeline(int prog, int topo, int blend, int stencil, int c
     pi.pMultisampleState = &ms; pi.pDepthStencilState = &dss; pi.pColorBlendState = &cb;
     pi.pDynamicState = &dy; pi.layout = layout; pi.renderPass = s_rpass;
     VkPipeline p = VK_NULL_HANDLE;
-    if (p_vkCreateGraphicsPipelines(s_dev, VK_NULL_HANDLE, 1, &pi, NULL, &p) != VK_SUCCESS) {
+    const uint64_t started = s_trace_pipeline_creation ? SDL_GetPerformanceCounter() : 0;
+    const VkResult result = p_vkCreateGraphicsPipelines(s_dev, s_driver_pipeline_cache, 1, &pi, NULL, &p);
+    trace_pipeline_creation("draw", started);
+    if (result != VK_SUCCESS) {
         vk_die("graphics pipeline create failed"); return VK_NULL_HANDLE;
     }
     s_pipe_cache[key] = p;
@@ -1420,6 +1518,7 @@ int vk_renderer_init_context(SDL_Window *win) {
         return vk_die("SDL_Vulkan_CreateSurface failed");
     if (!pick_device()) return 0;
     if (!create_device()) return 0;
+    create_driver_pipeline_cache();
 
     VkCommandPoolCreateInfo pi = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1447,6 +1546,7 @@ static void osd_staging_free(void);
 void vk_renderer_shutdown(void) {
     if (!s_dev) return;
     p_vkDeviceWaitIdle(s_dev);
+    destroy_driver_pipeline_cache(s_ctx_ok);
     pp_destroy_all();
     vk_gpu_sync_internal();   /* reclaim deferred staging before tearing down */
     cpres_cache_free();       /* FMV CPU-present cached image + staging */
@@ -1855,7 +1955,10 @@ static int pp_init_swapchain_objects(void) {
     ci.pViewportState = &vp; ci.pRasterizationState = &rs;
     ci.pMultisampleState = &ms; ci.pColorBlendState = &cb; ci.pDynamicState = &dy;
     ci.layout = s_pp_pl; ci.renderPass = s_pp_rp;
-    return p_vkCreateGraphicsPipelines(s_dev, VK_NULL_HANDLE, 1, &ci, NULL, &s_pp_pipe) == VK_SUCCESS;
+    const uint64_t started = s_trace_pipeline_creation ? SDL_GetPerformanceCounter() : 0;
+    const VkResult result = p_vkCreateGraphicsPipelines(s_dev, s_driver_pipeline_cache, 1, &ci, NULL, &s_pp_pipe);
+    trace_pipeline_creation("present", started);
+    return result == VK_SUCCESS;
 }
 
 /* Framebuffer for swapchain image idx, created on first use. */
