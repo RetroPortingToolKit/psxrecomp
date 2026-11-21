@@ -3221,6 +3221,12 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         add_test(NAME restore_edge_irq_check_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_restore_edge_irq_check.py)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            add_test(NAME netplay_test_input_test
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_test_input.py
+                             --compiler ${CMAKE_CXX_COMPILER})
+        endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME netplay_rb_session_reset_test
                      COMMAND ${Python3_EXECUTABLE}
