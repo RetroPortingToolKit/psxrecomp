@@ -142,6 +142,11 @@ void psx_pgxp_muldiv(struct CPUState *c, uint32_t i, uint32_t h, uint32_t l,
 void psx_pgxp_store(struct CPUState *c, uint32_t i, uint32_t a, uint32_t v) {
     (void)c; (void)i; (void)a; (void)v;
 }
+int psx_pgxp_load_delay_prepare(uint32_t reg) { (void)reg;return 0; }
+void psx_pgxp_load_delay_arm(uint32_t reg) { (void)reg; }
+void psx_pgxp_load_delay_begin(uint32_t reg) { (void)reg; }
+void psx_pgxp_load_delay_end(uint32_t reg,int keep) { (void)reg;(void)keep; }
+void psx_pgxp_load_delay_discard(void) {}
 void psx_rfe_mark_escape(void) {}
 static uint32_t syscall_a0; static int syscall_n;
 int psx_syscall(CPUState *cpu, uint32_t code) {

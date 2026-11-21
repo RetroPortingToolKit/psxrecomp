@@ -222,6 +222,12 @@ int main(void) {
     assert(boot_state_save_buffer_raw(&cpu,123,0x801b0000,&saved,&len));
     uint8_t *pipeline=section(saved,len,BS_SEC_CPU_EXEC); assert(pipeline);
     for(unsigned i=0;i<36;i++) assert(pipeline[i]==0);
+    fixture_ld=(DirtyRamLoadDelay){.rt=8,.val=cpu.gpr[8],.age=0,.armed=1,
+                                  .old=cpu.gpr[8],.next=0x80050044u,.seq=123};
+    uint8_t *same_word=NULL;size_t same_len=0;
+    assert(boot_state_save_buffer_raw(&cpu,123,0x801b0000,&same_word,&same_len));
+    assert(same_len==len && !memcmp(saved,same_word,len));
+    free(same_word);
     free(saved);
     puts("snapshot handoff: normal pipeline, cold/warm, BIOS/game, compressed/raw and atomic rejection passed");
     return 0;

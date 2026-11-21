@@ -122,6 +122,9 @@ def check_structure(src):
     stage = "dirty_ram_ld_delay_stage(cpu, 8u, %s, 0x%08Xu);" % (temp, LOOP)
     if stage not in taken or taken.find(stage) > taken.find('PSX_BLOCK_EDGE'):
         failures.append("taken arm must publish its load before the actual interrupt edge")
+    precision = taken.find('PGXP_COP2(%s_meta_instr' % temp)
+    if not 0 <= taken.find(stage) < precision < taken.find('PSX_BLOCK_EDGE'):
+        failures.append('the old precision receipt must be captured before publishing the loaded shadow')
     if "cpu->gpr[8] = %s;" % temp not in not_taken:
         failures.append("fall-through arm does not write t0 back from %s" % temp)
 

@@ -98,6 +98,45 @@ static bool redirect_delayed_write(std::string& emitted, uint32_t rt,
     return hit;
 }
 
+static std::string delayed_precision_decls(const std::string& temp) {
+    return "#if defined(PSX_PGXP) && PSX_PGXP\n" +
+        fmt::format("    uint32_t {0}_meta_kind=0, {0}_meta_instr=0, {0}_meta_addr=0;\n",temp) +
+        "#endif\n";
+}
+static std::string delayed_precision_publish(const std::string& temp) {
+    return "#if defined(PSX_PGXP) && PSX_PGXP\n" + fmt::format(
+        "    if ({0}_meta_kind==1u) PGXP_LOAD({0}_meta_instr,{0}_meta_addr,{0});\n"
+        "    else if ({0}_meta_kind==2u) PGXP_COP2({0}_meta_instr,{0},{0}_meta_addr);\n",temp) +
+        "#endif\n";
+}
+/* Capture the actual selected hook arguments, including mod selectors and
+ * their effective address. Publish only after the architectural write owner
+ * has captured the old register shadow; never replay all selector branches. */
+static void defer_delayed_precision(std::string& emitted,const std::string& temp) {
+    for(const auto& [name,kind]:std::vector<std::pair<std::string,unsigned>>{
+            {"PGXP_LOAD(",1u},{"PGXP_COP2(",2u}}) {
+        size_t at=0;
+        while((at=emitted.find(name,at))!=std::string::npos) {
+            size_t end=at+name.size(),part=end;unsigned depth=0;
+            std::vector<std::string> args;
+            for(;end<emitted.size();++end) {
+                const char c=emitted[end];
+                if(c=='(')++depth;
+                else if(c==')') {
+                    if(!depth){args.push_back(emitted.substr(part,end-part));break;}
+                    --depth;
+                } else if(c==','&&!depth){args.push_back(emitted.substr(part,end-part));part=end+1;}
+            }
+            if(args.size()!=3u || end+1>=emitted.size() || emitted[end+1]!=';')
+                throw std::runtime_error("unrecognized delayed precision hook");
+            const std::string captured="\n#if defined(PSX_PGXP) && PSX_PGXP\n"+
+                fmt::format("    {0}_meta_kind={1}u; {0}_meta_instr={2}; {0}_meta_addr={3};\n",
+                    temp,kind,args[0],args[kind==1u?1u:2u])+"#endif\n";
+            emitted.replace(at,end+2-at,captured);at+=captured.size();
+        }
+    }
+}
+
 /* Reserved MIPS-II branch-likely words often appear when discovery sweeps
  * ASCII/data as code. Emit the RI raise every time (faithfulness), but do not
  * spam one WARNING per revisit of the same PC — product Generate was flooding
@@ -2836,6 +2875,7 @@ std::string CodeGenerator::translate_basic_block(
                 delayed_load_active && addr == delayed_load_addr + 4u &&
                 succ_is_lwlr && get_rt(instr) == delayed_load_dest;
             if (forward_to_lwlr) {
+                ss << delayed_precision_publish(fmt::format("psx_ldd_{:08X}",delayed_load_addr));
                 set_lwlr_merge_forward(
                     delayed_load_dest,
                     fmt::format("psx_ldd_{:08X}", delayed_load_addr));
@@ -2895,6 +2935,8 @@ std::string CodeGenerator::translate_basic_block(
                     ss << config_.indent << "{ /* MIPS-I load-delay pair */\n";
                     ss << config_.indent
                        << fmt::format("    uint32_t {} = 0;\n", temp);
+                    ss << delayed_precision_decls(temp);
+                    defer_delayed_precision(emitted,temp);
                     delayed_load_addr = addr;
                     delayed_load_dest = static_cast<uint32_t>(load_dest);
                     delayed_load_active = true;
@@ -2922,6 +2964,7 @@ std::string CodeGenerator::translate_basic_block(
                     ss << config_.indent << fmt::format(
                         "cpu->gpr[{}] = psx_ldd_{:08X};  /* load-delay writeback */\n",
                         delayed_load_dest, delayed_load_addr);
+                    ss << delayed_precision_publish(fmt::format("psx_ldd_{:08X}",delayed_load_addr));
                 }
                 ss << config_.indent << "}\n";
                 delayed_load_active = false;
@@ -2945,10 +2988,12 @@ std::string CodeGenerator::translate_basic_block(
                     if (in_function && site.dependent.count(succ))
                         return config_.indent + config_.indent +
                                fmt::format("dirty_ram_ld_delay_stage(cpu, {}u, psx_dsl_{:08X}, 0x{:08X}u);\n",
-                                           site.rt, dsl_slot, runtime_pc(succ));
+                                           site.rt, dsl_slot, runtime_pc(succ))+
+                               delayed_precision_publish(fmt::format("psx_dsl_{:08X}",dsl_slot));
                     return config_.indent + config_.indent +
                            fmt::format("cpu->gpr[{}] = psx_dsl_{:08X};  /* load-delay writeback */\n",
-                                       site.rt, dsl_slot);
+                                       site.rt, dsl_slot)+
+                           delayed_precision_publish(fmt::format("psx_dsl_{:08X}",dsl_slot));
                 };
                 std::string delay_saved_cond;    // branch condition captured before delay
                 std::string delay_saved_target;  // JR/JALR target captured before delay
@@ -3093,6 +3138,7 @@ std::string CodeGenerator::translate_basic_block(
                                 redirect_delayed_write(ds_emit, dsl->second.rt,
                                                        fmt::format("psx_dsl_{:08X}", delay_slot_addr))) {
                                 dsl_slot = delay_slot_addr;
+                                defer_delayed_precision(ds_emit,fmt::format("psx_dsl_{:08X}",dsl_slot));
                                 ss << config_.indent << fmt::format(
                                     "/* MIPS-I load delay: r{} lands after the successor's first instruction */\n",
                                     dsl->second.rt);
@@ -4124,6 +4170,7 @@ std::string CodeGenerator::dsl_decls() const {
             ds, site.rt);
         out += config_.indent + fmt::format(
             "(void)psx_dsl_{:08X};\n", ds);
+        out += delayed_precision_decls(fmt::format("psx_dsl_{:08X}",ds));
     }
     return out;
 }

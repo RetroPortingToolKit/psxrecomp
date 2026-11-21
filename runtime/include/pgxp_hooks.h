@@ -78,6 +78,14 @@ void psx_pgxp_region_add_immediates(struct CPUState *cpu,
 void psx_pgxp_alu   (struct CPUState *cpu, uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2);
 void psx_pgxp_muldiv(struct CPUState *cpu, uint32_t instr, uint32_t hi, uint32_t lo, uint32_t s1, uint32_t s2);
 void psx_pgxp_cop2  (struct CPUState *cpu, uint32_t instr, uint32_t value, uint32_t addr);
+/* Presentation-local companion of the shared CPU load window. The PGXP
+ * provider owns complete register/scalar/source receipts and its checkpoint;
+ * none of these receipts or identities enter canonical guest state. */
+int psx_pgxp_load_delay_prepare(uint32_t reg);
+void psx_pgxp_load_delay_arm(uint32_t reg);
+void psx_pgxp_load_delay_begin(uint32_t reg);
+void psx_pgxp_load_delay_end(uint32_t reg, int keep_writer);
+void psx_pgxp_load_delay_discard(void);
 
 /* Proven metadata-free ALU writes are coalesced until the next full hook.
  * Values are captured at the architectural write, including load-delay pairs.

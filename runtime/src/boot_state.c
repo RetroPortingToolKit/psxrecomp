@@ -581,7 +581,9 @@ static int write_resume_sections(BsOut *o, int debug_resume) {
         PstW w;
         dirty_ram_ld_delay_save(&d);
         /* Retired pipeline scratch is not canonical guest state. */
-        if (!d.armed) memset(&d, 0, sizeof d);
+        /* Equal integer words need no architectural delay. PGXP may retain
+         * a local old/new lineage window, which must not change the digest. */
+        if (!d.armed || d.old == d.val) memset(&d, 0, sizeof d);
         if (d.rt > 31u || d.age > 1u || (d.armed && (d.rt == 0u || (d.next & 3u))))
             return 0;
         pst_w_init(&w, b, sizeof b);

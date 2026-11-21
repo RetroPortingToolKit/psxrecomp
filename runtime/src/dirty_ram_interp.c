@@ -402,6 +402,7 @@ static int dirty_ram_same_pc(uint32_t a, uint32_t b);
 /* The delay-slot instruction is done (or something else ran first): the load
  * has landed. Restores the loaded value only while it is hidden. */
 static inline void ld_delay_land(CPUState *cpu) {
+    psx_pgxp_load_delay_end(s_ld_pend_rt,s_ld_pend_age!=LD_HIDING);
     if (s_ld_pend_armed && s_ld_pend_age == LD_HIDING && s_ld_pend_rt != 0u)
         cpu->gpr[s_ld_pend_rt] = s_ld_pend_val;
     s_ld_pend_armed = 0;
@@ -420,9 +421,10 @@ void dirty_ram_ld_delay_stage(CPUState *cpu, uint32_t rt, uint32_t value,
                               uint32_t successor_pc) {
     if (!cpu || rt == 0u || rt >= 32u) return;
     dirty_ram_ld_delay_flush(cpu);
+    const int precision=psx_pgxp_load_delay_prepare(rt);
     const uint32_t previous = cpu->gpr[rt];
     cpu->gpr[rt] = value;
-    if (previous == value) return;
+    if (previous == value && !precision) return;
     s_ld_pend_rt = rt;
     s_ld_pend_val = value;
     s_ld_pend_old = previous;
@@ -430,6 +432,7 @@ void dirty_ram_ld_delay_stage(CPUState *cpu, uint32_t rt, uint32_t value,
     s_ld_pend_seq = ++s_ld_step;
     s_ld_pend_age = LD_ARMED;
     s_ld_pend_armed = 1;
+    psx_pgxp_load_delay_arm(rt);
 }
 
 uint64_t dirty_ram_ld_delay_begin(CPUState *cpu, uint32_t pc, uint32_t insn) {
@@ -443,6 +446,7 @@ uint64_t dirty_ram_ld_delay_begin(CPUState *cpu, uint32_t pc, uint32_t insn) {
         dirty_ram_same_pc(pc, s_ld_pend_next) &&
         cpu->gpr[s_ld_pend_rt] == s_ld_pend_val && !forwarded && !trap) {
         cpu->gpr[s_ld_pend_rt] = s_ld_pend_old;
+        psx_pgxp_load_delay_begin(s_ld_pend_rt);
         s_ld_pend_age = LD_HIDING;
         return ((uint64_t)s_ld_pend_seq << 1) | 1u;
     }
@@ -475,6 +479,7 @@ void dirty_ram_ld_delay_end(CPUState *cpu, uint64_t cookie, uint32_t instruction
     /* A successor's own write wins, including an ordinary ALU write.
      * Both routes use this rule; a later load starts a new window. */
     if (ld_instruction_writes(instruction, s_ld_pend_rt)) {
+        psx_pgxp_load_delay_end(s_ld_pend_rt,1);
         s_ld_pend_armed = 0;
         s_ld_pend_age = LD_ARMED;
         return;
@@ -490,6 +495,7 @@ void dirty_ram_ld_delay_discard(void) {
         s_ld_pend_from_state = 0;
         return;
     }
+    psx_pgxp_load_delay_discard();
     s_ld_pend_armed = 0;
     s_ld_pend_age   = LD_ARMED;
     s_ld_pend_rt    = 0;
@@ -526,6 +532,9 @@ void dirty_ram_ld_delay_restore(const DirtyRamLoadDelay *in) {
 void dirty_ram_ld_delay_restore_from_state(const DirtyRamLoadDelay *in) {
     if (!in) return;
     dirty_ram_ld_delay_restore(in);
+    /* Ordinary snapshots invalidate presentation provenance through the
+     * existing GTE timeline owner. Never resurrect a previous host window. */
+    psx_pgxp_load_delay_discard();
     /* A restored guest window is new to any still-unwinding host frame. The
      * cookie is host-only; it is neither a canonical state field nor a PC. */
     s_ld_pend_seq = ++s_ld_step;
@@ -1751,13 +1760,14 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
 #endif
 
+    const int ld_precision=is_ld?psx_pgxp_load_delay_prepare(ld_rt):0;
     const int rv = exec_one_fetched_inner(cpu, pc, insn, next_pc_out, original_instruction);
 
     dirty_ram_ld_delay_end(cpu, ld_cookie, insn);
 
     if (is_ld) {
         const uint32_t loaded = cpu->gpr[ld_rt];
-        if (loaded != ld_before) {
+        if (loaded != ld_before || ld_precision) {
             /* The register keeps the loaded value; only the next instruction
              * (pc + 4, or the branch target when this is a delay slot) is
              * shown ld_before. */
@@ -1768,6 +1778,7 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
             s_ld_pend_next  = pc + 4u;
             s_ld_pend_age   = ld_in_slot ? LD_UNRESOLVED : LD_ARMED;
             s_ld_pend_armed = 1;
+            psx_pgxp_load_delay_arm(ld_rt);
         }
     } else if (s_ld_pend_armed && s_ld_pend_age == LD_UNRESOLVED) {
         /* A load ran in this instruction's delay slot. Its own delay slot is
@@ -1777,6 +1788,7 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
             s_ld_pend_next = cpu->pc;
             s_ld_pend_age  = LD_ARMED;
         } else {
+            psx_pgxp_load_delay_end(s_ld_pend_rt,1);
             s_ld_pend_armed = 0;
             s_ld_pend_age   = LD_ARMED;
         }
