@@ -359,8 +359,9 @@ int psx_exec_phase(void) { return g_exec_phase; }
  * 128-byte memory-card frame was stored to one address (cards read as
  * permanently unformatted; the send side transmitted one byte 128x).
  *
- * Contract: on a same-register conflict the LOAD wins (it retires later),
- * matching the compiled emitter.
+ * Contract: the delay-slot instruction's own write wins a same-register
+ * conflict. A following load retains the original old operand in its own
+ * delay window, while LWL/LWR still forwards the merge input.
  *
  * Game RAM and MFC2/CFC2 too (PSX-SPX geometrytransformationenginegte, "GTE
  * Load Delay Slots"). The value delay used to be limited to BIOS code, and
@@ -396,6 +397,7 @@ static uint32_t s_ld_pend_age   = 0;  /* LD_ARMED / LD_HIDING / LD_UNRESOLVED  *
 static int      s_ld_pend_armed = 0;
 static uint32_t s_ld_step       = 0;  /* exec_one_fetched entries              */
 static int      s_ld_in_delay_slot = 0; /* set by exec_delay_slot for one call */
+static int dirty_ram_same_pc(uint32_t a, uint32_t b);
 
 /* The delay-slot instruction is done (or something else ran first): the load
  * has landed. Restores the loaded value only while it is hidden. */
@@ -411,6 +413,72 @@ static inline void ld_delay_land(CPUState *cpu) {
  * to compiled code, exception entry): the loaded value is already in place. */
 void dirty_ram_ld_delay_flush(CPUState *cpu) {
     if (!s_ld_pend_armed) return;
+    ld_delay_land(cpu);
+}
+
+void dirty_ram_ld_delay_stage(CPUState *cpu, uint32_t rt, uint32_t value,
+                              uint32_t successor_pc) {
+    if (!cpu || rt == 0u || rt >= 32u) return;
+    dirty_ram_ld_delay_flush(cpu);
+    const uint32_t previous = cpu->gpr[rt];
+    cpu->gpr[rt] = value;
+    if (previous == value) return;
+    s_ld_pend_rt = rt;
+    s_ld_pend_val = value;
+    s_ld_pend_old = previous;
+    s_ld_pend_next = successor_pc;
+    s_ld_pend_seq = ++s_ld_step;
+    s_ld_pend_age = LD_ARMED;
+    s_ld_pend_armed = 1;
+}
+
+uint64_t dirty_ram_ld_delay_begin(CPUState *cpu, uint32_t pc, uint32_t insn) {
+    if (!s_ld_pend_armed) return 0;
+    const uint32_t op = insn >> 26;
+    const uint32_t fn = insn & 63u;
+    const int forwarded = (op == 0x22u || op == 0x26u) &&
+                          ((insn >> 16) & 31u) == s_ld_pend_rt;
+    const int trap = op == 0u && (fn == 0x0cu || fn == 0x0du);
+    if (s_ld_pend_age == LD_ARMED &&
+        dirty_ram_same_pc(pc, s_ld_pend_next) &&
+        cpu->gpr[s_ld_pend_rt] == s_ld_pend_val && !forwarded && !trap) {
+        cpu->gpr[s_ld_pend_rt] = s_ld_pend_old;
+        s_ld_pend_age = LD_HIDING;
+        return ((uint64_t)s_ld_pend_seq << 1) | 1u;
+    }
+    ld_delay_land(cpu);
+    return 0;
+}
+
+static int ld_instruction_writes(uint32_t insn, uint32_t reg) {
+    const uint32_t op = insn >> 26, rt = (insn >> 16) & 31u;
+    if (op == 0u) {
+        const uint32_t fn = insn & 63u, rd = (insn >> 11) & 31u;
+        return rd == reg && (fn == 0u || fn == 2u || fn == 3u || fn == 4u ||
+            fn == 6u || fn == 7u || fn == 9u || fn == 0x10u || fn == 0x12u ||
+            (fn >= 0x20u && fn <= 0x27u) || fn == 0x2au || fn == 0x2bu);
+    }
+    if (op == 3u || (op == 1u && (rt == 0x10u || rt == 0x11u)))
+        return reg == 31u;
+    if ((op >= 8u && op <= 15u) || (op >= 0x20u && op <= 0x26u))
+        return rt == reg;
+    if (op == 0x10u || op == 0x12u) {
+        const uint32_t move = (insn >> 21) & 31u;
+        return rt == reg && (move == 0u || (op == 0x12u && move == 2u));
+    }
+    return 0;
+}
+
+void dirty_ram_ld_delay_end(CPUState *cpu, uint64_t cookie, uint32_t instruction) {
+    if (!(cookie & 1u) || !s_ld_pend_armed || s_ld_pend_age != LD_HIDING ||
+        (uint32_t)(cookie >> 1) != s_ld_pend_seq) return;
+    /* A successor's own write wins, including an ordinary ALU write.
+     * Both routes use this rule; a later load starts a new window. */
+    if (ld_instruction_writes(instruction, s_ld_pend_rt)) {
+        s_ld_pend_armed = 0;
+        s_ld_pend_age = LD_ARMED;
+        return;
+    }
     ld_delay_land(cpu);
 }
 
@@ -458,6 +526,9 @@ void dirty_ram_ld_delay_restore(const DirtyRamLoadDelay *in) {
 void dirty_ram_ld_delay_restore_from_state(const DirtyRamLoadDelay *in) {
     if (!in) return;
     dirty_ram_ld_delay_restore(in);
+    /* A restored guest window is new to any still-unwinding host frame. The
+     * cookie is host-only; it is neither a canonical state field nor a PC. */
+    s_ld_pend_seq = ++s_ld_step;
     s_ld_pend_from_state = 1;
 }
 
@@ -1623,35 +1694,11 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
     const uint32_t ld_step = ++s_ld_step;
     const int ld_in_slot = s_ld_in_delay_slot;
     s_ld_in_delay_slot = 0;
-    int ld_hiding = 0;
-    if (s_ld_pend_armed && s_ld_pend_age == LD_HIDING) {
-        /* Nested inside the delay-slot instruction: it is a branch or jump
-         * starting its own delay slot, so the load has landed. */
-        ld_delay_land(cpu);
-    } else if (s_ld_pend_armed) {
-        const uint32_t nx_op = op_field(insn);
-        const uint32_t nx_fn = funct_field(insn);
-        /* LWL/LWR exemption. `lwl rt,x` immediately followed by `lwr rt,y` is
-         * THE unaligned-load idiom every MIPS compiler emits, and MIPS-I
-         * explicitly permits the pair back-to-back: the second half merges with
-         * the first's result rather than the pre-load register. Hiding the
-         * loaded value here would make the merge read a stale rt and silently
-         * corrupt every unaligned load (it wedged Tomba 2 at boot): forwarding.
-         * SYSCALL/BREAK in the slot: the exception drains the pipeline, so the
-         * handler sees the loaded value. */
-        const int is_lwlr = (nx_op == 0x22u || nx_op == 0x26u) &&
-                            rt_field(insn) == s_ld_pend_rt;
-        const int is_trap = nx_op == 0x00u && (nx_fn == 0x0Cu || nx_fn == 0x0Du);
-        if (s_ld_pend_age == LD_ARMED && dirty_ram_same_pc(pc, s_ld_pend_next) &&
-            cpu->gpr[s_ld_pend_rt] == s_ld_pend_val && !is_lwlr && !is_trap) {
-            cpu->gpr[s_ld_pend_rt] = s_ld_pend_old; /* this IS the delay slot */
-            s_ld_pend_age = LD_HIDING;
-            ld_hiding = 1;
-        } else {
-            s_ld_pend_armed = 0; /* stale, or forwarded: the value is in place */
-            s_ld_pend_age   = LD_ARMED;
-        }
-    }
+    const uint32_t prior_rt = s_ld_pend_rt, prior_old = s_ld_pend_old;
+    const int prior_window = s_ld_pend_armed && s_ld_pend_age == LD_ARMED &&
+        dirty_ram_same_pc(pc, s_ld_pend_next) &&
+        cpu->gpr[s_ld_pend_rt] == s_ld_pend_val;
+    const uint64_t ld_cookie = dirty_ram_ld_delay_begin(cpu, pc, insn);
 
     if (g_psx_mod_instruction_hooks) psx_mod_instruction(cpu, pc, insn);
     const uint32_t original_instruction = insn;
@@ -1670,7 +1717,10 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
                                  (rs_field(insn) == 0x00u || rs_field(insn) == 0x02u);
     const int      is_ld = ((ld_op >= 0x20u && ld_op <= 0x26u) || is_gte_read) &&
                            (ld_rt != 0u);
-    const uint32_t ld_before = is_ld ? cpu->gpr[ld_rt] : 0u;
+    /* LWL/LWR consumes the preceding loaded value as its merge input, but
+     * its following delay slot still observes the original old GPR. */
+    const uint32_t ld_before = is_ld ?
+        (prior_window && ld_rt == prior_rt ? prior_old : cpu->gpr[ld_rt]) : 0u;
     /* Where this instruction transfers to if it is a branch or jump, for a
      * load in its delay slot (registers as this instruction reads them). */
     uint32_t ld_xfer_a = 0xFFFFFFFFu, ld_xfer_b = 0xFFFFFFFFu;
@@ -1703,15 +1753,7 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
 
     const int rv = exec_one_fetched_inner(cpu, pc, insn, next_pc_out, original_instruction);
 
-    if (ld_hiding && s_ld_pend_armed && s_ld_pend_age == LD_HIDING) {
-        /* The delay-slot instruction has retired: the load lands. It wins a
-         * same-register write, except against a load in its delay slot, which
-         * retires later. */
-        s_ld_pend_armed = 0;
-        s_ld_pend_age   = LD_ARMED;
-        if (!(is_ld && ld_rt == s_ld_pend_rt)) cpu->gpr[s_ld_pend_rt] = s_ld_pend_val;
-        cpu->gpr[0] = 0;
-    }
+    dirty_ram_ld_delay_end(cpu, ld_cookie, insn);
 
     if (is_ld) {
         const uint32_t loaded = cpu->gpr[ld_rt];

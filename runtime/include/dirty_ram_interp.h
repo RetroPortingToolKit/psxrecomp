@@ -19,6 +19,7 @@
 #include <string.h>
 #include "psx_memory.h"
 #include "cpu_state.h"
+#include "psx_load_delay.h"
 
 #ifdef __cplusplus
 extern "C" {

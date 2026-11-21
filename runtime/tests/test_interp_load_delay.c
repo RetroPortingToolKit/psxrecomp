@@ -19,7 +19,7 @@
  * Covers: the loop shape (branch-delay-slot MFC2 into the target's first
  * instruction, and into the fall-through), in-block MFC2/CFC2/LW pairs in game
  * RAM, a branch in a load's delay slot (it sees the old value, its own slot
- * the new one), the load winning a same-register ALU write, LWL/LWR
+ * the new one), a same-register ALU write cancelling the load, LWL/LWR
  * forwarding, a load in a JAL delay slot with an interpreted callee (hidden
  * from its first instruction) and with a compiled callee (the return site is
  * not shown a stale value), SYSCALL in the slot, a register changed behind the
@@ -110,6 +110,9 @@ void psx_bail_record(uint32_t ra, uint32_t sp, uint32_t pc, uint32_t gsp) {
     (void)ra; (void)sp; (void)pc; (void)gsp;
 }
 void psx_break(CPUState *cpu, uint32_t code, uint32_t pc) { (void)cpu; (void)code; (void)pc; }
+int psx_break_enter_guest_vector(CPUState *cpu, uint32_t pc) {
+    (void)cpu; (void)pc; abort(); /* this fixture executes no BREAK opcode */
+}
 void psx_check_interrupts(struct CPUState *cpu) { (void)cpu; }
 /* Compiled callee: records what it was entered with. */
 static uint32_t call_target, call_a0; static int call_n;
@@ -289,7 +292,9 @@ static void test_branch_in_slot(void) {
     CHECK(cpu.gpr[T1] == 7u, "branch delay slot saw t0 = %u, want 7", cpu.gpr[T1]);
 }
 
-/* The load wins a same-register ALU write in its delay slot; LWL/LWR forward. */
+/* SCPH-5501 hardware results (05DLY): the immediate write wins; two loads
+ * preserve the original old operand in the second load's delay slot.
+ * https://psx.wiki/tests/raw/20260928T0000Z-5501a-card-h/cpu/05DLY.txt */
 static void test_conflicts(void) {
     CPUState cpu; reset(&cpu);
     const uint32_t code[] = { LW(T0, 0, T8), ADDIU(T0, ZERO, 5), MOVE(T1, T0), NOP };
@@ -297,20 +302,33 @@ static void test_conflicts(void) {
     put_word(DATA, 0x1000u);
     cpu.gpr[T8] = DATA;
     run(&cpu, CODE, CODE + 12, 8);
-    CHECK(cpu.gpr[T1] == 0x1000u && cpu.gpr[T0] == 0x1000u,
-          "load vs addiu in its slot: t0 = 0x%X, want the load (0x1000)", cpu.gpr[T0]);
+    CHECK(cpu.gpr[T1] == 5u && cpu.gpr[T0] == 5u,
+          "load vs addiu in its slot: t0 = 0x%X, want the write (5)", cpu.gpr[T0]);
+
+    reset(&cpu);
+    const uint32_t chain[] = { LW(T0, 0, T8), LW(T0, 4, T8),
+                                MOVE(T1, T0), MOVE(T2, T0), NOP };
+    put_code(CODE, chain, 5);
+    put_word(DATA, 2u); put_word(DATA + 4, 3u);
+    cpu.gpr[T0] = 1u; cpu.gpr[T8] = DATA;
+    run(&cpu, CODE, CODE + 16, 8);
+    CHECK(cpu.gpr[T1] == 1u && cpu.gpr[T2] == 3u && cpu.gpr[T0] == 3u,
+          "two loads: delay=%u after=%u final=%u, want 1/3/3",
+          cpu.gpr[T1], cpu.gpr[T2], cpu.gpr[T0]);
 
     /* lw t0 then lwr t0 at a partial offset: the merge base must be the lw's
      * value (forwarded), not the old t0. */
     reset(&cpu);
-    const uint32_t lwlr2[] = { LW(T0, 0, T8), LWR(T0, 5, T8), NOP };
-    put_code(CODE, lwlr2, 3);
+    const uint32_t lwlr2[] = { LW(T0, 0, T8), LWR(T0, 5, T8),
+                                MOVE(T1, T0), MOVE(T2, T0), NOP };
+    put_code(CODE, lwlr2, 5);
     put_word(DATA, 0x11223344u);
     put_word(DATA + 4, 0xAABBCCDDu);
     cpu.gpr[T0] = 0x99999999u;
     cpu.gpr[T8] = DATA;
-    run(&cpu, CODE, CODE + 8, 4);
-    CHECK(cpu.gpr[T0] == 0x11AABBCCu,
+    run(&cpu, CODE, CODE + 16, 8);
+    CHECK(cpu.gpr[T0] == 0x11AABBCCu && cpu.gpr[T1] == 0x99999999u &&
+          cpu.gpr[T2] == 0x11AABBCCu,
           "lwr after lw merged into 0x%08X, want 0x11AABBCC (forwarded base)",
           cpu.gpr[T0]);
 }
@@ -403,6 +421,44 @@ static void test_stale_and_flush(void) {
     CHECK(cpu.gpr[T1] == 0x2222u, "a jump past the slot saw 0x%X", cpu.gpr[T1]);
 }
 
+#ifndef LOAD_PROVIDER_CONTROL
+static void test_shared_provider(void) {
+    CPUState cpu, saved; DirtyRamLoadDelay window;
+    reset(&cpu);
+    const uint32_t code[] = { MOVE(T1, T0), MOVE(T2, T0), NOP };
+    put_code(CODE, code, 3);
+    cpu.gpr[T0] = 1u;
+    dirty_ram_ld_delay_stage(&cpu, T0, 2u, CODE);
+    CHECK(cpu.gpr[T0] == 2u, "host boundary must see the loaded GPR");
+    run(&cpu, CODE, CODE + 8, 4);
+    CHECK(cpu.gpr[T1] == 1u && cpu.gpr[T2] == 2u,
+          "compiled stage to interpreter: delay=%u after=%u", cpu.gpr[T1], cpu.gpr[T2]);
+
+    reset(&cpu); cpu.gpr[T0] = 1u;
+    dirty_ram_ld_delay_stage(&cpu, T0, 2u, CODE);
+    saved = cpu; dirty_ram_ld_delay_save(&window);
+    uint64_t cookie = dirty_ram_ld_delay_begin(&cpu, CODE, code[0]);
+    CHECK(cookie && cpu.gpr[T0] == 1u, "native successor sees the old operand");
+    cpu.gpr[T1] = cpu.gpr[T0];
+    dirty_ram_ld_delay_end(&cpu, cookie, code[0]);
+    CHECK(cpu.gpr[T1] == 1u && cpu.gpr[T0] == 2u, "native successor retires the load");
+
+    cpu = saved; dirty_ram_ld_delay_restore_from_state(&window);
+    dirty_ram_ld_delay_discard(); /* normal post-load resync keeps restored data */
+    dirty_ram_ld_delay_end(&cpu, cookie, ADDIU(T0, ZERO, 3));
+    cookie = dirty_ram_ld_delay_begin(&cpu, CODE, code[0]);
+    CHECK(cookie && cpu.gpr[T0] == 1u, "stale host cookie must not consume a restored window");
+    dirty_ram_ld_delay_end(&cpu, cookie, code[0]);
+    CHECK(cpu.gpr[T0] == 2u, "restored window retires on its own stream");
+
+    reset(&cpu); cpu.gpr[T0] = 1u;
+    dirty_ram_ld_delay_stage(&cpu, T0, 2u, CODE);
+    dirty_ram_ld_delay_flush(&cpu); /* actual IRQ/thread delivery owns this flush */
+    cookie = dirty_ram_ld_delay_begin(&cpu, CODE, code[0]);
+    CHECK(!cookie && cpu.gpr[T0] == 2u, "a drained pipeline exposes the loaded value");
+}
+#endif
+
 int main(void) {
     test_vertex_loop();
     test_pairs();
@@ -411,6 +467,9 @@ int main(void) {
     test_calls();
     test_syscall_in_slot();
     test_stale_and_flush();
+#ifndef LOAD_PROVIDER_CONTROL
+    test_shared_provider();
+#endif
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

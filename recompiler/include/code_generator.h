@@ -559,10 +559,11 @@ private:
     // COP2 move (MFC2/CFC2) in a conditional branch's or j's delay slot is
     // still invisible to the first instruction at the branch's successor.
     // scan_delay_slot_loads() finds the slots whose in-function successor
-    // reads the destination; translate_basic_block() then defers the
-    // writeback through the function-scope psx_dsl_<slot> temp and
-    // psx_dslp_<slot> flag, retiring it after the successor's first
-    // instruction. dsl_decls() is the declaration block for those temps.
+    // reads the destination. translate_basic_block() publishes the loaded
+    // value through the shared checkpointed pipeline before the branch edge;
+    // only the actual successor's first instruction sees its old value.
+    // dsl_decls() holds instruction-local staging values, never pending writes
+    // that must survive an interrupt or a thread handoff.
     struct DelaySlotLoad {
         uint32_t rt = 0;
         std::set<uint32_t> dependent;   // successor block leaders that read rt first

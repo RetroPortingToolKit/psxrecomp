@@ -143,6 +143,10 @@ int main(void) {
     for(int compressed=0;compressed<2;++compressed) for(int started=0;started<2;++started) {
         uint8_t* saved=NULL; size_t len=0;
         cpu.pc=0x80050044; cpu.gpr[4]=0x12345678; ram[0x100]=0xab;
+        cpu.gpr[8]=2;
+        fixture_ld=(DirtyRamLoadDelay){.rt=8,.val=2,.age=0,.armed=1,
+                                      .old=1,.next=cpu.pc,.seq=0xaabbccddu};
+        fixture_ld_from_state=0;
         fntrace_restore_game_started(started);
         assert(compressed ? boot_state_save_buffer(&cpu,123,0x801b0000,&saved,&len)
                           : boot_state_save_buffer_raw(&cpu,123,0x801b0000,&saved,&len));
@@ -151,9 +155,19 @@ int main(void) {
         assert(phase);
         uint32_t count=read32(saved+28);
         assert(read32(saved + 4)==BOOT_STATE_VERSION_WITHOUT_HOST && read32(phase)==(uint32_t)started);
+        size_t pipeline_offset, pipeline_bytes;
+        uint8_t *pipeline=test_find_section(saved,len,BS_SEC_CPU_EXEC,&pipeline_offset,&pipeline_bytes);
+        assert(pipeline && pipeline_bytes==52);
+        assert(read32(pipeline)==1 && read32(pipeline+4)==cpu.pc);
+        assert(read32(pipeline+8)==0 && read32(pipeline+12)==0 && read32(pipeline+16)==0);
+        assert(read32(pipeline+20)==8 && read32(pipeline+24)==2 &&
+               read32(pipeline+28)==0 && read32(pipeline+32)==1);
         fntrace_restore_game_started(!started); ram[0x100]=0; cpu.pc=0;
         assert(boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
         assert(fntrace_is_game_started()==started && ram[0x100]==0xab && cpu.pc==0x80050044);
+        assert(fixture_ld_from_state && fixture_ld.rt==8 && fixture_ld.val==2 &&
+               fixture_ld.old==1 && fixture_ld.next==cpu.pc && fixture_ld.armed &&
+               fixture_ld.seq==0); /* host cookie epoch is not wire state */
         assert(!boot_clears && !cd_handoffs);
         /* Malformed, missing and duplicate phase sections must reject before
          * changing CPU, RAM or the previously active handoff latch. */
@@ -173,6 +187,18 @@ int main(void) {
         assert(!boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
         assert(cpu.pc==0xdeadbeef && ram[0x100]==0x55 && fntrace_is_game_started()==!started);
         u32(saved+32,boot_state_layout_cookie());
+        u32(pipeline+4,0x80050045u);
+        assert(!boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
+        assert(cpu.pc==0xdeadbeef && ram[0x100]==0x55);
+        u32(pipeline+4,0x80050044u);
+        uint8_t *no_pipeline=malloc(len-pipeline_bytes); assert(no_pipeline);
+        memcpy(no_pipeline,saved,pipeline_offset);
+        memcpy(no_pipeline+pipeline_offset,saved+pipeline_offset+pipeline_bytes,
+               len-pipeline_offset-pipeline_bytes);
+        u32(no_pipeline+28,count-1);
+        assert(!boot_state_load_buffer(no_pipeline,len-pipeline_bytes,123,0x801b0000,&cpu));
+        assert(cpu.pc==0xdeadbeef && ram[0x100]==0x55);
+        free(no_pipeline);
         u32(phase,2);
         assert(!boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
         u32(phase,(uint32_t)started);
@@ -188,6 +214,15 @@ int main(void) {
         assert(cpu.pc==0xdeadbeef && ram[0x100]==0x55 && fntrace_is_game_started()==!started);
         free(missing); free(duplicate); free(saved);
     }
-    puts("snapshot handoff: cold/warm, BIOS/game, compressed/raw and atomic rejection passed");
+    /* Nonsemantic retired scratch, including host epochs, must not alter the
+     * canonical state. This normal-save path needs no TAS/debug opt-in. */
+    fixture_ld=(DirtyRamLoadDelay){.rt=31,.val=0xdead,.age=1,.armed=0,
+                                  .old=0xbeef,.next=3,.seq=0x12345678};
+    uint8_t *saved=NULL; size_t len=0;
+    assert(boot_state_save_buffer_raw(&cpu,123,0x801b0000,&saved,&len));
+    uint8_t *pipeline=section(saved,len,BS_SEC_CPU_EXEC); assert(pipeline);
+    for(unsigned i=0;i<36;i++) assert(pipeline[i]==0);
+    free(saved);
+    puts("snapshot handoff: normal pipeline, cold/warm, BIOS/game, compressed/raw and atomic rejection passed");
     return 0;
 }

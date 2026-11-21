@@ -76,29 +76,6 @@ static bool insn_reads_gpr_cg(uint32_t w, uint32_t r) {
     return rs == r;
 }
 
-/* Does instruction w write GPR r? */
-static bool insn_writes_gpr_cg(uint32_t w, uint32_t r) {
-    if (r == 0u || w == 0u) return false;
-    uint32_t op = w >> 26, rt = (w >> 16) & 31u;
-    uint32_t rd = (w >> 11) & 31u, fn = w & 63u;
-    if (op == 0u) {
-        if (fn == 0x08u || fn == 0x0Cu || fn == 0x0Du || fn == 0x0Fu ||
-            fn == 0x11u || fn == 0x13u || (fn >= 0x18u && fn <= 0x1Bu)) return false;
-        return rd == r;
-    }
-    if (op == 0x03u) return r == 31u;
-    if (op == 0x01u) return (rt == 0x10u || rt == 0x11u) && r == 31u;
-    if (op == 0x02u || (op >= 0x04u && op <= 0x07u) ||
-        (op >= 0x28u && op <= 0x2Eu) || op == 0x32u || op == 0x3Au)
-        return false;
-    if (op == 0x10u) return ((w >> 21) & 31u) == 0u && rt == r;
-    if (op == 0x12u) {
-        uint32_t f = (w >> 21) & 31u;
-        return (f == 0u || f == 2u) && rt == r;
-    }
-    return rt == r;
-}
-
 /* Point a translated delayed write at `temp` instead of cpu->gpr[rt]: the
  * assignment itself and the PGXP hook that reports the written value. */
 static bool redirect_delayed_write(std::string& emitted, uint32_t rt,
@@ -331,7 +308,7 @@ void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
             const auto w=exe_.read_word(a);if(!w){precision_region_plan_={};return;}
             auto text=translate_instruction_core(a,*w);
             const bool control=ControlFlowAnalyzer::is_control_flow(*w);
-            bool opaque=extra_labels_.count(a)||!mod_instruction_call(a,*w).empty()||
+            bool opaque=extra_labels_.count(a)||dsl_sites_.count(a)||dsl_flush_at_.count(a)||!mod_instruction_call(a,*w).empty()||
                 find_mod_immediate_site(a,*w)||!draw_distance_clamp_prefix(a,*w).empty()||
                 text.find("psx_")!=std::string::npos||text.find("gte_")!=std::string::npos;
             if(control && (f.boundary || pgxp_flow_effect(*w).barrier || !mod_instruction_call(a,*w).empty()))opaque=true;
@@ -355,7 +332,7 @@ void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
             // selectors remain opaque. A scratch-frame declaration certifies
             // the exact handled adapters' SP/RA roles; emission still publishes
             // every pending geometry receipt before invoking those adapters.
-            i.opaque=extra_labels_.count(i.address)||
+            i.opaque=extra_labels_.count(i.address)||dsl_sites_.count(i.address)||dsl_flush_at_.count(i.address)||
                 (!config_.geometry_scratch_frames.count(cfg.function_start) &&
                  !mod_instruction_call(i.address,i.word).empty())||
                 find_mod_immediate_site(i.address,i.word)||
@@ -2428,7 +2405,7 @@ std::string CodeGenerator::translate_basic_block(
             const std::string text=translate_instruction_core(pc,*w);
             const uint32_t op=*w>>26;
             const bool protected_store=(op==0x28u||op==0x29u||op==0x2bu) && runtime_pc(pc)==0x00001ce4u;
-            bool opaque=protected_store||extra_labels_.count(pc)||!mod_instruction_call(pc,*w).empty()||
+            bool opaque=protected_store||extra_labels_.count(pc)||dsl_sites_.count(pc)||dsl_flush_at_.count(pc)||!mod_instruction_call(pc,*w).empty()||
                 find_mod_immediate_site(pc,*w)||!draw_distance_clamp_prefix(pc,*w).empty()||
                 text.find("psx_ws_")!=std::string::npos||text.find("psx_mod_")!=std::string::npos||text.find("gte_")!=std::string::npos;
             words.push_back({pc,*w,opaque});
@@ -2589,20 +2566,10 @@ std::string CodeGenerator::translate_basic_block(
                 if (co && funct == 0x10u) slice_side_effects = 1;   // RFE
             }
         }
-        // A delay-slot load pending into this block (dsl_flush_at_) lives in a
-        // C local: never leave the function before it retires. Slicing is a
-        // parked precision option, so skipping it on that edge only moves an
-        // interrupt to the next block boundary.
-        std::string dsl_pending;
-        auto pend = dsl_flush_at_.find(block.start_addr);
-        if (pend != dsl_flush_at_.end()) {
-            for (uint32_t ds : pend->second)
-                dsl_pending += fmt::format("!psx_dslp_{:08X} && ", ds);
-        }
         ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
         ss << config_.indent
-           << fmt::format("if ({}psx_slice_block(cpu, 0x{:08X}u, {}u, {})) return;\n",
-                          dsl_pending, runtime_pc(block.start_addr), slice_bcyc,
+           << fmt::format("if (psx_slice_block(cpu, 0x{:08X}u, {}u, {})) return;\n",
+                          runtime_pc(block.start_addr), slice_bcyc,
                           slice_side_effects);
         ss << "#endif\n";
     }
@@ -2851,6 +2818,14 @@ std::string CodeGenerator::translate_basic_block(
         if (!is_cf) {
             if (cycle_per_insn) emit_pre_icache(addr, config_.indent);
             if (cycle_per_insn) emit_pre_timing(instr, config_.indent);
+            const bool dsl_successor = addr == block.start_addr &&
+                                       dsl_flush_at_.count(addr) != 0;
+            if (dsl_successor) {
+                /* Materialize any native precision receipt before the shared
+                 * provider exposes the old operand for this instruction. */
+                if (precision_region_body_) ss << region_flush();
+                precision_span.barrier();
+            }
             // If this is the successor half of a deferred load pair AND it is an
             // LWL/LWR merging into that same register, hardware forwards the
             // pending load into the merge (see set_lwlr_merge_forward). Point
@@ -2925,25 +2900,14 @@ std::string CodeGenerator::translate_basic_block(
                     delayed_load_active = true;
                 }
             }
+            if (dsl_successor)
+                ss << config_.indent << fmt::format(
+                    "psx_dsl_cookie = dirty_ram_ld_delay_begin(cpu, 0x{:08X}u, 0x{:08X}u);\n",
+                    runtime_pc(addr), instr);
             ss << emitted << "\n";
-            // Retire a load from a predecessor's branch delay slot: this first
-            // instruction ran in its shadow and saw the old register.
-            if (addr == block.start_addr) {
-                auto pend = dsl_flush_at_.find(addr);
-                if (pend != dsl_flush_at_.end()) {
-                    for (uint32_t ds : pend->second) {
-                        const uint32_t rt = dsl_sites_.at(ds).rt;
-                        if (insn_writes_gpr_cg(instr, rt)) {
-                            ss << config_.indent << fmt::format(
-                                "psx_dslp_{:08X} = 0;  /* delay-slot load: this write wins */\n", ds);
-                        } else {
-                            ss << config_.indent << fmt::format(
-                                "if (psx_dslp_{0:08X}) {{ cpu->gpr[{1}] = psx_dsl_{0:08X}; "
-                                "psx_dslp_{0:08X} = 0; }}  /* delay-slot load writeback */\n",
-                                ds, rt);
-                        }
-                    }
-                }
+            if (dsl_successor) {
+                ss << config_.indent << fmt::format(
+                    "dirty_ram_ld_delay_end(cpu, psx_dsl_cookie, 0x{:08X}u);\n", instr);
             }
             if (delayed_load_active && addr == delayed_load_addr + 4u) {
                 if (forward_to_lwlr) {
@@ -2980,8 +2944,8 @@ std::string CodeGenerator::translate_basic_block(
                     const auto& site = dsl_sites_.at(dsl_slot);
                     if (in_function && site.dependent.count(succ))
                         return config_.indent + config_.indent +
-                               fmt::format("psx_dslp_{:08X} = 1;  /* retired at block_{:08X} */\n",
-                                           dsl_slot, succ);
+                               fmt::format("dirty_ram_ld_delay_stage(cpu, {}u, psx_dsl_{:08X}, 0x{:08X}u);\n",
+                                           site.rt, dsl_slot, runtime_pc(succ));
                     return config_.indent + config_.indent +
                            fmt::format("cpu->gpr[{}] = psx_dsl_{:08X};  /* load-delay writeback */\n",
                                        site.rt, dsl_slot);
@@ -3608,7 +3572,7 @@ void CodeGenerator::prepare_precision_dataflow(const ControlFlowGraph& cfg) {
             if (!word) return;
             PgxpFlowInstruction i{pc, *word};
             i.removable = !delay_slots.count(pc);
-            i.opaque = extra_labels_.count(pc) || !mod_instruction_call(pc, *word).empty() ||
+            i.opaque = extra_labels_.count(pc) || dsl_sites_.count(pc) || dsl_flush_at_.count(pc) || !mod_instruction_call(pc, *word).empty() ||
                 find_mod_immediate_site(pc, *word) || !draw_distance_clamp_prefix(pc, *word).empty();
             const auto effect = pgxp_flow_effect(*word);
             if (effect.pure_alu && !i.opaque) {
@@ -3766,8 +3730,8 @@ GeneratedFunction CodeGenerator::generate_function(
     extra_labels_.clear();
     std::map<uint32_t, std::vector<uint32_t>> jr_table_edges;
     scan_jr_tables(cfg, jr_table_edges);
-    prepare_precision_dataflow(cfg);
     scan_delay_slot_loads(cfg);
+    prepare_precision_dataflow(cfg);
 
     // CPS (§25): collect this function's continuations (call return points) as
     // blocks are translated, so the entry-switch below can route a dispatched
@@ -4150,12 +4114,14 @@ void CodeGenerator::scan_delay_slot_loads(const ControlFlowGraph& cfg) {
 
 std::string CodeGenerator::dsl_decls() const {
     std::string out;
+    if (!dsl_sites_.empty())
+        out += config_.indent + "uint64_t psx_dsl_cookie = 0; (void)psx_dsl_cookie;\n";
     for (const auto& [ds, site] : dsl_sites_) {
         out += config_.indent + fmt::format(
-            "uint32_t psx_dsl_{0:08X} = 0; int psx_dslp_{0:08X} = 0;  /* delay-slot load r{1} */\n",
+            "uint32_t psx_dsl_{0:08X} = 0;  /* delay-slot load r{1}, staged before the edge */\n",
             ds, site.rt);
         out += config_.indent + fmt::format(
-            "(void)psx_dsl_{0:08X}; (void)psx_dslp_{0:08X};\n", ds);
+            "(void)psx_dsl_{:08X};\n", ds);
     }
     return out;
 }
@@ -4225,8 +4191,8 @@ std::vector<GeneratedFunction> CodeGenerator::generate_alias_group(
     extra_labels_.clear();
     std::map<uint32_t, std::vector<uint32_t>> jr_table_edges;
     scan_jr_tables(cfg, jr_table_edges);
-    prepare_precision_dataflow(cfg);
     scan_delay_slot_loads(cfg);
+    prepare_precision_dataflow(cfg);
 
     // CPS (§25): collect this alias group's continuations during block
     // translation (also prevents a stale list from leaking into the next

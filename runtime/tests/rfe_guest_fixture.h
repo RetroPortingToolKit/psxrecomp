@@ -132,6 +132,11 @@ void dirty_ram_checkpoint_enter(uint32_t pc, int slot, uint32_t target, int take
 void dirty_ram_checkpoint_leave(void) {}
 int dirty_ram_checkpoint_resume_pending(void) { return 0; }
 int dirty_ram_is_dirty(uint32_t phys) { (void)phys; return 0; }
+#ifndef FX_REAL_LOAD_DELAY
+/* These guests never execute a delayed load. The dedicated provider/IRQ
+ * regression links the production window instead of this empty seam. */
+void dirty_ram_ld_delay_flush(CPUState *cpu) { (void)cpu; }
+#endif
 int dma_cdrom_transfer_active(void) { return 0; }
 int source_gpu_runtime_active(void) { return 0; }
 int psx_netplay_active(void) { return 0; }
