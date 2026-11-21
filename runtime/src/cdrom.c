@@ -338,6 +338,9 @@ void cdrom_set_speed(int divisor) {
     g_disc_speed_divisor = divisor;
 }
 
+int cdrom_get_speed(void) { return g_disc_speed_divisor; }
+int cdrom_get_game_speed(void) { return g_game_divisor; }
+
 /* Store the configured speed for post-BIOS application. Boot stays at 1x. */
 void cdrom_set_game_speed(int divisor) {
     g_game_divisor = divisor;
