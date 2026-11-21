@@ -32,11 +32,15 @@ For two-seat non-media rollback recovery, a follow-NACK offers a retained,
 verified snapshot strictly before the original mispredicted input. A progress
 watermark alone is insufficient. The peers park Live, reopen BEGIN for that
 same correction, exchange sealed input rows, match the restored baseline, and
-match POST after replay before resuming. Missing retained history remains
+match POST after replay before resuming. If there is no usable recent shared
+snapshot, the existing slot-zero host can transfer its retained pre-mismatch
+keyframe before baseline verification and full input replay. Keyframe authority
+stays with that host. Missing host history or an unreplayable input range stays
 parked with a reconnect diagnostic; it never authorizes a unilateral restore
 or replacement of player input. PSX SYNC flag `0x08` marks this retained-load
 retry (and a valid NACK offer, including tick zero); NACK flag `0x10` means no
-retained offer. Normal strict build compatibility applies.
+retained offer. `MEDIA_KF` on NACK advertises a retained host keyframe source.
+Normal strict build compatibility applies.
 
 A statically linked title can register `PSXModNetplayProfile` from
 `runtime/include/mod_netplay.h` for a shared simulation such as experimental
