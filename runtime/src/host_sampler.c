@@ -19,6 +19,7 @@
 #include "host_sampler.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern int g_psx_render_pass_active;
@@ -47,11 +48,19 @@ static void record(uintptr_t pc) {
 #if defined(PSX_DISABLE_HOST_SAMPLER) && PSX_DISABLE_HOST_SAMPLER
 /* Build-only overhead control. Normal Release/debug builds always retain history. */
 void host_sampler_start(void) {}
+void host_sampler_stop(void) {}
 
 #elif defined(_WIN32)
 #include <windows.h>
 
 static HANDLE s_target;
+/* Held across each SuspendThread..ResumeThread. exit() terminates the other
+ * threads after the atexit handlers run; a sampler terminated between its
+ * suspend and its resume leaves the exiting thread suspended for good, and
+ * the process never ends. host_sampler_stop (an atexit handler) takes the
+ * lock, so no suspension is in progress or can start after it returns. */
+static SRWLOCK s_sample_lock = SRWLOCK_INIT;
+static int s_stopped;
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
@@ -75,7 +84,15 @@ static DWORD WINAPI sampler_main(LPVOID arg) {
     for (;;) {
         if (timer) WaitForSingleObject(timer, INFINITE);
         else Sleep(1);
-        if (SuspendThread(s_target) == (DWORD)-1) continue;
+        AcquireSRWLockExclusive(&s_sample_lock);
+        if (s_stopped) {
+            ReleaseSRWLockExclusive(&s_sample_lock);
+            break;
+        }
+        if (SuspendThread(s_target) == (DWORD)-1) {
+            ReleaseSRWLockExclusive(&s_sample_lock);
+            continue;
+        }
         CONTEXT ctx;
         memset(&ctx, 0, sizeof ctx);
         ctx.ContextFlags = CONTEXT_CONTROL;
@@ -87,8 +104,17 @@ static DWORD WINAPI sampler_main(LPVOID arg) {
 #endif
         }
         ResumeThread(s_target);
+        ReleaseSRWLockExclusive(&s_sample_lock);
     }
+    if (timer) CloseHandle(timer);
     return 0;
+}
+
+void host_sampler_stop(void) {
+    if (!s_supported) return;
+    AcquireSRWLockExclusive(&s_sample_lock);
+    s_stopped = 1;
+    ReleaseSRWLockExclusive(&s_sample_lock);
 }
 
 void host_sampler_start(void) {
@@ -105,6 +131,7 @@ void host_sampler_start(void) {
     SetThreadPriority(t, THREAD_PRIORITY_TIME_CRITICAL);
     CloseHandle(t);
     s_supported = 1;
+    atexit(host_sampler_stop);
 }
 
 #elif defined(__linux__) || defined(__APPLE__)
@@ -181,6 +208,11 @@ void host_sampler_start(void) {
 
 #else
 void host_sampler_start(void) {}
+#endif
+
+#if !defined(_WIN32) && !(defined(PSX_DISABLE_HOST_SAMPLER) && PSX_DISABLE_HOST_SAMPLER)
+/* SIGPROF samples the thread it lands on; nothing suspends a thread. */
+void host_sampler_stop(void) {}
 #endif
 
 int host_sampler_supported(void) { return s_supported; }
