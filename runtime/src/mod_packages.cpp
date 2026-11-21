@@ -35,7 +35,7 @@ constexpr uint32_t kMaxFormatVersion = 14;
 /* A mod may only point the launcher at a file inside the game folder. */
 static bool status_file_path_ok(const std::string& text) {
     const std::filesystem::path path(text);
-    if (text.empty() || path.is_absolute() || path.has_root_name()) return false;
+    if (text.empty() || path.is_absolute() || path.has_root_path()) return false;
     for (const auto& part : path)
         if (part == "..") return false;
     return true;

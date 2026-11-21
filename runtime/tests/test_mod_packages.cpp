@@ -2693,7 +2693,7 @@ int main() {
         write_text(exe / "s1.txt", "HD pack active (Lanczos)\nzweite\n");
         check(mod_feature_status_text(exe, "s1.txt") == "HD pack active (Lanczos)",
               "status_reads_first_line");
-        write_text(exe / "s2.txt", "abc\r\n");
+        write_bytes(exe / "s2.txt", {'a', 'b', 'c', '\r', '\n'});
         check(mod_feature_status_text(exe, "s2.txt") == "abc", "status_strips_crlf");
         check(mod_feature_status_text(exe, "missing.txt").empty(),
               "status_missing_file_is_empty");
