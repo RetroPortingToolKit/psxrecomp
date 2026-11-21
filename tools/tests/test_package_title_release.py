@@ -160,16 +160,29 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.diagnostics['replay_helper'])
         self.assertTrue(config.selective_pgo)
         self.assertEqual(config.pgo_train_seconds, 10)
+        self.assertEqual(config.pgo_train_frames, 600)
 
     def test_pgo_options_are_explicit_and_bounded(self):
         path = self.fixture.root / 'release.toml'
         path.write_text(CONFIG.format(extra='').replace(
             '[build]', '[build]\nselective_pgo = false\npgo_train_seconds = 3'))
         self.assertFalse(self.fixture.config().selective_pgo)
+        self.assertEqual(self.fixture.config().pgo_train_frames, 180)
         for value in ('0', '301', 'true', '"10"'):
             path.write_text(CONFIG.format(extra='').replace(
                 '[build]', '[build]\npgo_train_seconds = ' + value))
             with self.assertRaisesRegex(ptr.PackagingError, 'pgo_train_seconds'):
+                self.fixture.config()
+
+    def test_explicit_guest_frame_workload_overrides_legacy_seconds(self):
+        path = self.fixture.root / 'release.toml'
+        path.write_text(CONFIG.format(extra='').replace(
+            '[build]', '[build]\npgo_train_frames = 240\npgo_train_seconds = 3'))
+        self.assertEqual(self.fixture.config().pgo_train_frames, 240)
+        for value in ('0', '18001', 'true', '"600"'):
+            path.write_text(CONFIG.format(extra='').replace(
+                '[build]', '[build]\npgo_train_frames = ' + value))
+            with self.assertRaisesRegex(ptr.PackagingError, 'pgo_train_frames'):
                 self.fixture.config()
 
     def test_diagnostics_hd_policy_is_explicit_and_forwarded(self):
@@ -410,7 +423,7 @@ class SelectiveReleasePgoTests(unittest.TestCase):
 
         def training(*args):
             (directory / 'training.json').write_text('{}')
-            return dict(profiles=profiles)
+            return dict(profiles=profiles, frame_completion=dict(first=1, last=601, frames=600))
 
         cache = dict(CMAKE_COMMAND='cmake', CMAKE_GENERATOR='Ninja', CMAKE_C_COMPILER='gcc',
                      CMAKE_CXX_COMPILER='g++', CMAKE_MAKE_PROGRAM='ninja')
@@ -435,6 +448,16 @@ class SelectiveReleasePgoTests(unittest.TestCase):
         (directory / 'generate.json').write_text('{}')
         return directory
 
+    def frame_boot(self, process):
+        def launch(*args, **kwargs):
+            count = self.ctx.config.pgo_train_frames
+            kwargs['stdout'].write(('[BENCH] window=1:%d frames=%d wall_ms=1\n'
+                                    '[BENCH] self_exit=normal frame=%d\n' %
+                                    (count + 1, count, count + 1)).encode())
+            kwargs['stdout'].flush()
+            return process
+        return launch
+
     def test_linux_dotted_basename_keeps_the_full_execution_sidecar_name(self):
         ctx = self.ctx
         ctx.tc.exe_suffix = ''
@@ -448,35 +471,71 @@ class SelectiveReleasePgoTests(unittest.TestCase):
         self.assertEqual(recipe['binary'], 'Game.v2')
         self.assertEqual(recipe['companions'], ['Game.v2.execution.json'])
 
-    def test_boot_profiles_require_normal_close_and_real_profile_validation(self):
-        directory = self.training_files()
+    def training_process(self, code=0):
         process = mock.Mock(pid=123, returncode=None)
-        process.wait.side_effect = subprocess.TimeoutExpired('fixture', 10)
         process.poll.side_effect = lambda: process.returncode
+        def wait(*args, **kwargs):
+            self.assertEqual((args, kwargs), ((), {}), 'normal flush has no deadline')
+            process.returncode = code
+            return code
+        process.wait.side_effect = wait
+        return process
 
-        def close(child):
-            child.returncode = 0
-            return dict(method='mock normal close', exit_code=0)
+    def test_slow_startup_waits_for_finite_guest_work_before_exit(self):
+        self.training_files()
+        process = self.training_process()
+        launched, polls = {}, []
+        def launch(*args, **kwargs):
+            launched.update(kwargs)
+            return process
+        def poll():
+            polls.append(True)
+            if len(polls) == 2:
+                launched['stdout'].write(b'[BENCH] window=1:')
+                launched['stdout'].flush()
+            if len(polls) == 3:
+                launched['stdout'].write(b'601 frames=600 wall_ms=999999\n[BENCH] self_exit=normal frame=601\n')
+                launched['stdout'].flush()
+            return process.returncode
+        process.poll.side_effect = poll
+        with mock.patch.object(ptr.subprocess, 'Popen', side_effect=launch), \
+                mock.patch.object(ptr.time, 'sleep'), \
+                mock.patch.object(ptr.time, 'monotonic', side_effect=[0, 100000]), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'verify_inputs'), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'profiles', return_value={'validated': True}):
+            result = ptr.train_release_pgo(self.ctx, {'commands': {}})
+        self.assertGreaterEqual(len(polls), 3)
+        self.assertEqual(result['frame_completion'], {'first': 1, 'last': 601, 'frames': 600})
+        self.assertEqual(result['elapsed_seconds'], 100000)
+        process.wait.assert_called_once_with()
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
 
-        with mock.patch.object(ptr.subprocess, 'Popen', return_value=process) as launch, \
-                mock.patch.object(ptr, 'close_training_game', side_effect=close), \
+    def test_boot_profiles_require_guest_completion_normal_exit_and_profile_validation(self):
+        directory = self.training_files()
+        process = self.training_process()
+        with mock.patch.object(ptr.subprocess, 'Popen', side_effect=self.frame_boot(process)) as launch, \
                 mock.patch.object(ptr.runtime_hot_pgo, 'verify_inputs') as inputs, \
                 mock.patch.object(ptr.runtime_hot_pgo, 'profiles', return_value={'validated': True}) as profiles:
             result = ptr.train_release_pgo(self.ctx, {'commands': 'fixture commands'})
         self.assertEqual(result['status'], 'trained-boot-only')
         self.assertEqual(result['profiles'], {'validated': True})
+        self.assertEqual(result['close']['method'], 'runtime finite guest-frame self-exit')
+        self.assertEqual(result['close']['exit_code'], 0)
         inputs.assert_called_once()
         profiles.assert_called_once_with(self.ctx.runtime_build, 'psx-runtime', 'fixture commands')
         env = launch.call_args.kwargs['env']
         self.assertNotIn('PSX_LOAD_SLOT', env)
         self.assertEqual(env['SDL_AUDIODRIVER'], 'dummy')
+        self.assertEqual(env['PSX_BENCH_WINDOW'], '1:601')
+        self.assertEqual(env['PSX_BENCH_EXIT'], '1')
+        process.wait.assert_called_once_with()
         self.assertTrue((directory / 'training.json').is_file())
 
     def test_early_exit_is_not_training_even_with_exit_zero(self):
         directory = self.training_files()
-        process = mock.Mock(returncode=0)
-        process.wait.return_value = 0
-        process.poll.return_value = 0
+        process = self.training_process()
+        process.returncode = 0
         with mock.patch.object(ptr.subprocess, 'Popen', return_value=process), \
                 mock.patch.object(ptr.runtime_hot_pgo, 'profiles') as profiles:
             with self.assertRaisesRegex(ptr.PackagingError, 'exited early'):
@@ -484,55 +543,55 @@ class SelectiveReleasePgoTests(unittest.TestCase):
         profiles.assert_not_called()
         self.assertEqual(json.loads((directory / 'training.json').read_text())['status'], 'failed')
 
+    def test_nonzero_self_exit_still_rejects_training(self):
+        directory = self.training_files()
+        process = self.training_process(code=7)
+        with mock.patch.object(ptr.subprocess, 'Popen', side_effect=self.frame_boot(process)), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'profiles') as profiles:
+            with self.assertRaisesRegex(ptr.PackagingError, 'did not close normally'):
+                ptr.train_release_pgo(self.ctx, {})
+        profiles.assert_not_called()
+        self.assertEqual(json.loads((directory / 'training.json').read_text())['close']['exit_code'], 7)
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
     def test_normal_exit_without_three_valid_profiles_still_fails(self):
         directory = self.training_files()
-        process = mock.Mock(pid=123, returncode=None)
-        process.wait.side_effect = subprocess.TimeoutExpired('fixture', 10)
-        process.poll.side_effect = lambda: process.returncode
-
-        def close(child):
-            child.returncode = 0
-            return dict(exit_code=0)
-
-        with mock.patch.object(ptr.subprocess, 'Popen', return_value=process), \
-                mock.patch.object(ptr, 'close_training_game', side_effect=close), \
+        process = self.training_process()
+        with mock.patch.object(ptr.subprocess, 'Popen', side_effect=self.frame_boot(process)), \
                 mock.patch.object(ptr.runtime_hot_pgo, 'verify_inputs'), \
                 mock.patch.object(ptr.runtime_hot_pgo, 'profiles', side_effect=RuntimeError('missing selected profile')):
             with self.assertRaisesRegex(RuntimeError, 'missing selected profile'):
                 ptr.train_release_pgo(self.ctx, {'commands': {}})
         self.assertEqual(json.loads((directory / 'training.json').read_text())['status'], 'failed')
 
-    def test_normal_close_waits_without_an_elapsed_deadline(self):
-        process = mock.Mock(pid=123, returncode=None)
-        process.poll.return_value = None
+    def test_unmarked_exit_after_guest_work_is_not_runtime_self_exit(self):
+        self.training_files()
+        process = self.training_process()
+        def launch(*args, **kwargs):
+            kwargs['stdout'].write(b'[BENCH] window=1:601 frames=600 wall_ms=1\n')
+            kwargs['stdout'].flush()
+            return process
+        with mock.patch.object(ptr.subprocess, 'Popen', side_effect=launch), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'profiles') as profiles:
+            with self.assertRaisesRegex(ptr.PackagingError, 'did not report its own'):
+                ptr.train_release_pgo(self.ctx, {})
+        profiles.assert_not_called()
 
-        def wait(*args, **kwargs):
-            if args or kwargs:
-                raise subprocess.TimeoutExpired('healthy slow shutdown', kwargs.get('timeout'))
-            process.returncode = 0
-            return 0
-
-        process.wait.side_effect = wait
-        with mock.patch.object(ptr.os, 'name', 'posix'):
-            result = ptr.close_training_game(process)
-        self.assertEqual(result['exit_code'], 0)
-        process.wait.assert_called_once_with()
-        process.terminate.assert_not_called()
-        process.kill.assert_not_called()
-
-    def test_close_failure_retains_owned_child_and_original_failure(self):
+    def test_wrong_completion_retains_owned_child_without_error_cleanup_exit(self):
         directory = self.training_files()
-        process = mock.Mock(pid=123, returncode=None)
-        process.wait.side_effect = subprocess.TimeoutExpired('finite boot sample', 10)
-        process.poll.return_value = None
-        with mock.patch.object(ptr.subprocess, 'Popen', return_value=process), \
-                mock.patch.object(ptr, 'close_training_game', side_effect=ptr.PackagingError('close fixture failed')):
-            with self.assertRaisesRegex(ptr.PackagingError, 'close fixture failed'):
+        process = self.training_process()
+        def launch(*args, **kwargs):
+            kwargs['stdout'].write(b'[BENCH] window=1:301 frames=300 wall_ms=1\n')
+            kwargs['stdout'].flush()
+            return process
+        with mock.patch.object(ptr.subprocess, 'Popen', side_effect=launch):
+            with self.assertRaisesRegex(ptr.PackagingError, 'does not match'):
                 ptr.train_release_pgo(self.ctx, {})
         record = json.loads((directory / 'training.json').read_text())
         self.assertEqual(record['status'], 'failed')
-        self.assertEqual(record['failure'], 'close fixture failed')
         self.assertEqual(record['owned_process'], {'pid': 123, 'running': True})
+        process.wait.assert_not_called()
         process.terminate.assert_not_called()
         process.kill.assert_not_called()
 
