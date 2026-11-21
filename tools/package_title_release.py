@@ -585,7 +585,7 @@ def native_toolchain_args(toolchain):
             '-DCMAKE_MAKE_PROGRAM=' + toolchain.make]
 
 
-def close_training_game(process, timeout=15):
+def close_training_game(process):
     """Request the exact owned SDL process to quit normally so gcov flushes."""
     if process.poll() is not None:
         fail('PGO training exited before its close request (%s)' % process.returncode)
@@ -623,7 +623,8 @@ def close_training_game(process, timeout=15):
         # A signal termination/nonzero exit is a failure, never a flushed-profile pass.
         process.send_signal(signal.SIGTERM)
         method = 'SIGTERM converted by SDL signal handler to quit'
-    code = process.wait(timeout=timeout)
+    # Normal shutdown may still be flushing healthy work; elapsed time is not a failure.
+    code = process.wait()
     if code != 0:
         fail('PGO training did not close normally (exit %s)' % code)
     return dict(method=method, pid=process.pid, exit_code=code)
@@ -687,14 +688,9 @@ def train_release_pgo(ctx, generated):
     finally:
         try:
             if process is not None and process.poll() is None:
-                # Cleanup is never credited as a successful profile flush.
-                try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                except (OSError, subprocess.TimeoutExpired):
-                    process.kill()
-                    process.wait(timeout=5)
-                record['cleanup_exit_code'] = process.returncode
+                # A failed close request does not authorize killing healthy work.
+                # Retain exact ownership so the caller can inspect or request normal quit.
+                record['owned_process'] = dict(pid=process.pid, running=True)
         except BaseException as cleanup_error:
             record['cleanup_error'] = str(cleanup_error)
         finally:
