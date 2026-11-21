@@ -182,6 +182,10 @@ if(BUILD_TESTING)
                 COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_direct_guest_memory.py
                     --cc ${CMAKE_C_COMPILER})
+            add_test(NAME lowram_game_handoff
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lowram_game_handoff.py
+                    --cc ${CMAKE_C_COMPILER})
         endif()
     endif()
     add_executable(audio_sync_target_test tests/test_audio_sync_target.c src/audio_sync.c)
