@@ -8058,6 +8058,8 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
 
     if (!g_rb || !s)
         return 0;
+    if (psx_netplay_defer_recovery_for_transfer(mismatch_tick, slot))
+        return 0;
     /* §115: tip+1 platform fork already accepted — do not re-heal it. */
     if (g_platform_accepted_fork != 0u &&
         mismatch_tick == g_platform_accepted_fork) {
@@ -9443,6 +9445,10 @@ void psx_netplay_rb_pump(void)
     rnet_u16 row_count;
 
     if (!g_rb || !s)
+        return;
+    /* Leave incoming recovery messages queued while the collective operation
+     * owns the state channel; pump resumes them after its phase completes. */
+    if (psx_netplay_collective_transfer_active())
         return;
 
     /* §97: host probe/transfer media keyframe while awaiting baseline. */

@@ -518,6 +518,8 @@ void psx_netplay_pad_trace_dev(int card, int fallback, int sdl_start,
     (void)buttons;
 }
 void psx_netplay_on_rb_snap_loaded(void) {}
+int psx_netplay_collective_transfer_active(void) { return 0; }
+int psx_netplay_defer_recovery_for_transfer(uint32_t t, int s) { (void)t; (void)s; return 0; }
 void psx_netplay_hc_fork_recovery_restart(void) {}
 void psx_netplay_hc_fork_recovery_clear(void) {}
 void psx_netplay_cd_bisect_arm(uint32_t from_sim, uint32_t ticks)
@@ -805,6 +807,26 @@ static void np_log_live_digest(uint32_t tick, const NetplayCoreParts *parts,
  * episode reloads from the newest provably-safe snap (≤ fork tick — HC is
  * confirmed through fork-1 by definition) and reseals both seats from
  * wire-authoritative history, converging the states. */
+/* A collective card/save/load operation owns the application boundary until
+ * its existing phase returns to NONE. Rollback's own keyframe transport does
+ * not set this phase and must remain able to complete its recovery. */
+int psx_netplay_collective_transfer_active(void)
+{
+    return g_np.xfer != NP_XFER_NONE;
+}
+
+int psx_netplay_defer_recovery_for_transfer(uint32_t tick, int slot)
+{
+    if (!psx_netplay_collective_transfer_active()) return 0;
+    if (!s_deferred_rw_valid || tick < s_deferred_rw_tick) {
+        s_deferred_rw_valid = 1;
+        s_deferred_rw_tick = tick;
+        s_deferred_rw_slot = slot;
+        s_deferred_rw_logged = 0;
+    }
+    return 1;
+}
+
 /* PSX_RB_DET_SELFTEST=<K>: the replay-determinism test. Every K ticks the
  * slot-0 host opens a rollback episode 16 ticks back although nothing was
  * mispredicted, so every seat reloads a snap and replays confirmed rows over
@@ -826,7 +848,8 @@ static void np_det_selftest_tick(uint32_t done)
         return;
     if (done - last < (uint32_t)k)
         return;
-    if (psx_netplay_rb_active() || psx_netplay_rb_tip_holding() ||
+    if (psx_netplay_collective_transfer_active() ||
+        psx_netplay_rb_active() || psx_netplay_rb_tip_holding() ||
         psx_netplay_rb_load_pending())
         return;
     last = done;
@@ -849,7 +872,8 @@ static void np_try_hc_fork_recovery(uint32_t fork_tick)
      * the same doomed ladder (soak: load 1808→1792→1776→… baseline mismatch). */
     const uint32_t retry_ticks_fork_cap = 256u;
 
-    if (!g_np.rollback || !g_np.session)
+    if (!g_np.rollback || !g_np.session ||
+        psx_netplay_collective_transfer_active())
         return;
     if (g_np.local_slot != 0)
         return; /* initiator side only */
@@ -1355,7 +1379,7 @@ static int np_mc_blob_crc(uint32_t *size_out, uint32_t *crc_out)
 static int np_xfer_busy(void)
 {
     if (!g_np.session) return 0;
-    if (g_np.xfer != NP_XFER_NONE) return 1;
+    if (psx_netplay_collective_transfer_active()) return 1;
     return rnet_session_state_busy(g_np.session) ||
            rnet_session_state_take_ready(g_np.session, NULL, NULL, NULL, NULL);
 }
@@ -2991,8 +3015,11 @@ static void np_rollback_reconcile_wire(void)
          * live FMV even with MEDIA_KF (avoids GAP1→3.7MB KF xfer). Post-FMV
          * menus invent+resim. */
         int fmv_lock = psx_netplay_rb_lockstep_no_invent();
-        no_resim = promote_sweep || cooldown || fmv_lock;
-        if (promote_sweep)
+        no_resim = promote_sweep || cooldown || fmv_lock ||
+                   psx_netplay_collective_transfer_active();
+        if (psx_netplay_collective_transfer_active())
+            no_resim_why = "state-transfer";
+        else if (promote_sweep)
             no_resim_why = "sweep";
         else if (cooldown)
             no_resim_why = "cooldown";
@@ -4886,6 +4913,8 @@ int psx_netplay_request_save(int slot)
         return 0;
     if (g_np.local_slot != 0)
         return 1; /* guest: host-only; ignore */
+    if (psx_netplay_rb_active() || psx_netplay_rb_tip_holding() ||
+        psx_netplay_rb_load_pending()) return 0;
     if (np_xfer_busy() || !g_np.mc_sync_done)
         return 1;
     if (slot < 0) slot = 0;
@@ -4922,6 +4951,8 @@ int psx_netplay_request_load(int slot)
         return 0;
     if (g_np.local_slot != 0)
         return 1;
+    if (psx_netplay_rb_active() || psx_netplay_rb_tip_holding() ||
+        psx_netplay_rb_load_pending()) return 0;
     if (np_xfer_busy() || !g_np.mc_sync_done)
         return 1;
     if (slot < 0) slot = 0;
