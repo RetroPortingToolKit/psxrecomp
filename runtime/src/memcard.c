@@ -47,6 +47,9 @@ typedef struct {
 static MemCard cards[MAX_CARDS];
 static MemcardExtensionLoad extension_load;
 static MemcardExtensionSave extension_save;
+/* Replay playback: the player's cards, put back by memcard_replay_end. */
+static MemCard player_cards[MAX_CARDS];
+static int replay_active;
 
 void memcard_set_extension_codec(MemcardExtensionLoad load,
                                 MemcardExtensionSave save) {
@@ -252,6 +255,7 @@ static void memcard_ensure_dir(const char* dir) {
 }
 
 void memcard_init_slots(const char* dir, const MemcardSlotConfig slots[2]) {
+    if (replay_active) return;
     for (int i = 0; i < MAX_CARDS; ++i) discard_extension(&cards[i]);
     memset(cards, 0, sizeof(cards));
     memcard_ensure_dir(dir);
@@ -476,7 +480,7 @@ int memcard_import_raw(int card, const uint8_t *src) {
 
 int memcard_rebind_dir(const char *dir) {
     int i;
-    if (!dir || !dir[0]) return -1;
+    if (!dir || !dir[0] || replay_active) return -1;
     memcard_ensure_dir(dir);
     for (i = 0; i < MAX_CARDS; i++) {
         if (!cards[i].present && cards[i].filepath[0] == '\0')
@@ -492,6 +496,7 @@ int memcard_rebind_dir(const char *dir) {
 }
 
 int memcard_rebind_paths(const char *path0, const char *path1) {
+    if (replay_active) return -1;
     if (path0 && path0[0]) {
         snprintf(cards[0].filepath, sizeof(cards[0].filepath), "%s", path0);
     }
@@ -502,7 +507,7 @@ int memcard_rebind_paths(const char *path0, const char *path1) {
 }
 
 int memcard_rebind_path(int card, const char *path) {
-    if (card < 0 || card >= MAX_CARDS) return -1;
+    if (card < 0 || card >= MAX_CARDS || replay_active) return -1;
     if (path && path[0]) {
         snprintf(cards[card].filepath, sizeof(cards[card].filepath), "%s", path);
         /* The first flush must not fail on a missing directory (the host's
@@ -528,6 +533,7 @@ int memcard_rebind_path(int card, const char *path) {
 
 int memcard_reload_bound(void) {
     int i;
+    if (replay_active) return 0;
     for (i = 0; i < MAX_CARDS; i++) {
         FILE *f;
         if (cards[i].filepath[0] == '\0') {
@@ -553,4 +559,36 @@ int memcard_reload_bound(void) {
         fclose(f);
     }
     return 0;
+}
+
+int memcard_replay_supported(void) {
+    const MemCard* c = replay_active ? player_cards : cards;
+    if (memcard_extension_codec_active()) return 0;
+    for (int i = 0; i < MAX_CARDS; ++i)
+        if (c[i].extension || c[i].extension_read_failed) return 0;
+    return 1;
+}
+
+int memcard_replay_begin(const uint8_t *images, uint32_t mask) {
+    if (!images || mask > 3u || !memcard_replay_supported()) return -1;
+    if (!replay_active) {
+        /* The player's pending saves reach their files before the swap. */
+        memcard_flush_all();
+        memcpy(player_cards, cards, sizeof cards);
+        replay_active = 1;
+    }
+    memset(cards, 0, sizeof cards);
+    for (int i = 0; i < MAX_CARDS; ++i) {
+        if (!(mask >> i & 1u)) continue;
+        /* No file path: guest saves stay in memory. */
+        memcpy(cards[i].data, images + (size_t)i * MEMCARD_SIZE, MEMCARD_SIZE);
+        cards[i].present = 1;
+    }
+    return 0;
+}
+
+void memcard_replay_end(void) {
+    if (!replay_active) return;
+    memcpy(cards, player_cards, sizeof cards);
+    replay_active = 0;
 }

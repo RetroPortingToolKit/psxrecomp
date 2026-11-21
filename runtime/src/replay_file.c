@@ -230,6 +230,9 @@ const char *replay_file_read(FILE *f, ReplayFileInfo *info, ReplayStep *steps, u
         case REPLAY_TAG_PRODUCT:
             error = read_lines(f, length, s->product, REPLAY_FILE_PRODUCT_MAX, "replay product");
             break;
+        case REPLAY_TAG_CODE_SET:
+            error = read_lines(f, length, s->code_set, REPLAY_FILE_CODE_SET_MAX, "replay code set");
+            break;
         default:
             if (!(tag & REPLAY_TAG_SKIPPABLE)) { error = "unsupported mandatory extension tag"; break; }
             if ((tag & 0x7fffff00u) == 0x100u) { error = "unsupported identity or marker tag"; break; }
@@ -308,6 +311,7 @@ const char *replay_file_write(FILE *f, const ReplayFileOut *o)
     const size_t settings_len = o && o->settings ? strlen(o->settings) : 0;
     const size_t name_len = o && o->name ? strlen(o->name) : 0;
     const size_t product_len = o && o->product ? strlen(o->product) : 0;
+    const size_t code_set_len = o && o->code_set ? strlen(o->code_set) : 0;
     const uint32_t card_bytes = o ? replay_file_card_count(o->cards_mask) * REPLAY_FILE_CARD_BYTES : 0;
     const uint32_t thumb_px = o && o->thumb ? (uint32_t)o->thumb_w * o->thumb_h : 0;
     unsigned char h[REPLAY_FILE_HEADER_BYTES], small[36], *cp;
@@ -323,6 +327,8 @@ const char *replay_file_write(FILE *f, const ReplayFileOut *o)
         return "replay settings";
     if (product_len > REPLAY_FILE_PRODUCT_MAX || !lines_ok(o->product ? o->product : "", product_len))
         return "replay product";
+    if (code_set_len > REPLAY_FILE_CODE_SET_MAX || !lines_ok(o->code_set ? o->code_set : "", code_set_len))
+        return "replay code set";
     if (name_len && !replay_file_name_ok(o->name, name_len)) return "replay name";
     if (thumb_px && (4u + 4u * (uint64_t)thumb_px > REPLAY_FILE_THUMB_MAX)) return "replay thumbnail size";
     if (o->digest_count > o->frames + 1u) return "replay digests";
@@ -339,6 +345,7 @@ const char *replay_file_write(FILE *f, const ReplayFileOut *o)
     if (o->anchor) ext += entry_bytes(o->anchor_length);
     if (o->power_on) ext += entry_bytes(4) + entry_bytes(4u + (uint64_t)card_bytes);
     if (product_len) ext += entry_bytes(product_len);
+    if (code_set_len) ext += entry_bytes(code_set_len);
     if (settings_len) ext += entry_bytes(settings_len);
     if (o->digest_count) ext += entry_bytes(4u + (uint64_t)o->digest_count * REPLAY_FILE_DIGEST_BYTES);
     if (thumb_px) ext += entry_bytes(4u + 4u * (uint64_t)thumb_px);
@@ -366,6 +373,8 @@ const char *replay_file_write(FILE *f, const ReplayFileOut *o)
     }
     if (product_len && !put_entry(f, REPLAY_TAG_PRODUCT, o->product, (uint32_t)product_len))
         return "write replay product";
+    if (code_set_len && !put_entry(f, REPLAY_TAG_CODE_SET, o->code_set, (uint32_t)code_set_len))
+        return "write replay code set";
     if (settings_len && !put_entry(f, REPLAY_TAG_SETTINGS, o->settings, (uint32_t)settings_len))
         return "write replay settings";
     if (o->digest_count) {

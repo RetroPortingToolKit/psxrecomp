@@ -71,15 +71,22 @@ extern "C" {
  *            start
  *   NAME     UTF-8 text, no control bytes
  *   PRODUCT  ASCII "key=value" lines naming the product that recorded it:
- *            exe_sha256, codegen, bios_crc32, renderer, platform */
+ *            exe_sha256, codegen, bios_crc32, renderer, platform
+ *   CODE_SET ASCII "key=value" lines naming the native overlay code the
+ *            recording ran with, taken after the compiler was held:
+ *            count=<units>, digest=<SHA-256 hex over the sorted unit lines,
+ *            each followed by a newline>, then one "unit=<path>" line per
+ *            unit when they all fit. A file without it plays as before. */
 #define REPLAY_TAG_THUMB       0x80000304u
 #define REPLAY_TAG_NAME        0x80000305u
 #define REPLAY_TAG_PRODUCT     0x80000308u
+#define REPLAY_TAG_CODE_SET    0x80000309u
 
 #define REPLAY_FILE_DIGEST_BYTES 20u
 #define REPLAY_FILE_SETTINGS_MAX 4096u
 #define REPLAY_FILE_NAME_MAX 96u
 #define REPLAY_FILE_PRODUCT_MAX 1024u
+#define REPLAY_FILE_CODE_SET_MAX 4096u
 #define REPLAY_FILE_THUMB_MAX (4u + 4u * 256u * 256u)
 #define REPLAY_FILE_CARD_BYTES (128u * 1024u)
 
@@ -146,6 +153,7 @@ typedef struct {
     uint32_t cards_mask;
     long cards_offset;              /* the first inserted card's image */
     char product[REPLAY_FILE_PRODUCT_MAX + 1];
+    char code_set[REPLAY_FILE_CODE_SET_MAX + 1];   /* "" when absent */
 } ReplayFileInfo;
 
 /* What replay_file_write writes. NULL or zero members are left out; exactly
@@ -167,6 +175,7 @@ typedef struct {
     uint16_t thumb_w, thumb_h;
     const char *name;
     const char *product;
+    const char *code_set;
 } ReplayFileOut;
 
 /* Reads a whole replay from the current position (the magic). Up to
