@@ -5,6 +5,7 @@
 #if !defined(PSX_HAS_RECOMP_NET)
 void psx_netplay_rb_bind(const PsxNetplayRbBindings *b) { (void)b; }
 void psx_netplay_rb_start(void) {}
+void psx_netplay_rb_restart_after_load(void) {}
 void psx_netplay_rb_shutdown(void) {}
 void psx_netplay_rb_cold_reset(void) {}
 void psx_netplay_rb_poll(struct CPUState *cpu, uint32_t resume_pc)
@@ -6617,19 +6618,22 @@ void psx_netplay_rb_bind(const PsxNetplayRbBindings *b)
     g_bound = 1;
 }
 
-void psx_netplay_rb_start(void)
+static void rb_shutdown(int clear_guest_resume);
+
+static void rb_start(int clear_guest_resume)
 {
     RNetRbConfig cfg;
     RNetRollbackVTable vt;
     RNetSession *s = sess();
     int delay;
 
-    psx_netplay_rb_shutdown(); /* also clears IRQ resume latches */
+    rb_shutdown(clear_guest_resume);
     if (!g_bound || !s)
         return;
     /* Rematch: belt-and-suspenders with interrupts_init (shutdown already
      * cleared; re-clear after recreate path in case bind raced). */
-    psx_irq_clear_resume_latches();
+    if (clear_guest_resume)
+        psx_irq_clear_resume_latches();
 
     /* §96: dirty-VRAM tracking only while RB netplay is live. */
     gpu_vram_dirty_set_tracking(1);
@@ -6744,6 +6748,22 @@ void psx_netplay_rb_start(void)
             (unsigned)snap_interval(), (unsigned)tip_dense_window());
 }
 
+void psx_netplay_rb_start(void)
+{
+    rb_start(1);
+}
+
+void psx_netplay_rb_restart_after_load(void)
+{
+    /* A manual load starts a new tick domain, not another recovery episode.
+     * The existing reset owner drops old snapshots, authoritative ceilings,
+     * peer episode bookkeeping and media deadlines together. CPU/IRQ resume
+     * latches belong to the restored state and must remain intact. */
+    rb_start(0);
+    fprintf(stderr, "psxrecomp: rb host timeline restarted after netplay load\n");
+    fflush(stderr);
+}
+
 void psx_netplay_rb_cold_reset(void)
 {
     /* Residue rb_shutdown historically left until the next rb_start — a
@@ -6780,6 +6800,7 @@ void psx_netplay_rb_cold_reset(void)
     g_stat_replay_ticks_total = 0;
     g_pending_save_valid = 0;
     g_pending_load_valid = 0;
+    g_auth_snap_through = 0;
     g_pending_resume_valid = 0;
     g_live_realign_pending = 0;
     g_was_in_fmv = 0;
@@ -6808,7 +6829,7 @@ void psx_netplay_rb_cold_reset(void)
     g_last_good_bb_pc = 0;
 }
 
-void psx_netplay_rb_shutdown(void)
+static void rb_shutdown(int clear_guest_resume)
 {
     if (g_rb) {
         rnet_rb_destroy(g_rb);
@@ -6820,7 +6841,8 @@ void psx_netplay_rb_shutdown(void)
     }
     /* BYE / soft-exit: drop resume latches before lobby rematch so dig0 cannot
      * see a prior-match game PC between shutdown and interrupts_init. */
-    psx_irq_clear_resume_latches();
+    if (clear_guest_resume)
+        psx_irq_clear_resume_latches();
     psx_netplay_rb_cold_reset();
     gpu_vram_dirty_set_tracking(0);
     boot_state_vram_mirror_reset();
@@ -6897,6 +6919,11 @@ void psx_netplay_rb_shutdown(void)
     g_abort_wire_realign_tick = 0u;
     g_abort_from_peer = 0;
     g_rb_rtt_ema_ms = 0;
+}
+
+void psx_netplay_rb_shutdown(void)
+{
+    rb_shutdown(1);
 }
 
 /* Dense tip snaps: settle + digest lockstep/+tip (§26) — first Cross/Start

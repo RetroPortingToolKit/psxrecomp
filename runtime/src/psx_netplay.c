@@ -2109,9 +2109,10 @@ static void np_commit_load_sync(void)
     g_np.needs_advance = 0;
     g_np.latched_for_tick = 0;
     /* staged_valid left set by prime — tip must match delay-prefix hold. */
-    /* §95: load is a hard resync — drop leftover FMV DESYNC invent-hold. */
+    /* The network clock is a fresh era. Drop the old RB host timeline and
+     * snapshots, keeping the loaded CPU/device state and selected profile. */
     if (g_np.rollback)
-        psx_netplay_rb_clear_fmv_desync_hold("netplay load sync");
+        psx_netplay_rb_restart_after_load();
 }
 
 static void np_enter_load_ready(int slot)
