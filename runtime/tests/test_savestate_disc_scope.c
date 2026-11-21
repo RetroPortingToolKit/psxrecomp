@@ -73,6 +73,11 @@ int boot_state_save_buffer_raw(const CPUState* cpu, uint32_t bios, uint32_t entr
     *size = 1;
     return *data != NULL;
 }
+/* The replay recorder saves its anchors through the checked wrapper. */
+int boot_state_save_buffer(const CPUState* cpu, uint32_t bios, uint32_t entry,
+                           uint8_t** data, size_t* size) {
+    return boot_state_save_buffer_raw(cpu, bios, entry, data, size);
+}
 int boot_state_check_buffer(const uint8_t* data, size_t size, uint32_t bios,
                             uint32_t entry, char* reason, size_t cap) {
     (void)data; (void)size; (void)bios; (void)entry;

@@ -29,6 +29,9 @@ void cdrom_set_disc_scex(const char scex[4]);
 void cdrom_set_speed(int divisor);
 /* Store configured game speed (applied post-BIOS via cdrom_notify_game_started). */
 void cdrom_set_game_speed(int divisor);
+/* The divisors set by the two calls above. */
+int cdrom_get_speed(void);
+int cdrom_get_game_speed(void);
 /* Called by fntrace on first game-range dispatch; switches to game speed. */
 void cdrom_notify_game_started(void);
 /* LBA of the most recent SetLoc command (-1 if none yet). Used by the DMA
