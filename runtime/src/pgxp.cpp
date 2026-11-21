@@ -160,6 +160,55 @@ uint32_t psx_pgxp_plain_mask = 0;
 uint32_t psx_pgxp_plain_values[32] = {};
 }
 static void flush_plain_writes(void);
+struct PGXPLoadRegister {
+    PGXPValue value{};
+    PGXPScalar scalar{};
+    uint64_t source=0;
+};
+struct PGXPLoadWindow {
+    PGXPLoadRegister prepared{},old{},loaded{};
+    uint32_t prepared_reg=0,reg=0,gen=0;
+    bool armed=false,hidden=false;
+};
+static PGXPLoadWindow s_load_window;
+static PGXPLoadRegister load_register(uint32_t reg) {
+    return {s_gpr[reg],s_gpr_s[reg],source_get(&s_gpr[reg])};
+}
+static void put_load_register(uint32_t reg,const PGXPLoadRegister& saved) {
+    psx_pgxp_plain_mask &= ~(UINT32_C(1)<<reg);
+    s_gpr[reg]=saved.value;s_gpr_s[reg]=saved.scalar;
+    source_set(&s_gpr[reg],saved.source);
+}
+extern "C" int psx_pgxp_load_delay_prepare(uint32_t reg) {
+    s_load_window.prepared_reg=0;
+    if(!g_pgxp_active || !reg || reg>=32u)return 0;
+    flush_plain_writes();
+    s_load_window.prepared=load_register(reg);
+    s_load_window.prepared_reg=reg;
+    return 1;
+}
+extern "C" void psx_pgxp_load_delay_arm(uint32_t reg) {
+    s_load_window.armed=false;s_load_window.hidden=false;
+    if(!g_pgxp_active || s_load_window.prepared_reg!=reg)return;
+    s_load_window.old=s_load_window.prepared;
+    s_load_window.prepared_reg=0;s_load_window.reg=reg;
+    s_load_window.gen=s_gen;s_load_window.armed=true;
+}
+extern "C" void psx_pgxp_load_delay_begin(uint32_t reg) {
+    if(!s_load_window.armed || s_load_window.reg!=reg ||
+       s_load_window.gen!=s_gen || !g_pgxp_active)return;
+    flush_plain_writes();
+    s_load_window.loaded=load_register(reg);
+    put_load_register(reg,s_load_window.old);
+    s_load_window.hidden=true;
+}
+extern "C" void psx_pgxp_load_delay_end(uint32_t reg,int keep_writer) {
+    if(!s_load_window.armed || s_load_window.reg!=reg)return;
+    if(s_load_window.hidden && !keep_writer && s_load_window.gen==s_gen)
+        put_load_register(reg,s_load_window.loaded);
+    s_load_window.armed=false;s_load_window.hidden=false;
+}
+extern "C" void psx_pgxp_load_delay_discard(void) { s_load_window={}; }
 static inline void recompute_active(void) {
     g_pgxp_active = ((s_enabled || s_source_tracking) && s_suppress == 0) ? 1 : 0;
     psx_pgxp_plain_enabled = g_pgxp_active;
@@ -177,6 +226,7 @@ static void ck_wrapped(void);
 
 extern "C" void pgxp_invalidate_all(void) {
     if (s_suppress != 0) { s_deferred_invalidate = 1; return; }
+    s_load_window={};
     psx_pgxp_plain_mask = 0;
     if (++s_gen == 0) {
         ck_wrapped();
@@ -432,6 +482,7 @@ static int               s_ck_lossy = 0;
 static PGXPValue         s_ck_gpr[34], s_ck_gte[32], s_ck_gtc[32];
 static uint64_t          s_ck_gpr_source[34], s_ck_gte_source[32], s_ck_gtc_source[32];
 static PGXPScalar        s_ck_gpr_s[34], s_ck_gte_s[32], s_ck_gtc_s[32];
+static PGXPLoadWindow    s_ck_load_window;
 static uint32_t          s_ck_gen = 0, s_ck_suppress = 0;
 static int               s_ck_deferred = 0;
 static uint64_t          s_ck_source_revision = 0;
@@ -589,6 +640,7 @@ extern "C" void pgxp_checkpoint_begin(void) {
     std::memcpy(s_ck_gpr_s, s_gpr_s, sizeof s_gpr_s);
     std::memcpy(s_ck_gte_s, s_gte_s, sizeof s_gte_s);
     std::memcpy(s_ck_gtc_s, s_gtc_s, sizeof s_gtc_s);
+    s_ck_load_window=s_load_window;
     s_ck_gen = s_gen;
     s_ck_suppress = s_suppress;
     s_ck_deferred = s_deferred_invalidate;
@@ -619,6 +671,7 @@ extern "C" void pgxp_checkpoint_rollback(void) {
     std::memcpy(s_gpr_s, s_ck_gpr_s, sizeof s_gpr_s);
     std::memcpy(s_gte_s, s_ck_gte_s, sizeof s_gte_s);
     std::memcpy(s_gtc_s, s_ck_gtc_s, sizeof s_gtc_s);
+    s_load_window=s_ck_load_window;
     s_gen = s_ck_gen;
     /* A watchdog abort can leave a suppress bracket open: the machine it
      * interrupted is gone, so its bracket is too. */

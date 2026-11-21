@@ -32,6 +32,111 @@ static bool block_needs_fallthrough(const BasicBlock& block) {
             block.successors.empty() && block.exit_instr.target == 0);
 }
 
+/* GPR written one instruction late on the R3000A (MIPS-I load delay): the
+ * simple loads LB/LH/LW/LBU/LHU (PSX-SPX cpuspecifications, "Caution - Load
+ * Delay") and the COP2 moves MFC2/CFC2 (PSX-SPX geometrytransformationenginegte,
+ * "GTE Load Delay Slots": one instruction until the GPR is loaded). LWL/LWR
+ * are excluded: they forward into a following LWL/LWR and are handled by the
+ * LWL/LWR forwarding path. Returns the destination GPR, or -1. */
+static int delayed_gpr_dest(uint32_t w) {
+    const uint32_t op = w >> 26, rt = (w >> 16) & 31u;
+    if (op == 0x20u || op == 0x21u || op == 0x23u || op == 0x24u || op == 0x25u)
+        return rt ? static_cast<int>(rt) : -1;
+    if (op == 0x12u) {
+        const uint32_t f = (w >> 21) & 31u;
+        if (f == 0x00u || f == 0x02u) return rt ? static_cast<int>(rt) : -1;
+    }
+    return -1;
+}
+
+/* Does instruction w read GPR r? (Same decode as translate_basic_block's
+ * in-block pair test.) */
+static bool insn_reads_gpr_cg(uint32_t w, uint32_t r) {
+    if (r == 0u || w == 0u) return false;
+    uint32_t op = w >> 26, rs = (w >> 21) & 31u;
+    uint32_t rt = (w >> 16) & 31u, fn = w & 63u;
+    if (op == 0u) {
+        if (fn == 0x08u || fn == 0x09u) return rs == r;
+        if (fn == 0x0Cu || fn == 0x0Du || fn == 0x10u || fn == 0x12u)
+            return false;
+        if (fn == 0x00u || fn == 0x02u || fn == 0x03u) return rt == r;
+        return rs == r || rt == r;
+    }
+    if (op == 0x02u || op == 0x03u || op == 0x0Fu) return false;
+    if (op == 0x01u || op == 0x06u || op == 0x07u) return rs == r;
+    if (op == 0x04u || op == 0x05u) return rs == r || rt == r;
+    if (op >= 0x08u && op <= 0x0Eu) return rs == r;
+    if (op == 0x10u) return ((w >> 21) & 31u) == 0x04u && rt == r;
+    if (op == 0x12u) {
+        uint32_t f = (w >> 21) & 31u;
+        return (f == 0x04u || f == 0x06u) && rt == r;
+    }
+    if (op == 0x22u || op == 0x26u || (op >= 0x28u && op <= 0x2Eu))
+        return rs == r || rt == r;
+    return rs == r;
+}
+
+/* Point a translated delayed write at `temp` instead of cpu->gpr[rt]: the
+ * assignment itself and the PGXP hook that reports the written value. */
+static bool redirect_delayed_write(std::string& emitted, uint32_t rt,
+                                   const std::string& temp) {
+    const std::string lhs = fmt::format("cpu->gpr[{}] =", rt);
+    bool hit = false;
+    for (size_t at = emitted.find(lhs); at != std::string::npos;
+         at = emitted.find(lhs, at + temp.size())) {
+        emitted.replace(at, lhs.size(), temp + " =");
+        hit = true;
+    }
+    const std::string load_tail = fmt::format(", _pgxa, cpu->gpr[{}]);", rt);
+    for (size_t at = emitted.find(load_tail); at != std::string::npos;
+         at = emitted.find(load_tail, at + 1))
+        emitted.replace(at, load_tail.size(), fmt::format(", _pgxa, {});", temp));
+    const std::string cop2_mid = fmt::format("u, cpu->gpr[{}], 0u);", rt);
+    for (size_t at = emitted.find(cop2_mid); at != std::string::npos;
+         at = emitted.find(cop2_mid, at + 1))
+        emitted.replace(at, cop2_mid.size(), fmt::format("u, {}, 0u);", temp));
+    return hit;
+}
+
+static std::string delayed_precision_decls(const std::string& temp) {
+    return "#if defined(PSX_PGXP) && PSX_PGXP\n" +
+        fmt::format("    uint32_t {0}_meta_kind=0, {0}_meta_instr=0, {0}_meta_addr=0;\n",temp) +
+        "#endif\n";
+}
+static std::string delayed_precision_publish(const std::string& temp) {
+    return "#if defined(PSX_PGXP) && PSX_PGXP\n" + fmt::format(
+        "    if ({0}_meta_kind==1u) PGXP_LOAD({0}_meta_instr,{0}_meta_addr,{0});\n"
+        "    else if ({0}_meta_kind==2u) PGXP_COP2({0}_meta_instr,{0},{0}_meta_addr);\n",temp) +
+        "#endif\n";
+}
+/* Capture the actual selected hook arguments, including mod selectors and
+ * their effective address. Publish only after the architectural write owner
+ * has captured the old register shadow; never replay all selector branches. */
+static void defer_delayed_precision(std::string& emitted,const std::string& temp) {
+    for(const auto& [name,kind]:std::vector<std::pair<std::string,unsigned>>{
+            {"PGXP_LOAD(",1u},{"PGXP_COP2(",2u}}) {
+        size_t at=0;
+        while((at=emitted.find(name,at))!=std::string::npos) {
+            size_t end=at+name.size(),part=end;unsigned depth=0;
+            std::vector<std::string> args;
+            for(;end<emitted.size();++end) {
+                const char c=emitted[end];
+                if(c=='(')++depth;
+                else if(c==')') {
+                    if(!depth){args.push_back(emitted.substr(part,end-part));break;}
+                    --depth;
+                } else if(c==','&&!depth){args.push_back(emitted.substr(part,end-part));part=end+1;}
+            }
+            if(args.size()!=3u || end+1>=emitted.size() || emitted[end+1]!=';')
+                throw std::runtime_error("unrecognized delayed precision hook");
+            const std::string captured="\n#if defined(PSX_PGXP) && PSX_PGXP\n"+
+                fmt::format("    {0}_meta_kind={1}u; {0}_meta_instr={2}; {0}_meta_addr={3};\n",
+                    temp,kind,args[0],args[kind==1u?1u:2u])+"#endif\n";
+            emitted.replace(at,end+2-at,captured);at+=captured.size();
+        }
+    }
+}
+
 /* Reserved MIPS-II branch-likely words often appear when discovery sweeps
  * ASCII/data as code. Emit the RI raise every time (faithfulness), but do not
  * spam one WARNING per revisit of the same PC — product Generate was flooding
@@ -242,7 +347,7 @@ void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
             const auto w=exe_.read_word(a);if(!w){precision_region_plan_={};return;}
             auto text=translate_instruction_core(a,*w);
             const bool control=ControlFlowAnalyzer::is_control_flow(*w);
-            bool opaque=extra_labels_.count(a)||!mod_instruction_call(a,*w).empty()||
+            bool opaque=extra_labels_.count(a)||dsl_sites_.count(a)||dsl_flush_at_.count(a)||!mod_instruction_call(a,*w).empty()||
                 find_mod_immediate_site(a,*w)||!draw_distance_clamp_prefix(a,*w).empty()||
                 text.find("psx_")!=std::string::npos||text.find("gte_")!=std::string::npos;
             if(control && (f.boundary || pgxp_flow_effect(*w).barrier || !mod_instruction_call(a,*w).empty()))opaque=true;
@@ -266,7 +371,7 @@ void CodeGenerator::prepare_precision_regions(const ControlFlowGraph& cfg) {
             // selectors remain opaque. A scratch-frame declaration certifies
             // the exact handled adapters' SP/RA roles; emission still publishes
             // every pending geometry receipt before invoking those adapters.
-            i.opaque=extra_labels_.count(i.address)||
+            i.opaque=extra_labels_.count(i.address)||dsl_sites_.count(i.address)||dsl_flush_at_.count(i.address)||
                 (!config_.geometry_scratch_frames.count(cfg.function_start) &&
                  !mod_instruction_call(i.address,i.word).empty())||
                 find_mod_immediate_site(i.address,i.word)||
@@ -2339,7 +2444,7 @@ std::string CodeGenerator::translate_basic_block(
             const std::string text=translate_instruction_core(pc,*w);
             const uint32_t op=*w>>26;
             const bool protected_store=(op==0x28u||op==0x29u||op==0x2bu) && runtime_pc(pc)==0x00001ce4u;
-            bool opaque=protected_store||extra_labels_.count(pc)||!mod_instruction_call(pc,*w).empty()||
+            bool opaque=protected_store||extra_labels_.count(pc)||dsl_sites_.count(pc)||dsl_flush_at_.count(pc)||!mod_instruction_call(pc,*w).empty()||
                 find_mod_immediate_site(pc,*w)||!draw_distance_clamp_prefix(pc,*w).empty()||
                 text.find("psx_ws_")!=std::string::npos||text.find("psx_mod_")!=std::string::npos||text.find("gte_")!=std::string::npos;
             words.push_back({pc,*w,opaque});
@@ -2503,7 +2608,8 @@ std::string CodeGenerator::translate_basic_block(
         ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
         ss << config_.indent
            << fmt::format("if (psx_slice_block(cpu, 0x{:08X}u, {}u, {})) return;\n",
-                          runtime_pc(block.start_addr), slice_bcyc, slice_side_effects);
+                          runtime_pc(block.start_addr), slice_bcyc,
+                          slice_side_effects);
         ss << "#endif\n";
     }
 
@@ -2587,15 +2693,8 @@ std::string CodeGenerator::translate_basic_block(
      * resident/full-function emitter already models these; overlay/game CFG
      * emission must do the same.  OpenBIOS's CD/card fasttrack deliberately
      * uses `lw k0,...; move at,k0`, where the move must observe OLD k0. */
-    auto simple_load_dest = [](uint32_t w) -> int {
-        uint32_t op = w >> 26;
-        if (op == 0x20u || op == 0x21u || op == 0x23u ||
-            op == 0x24u || op == 0x25u) {
-            uint32_t rt = (w >> 16) & 31u;
-            return rt ? static_cast<int>(rt) : -1;
-        }
-        return -1;
-    };
+    /* MFC2/CFC2 have the same one-instruction delay as LW (delayed_gpr_dest). */
+    auto simple_load_dest = [](uint32_t w) -> int { return delayed_gpr_dest(w); };
     auto reads_gpr = [](uint32_t w, uint32_t r) -> bool {
         if (r == 0u || w == 0u) return false;
         uint32_t op = w >> 26, rs = (w >> 21) & 31u;
@@ -2758,6 +2857,14 @@ std::string CodeGenerator::translate_basic_block(
         if (!is_cf) {
             if (cycle_per_insn) emit_pre_icache(addr, config_.indent);
             if (cycle_per_insn) emit_pre_timing(instr, config_.indent);
+            const bool dsl_successor = addr == block.start_addr &&
+                                       dsl_flush_at_.count(addr) != 0;
+            if (dsl_successor) {
+                /* Materialize any native precision receipt before the shared
+                 * provider exposes the old operand for this instruction. */
+                if (precision_region_body_) ss << region_flush();
+                precision_span.barrier();
+            }
             // If this is the successor half of a deferred load pair AND it is an
             // LWL/LWR merging into that same register, hardware forwards the
             // pending load into the merge (see set_lwlr_merge_forward). Point
@@ -2768,6 +2875,7 @@ std::string CodeGenerator::translate_basic_block(
                 delayed_load_active && addr == delayed_load_addr + 4u &&
                 succ_is_lwlr && get_rt(instr) == delayed_load_dest;
             if (forward_to_lwlr) {
+                ss << delayed_precision_publish(fmt::format("psx_ldd_{:08X}",delayed_load_addr));
                 set_lwlr_merge_forward(
                     delayed_load_dest,
                     fmt::format("psx_ldd_{:08X}", delayed_load_addr));
@@ -2807,6 +2915,13 @@ std::string CodeGenerator::translate_basic_block(
                     if (hook != std::string::npos)
                         emitted.replace(hook, pgxp_tail.size(),
                                         fmt::format(", _pgxa, {});", temp));
+                    // MFC2/CFC2: PGXP_COP2(insn, value, 0u) reports the value.
+                    const std::string cop2_mid =
+                        fmt::format("u, cpu->gpr[{}], 0u);", load_dest);
+                    const size_t cop2_hook = emitted.rfind(cop2_mid);
+                    if (cop2_hook != std::string::npos)
+                        emitted.replace(cop2_hook, cop2_mid.size(),
+                                        fmt::format("u, {}, 0u);", temp));
                     if (per_selector) {
                         // The remaining selector copies, same two rewrites.
                         for (size_t at = emitted.find(lhs); at != std::string::npos;
@@ -2820,12 +2935,22 @@ std::string CodeGenerator::translate_basic_block(
                     ss << config_.indent << "{ /* MIPS-I load-delay pair */\n";
                     ss << config_.indent
                        << fmt::format("    uint32_t {} = 0;\n", temp);
+                    ss << delayed_precision_decls(temp);
+                    defer_delayed_precision(emitted,temp);
                     delayed_load_addr = addr;
                     delayed_load_dest = static_cast<uint32_t>(load_dest);
                     delayed_load_active = true;
                 }
             }
+            if (dsl_successor)
+                ss << config_.indent << fmt::format(
+                    "psx_dsl_cookie = dirty_ram_ld_delay_begin(cpu, 0x{:08X}u, 0x{:08X}u);\n",
+                    runtime_pc(addr), instr);
             ss << emitted << "\n";
+            if (dsl_successor) {
+                ss << config_.indent << fmt::format(
+                    "dirty_ram_ld_delay_end(cpu, psx_dsl_cookie, 0x{:08X}u);\n", instr);
+            }
             if (delayed_load_active && addr == delayed_load_addr + 4u) {
                 if (forward_to_lwlr) {
                     ss << config_.indent << fmt::format(
@@ -2839,6 +2964,7 @@ std::string CodeGenerator::translate_basic_block(
                     ss << config_.indent << fmt::format(
                         "cpu->gpr[{}] = psx_ldd_{:08X};  /* load-delay writeback */\n",
                         delayed_load_dest, delayed_load_addr);
+                    ss << delayed_precision_publish(fmt::format("psx_ldd_{:08X}",delayed_load_addr));
                 }
                 ss << config_.indent << "}\n";
                 delayed_load_active = false;
@@ -2853,6 +2979,22 @@ std::string CodeGenerator::translate_basic_block(
                 // generate_branch_condition; check them here.
                 check_explicit_branch_site(addr, block.exit_instr.instruction);
                 ss << config_.indent << mod_instruction_call(addr, instr);
+                uint32_t dsl_slot = 0;            // delay slot holding a deferred load
+                // Before an arm's transfer: hand a deferred delay-slot load to a
+                // successor that reads it first, else write it back now.
+                auto dsl_arm = [&](uint32_t succ, bool in_function) -> std::string {
+                    if (!dsl_slot) return "";
+                    const auto& site = dsl_sites_.at(dsl_slot);
+                    if (in_function && site.dependent.count(succ))
+                        return config_.indent + config_.indent +
+                               fmt::format("dirty_ram_ld_delay_stage(cpu, {}u, psx_dsl_{:08X}, 0x{:08X}u);\n",
+                                           site.rt, dsl_slot, runtime_pc(succ))+
+                               delayed_precision_publish(fmt::format("psx_dsl_{:08X}",dsl_slot));
+                    return config_.indent + config_.indent +
+                           fmt::format("cpu->gpr[{}] = psx_dsl_{:08X};  /* load-delay writeback */\n",
+                                       site.rt, dsl_slot)+
+                           delayed_precision_publish(fmt::format("psx_dsl_{:08X}",dsl_slot));
+                };
                 std::string delay_saved_cond;    // branch condition captured before delay
                 std::string delay_saved_target;  // JR/JALR target captured before delay
 
@@ -2988,7 +3130,20 @@ std::string CodeGenerator::translate_basic_block(
                             // Delay slot's own fetch + §1+deps+DO_LDS, before its body (skipped if a load).
                             if (cycle_per_insn) emit_pre_icache(delay_slot_addr, config_.indent);
                             if (cycle_per_insn) emit_pre_timing(delay_instr, config_.indent);
-                            ss << translate_instruction(delay_slot_addr, delay_instr) << "\n";
+                            std::string ds_emit = translate_instruction(delay_slot_addr, delay_instr);
+                            auto dsl = dsl_sites_.find(delay_slot_addr);
+                            if (dsl != dsl_sites_.end() &&
+                                (block.exit_instr.type == ControlFlowType::Branch ||
+                                 block.exit_instr.type == ControlFlowType::Jump) &&
+                                redirect_delayed_write(ds_emit, dsl->second.rt,
+                                                       fmt::format("psx_dsl_{:08X}", delay_slot_addr))) {
+                                dsl_slot = delay_slot_addr;
+                                defer_delayed_precision(ds_emit,fmt::format("psx_dsl_{:08X}",dsl_slot));
+                                ss << config_.indent << fmt::format(
+                                    "/* MIPS-I load delay: r{} lands after the successor's first instruction */\n",
+                                    dsl->second.rt);
+                            }
+                            ss << ds_emit << "\n";
                             emit_cosim_instr(delay_slot_addr, config_.indent);
                         }
                     }
@@ -3002,10 +3157,12 @@ std::string CodeGenerator::translate_basic_block(
                         : delay_saved_cond;
                     if (block.successors.size() == 2) {
                         ss << config_.indent << "if (" << condition << ") {\n";
+                        ss << dsl_arm(block.successors[0], true);
                         ss << emit_interrupt_check(block.successors[0], config_.indent + config_.indent);
                         ss << config_.indent << config_.indent
                            << fmt::format("goto block_{:08X};  /* taken */\n", block.successors[0]);
                         ss << config_.indent << "} else {\n";
+                        ss << dsl_arm(block.successors[1], true);
                         ss << emit_interrupt_check(block.successors[1], config_.indent + config_.indent);
                         ss << config_.indent << config_.indent
                            << fmt::format("goto block_{:08X};  /* not taken */\n", block.successors[1]);
@@ -3020,6 +3177,7 @@ std::string CodeGenerator::translate_basic_block(
                         bool fallthru_in = cfg.blocks.count(fall_through_addr) > 0;
 
                         ss << config_.indent << "if (" << condition << ") {\n";
+                        ss << dsl_arm(branch_target, target_in);
                         if (target_in) {
                             ss << emit_interrupt_check(branch_target, config_.indent + config_.indent);
                             ss << config_.indent << config_.indent
@@ -3039,6 +3197,7 @@ std::string CodeGenerator::translate_basic_block(
                                << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* taken: split (mid-func) */\n", runtime_pc(branch_target));
                         }
                         ss << config_.indent << "} else {\n";
+                        ss << dsl_arm(fall_through_addr, fallthru_in);
                         if (fallthru_in) {
                             ss << emit_interrupt_check(fall_through_addr, config_.indent + config_.indent);
                             ss << config_.indent << config_.indent
@@ -3061,6 +3220,12 @@ std::string CodeGenerator::translate_basic_block(
                     }
                 } else if (block.exit_instr.type == ControlFlowType::Jump) {
                     // Unconditional jump
+                    {
+                        const uint32_t succ = block.successors.empty()
+                            ? block.exit_instr.target : block.successors[0];
+                        const std::string arm = dsl_arm(succ, !block.successors.empty());
+                        if (!arm.empty()) ss << arm.substr(config_.indent.size());
+                    }
                     if (!block.successors.empty()) {
                         ss << emit_interrupt_check(block.successors[0], config_.indent);
                         ss << config_.indent
@@ -3453,7 +3618,7 @@ void CodeGenerator::prepare_precision_dataflow(const ControlFlowGraph& cfg) {
             if (!word) return;
             PgxpFlowInstruction i{pc, *word};
             i.removable = !delay_slots.count(pc);
-            i.opaque = extra_labels_.count(pc) || !mod_instruction_call(pc, *word).empty() ||
+            i.opaque = extra_labels_.count(pc) || dsl_sites_.count(pc) || dsl_flush_at_.count(pc) || !mod_instruction_call(pc, *word).empty() ||
                 find_mod_immediate_site(pc, *word) || !draw_distance_clamp_prefix(pc, *word).empty();
             const auto effect = pgxp_flow_effect(*word);
             if (effect.pure_alu && !i.opaque) {
@@ -3611,6 +3776,7 @@ GeneratedFunction CodeGenerator::generate_function(
     extra_labels_.clear();
     std::map<uint32_t, std::vector<uint32_t>> jr_table_edges;
     scan_jr_tables(cfg, jr_table_edges);
+    scan_delay_slot_loads(cfg);
     prepare_precision_dataflow(cfg);
 
     // CPS (§25): collect this function's continuations (call return points) as
@@ -3710,6 +3876,7 @@ GeneratedFunction CodeGenerator::generate_function(
                 << config_.indent << "psx_cyc_local_begin(&_psx_lc_acc);\n";
     }
     body_ss << "#endif\n";
+    body_ss << dsl_decls();
 
     // CPS entry-switch: when the unified flat trampoline dispatches a
     // continuation address (a callee published cpu->pc = $ra back to us), route
@@ -3928,7 +4095,9 @@ GeneratedFunction CodeGenerator::generate_function(
         // public function retains its one cleanup scope and all entry hooks;
         // this helper may only be called after those hooks/edges were consumed.
         annotation_prefix+="#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 9\n__attribute__((noipa,cold))\n#elif defined(__GNUC__) || defined(__clang__)\n__attribute__((noinline,cold))\n#elif defined(_MSC_VER)\n__declspec(noinline)\n#endif\n";
-        annotation_prefix+=fmt::format("static void {}_canonical(CPUState *cpu,uint32_t entry) {{\n    switch(entry) {{\n",precision_region_owner_);
+        annotation_prefix+=fmt::format("static void {}_canonical(CPUState *cpu,uint32_t entry) {{\n",precision_region_owner_);
+        annotation_prefix+=dsl_decls();
+        annotation_prefix+="    switch(entry) {\n";
         std::set<uint32_t> entries(cps_cur_continuations_.begin(),cps_cur_continuations_.end());
         entries.insert(func.start_addr);
         for(uint32_t pc:entries) {
@@ -3944,6 +4113,66 @@ GeneratedFunction CodeGenerator::generate_function(
     result.line_count = std::count(result.full_code.begin(), result.full_code.end(), '\n');
 
     return result;
+}
+
+void CodeGenerator::scan_delay_slot_loads(const ControlFlowGraph& cfg) {
+    dsl_sites_.clear();
+    dsl_flush_at_.clear();
+    for (const auto& [baddr, block] : cfg.blocks) {
+        const auto& ex = block.exit_instr;
+        if (!ex.has_delay_slot || ex.is_likely) continue;
+        if (ex.type != ControlFlowType::Branch && ex.type != ControlFlowType::Jump) continue;
+        const uint32_t ds = ex.address + 4u;
+        auto dw = exe_.read_word(ds);
+        if (!dw.has_value()) continue;
+        const int rt = delayed_gpr_dest(*dw);
+        if (rt <= 0) continue;
+        std::vector<uint32_t> succs{ex.target};
+        if (ex.type == ControlFlowType::Branch) succs.push_back(ex.address + 8u);
+        DelaySlotLoad site;
+        site.rt = static_cast<uint32_t>(rt);
+        for (uint32_t succ : succs) {
+            if (succ == 0u || succ == ds) continue;
+            auto sw = exe_.read_word(succ);
+            if (!sw.has_value() || !insn_reads_gpr_cg(*sw, site.rt)) continue;
+            const uint32_t sop = *sw >> 26;
+            const bool modelable = cfg.blocks.count(succ) &&
+                !ControlFlowAnalyzer::is_control_flow(*sw) &&
+                delayed_gpr_dest(*sw) != rt &&
+                !((sop == 0x22u || sop == 0x26u) && ((*sw >> 16) & 31u) == site.rt);
+            if (!modelable) {
+                fmt::print(stderr,
+                    "  [load-delay] UNMODELED: delay-slot load 0x{:08X} r{} read first at "
+                    "0x{:08X} (outside this function, a branch, or a load of r{}); "
+                    "written back before the transfer\n", ds, rt, succ, rt);
+                continue;
+            }
+            site.dependent.insert(succ);
+        }
+        if (site.dependent.empty()) continue;
+        for (uint32_t succ : site.dependent) {
+            dsl_flush_at_[succ].push_back(ds);
+            fmt::print(stderr,
+                "  [load-delay] delay-slot load 0x{:08X} r{} retires after 0x{:08X}\n",
+                ds, rt, succ);
+        }
+        dsl_sites_[ds] = site;
+    }
+}
+
+std::string CodeGenerator::dsl_decls() const {
+    std::string out;
+    if (!dsl_sites_.empty())
+        out += config_.indent + "uint64_t psx_dsl_cookie = 0; (void)psx_dsl_cookie;\n";
+    for (const auto& [ds, site] : dsl_sites_) {
+        out += config_.indent + fmt::format(
+            "uint32_t psx_dsl_{0:08X} = 0;  /* delay-slot load r{1}, staged before the edge */\n",
+            ds, site.rt);
+        out += config_.indent + fmt::format(
+            "(void)psx_dsl_{:08X};\n", ds);
+        out += delayed_precision_decls(fmt::format("psx_dsl_{:08X}",ds));
+    }
+    return out;
 }
 
 void CodeGenerator::scan_jr_tables(
@@ -4011,6 +4240,7 @@ std::vector<GeneratedFunction> CodeGenerator::generate_alias_group(
     extra_labels_.clear();
     std::map<uint32_t, std::vector<uint32_t>> jr_table_edges;
     scan_jr_tables(cfg, jr_table_edges);
+    scan_delay_slot_loads(cfg);
     prepare_precision_dataflow(cfg);
 
     // CPS (§25): collect this alias group's continuations during block
@@ -4088,6 +4318,7 @@ std::vector<GeneratedFunction> CodeGenerator::generate_alias_group(
     body << fmt::format("void psx_alias_body_{:08X}(CPUState* cpu, uint32_t entry)\n{{\n",
                         host);
     alias_body_decls_.push_back(fmt::format("void psx_alias_body_{:08X}(CPUState* cpu, uint32_t entry)", host));
+    body << dsl_decls();
     // CPS (§25): a dispatched continuation (callee published cpu->pc = $ra) is
     // routed into its block here, BEFORE the entry switch — cpu->pc overrides
     // the `entry` arg. The dispatch routes a continuation by calling the first
