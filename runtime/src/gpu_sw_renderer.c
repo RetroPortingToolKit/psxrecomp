@@ -1959,3 +1959,93 @@ int sw_wide_dump_full(uint32_t *out, int cap_pixels, int *ow, int *oh, int base_
     if (oh) *oh = H;
     return W * H;
 }
+
+/* ------------------------------------------------------------------ */
+/* Renderer state snapshot (recordings and offline replay)            */
+/* ------------------------------------------------------------------ */
+
+/* Fixed-width fields so a snapshot means the same thing in every build. */
+typedef struct {
+    char magic[8];
+    int32_t scale, clip[4], offset[2];
+    int32_t semi_enabled, semi_mode, mask_set, mask_check;
+    uint8_t tw[4], mod[3], pad;
+    int32_t raw_texture, texture_filter, texture_filter_req, faithful;
+    int32_t precise_valid, precise_x16[3], precise_y16[3];
+    int32_t perspective_valid;
+    float perspective_q[3];
+    int32_t uv_lim[4];
+    int32_t view[4];
+} SwStateHeader;
+
+static const char k_sw_state_magic[8] = {'P','S','X','S','W','S','1','\0'};
+
+size_t sw_state_size(void) {
+    size_t pixels = (size_t)VRAM_WIDTH * VRAM_HEIGHT;
+    if (g_hr) pixels += (size_t)g_hr_w * g_hr_h;
+    return sizeof(SwStateHeader) + pixels * sizeof(uint16_t);
+}
+
+int sw_state_save(void *out, size_t capacity) {
+    if (g_wide_w || capacity < sw_state_size()) return 0;
+    SwStateHeader h;
+    memset(&h, 0, sizeof h);
+    memcpy(h.magic, k_sw_state_magic, sizeof h.magic);
+    h.scale = g_scale;
+    h.clip[0] = g_clip_x1; h.clip[1] = g_clip_y1; h.clip[2] = g_clip_x2; h.clip[3] = g_clip_y2;
+    h.offset[0] = g_offset_x; h.offset[1] = g_offset_y;
+    h.semi_enabled = g_semi_trans_enabled; h.semi_mode = g_semi_trans_mode;
+    h.mask_set = g_mask_set_bit; h.mask_check = g_mask_check_bit;
+    h.tw[0] = g_tw_mask_x; h.tw[1] = g_tw_mask_y; h.tw[2] = g_tw_off_x; h.tw[3] = g_tw_off_y;
+    h.mod[0] = g_mod_r; h.mod[1] = g_mod_g; h.mod[2] = g_mod_b;
+    h.raw_texture = g_raw_texture;
+    h.texture_filter = g_texture_filter; h.texture_filter_req = g_texture_filter_req;
+    h.faithful = g_faithful_authority;
+    h.precise_valid = g_precise_valid;
+    memcpy(h.precise_x16, g_precise_x16, sizeof h.precise_x16);
+    memcpy(h.precise_y16, g_precise_y16, sizeof h.precise_y16);
+    h.perspective_valid = g_perspective_valid;
+    memcpy(h.perspective_q, g_perspective_q, sizeof h.perspective_q);
+    memcpy(h.uv_lim, g_uv_lim, sizeof h.uv_lim);
+    h.view[0] = view_enabled; h.view[1] = view_shift;
+    h.view[2] = view_pad_left; h.view[3] = view_pad_right;
+    uint8_t *p = (uint8_t *)out;
+    memcpy(p, &h, sizeof h);
+    p += sizeof h;
+    memcpy(p, g_vram, (size_t)VRAM_WIDTH * VRAM_HEIGHT * sizeof(uint16_t));
+    p += (size_t)VRAM_WIDTH * VRAM_HEIGHT * sizeof(uint16_t);
+    if (g_hr) memcpy(p, g_hr, (size_t)g_hr_w * g_hr_h * sizeof(uint16_t));
+    return 1;
+}
+
+/* Restores a snapshot into an initialized renderer, including its scale. */
+int sw_state_load(const void *in, size_t size) {
+    SwStateHeader h;
+    if (size < sizeof h) return 0;
+    memcpy(&h, in, sizeof h);
+    if (memcmp(h.magic, k_sw_state_magic, sizeof h.magic) != 0) return 0;
+    sw_renderer_set_scale(h.scale);
+    if (g_scale != h.scale || size != sw_state_size()) return 0;
+    g_clip_x1 = h.clip[0]; g_clip_y1 = h.clip[1]; g_clip_x2 = h.clip[2]; g_clip_y2 = h.clip[3];
+    g_offset_x = h.offset[0]; g_offset_y = h.offset[1];
+    g_semi_trans_enabled = h.semi_enabled; g_semi_trans_mode = h.semi_mode;
+    g_mask_set_bit = h.mask_set; g_mask_check_bit = h.mask_check;
+    g_tw_mask_x = h.tw[0]; g_tw_mask_y = h.tw[1]; g_tw_off_x = h.tw[2]; g_tw_off_y = h.tw[3];
+    g_mod_r = h.mod[0]; g_mod_g = h.mod[1]; g_mod_b = h.mod[2];
+    g_raw_texture = h.raw_texture;
+    g_texture_filter = h.texture_filter; g_texture_filter_req = h.texture_filter_req;
+    g_faithful_authority = h.faithful;
+    g_precise_valid = h.precise_valid;
+    memcpy(g_precise_x16, h.precise_x16, sizeof h.precise_x16);
+    memcpy(g_precise_y16, h.precise_y16, sizeof h.precise_y16);
+    g_perspective_valid = h.perspective_valid;
+    memcpy(g_perspective_q, h.perspective_q, sizeof h.perspective_q);
+    memcpy(g_uv_lim, h.uv_lim, sizeof h.uv_lim);
+    view_enabled = h.view[0]; view_shift = h.view[1];
+    view_pad_left = h.view[2]; view_pad_right = h.view[3];
+    const uint8_t *p = (const uint8_t *)in + sizeof h;
+    memcpy(g_vram, p, (size_t)VRAM_WIDTH * VRAM_HEIGHT * sizeof(uint16_t));
+    p += (size_t)VRAM_WIDTH * VRAM_HEIGHT * sizeof(uint16_t);
+    if (g_hr) memcpy(g_hr, p, (size_t)g_hr_w * g_hr_h * sizeof(uint16_t));
+    return 1;
+}

@@ -12,6 +12,7 @@
 
 #include "gpu_render.h"
 #include "gpu_sw_renderer.h"
+#include "gpu_render_record.h"
 #include "gpu_hd_textures.h"
 #include "gpu_uv.h"
 #include <stdio.h>
@@ -68,6 +69,13 @@ extern const GpuRenderBackend *vk_backend_get(void);
 
 static const GpuRenderBackend *g_b         = &SW_BACKEND;
 static GrBackend               g_effective = GR_BACKEND_SOFTWARE;
+/* Installed by gpu_render_record.c while a recording is open, so the facade
+ * has no link dependency on the recorder. */
+static int (*g_record_stop)(void);
+void gr_record_set_stop_hook(int (*stop)(void)) { g_record_stop = stop; }
+const GpuRenderBackend *gr_backend_table(void) { return g_b; }
+void gr_backend_table_replace(const GpuRenderBackend *table) { g_b = table; }
+int gr_backend_is_software(void) { return g_effective == GR_BACKEND_SOFTWARE; }
 static int g_hd_offset_x, g_hd_offset_y;
 static uint32_t g_hd_texture_window;
 static int g_hd_semi, g_hd_perspective;
@@ -121,6 +129,7 @@ static void hd_invalidate_triangle(int x0, int y0, int x1, int y1, int x2, int y
 }
 
 void gr_set_backend(GrBackend backend) {
+    if (g_record_stop) g_record_stop();   /* a recording covers one backend */
     if (backend == GR_BACKEND_OPENGL) {
         const GpuRenderBackend *gl = gl_backend_get();
         if (gl) {

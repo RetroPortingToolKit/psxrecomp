@@ -1,6 +1,7 @@
 #ifndef PSX_GPU_SW_RENDERER_H
 #define PSX_GPU_SW_RENDERER_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -12,6 +13,13 @@ extern "C" {
 
 /* Initialize software renderer */
 void sw_renderer_init(uint16_t* vram);
+
+/* Complete renderer state: draw settings, native VRAM and the high-resolution
+ * mirror. Saving fails while the wide compositor is configured. Loading
+ * restores the saved scale. Used by renderer recordings and offline replay. */
+size_t sw_state_size(void);
+int sw_state_save(void *out, size_t capacity);
+int sw_state_load(const void *in, size_t size);
 /* Rebind the VRAM array only; draw state is kept. */
 void sw_renderer_rebind_vram(uint16_t* vram);
 
