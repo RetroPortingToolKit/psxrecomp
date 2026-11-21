@@ -213,7 +213,7 @@ int psx_host_enh_parse_screen_kind(const char* text);   /* default crt composite
 int psx_host_enh_parse_tristate(const char* text);      /* default on off */
 int psx_host_enh_parse_strength(const char* text);      /* "1".."100" */
 int psx_host_enh_parse_smoothing(const char* text);     /* default smooth sharp */
-int psx_host_enh_parse_texture_filter(const char* text);/* default nearest bilinear xbr */
+int psx_host_enh_parse_texture_filter(const char* text);/* default nearest bilinear stable xbr */
 int psx_host_enh_parse_fmv_filter(const char* text);    /* default nearest bilinear sharp bicubic */
 int psx_host_enh_parse_dithering(const char* text);     /* default off native fine */
 int psx_host_enh_parse_rewind_depth(const char* text);  /* "50" "100" "150" "200" */

@@ -148,7 +148,8 @@ int psx_mod_run_command(const char* name, const char* args, char* reply, int cap
 /* Presentation-only filtering: 0 nearest, 1 bilinear, 2 stable minification.
  * Mode 2 uses a bounded palette-aware footprint for proven 3D polygons on
  * OpenGL; untracked UI stays nearest. Other backends use bilinear. A session
- * reset restores the player's configured filter. */
+ * reset restores the player's configured filter. An explicit saved player
+ * filter takes priority over the plugin choice. */
 void psx_mod_set_texture_filter(int mode);
 /* Entry callbacks can make nested guest calls while retaining host registers.
  * Save/load and rewind must wait until that host context has returned. */

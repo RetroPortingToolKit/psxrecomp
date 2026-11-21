@@ -52,6 +52,7 @@ static int g_render_thread=1,g_present_thread=1,g_frame_generation=0,g_video_asp
 static double g_guest_frame_period_ms=20,g_frame_period_ms=20;
 static bool g_mod_native_vblank_rate=false,g_ws_adaptive_view=false,g_turbo_loads_enabled=false;
 static int g_mod_native_vblank_fps,g_mod_texfilter,g_video_texfilter,g_ws_adaptive_max_num=16,g_ws_adaptive_max_den=9,g_ws_auto_ui_proportional_cfg;
+static bool g_video_texfilter_from_env=false;
 static std::string g_bezel_path;
 static float g_frame_interpolation_blend,g_frame_interpolation_blend_default;
 static int g_frame_interpolation_source;
@@ -79,16 +80,40 @@ for name in renderer_names:
  else:
   stubs+='template<class T> static int gl_renderer_set_'+name+'(T value){std::ostringstream text;text<<value;renderer_arguments["'+name+'"]=text.str();return 1;}\n'
 for name in ('psx_mod_internal_resolution_reset','memcard_set_extension_codec','psx_local_mouse_clear',
- 'psx_keybinds_clear_session_players','gr_set_texture_filter','psx_ram_reset_size_request',
+ 'psx_keybinds_clear_session_players','psx_ram_reset_size_request',
  'debug_server_request','psx_mod_set_texture_bank_resolver','psx_mod_set_texture_bank_batching','gpu_ws_set_auto_ui_proportional',
  'psx_mod_set_world_scene_predicate','gpu_ws_set_native_scene_predicate','psx_mod_set_native_wide_projection_correction',
  'psx_mod_set_retained_scene_predicate','psx_mod_set_adaptive_backdrop_preload','psx_mod_set_draw_distance_clamp',
  'psx_mod_immediate_reset','psx_mod_set_guest_cycle_scale_gate','render_pass_reset_session'):
  stubs+='template<class... T> static int '+name+'(T...){return 0;}\n'
 # host_enhancements.h declares the real function, which a template stub cannot replace.
-stubs+='extern "C" void psx_host_enh_reset(void){}\n'
+stubs+='static int observed_texture_filter=-9;\nstatic void gr_set_texture_filter(int value){observed_texture_filter=value;}\n'
+if 'static int session_texture_filter(' in main:
+ stubs+=block(main.index('static int session_texture_filter('))+'\n'
+stubs+=block(main.index('extern "C" void psx_mod_set_texture_filter('))+'\n'
 stubs+=reset+'\n'+capabilities+'\n'
 fixture=fixture.replace('int main() {',stubs+'\nint main() {')
+# Execute the actual title-plugin setter against the real saved-request owner.
+# The old production setter fails the explicit nearest/stable precedence check.
+precedence=r'''
+    psx_host_enh_player_clear();psx_host_enh_reset();g_video_texfilter=0;
+    psx_mod_set_texture_filter(2);assert(observed_texture_filter==2);
+    assert(psx_host_enh_player_set("video.texture_filtering","nearest"));psx_host_enh_reset();
+    psx_mod_set_texture_filter(2);assert(observed_texture_filter==0);
+    assert(psx_host_enh_player_set("video.texture_filtering","stable"));psx_host_enh_reset();
+    psx_mod_set_texture_filter(1);assert(observed_texture_filter==2);
+    assert(psx_host_enh_player_set("video.texture_filtering","xbr"));psx_host_enh_reset();
+    psx_mod_set_texture_filter(0);assert(observed_texture_filter==3);
+    psx_mod_set_texture_filter(99);assert(observed_texture_filter==3);
+    g_video_texfilter_from_env=true;g_video_texfilter=1;
+    psx_mod_set_texture_filter(2);assert(observed_texture_filter==1);
+    psx_host_enh_player_clear();psx_host_enh_reset();
+    psx_mod_set_texture_filter(2);assert(observed_texture_filter==1);
+    g_video_texfilter_from_env=false;
+
+'''
+fixture=fixture.replace('int main() {','int main() {\n'+precedence)
+
 start=fixture.index('    assert(intro && audio==64')
 end=fixture.index('    PSXRecompV4::UserSettings old_snapshot;',start)
 checks=fixture[start:end]
@@ -149,9 +174,9 @@ if env_declaration:
 fixture=fixture.replace('    puts("PASS:36 actual provider edits',insert+'\n    puts("PASS:36 actual provider edits')
 fixture=fixture.replace('#include "../src/', '#include "'+(root/'runtime/src').as_posix()+'/')
 a.work.mkdir(parents=True,exist_ok=True);cpp=a.work/'composition.cpp';cpp.write_text(fixture,encoding='utf-8');exe=a.work/'composition.exe'
-command=[a.compiler,'-std=c++17','-O0','-UNDEBUG','-DRECOMP_LAUNCHER','-DFMT_HEADER_ONLY=1']
+command=[a.compiler,'-std=c++17','-O0','-UNDEBUG','-DRECOMP_LAUNCHER','-DFMT_HEADER_ONLY=1','-DPSX_PLAYER_SETTINGS_REAL_HOST=1']
 command+=['-I'+str(root/part) for part in ('runtime/include','recompiler/src','recompiler/include','recompiler/lib/fmt/include','recompiler/lib/toml11')]
-command+=['-I'+str(a.ui/'src'),str(cpp),str(root/'recompiler/src/config_loader.cpp'),str(root/'recompiler/src/ps1_exe_parser.cpp'),'-o',str(exe)]
+command+=['-I'+str(a.ui/'src'),str(cpp),str(root/'recompiler/src/config_loader.cpp'),str(root/'recompiler/src/ps1_exe_parser.cpp'),str(root/'runtime/src/host_enhancements.c'),'-o',str(exe)]
 result=subprocess.run(command,text=True,encoding='utf-8',errors='replace')
 if result.returncode:raise SystemExit(result.returncode)
 if a.compile_only:raise SystemExit(0)

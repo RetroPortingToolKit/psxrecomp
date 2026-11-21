@@ -148,8 +148,16 @@ int main() {
     assert(g_video_match_max_lines==1080 && g_video_ss_disable_at_lines==2160);
     assert(g_video_geometry_correction && !g_video_perspective_texturing && g_player_geometry_set && g_player_texture_set);
     assert(g_video_pgxp_cpu_mode && g_player_pgxp_cpu_set && g_player_pgxp_culling);
+#ifdef PSX_PLAYER_SETTINGS_REAL_HOST
+    psx_host_enh_reset();
+    PsxHostEnhRequests real_requests;
+    psx_host_enh_requests(&real_requests);
+    assert(real_requests.resolution_value==PSX_IR_SCALE(8) && real_requests.crt_screen_kind==3);
+    assert(real_requests.audio==1 && real_requests.rewind_depth==100);
+#else
     assert(g_host_enh_player.at("video.internal_resolution")=="8x" && g_host_enh_player.at("video.crt_filter")=="trinitron");
     assert(g_host_enh_player.at("audio.spu_hq")=="true" && g_host_enh_player.at("video.rewind_depth")=="100");
+#endif
     PSXRecompV4::UserSettings old_snapshot;
     player_settings_merge(old_snapshot);
     assert(old_snapshot.extra_player_settings==prefs.extra_player_settings && old_snapshot.fast_boot);
@@ -165,6 +173,49 @@ int main() {
     std::ifstream input(path); std::string text((std::istreambuf_iterator<char>(input)),{});
     const auto audio_table=text.find("[audio]");
     assert(audio_table!=std::string::npos && text.find("[audio]",audio_table+1)==std::string::npos);
+    // The actual game.toml parser keeps the renderer enum identities too.
+    const auto game_path=std::filesystem::path(path.string()+".game.toml");
+    Cleanup game_cleanup{game_path};
+    for(const auto& [name,mode]:std::map<std::string,int>{{"nearest",0},{"bilinear",1},{"stable",2},{"xbr",3}}) {
+        { std::ofstream game(game_path);
+          game<<"[game]\nname='Filter fixture'\nid='SLUS-TEST'\nexe='stock.exe'\n"
+                "load_address='0x80010000'\nentry_pc='0x80010000'\ntext_size='0x1000'\n"
+                "stack_base='0x801ffff0'\n[recompiler]\nseeds='seeds.txt'\n[video]\ntexture_filtering='"<<name<<"'\n"; }
+        assert(PSXRecompV4::load_game_config(game_path).runtime.video_texture_filter==mode);
+    }
+    // Stable is the existing renderer mode2, not a second filtering path.
+    RecompLauncherCModOption filtering{};
+    bool found_filter=false;
+    for(int i=0;provider->feature_option_get(nullptr,kPlayerSettingsPackage,"display",i,&filtering);++i)
+        if(std::string(filtering.id)=="video.texture_filtering") { found_filter=true;break; }
+    assert(found_filter && filtering.choice_count==4);
+    bool found_stable=false;
+    for(int i=0;i<filtering.choice_count;++i) {
+        RecompLauncherCModChoice choice{};
+        assert(provider->feature_choice_get(nullptr,kPlayerSettingsPackage,"display",filtering.id,i,&choice));
+        if(std::string(choice.value)=="stable") {
+            found_stable=true;
+            assert(std::string(choice.label)=="Stable 3D (OpenGL)");
+        }
+    }
+    assert(found_stable && std::string(filtering.description).find("bilinear")!=std::string::npos);
+    assert(provider->feature_set_option(nullptr,kPlayerSettingsPackage,"display","video.texture_filtering","stable"));
+    const auto stable_prefs=PSXRecompV4::load_user_settings(path);
+    assert(!stable_prefs.parse_error && stable_prefs.extra_player_settings.at("video.texture_filtering")=="stable");
+    apply_extra_player_settings(stable_prefs,intro,audio);
+#ifdef PSX_PLAYER_SETTINGS_REAL_HOST
+    PsxHostEnhRequests stable_requests;
+    psx_host_enh_reset(); psx_host_enh_requests(&stable_requests);
+    assert(stable_requests.image_texture_filter==PSX_TEXTURE_FILTER_STABLE_WORLD);
+    assert(psx_host_enh_resolve(&g_title_look,&stable_requests).texture_filter==PSX_TEXTURE_FILTER_STABLE_WORLD);
+#else
+    assert(g_host_enh_player.at("video.texture_filtering")=="stable");
+#endif
+    g_title_look.texture_filter=PSX_TEXTURE_FILTER_STABLE_WORLD;
+    const auto stable_baseline=player_settings_baseline(false,false,false,100,"cards");
+    assert(stable_baseline.at("video.texture_filtering")=="stable");
+    player_settings_configure(path,stable_baseline); // real next-launch re-read
+    assert(s_player_setting_values.at("video.texture_filtering")=="stable");
     puts("PASS:36 actual provider edits -> TOML load -> startup owners; bounds/old snapshot/stub preservation");
     return 0;
 }

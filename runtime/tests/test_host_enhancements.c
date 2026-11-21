@@ -228,7 +228,7 @@ static void test_parsers(void) {
     CHECK(psx_host_enh_parse_texture_filter("nearest") == PSX_TEXTURE_FILTER_NEAREST);
     CHECK(psx_host_enh_parse_texture_filter("bilinear") == PSX_TEXTURE_FILTER_BILINEAR);
     CHECK(psx_host_enh_parse_texture_filter("xbr") == PSX_TEXTURE_FILTER_XBR);
-    CHECK(psx_host_enh_parse_texture_filter("stable") == PSX_HOST_ENH_DEFAULT);
+    CHECK(psx_host_enh_parse_texture_filter("stable") == PSX_TEXTURE_FILTER_STABLE_WORLD);
     CHECK(psx_host_enh_parse_fmv_filter("nearest") == 0 && psx_host_enh_parse_fmv_filter("bilinear") == 1);
     CHECK(psx_host_enh_parse_fmv_filter("sharp") == 2 && psx_host_enh_parse_fmv_filter("bicubic") == 3);
     CHECK(psx_host_enh_parse_rewind_depth("150") == 150 && psx_host_enh_parse_rewind_depth("75") == 50);

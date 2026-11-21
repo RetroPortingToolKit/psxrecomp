@@ -88,6 +88,7 @@ static std::map<std::string,std::string> player_settings_baseline(bool fast_boot
     values["video.scanline_strength"]=player_setting_text(g_title_look.scanline_strength_pct/100.0);
     values["video.antialiasing"]=player_setting_flag(g_title_look.present_linear!=0);
     values["video.texture_filtering"]=g_title_look.texture_filter==PSX_TEXTURE_FILTER_BILINEAR ? "bilinear" :
+                                      g_title_look.texture_filter==PSX_TEXTURE_FILTER_STABLE_WORLD ? "stable" :
                                       g_title_look.texture_filter==PSX_TEXTURE_FILTER_XBR ? "xbr" : "nearest";
     static const char* const kMovies[]={"nearest","bilinear","sharp","bicubic"};
     values["video.fmv_filter"]=g_title_look.fmv_filter>=0 && g_title_look.fmv_filter<=3 ? kMovies[g_title_look.fmv_filter] : "nearest";
