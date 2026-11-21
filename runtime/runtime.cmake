@@ -34,7 +34,6 @@ include("${PSXRECOMP_ROOT}/cmake/psx_precision_slices.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_pgxp_dataflow.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_precision_operations.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_sha256_file.cmake")
-option(PSX_REQUIRED_HOST_PROFILES "Candidate required pre-guest host-profile admission" OFF)
 include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
@@ -1777,12 +1776,9 @@ function(psxrecomp_add_runtime_target target)
     endforeach()
     psxrecomp_pgxp_dataflow(${target} GENERATED_SOURCES ${_pgxp_flow_generated})
     psxrecomp_precision_operations(${target} GENERATED_SOURCES ${_pgxp_flow_generated})
-    target_compile_definitions(${target} PRIVATE PSX_REQUIRED_HOST_PROFILES=$<BOOL:${PSX_REQUIRED_HOST_PROFILES}>)
-    if(PSX_REQUIRED_HOST_PROFILES)
-        set(_host_required 1)
-    else()
-        set(_host_required 0)
-    endif()
+    # Host agreement is a correctness boundary, not an optional build feature.
+    # A cached legacy PSX_REQUIRED_HOST_PROFILES=OFF cannot bypass admission.
+    set(_host_required 1)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/host-profile/${target}")
     set(_host_policy_source "${CMAKE_CURRENT_BINARY_DIR}/host-profile/${target}/selected.c")
     file(CONFIGURE OUTPUT "${_host_policy_source}" CONTENT
@@ -1791,6 +1787,9 @@ function(psxrecomp_add_runtime_target target)
         NAME host-profile-admission CONTRACT immutable-host-catalog-${_host_required}-v1
         HLE_SOURCES "${_host_policy_source}" LLE_SOURCES "${_host_policy_source}"
         CONTRACT_FILES "${PSXRECOMP_ROOT}/runtime/include/netplay_host_startup.hpp"
+                       "${PSXRECOMP_ROOT}/runtime/include/netplay_host_catalog.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/mod_netplay.h"
+                       "${PSXRECOMP_ROOT}/runtime/src/mod_netplay.c"
                        "${PSXRECOMP_ROOT}/runtime/src/netplay_host_profile.c"
                        "${PSXRECOMP_ROOT}/runtime/src/netplay_host_gate.c"
                        "${PSXRECOMP_ROOT}/runtime/src/netplay_host_cpu_sdl3.c"

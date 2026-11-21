@@ -20,6 +20,7 @@ static PSXModNetplayHostStartup observed;
 static PSXHostSelection selected;
 extern "C" {
 const PSXModNetplayProfile *psx_mod_netplay_profile(void){return &title;}
+PSXModNetplayHostProfiles psx_mod_netplay_host_profiles(void){return title.host_profiles;}
 int psx_mod_netplay_loading(void){return 1;}
 int psx_mod_netplay_aspect(void){return 0;}
 int psx_host_fp_environment_is_default(void){return fp_ok;}

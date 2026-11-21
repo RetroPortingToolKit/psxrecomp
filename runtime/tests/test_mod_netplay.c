@@ -1,4 +1,5 @@
 #include "mod_netplay.h"
+#include "netplay_host_catalog.h"
 #include "netplay_state_digest.h"
 #include "crc32.h"
 #undef NDEBUG
@@ -43,6 +44,12 @@ void sio_snapshot_section_ends(uint32_t out[5]) { memset(out, 0, 5 * sizeof(*out
 static uint32_t gameplay_state;
 static unsigned digest_calls;
 static uint32_t gameplay_digest(void) { ++digest_calls; return gameplay_state; }
+static int vanilla_catalog(const PSXModNetplayHostStartup *in,PSXHostProfileCatalog *out) {
+    (void)in;(void)out;return 0; /* Metadata registration test, no qualification. */
+}
+static int other_catalog(const PSXModNetplayHostStartup *in,PSXHostProfileCatalog *out) {
+    (void)in;(void)out;return 0;
+}
 
 int main(int argc, char** argv) {
     CPUState cpu;
@@ -63,6 +70,13 @@ int main(int argc, char** argv) {
     cpu.pc = 0x80010000;
     netplay_core_digest_parts(&cpu, &baseline);
     assert(baseline.mod == 0);
+    assert(!psx_mod_netplay_host_profiles());
+    assert(!psx_mod_register_vanilla_host_profiles(NULL));
+    assert(psx_mod_register_vanilla_host_profiles(vanilla_catalog));
+    assert(psx_mod_register_vanilla_host_profiles(vanilla_catalog));
+    assert(!psx_mod_register_vanilla_host_profiles(other_catalog));
+    assert(psx_mod_netplay_host_profiles()==vanilla_catalog);
+    assert(!psx_mod_netplay_profile()); /* No fake gameplay plugin/profile. */
     assert(psx_mod_netplay_rollback_supported());
     assert(!psx_mod_netplay_requires_texture_banks());
     assert(psx_mod_netplay_renderer_allowed(0) && psx_mod_netplay_renderer_allowed(1) &&
@@ -114,6 +128,7 @@ int main(int argc, char** argv) {
     }
     assert(psx_mod_register_netplay_profile(&profile));
     assert(psx_mod_register_netplay_profile(&profile));
+    assert(!psx_mod_netplay_host_profiles()); /* Never borrow vanilla policy. */
     duplicate = profile;
     assert(!psx_mod_register_netplay_profile(&duplicate));
     assert(!psx_mod_netplay_rollback_supported());

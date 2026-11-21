@@ -1,7 +1,7 @@
 #ifndef PSX_NETPLAY_HOST_STARTUP_HPP
 #define PSX_NETPLAY_HOST_STARTUP_HPP
 #include "psx_netplay.h"
-#include "mod_netplay.h"
+#include "netplay_host_catalog.h"
 #include "host_executable_identity.h"
 #include "host_fp_environment.h"
 #include "build_manifest.h"
@@ -21,8 +21,8 @@ static bool psx_install_required_host_profile(PsxNetplayConfig& cfg,uint32_t ini
     auto refuse=[&](const char *why){error=why;
         if(code_provider_session_interpreted_sealed())(void)code_provider_session_end_interpreted();
         return false;};
-    const PSXModNetplayProfile *title=psx_mod_netplay_profile();
-    if(!title||!title->host_profiles)return refuse("This title has no qualified host simulation catalog.");
+    const PSXModNetplayHostProfiles profiles=psx_mod_netplay_host_profiles();
+    if(!profiles)return refuse("This title has no qualified host simulation catalog.");
     if(psx_simulation_testing::first_configured_override())
         return refuse("Simulation testing overrides are not qualified for netplay host profiles.");
     if(!psx_host_fp_environment_is_default())return refuse("The host floating-point environment is not canonical.");
@@ -57,7 +57,7 @@ static bool psx_install_required_host_profile(PsxNetplayConfig& cfg,uint32_t ini
     context.renderer=renderer;context.retained_texture_banks=retained_banks;
     context.aspect_index=psx_mod_netplay_aspect();context.observer=cfg.spectator?1:0;
     PSXHostProfileCatalog cat{};
-    if(!title->host_profiles(&context,&cat)||!cat.rules||!cat.count||cat.count>PSX_HOST_MAX_OFFERS)
+    if(!profiles(&context,&cat)||!cat.rules||!cat.count||cat.count>PSX_HOST_MAX_OFFERS)
         return refuse("No qualified simulation profile is available for this host.");
     for(unsigned i=0;i<cat.count;++i){
         if(cfg.spectator&&!(cat.rules[i].flags&PSX_HOST_PROFILE_OBSERVER))continue;
