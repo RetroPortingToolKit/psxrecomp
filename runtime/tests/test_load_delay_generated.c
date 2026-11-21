@@ -2,6 +2,12 @@
  * native-function re-entry. The existing exception fixture owns only guest
  * RAM/kernel dispatch; production interrupts/traps and pipeline are linked. */
 #define FX_REAL_LOAD_DELAY 1
+#include <stdio.h>
+#include <stdlib.h>
+/* Match the existing ChangeThread guest's stdout-only failure path: the
+ * fixture link helper's unrelated stderr seam must not mask the negative. */
+#define FX_FAIL(...) do { printf("FAIL line %d: ", __LINE__); \
+    printf(__VA_ARGS__); puts(""); fflush(stdout); _Exit(1); } while (0)
 #include "rfe_guest_fixture.h"
 #include "psx_load_delay.h"
 
@@ -17,25 +23,34 @@
 #define SAVE 0x70000u
 static unsigned mode_irq, irqs, mains, exits, writes;
 static uint32_t log_values[4];
+volatile uint32_t g_psx_last_fn_entry;
+uint32_t g_psx_ram_size=0x200000u;
 
 int psx_game_text_native_ok(uint32_t pc) { (void)pc; return 1; }
 int psx_mod_try_function_replacement(CPUState *cpu,uint32_t pc) { (void)cpu;(void)pc;return 0; }
-uint32_t psx_cyc_load_word(CPUState *cpu,uint32_t addr,uint32_t rt,uint32_t mask) {
-    (void)cpu;(void)rt;(void)mask;return fx_read(addr);
-}
 uint32_t gte_read_data(CPUState *cpu,uint8_t reg) {
     (void)cpu;
     if(reg==17) {
+        /* Ordinary MTC2 registers are emitted as direct CPUState writes.
+         * Observe the actual GTE input at the following native GTE read. */
+        FX_CHECK(writes<4);log_values[writes++]=cpu->gte_data[0];
         if(mode_irq && !irqs) { psx_cycle_count+=1000u;i_stat|=8u; }
         return 0x2222u;
     }
     FX_CHECK(reg==18);return 0x3333u;
 }
 void gte_write_data(CPUState *cpu,uint8_t reg,uint32_t value) {
-    (void)cpu;FX_CHECK(reg==0 && writes<4);log_values[writes++]=value;
+    (void)cpu;(void)reg;(void)value;
+    FX_FAIL("unexpected indirect GTE write in the ordinary-register fixture");
 }
 
+/* Release-style PGXP-OFF shards retain optional metadata temporaries/labels.
+ * Keep fixture diagnostics strict without changing the emitted production C. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-label"
 #include PSX_LOAD_DELAY_GENERATED
+#pragma GCC diagnostic pop
 
 int psx_syscall(CPUState *,uint32_t);
 static void change(CPUState *cpu,uint32_t tcb) {
@@ -91,7 +106,9 @@ int main(int argc,char **argv) {
     fx_write(MAIN_TCB+0x94,0x404);
     i_mask=8u;
     psx_scheduler_run(&cpu);
-    FX_CHECK(exits==1u && writes==2u && log_values[0]==0x1111u);
+    if(exits!=1u || writes!=2u || log_values[0]!=0x1111u)
+        FX_FAIL("completed loop exits=%u writes=%u first=%08X second=%08X irq=%u main=%u",
+                exits,writes,log_values[0],log_values[1],irqs,mains);
     FX_CHECK(log_values[1]==(mode_irq?0x2222u:0x1111u));
     FX_CHECK(irqs==mode_irq && mains==mode_irq);
     puts("PASS: actual emitted loop, IRQ TCB save, ChangeThread exit and fresh native re-entry");

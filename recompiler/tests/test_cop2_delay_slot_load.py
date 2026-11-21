@@ -26,6 +26,7 @@ Usage:  python test_cop2_delay_slot_load.py [--recompiler <psxrecomp-game>]
 Exit 0 = PASS.
 """
 import argparse, glob, os, re, struct, subprocess, sys, tempfile
+from contextlib import nullcontext
 from pathlib import Path
 
 LOAD = 0x80010000
@@ -92,10 +93,14 @@ def main():
                     default=Path(here).parents[1] / 'runtime/tests/test_load_delay_generated.c')
     ap.add_argument('--control', action='store_true',
                     help='execute the old emitter for a behavior-based IRQ/TCB negative')
+    ap.add_argument('--work-dir', type=Path,
+                    help='retain one local failing fixture for native debugging')
     args = ap.parse_args()
     if not os.path.isfile(args.recompiler):
         raise SystemExit("recompiler not found: %s (build it first)" % args.recompiler)
-    with tempfile.TemporaryDirectory() as tmp:
+    if args.work_dir:
+        args.work_dir.mkdir(parents=True, exist_ok=False)
+    with (nullcontext(str(args.work_dir)) if args.work_dir else tempfile.TemporaryDirectory()) as tmp:
         src = generate(args.recompiler, tmp)
         if not args.control:
             check_structure(src)
@@ -154,11 +159,13 @@ def execute(args, work):
     if not args.control:
         # The canonical precision helper is a separate C function and needs
         # its own instruction-local cookie declarations too.
+        (work / 'psx_observation_config.h').write_text(
+            '#pragma once\n#define PSX_OBSERVATION_WAIT_SITE(pc) 0\n', encoding='utf-8')
         subprocess.run([args.compiler, '-std=c11', '-Werror=implicit-function-declaration',
                         '-DPSX_NO_DEBUG_TOOLS=1', '-DPSX_PGXP=1',
                         '-DPSX_ENABLE_BLOCK_CYCLES=1', '-DPSX_PGXP_DEMAND_REGIONS=1',
                         '-DPSX_NATIVE_CPU_SPANS=1', '-DPSX_OBSERVATION_TIME=1',
-                        '-I' + str(runtime / 'include'), '-c', str(sources[0]),
+                        '-I' + str(runtime / 'include'), '-I' + str(work), '-c', str(sources[0]),
                         '-o', str(work / 'precision-native.o')], check=True)
     modules = ['interrupts.c', 'traps.c', 'psx_bios_backend.c', str(provider)]
     for opt in ('-O0', '-O2'):
