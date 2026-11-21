@@ -4695,6 +4695,18 @@ static void runtime_perf_bench_tick(uint64_t now) {
         (unsigned long long)end.capture_last_dispatch_delta);
     std::fflush(stdout);
     g_runtime_perf.bench_reported = true;
+    /* Build-stage profiling may select this existing finite guest-frame work
+     * instead of imposing a wall-clock boot cutoff. Use the normal runtime
+     * shutdown path: compiler workers and the sampler drain before CRT/gcov. */
+    const char *exit_after = std::getenv("PSX_BENCH_EXIT");
+    if (exit_after && std::strcmp(exit_after, "1") == 0) {
+        std::fprintf(stdout, "[BENCH] self_exit=normal frame=%llu\n",
+                     (unsigned long long)end.frame);
+        std::fflush(stdout);
+        psx_crash_trace_set_exit_origin("finite_guest_frame_complete");
+        shutdown_runtime();
+        std::exit(0);
+    }
 }
 
 static void runtime_perf_frame_begin() {

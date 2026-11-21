@@ -131,7 +131,7 @@ def verify_recompiler_matches_tag(recompiler: str, tag_hash: int) -> None:
     import subprocess
     try:
         out = subprocess.run([recompiler, '--codegen-hash'],
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True)
     except Exception as e:
         raise SystemExit(f'FATAL: cannot execute {recompiler} for --codegen-hash '
                          f'staleness check: {e}')
@@ -184,7 +184,7 @@ def overlay_config_hash(recompiler: str, game_toml: str) -> int:
     try:
         out = subprocess.run(
             [recompiler, '--overlay-config-hash', os.path.abspath(game_toml)],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True)
     except Exception as e:
         raise SystemExit(
             f'FATAL: cannot execute {recompiler} for --overlay-config-hash: {e}')
@@ -6457,7 +6457,7 @@ def _write_json_atomic(path: str, value: dict) -> None:
 
 
 @contextmanager
-def _exclusive_file_lock(lock_path: str, timeout: float | None = 120.0):
+def _exclusive_file_lock(lock_path: str, timeout: float | None = None):
     """Kernel-owned cross-process lock on one permanent byte-range file.
 
     The lock file is intentionally permanent.  OS byte-range/advisory locks are
@@ -6503,7 +6503,7 @@ def _exclusive_file_lock(lock_path: str, timeout: float | None = 120.0):
 
 
 @contextmanager
-def _shard_pair_lock(dll_path: str, timeout: float = 120.0):
+def _shard_pair_lock(dll_path: str, timeout: float | None = None):
     """Cross-process lock for one canonical DLL/ranges filename pair."""
     _dll, _ranges, lock_path, _journal = _shard_pair_paths(dll_path)
     with _exclusive_file_lock(lock_path, timeout):

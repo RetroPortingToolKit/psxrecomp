@@ -59,7 +59,6 @@ import platform as _platform
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -191,7 +190,7 @@ class Config:
         'product': {'name', 'display_name', 'exe_name', 'version_file', 'game_toml',
                     'player_game_toml', 'runtime_target', 'zip_folder', 'launcher_boxart'},
         'build': {'cmake_args', 'linux_cmake_args', 'windows_cmake_args', 'regenerate',
-                  'binary_identity', 'selective_pgo', 'pgo_train_seconds'},
+                  'binary_identity', 'selective_pgo', 'pgo_train_seconds', 'pgo_train_frames'},
         'aot': {'mode', 'profile', 'cps'},
         'overlay_toolchain': {'ship'},
         'diagnostics': {'game_id', 'package_id', 'replay_helper', 'allow_hd_textures'},
@@ -240,6 +239,10 @@ class Config:
         if (type(self.pgo_train_seconds) is not int or
                 not 1 <= self.pgo_train_seconds <= 300):
             fail('%s: pgo_train_seconds must be an integer from 1 to 300' % self.path)
+        # Legacy seconds select the equivalent finite frame workload, never a wall deadline.
+        self.pgo_train_frames = build.get('pgo_train_frames', self.pgo_train_seconds * 60)
+        if type(self.pgo_train_frames) is not int or not 1 <= self.pgo_train_frames <= 18000:
+            fail('%s: pgo_train_frames must be an integer from 1 to 18000' % self.path)
 
         aot = self._table(data, 'aot')
         self.aot_mode = self._str(aot, 'mode', 'none')
@@ -585,48 +588,29 @@ def native_toolchain_args(toolchain):
             '-DCMAKE_MAKE_PROGRAM=' + toolchain.make]
 
 
-def close_training_game(process, timeout=15):
-    """Request the exact owned SDL process to quit normally so gcov flushes."""
-    if process.poll() is not None:
-        fail('PGO training exited before its close request (%s)' % process.returncode)
-    if os.name == 'nt':
-        import ctypes
-        from ctypes import wintypes as w
-        user = ctypes.WinDLL('user32', use_last_error=True)
-        callback_type = ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
-        user.EnumWindows.argtypes = [callback_type, w.LPARAM]
-        user.EnumWindows.restype = w.BOOL
-        user.GetWindowThreadProcessId.argtypes = [w.HWND, ctypes.POINTER(w.DWORD)]
-        user.GetClassNameW.argtypes = [w.HWND, w.LPWSTR, ctypes.c_int]
-        user.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
-        user.PostMessageW.restype = w.BOOL
-        windows = []
-
-        @callback_type
-        def inspect(handle, unused):
-            owner = w.DWORD()
-            user.GetWindowThreadProcessId(handle, ctypes.byref(owner))
-            if owner.value == process.pid:
-                name = ctypes.create_unicode_buffer(256)
-                user.GetClassNameW(handle, name, len(name))
-                if name.value.startswith('SDL'):
-                    windows.append(handle)
-            return True
-
-        if not user.EnumWindows(inspect, 0) or len(windows) != 1:
-            fail('PGO training needs one exact owned SDL window; found %d' % len(windows))
-        if not user.PostMessageW(windows[0], 0x0010, 0, 0):
-            fail('Cannot request normal PGO training window close')
-        method = 'WM_CLOSE to exact owned SDL window, no focus'
-    else:
-        # SDL's enabled POSIX signal handler converts SIGTERM to SDL_EVENT_QUIT.
-        # A signal termination/nonzero exit is a failure, never a flushed-profile pass.
-        process.send_signal(signal.SIGTERM)
-        method = 'SIGTERM converted by SDL signal handler to quit'
-    code = process.wait(timeout=timeout)
-    if code != 0:
-        fail('PGO training did not close normally (exit %s)' % code)
-    return dict(method=method, pid=process.pid, exit_code=code)
+def wait_training_guest_frames(process, stdout_path, frames):
+    """Observe the existing guest-counter BENCH completion; startup has no deadline."""
+    expected = dict(first=1, last=1 + frames, frames=frames)
+    pending = b''
+    with Path(stdout_path).open('rb') as output:
+        while True:
+            raw = output.readline()
+            if raw:
+                pending += raw
+                if not pending.endswith(b'\n'):
+                    continue
+                match = re.match(rb'^\[BENCH\] window=(\d+):(\d+) frames=(\d+)\b', pending)
+                pending = b''
+                if match:
+                    observed = dict(zip(('first', 'last', 'frames'), map(int, match.groups())))
+                    if observed != expected:
+                        fail('PGO guest-frame completion does not match the requested workload: %s' % observed)
+                    return observed
+            else:
+                code = process.poll()
+                if code is not None:
+                    fail('PGO boot exited early (exit %s), before completing %d guest frames' % (code, frames))
+                time.sleep(0.025)
 
 
 def train_release_pgo(ctx, generated):
@@ -645,7 +629,10 @@ def train_release_pgo(ctx, generated):
         fail('PGO boot training needs the build-staged OpenBIOS')
     env = {key: value for key, value in ctx.tc.env.items()
            if not key.startswith(('PSX_', 'SDL_', 'GCOV_', 'LLVM_PROFILE_'))}
-    env.update(SDL_AUDIODRIVER='dummy', SDL_NO_SIGNAL_HANDLERS='0',
+    env.update(SDL_AUDIODRIVER='dummy', SDL_AUDIO_DRIVER='dummy', SDL_NO_SIGNAL_HANDLERS='0',
+               PSX_RUNTIME_PERF_DIAG='1',
+               PSX_BENCH_WINDOW='1:%d' % (ctx.config.pgo_train_frames + 1),
+               PSX_BENCH_EXIT='1',
                PSX_RESIDENT_CACHE=str(private / 'resident-cache'),
                PSX_OVERLAY_CACHE_DIR=str(exe.parent / 'cache'),
                TEMP=str(private / 'temp'), TMP=str(private / 'temp'),
@@ -659,21 +646,24 @@ def train_release_pgo(ctx, generated):
                   binary_sha256=sha256(exe), config_sha256=sha256(ctx.config.game_toml),
                   generate_receipt_sha256=sha256(directory / 'generate.json'),
                   seconds=ctx.config.pgo_train_seconds, argv=argv, private=str(private))
-    log('Build-stage PGO boot profiles: %ds, hidden and muted; no gameplay QA claim'
-        % ctx.config.pgo_train_seconds)
+    log('Build-stage PGO boot profiles: %d guest frames, hidden and muted; no gameplay QA claim'
+        % ctx.config.pgo_train_frames)
     process = None
     try:
         with (private / 'stdout.log').open('wb') as out, (private / 'stderr.log').open('wb') as err:
             process = subprocess.Popen(argv, cwd=exe.parent, env=env, stdin=subprocess.DEVNULL,
                                        stdout=out, stderr=err)
             started = time.monotonic()
-            try:
-                code = process.wait(timeout=ctx.config.pgo_train_seconds)
-            except subprocess.TimeoutExpired:
-                pass
-            else:
-                fail('PGO boot exited early (exit %s); no training qualification' % code)
-            record['close'] = close_training_game(process)
+            record['frame_completion'] = wait_training_guest_frames(
+                process, private / 'stdout.log', ctx.config.pgo_train_frames)
+            code = process.wait()
+            record['close'] = dict(method='runtime finite guest-frame self-exit',
+                                   pid=process.pid, exit_code=code)
+            if code != 0:
+                fail('PGO training did not close normally (exit %s)' % code)
+            marker = '[BENCH] self_exit=normal frame=%d' % (ctx.config.pgo_train_frames + 1)
+            if marker not in (private / 'stdout.log').read_text(encoding='utf-8', errors='replace').splitlines():
+                fail('PGO runtime did not report its own finite guest-frame exit')
             record['elapsed_seconds'] = time.monotonic() - started
         runtime_hot_pgo.verify_inputs(generated)
         record['profiles'] = runtime_hot_pgo.profiles(
@@ -687,14 +677,9 @@ def train_release_pgo(ctx, generated):
     finally:
         try:
             if process is not None and process.poll() is None:
-                # Cleanup is never credited as a successful profile flush.
-                try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                except (OSError, subprocess.TimeoutExpired):
-                    process.kill()
-                    process.wait(timeout=5)
-                record['cleanup_exit_code'] = process.returncode
+                # A failed close request does not authorize killing healthy work.
+                # Retain exact ownership so the caller can inspect or request normal quit.
+                record['owned_process'] = dict(pid=process.pid, running=True)
         except BaseException as cleanup_error:
             record['cleanup_error'] = str(cleanup_error)
         finally:
@@ -732,6 +717,7 @@ def build_selective_pgo(ctx, args, cache):
     if used['status'] != 'built' or used['profiles'] != training['profiles']:
         fail('Strict PGO use did not retain the actual boot training profiles')
     ctx.runtime_pgo = dict(status='selective-use', training_scope='boot-only; not gameplay QA or a per-title gain claim',
+                           frame_completion=training['frame_completion'],
                            selected_sources=used['selected_sources'], profiles=used['profiles'],
                            receipts={phase: sha256(directory / (phase + '.json'))
                                      for phase in ('baseline', 'generate', 'training', 'use')})
