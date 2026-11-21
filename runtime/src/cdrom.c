@@ -2627,6 +2627,15 @@ static void exec_command(uint8_t cmd) {
             response_push(0x19);
             response_push(0xC0);
             set_irq(CDIRQ_ACK);
+        } else if (param_count >= 1 && param_fifo[0] == 0x05) {
+            /* Read SCEx counters: INT3 with two bytes, the total and the
+             * successful SCEx string reads, and no status byte. The drive
+             * model does not count SCEx reads; both counts are a placeholder
+             * zero, as on a drive that has received no SCEx string. A guest
+             * that reads one byte here gets the status, a nonzero count. */
+            response_push(0x00);
+            response_push(0x00);
+            set_irq(CDIRQ_ACK);
         } else {
             response_push(stat_reg);
             set_irq(CDIRQ_ACK);
