@@ -502,19 +502,39 @@ class SelectiveReleasePgoTests(unittest.TestCase):
                 ptr.train_release_pgo(self.ctx, {'commands': {}})
         self.assertEqual(json.loads((directory / 'training.json').read_text())['status'], 'failed')
 
-    def test_cleanup_failure_does_not_hide_close_failure_or_raw_receipt(self):
+    def test_normal_close_waits_without_an_elapsed_deadline(self):
+        process = mock.Mock(pid=123, returncode=None)
+        process.poll.return_value = None
+
+        def wait(*args, **kwargs):
+            if args or kwargs:
+                raise subprocess.TimeoutExpired('healthy slow shutdown', kwargs.get('timeout'))
+            process.returncode = 0
+            return 0
+
+        process.wait.side_effect = wait
+        with mock.patch.object(ptr.os, 'name', 'posix'):
+            result = ptr.close_training_game(process)
+        self.assertEqual(result['exit_code'], 0)
+        process.wait.assert_called_once_with()
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
+    def test_close_failure_retains_owned_child_and_original_failure(self):
         directory = self.training_files()
         process = mock.Mock(pid=123, returncode=None)
-        process.wait.side_effect = subprocess.TimeoutExpired('fixture', 10)
+        process.wait.side_effect = subprocess.TimeoutExpired('finite boot sample', 10)
         process.poll.return_value = None
-        process.kill.side_effect = OSError('cleanup fixture failed')
         with mock.patch.object(ptr.subprocess, 'Popen', return_value=process), \
                 mock.patch.object(ptr, 'close_training_game', side_effect=ptr.PackagingError('close fixture failed')):
             with self.assertRaisesRegex(ptr.PackagingError, 'close fixture failed'):
                 ptr.train_release_pgo(self.ctx, {})
         record = json.loads((directory / 'training.json').read_text())
         self.assertEqual(record['status'], 'failed')
-        self.assertIn('cleanup fixture failed', record['cleanup_error'])
+        self.assertEqual(record['failure'], 'close fixture failed')
+        self.assertEqual(record['owned_process'], {'pid': 123, 'running': True})
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
 
 
 class DiagnosticsTests(unittest.TestCase):
