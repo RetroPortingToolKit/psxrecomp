@@ -152,6 +152,8 @@ int savestate_request_load_protocol(int slot);
 /* Netplay LOAD transfer: stage an in-memory .pst (no disk write). Copied
  * internally; applied by savestate_poll like a normal slot load. */
 int savestate_request_load_blob_protocol(const void* data, size_t size);
+/* The same, for a replay anchor: no load toast and no input guard. */
+int savestate_request_load_blob_quiet(const void* data, size_t size);
 
 /* 1 while a staged save/load has not yet been consumed by savestate_poll. */
 int savestate_pending(void);

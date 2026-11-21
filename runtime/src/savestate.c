@@ -80,6 +80,7 @@ static uint32_t s_last_save_pc = 0;
 static int      s_save_defer_slot = -1;
 static double   s_save_defer_t0 = 0.0;
 static uint8_t *s_load_blob = NULL;   /* optional in-memory .pst for netplay */
+static int      s_load_blob_quiet = 0; /* replay anchors: no toast or input guard */
 static size_t   s_load_blob_len = 0;
 #if defined(PSX_HAS_RECOMP_NET)
 static uint32_t s_load_trace_generation;
@@ -199,6 +200,7 @@ static void ensure_dir(const char* dir) {
 }
 
 static void clear_load_blob(void) {
+    s_load_blob_quiet = 0;
     free(s_load_blob);
     s_load_blob = NULL;
     s_load_blob_len = 0;
@@ -978,6 +980,12 @@ int savestate_request_load_blob_protocol(const void* data, size_t size) {
     return 1;
 }
 
+int savestate_request_load_blob_quiet(const void* data, size_t size) {
+    if (!savestate_request_load_blob_protocol(data, size)) return 0;
+    s_load_blob_quiet = 1;
+    return 1;
+}
+
 int savestate_pending(void) {
     return (s_save_pending >= 0 || s_load_pending >= 0) ? 1 : 0;
 }
@@ -1181,6 +1189,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
         if (!psx_irq_resume_context_snapshot_safe_at(pc)) return;
         int slot = s_load_pending;
         int loaded = 0;
+        const int quiet = s_load_blob_quiet && s_load_blob;
 #if defined(PSX_HAS_RECOMP_NET)
         uint32_t load_trace_generation = ++s_load_trace_generation;
         const char *load_trace_source =
@@ -1210,7 +1219,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
             clear_load_blob();
             s_load_failed = 1;
             fprintf(stderr, "savestate: LOAD FAILED slot %d (cannot capture rollback)\n", slot);
-            psx_frontend_on_savestate_notify(1, slot, 0);
+            if (!quiet) psx_frontend_on_savestate_notify(1, slot, 0);
         } else if (s_load_blob && s_load_blob_len > 0) {
             const size_t blob_len = s_load_blob_len;
             loaded = boot_state_load_buffer_checked(s_load_blob, blob_len,
@@ -1222,7 +1231,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                         "savestate: LOAD FAILED blob (%zu bytes, entry=%08X)\n",
                         blob_len, (unsigned)s_entry_pc);
                 s_load_failed = 1;
-                psx_frontend_on_savestate_notify(1, slot, 0);
+                if (!quiet) psx_frontend_on_savestate_notify(1, slot, 0);
             }
         } else if (slot_file_path(slot, slot_view_disc(slot), "pst", path,
                                   sizeof(path))) {
@@ -1266,15 +1275,15 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                 s_load_failed = 1;
                 if (refusal[0]) {
                     fprintf(stderr, "savestate: %s\n", refusal);
-                    psx_frontend_on_savestate_refused(1, slot, refusal);
+                    if (!quiet) psx_frontend_on_savestate_refused(1, slot, refusal);
                 } else {
-                    psx_frontend_on_savestate_notify(1, slot, 0);
+                    if (!quiet) psx_frontend_on_savestate_notify(1, slot, 0);
                 }
             }
         } else {
             fprintf(stderr, "savestate: LOAD FAILED slot %d (no path)\n", slot);
             s_load_failed = 1;
-            psx_frontend_on_savestate_notify(1, slot, 0);
+            if (!quiet) psx_frontend_on_savestate_notify(1, slot, 0);
         }
         /* A post-apply resume-PC refusal has not notified observers. Restore
          * the original machine silently, without splitting its input stream. */
@@ -1321,7 +1330,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                     t_after_frontend - t_after_boot,
                     t_after_frontend - t_load0,
                     path[0] ? "" : " [blob]");
-            psx_frontend_on_savestate_notify(1, slot, 1);
+            if (!quiet) psx_frontend_on_savestate_notify(1, slot, 1);
 #if defined(PSX_HAS_RECOMP_NET)
             savestate_load_trace("before_resume", load_trace_generation, slot,
                                  load_trace_source, cpu);

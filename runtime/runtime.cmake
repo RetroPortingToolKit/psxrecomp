@@ -503,6 +503,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/tas_checkpoint.c
     ${PSXRECOMP_ROOT}/runtime/src/replay_file.c
     ${PSXRECOMP_ROOT}/runtime/src/replay_identity.c
+    ${PSXRECOMP_ROOT}/runtime/src/replay_session.c
     ${PSXRECOMP_ROOT}/runtime/src/disc_identity.cpp
     ${PSXRECOMP_ROOT}/runtime/src/cue_sheet.cpp
     ${PSXRECOMP_ROOT}/runtime/src/disc_path.cpp
