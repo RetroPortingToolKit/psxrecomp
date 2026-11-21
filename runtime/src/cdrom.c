@@ -3169,7 +3169,7 @@ void cdrom_write(uint32_t addr, uint32_t value) {
             if (pending_dataready && pending_present_due == 0)
                 pending_present_due = psx_cycle_count + CDROM_PEND_PRESENT_DELAY;
             process_pending(0);
-            if (queued_cmd.pending && (irq_flag & 0x1F) == 0)
+            if (had_active_irq && queued_cmd.pending && (irq_flag & 0x1F) == 0)
                 queued_release_due = psx_cycle_count + CDROM_IRQ_PRESENT_DELAY;
         }
         break;
@@ -3205,8 +3205,9 @@ uint32_t cdrom_cycles_to_irq(uint32_t i_mask) {
             best = 0u;
         }
     }
-    /* Scheduled pickup of a command held behind an acknowledged INT. */
-    if (queued_cmd.pending && queued_release_due != 0) {
+    /* A held command can run at its pickup deadline only while no new INT
+     * blocks it. A blocked, overdue pickup must not force one-cycle slices. */
+    if (irq_flag == 0 && queued_cmd.pending && queued_release_due != 0) {
         uint32_t d = (uint32_t)cycles_until_due(queued_release_due);
         if (d < best) best = d;
     }
@@ -3241,7 +3242,7 @@ uint32_t cdrom_cycles_to_internal_event(void) {
                          ? (uint32_t)cycles_until_due(pending_present_due) : 1u;
         if (d < best) best = d;
     }
-    if (queued_cmd.pending && queued_release_due) {
+    if (irq_flag == 0 && queued_cmd.pending && queued_release_due) {
         const uint32_t d = psx_cycle_count < queued_release_due
                          ? (uint32_t)cycles_until_due(queued_release_due) : 1u;
         if (d < best) best = d;

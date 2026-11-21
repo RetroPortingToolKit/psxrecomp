@@ -56,8 +56,20 @@ static void hold_readn(void) {
     CHECK(queued_cmd.pending && queued_cmd.cmd == 0x06);
 }
 
+/* Move the destination without consuming the current stream's next sector.
+ * A plain ReadN without a new destination uses read_continues_current_stream()
+ * and cannot expose the ring-clearing restart that this regression covers. */
+static void set_future_location(void) {
+    cdrom_write(0x1f801800, 0);
+    cdrom_write(0x1f801802, 0x00);
+    cdrom_write(0x1f801802, 0x05);
+    cdrom_write(0x1f801802, 0x00); /* LBA 225, distinct from current stream */
+    cdrom_write(0x1f801801, 0x02);
+    ack();
+}
+
 static void held_command_picked_up_after_ack(void) {
-    setup(); sector();                        /* INT1 announces LBA 100 */
+    setup(); set_future_location(); sector(); /* INT1 announces LBA 100 */
     CHECK(irq_flag == CDIRQ_DATA_READY);
     hold_readn();
     ack();
@@ -94,6 +106,41 @@ static void every_full_ack_restarts_the_pickup(void) {
     psx_cycle_count = acked + CDROM_IRQ_PRESENT_DELAY;
     cdrom_advance(0);
     CHECK(!queued_cmd.pending && irq_flag == CDIRQ_ACK);
+}
+
+static void parameter_fifo_reset_does_not_restart_pickup(void) {
+    setup(); sector(); hold_readn(); ack();
+    const uint64_t due = queued_release_due;
+    psx_cycle_count += CDROM_IRQ_PRESENT_DELAY / 2;
+    cdrom_write(0x1f801800, 0);
+    cdrom_write(0x1f801802, 0x55);
+    CHECK(param_count == 1);
+    cdrom_write(0x1f801800, 1);
+    cdrom_write(0x1f801803, 0x40); /* CLRPRM, no interrupt acknowledged */
+    CHECK(param_count == 0);
+    CHECK(queued_release_due == due);
+    cdrom_write(0x1f801803, 7); /* redundant ack with no pending interrupt */
+    CHECK(queued_release_due == due);
+    psx_cycle_count = due;
+    cdrom_advance(0);
+    CHECK(!queued_cmd.pending && irq_flag == CDIRQ_ACK);
+}
+
+static void blocked_pickup_is_not_a_runnable_deadline(void) {
+    setup(); sector(); hold_readn(); ack();
+    psx_cycle_count += CDROM_IRQ_PRESENT_DELAY / 2;
+    set_irq(CDIRQ_DATA_READY);
+    /* Isolate the held command from sector/IRQ presentation deadlines. */
+    reading = 0;
+    irq_enable = 0;
+    psx_cycle_count = queued_release_due + 1;
+    cdrom_advance(0);
+    CHECK(queued_cmd.pending && irq_flag == CDIRQ_DATA_READY);
+    CHECK(cdrom_cycles_to_internal_event() == UINT32_MAX);
+    CHECK(cdrom_cycles_to_irq(1u << 2) == UINT32_MAX);
+    ack();
+    CHECK(cdrom_cycles_to_internal_event() == CDROM_IRQ_PRESENT_DELAY);
+    CHECK(cdrom_cycles_to_irq(1u << 2) == CDROM_IRQ_PRESENT_DELAY);
 }
 
 static void snapshot_keeps_pickup_relative(void) {
@@ -136,6 +183,8 @@ static void snapshot_keeps_pickup_relative(void) {
 int main(void) {
     held_command_picked_up_after_ack();
     every_full_ack_restarts_the_pickup();
+    parameter_fifo_reset_does_not_restart_pickup();
+    blocked_pickup_is_not_a_runnable_deadline();
     snapshot_keeps_pickup_relative();
     puts("PASS: held CD command is picked up after the acknowledge");
     return 0;
