@@ -460,6 +460,7 @@ static void pack_flush(void);             /* hr -> raw mirror (dirty rect) */
 static void flush_pack_if_sampling(int tpx, int tpy, int depth, int clx, int cly);
 static void vram_upload_block(int x, int y, int w, int h, const uint16_t *data);
 static void gpu_copy_rect(int sx, int sy, int dx, int dy, int w, int h);
+static void depth24_upload_policy(void);
 static void ensure_cpu(void);             /* GPU -> CPU mirror readback */
 static int  make_staging(VkDeviceSize bytes, VkBuffer *buf, VkDeviceMemory *mem, void **map);
 static void free_staging(VkBuffer buf, VkDeviceMemory mem);
@@ -477,6 +478,9 @@ static int s_mod_r = 128, s_mod_g = 128, s_mod_b = 128, s_mod_raw = 0;
 typedef struct { int set, x0, y0, x1, y1; } DirtyRect;
 static DirtyRect s_pack_dirty;
 static int       s_gpu_dirty;
+/* RGB888 scanout owns CPU VRAM until the next 15-bit handoff. */
+static int       s_depth24_skip_up;
+static DirtyRect s_d24_skip_fb;
 /* CPU-side VRAM writes (GP0 A0 transfers, DMA, fills, single pokes) land in
  * the CPU array immediately and accumulate here; ONE batched upload flushes
  * them before the next GPU op that could observe them (mirrors the GL
@@ -2325,6 +2329,7 @@ int vk_renderer_present_wide(int disp_x, int disp_y, int disp_h, int linear) {
 }
 
 void vk_renderer_sync_cpu(void) {
+    depth24_upload_policy();
     if (!s_ctx_ok) return;
     ensure_cpu();   /* drain batches, pack hr->raw, copy raw->CPU mirror */
 }
@@ -2757,7 +2762,8 @@ static void flush_cpu_upload(void) {
 static void ensure_cpu(void) {
     extern int psx_netplay_active(void);
     if (!s_ready || !s_gpu_dirty || !s_vram) return;
-    if (psx_netplay_active()) {
+    if (s_depth24_skip_up || psx_netplay_active()) {
+        /* RGB888 uploads are deliberately absent from the 1555 GPU mirror. */
         s_gpu_dirty = 0;
         return;
     }
@@ -2809,17 +2815,19 @@ static void vkb_set_draw_area(int x1, int y1, int x2, int y2) {
         flush_geometry();
     }
     s_da_x1 = x1; s_da_y1 = y1; s_da_x2 = x2; s_da_y2 = y2;
+    sw_set_draw_area(x1, y1, x2, y2);
 }
 static void vkb_get_draw_area(int *x1, int *y1, int *x2, int *y2) {
     if (x1) *x1 = s_da_x1; if (y1) *y1 = s_da_y1; if (x2) *x2 = s_da_x2; if (y2) *y2 = s_da_y2;
 }
-static void vkb_set_draw_offset(int x, int y) { s_off_x = x; s_off_y = y; }
+static void vkb_set_draw_offset(int x, int y) { s_off_x = x; s_off_y = y; sw_set_draw_offset(x, y); }
 
 /* GP0 02h fill: set a VRAM rect to a solid 1555 colour. The write lands in
  * the CPU array immediately (like every CPU-side VRAM write) and rides the
  * batched s_up_rects upload — the old per-fill staging upload was part of
  * the per-op alloc/submit churn. */
 static void vkb_fill_rect(int x, int y, int w, int h, uint16_t color) {
+    depth24_upload_policy();
     sw_fill_rect(x, y, w, h, color);
     if (!s_ctx_ok) return;
     if (x < 0) { w += x; x = 0; } if (y < 0) { h += y; y = 0; }
@@ -2831,9 +2839,6 @@ static void vkb_fill_rect(int x, int y, int w, int h, uint16_t color) {
 /* Same policy as GL: skip framebuffer-sized depth24 (RGB888) transfers only;
  * still stage smaller texture A0s. On leave clear skipped FB union — never
  * restage packed RGB888 as 1555. */
-static int s_depth24_skip_up = 0;
-static DirtyRect s_d24_skip_fb;
-
 static int depth24_is_fb_transfer(int x, int y, int w, int h) {
     if (!gpu_display_is_depth24() || w <= 0 || h <= 0) return 0;
     GpuDisplayInfo di;
@@ -2882,22 +2887,30 @@ static void depth24_clear_skipped_fb(void) {
 }
 
 static void depth24_upload_policy(void) {
+    if (!s_ctx_ok) return;
     int d24 = gpu_display_is_depth24();
     if (d24 && !s_depth24_skip_up) {
+        /* Finish the old 15-bit image before any RGB888 CPU write. Queued
+         * geometry has not necessarily set s_gpu_dirty yet. */
+        flush_cpu_upload();
+        flush_tex_batch(); flush_geometry();
+        ensure_cpu();
         s_up_nrects = 0;
         rect_clear(&s_d24_skip_fb);
     } else if (!d24 && s_depth24_skip_up) {
-        s_up_nrects = 0;
+        s_depth24_skip_up = 0;
         depth24_clear_skipped_fb();
+        /* Preserve smaller texture uploads queued during the movie. */
+        flush_cpu_upload();
         gpu_depth24_upload_span_reset();
     }
     s_depth24_skip_up = d24;
 }
 
 static void vkb_vram_transfer_in(int x, int y, int w, int h, const uint16_t *data) {
+    depth24_upload_policy();
     sw_vram_transfer_in(x, y, w, h, data);
     if (!s_ctx_ok) return;
-    depth24_upload_policy();
     if (s_depth24_skip_up && depth24_is_fb_transfer(x, y, w, h)) {
         /* Full-VRAM savestate restore: stage FBO; mark scanout band only. */
         if (w >= VRAM_W && h >= VRAM_H) {
@@ -2926,19 +2939,21 @@ void vk_renderer_restage_vram_after_savestate(void) {
     }
 }
 static void vkb_vram_transfer_out(int x, int y, int w, int h, uint16_t *data) {
+    depth24_upload_policy();
     ensure_cpu();   /* sync GPU-rendered content down to the CPU mirror first */
     for (int row = 0; row < h; row++)
         for (int col = 0; col < w; col++)
             data[row * w + col] = s_vram ? s_vram[(y + row) * VRAM_W + (x + col)] : 0;
 }
 static void vkb_vram_write(int x, int y, uint16_t pixel) {
+    depth24_upload_policy();
     sw_vram_write(x, y, pixel);
     if (!s_ctx_ok) return;
-    depth24_upload_policy();
     up_add(x & (VRAM_W - 1), y & (VRAM_H - 1),
            x & (VRAM_W - 1), y & (VRAM_H - 1));
 }
 static uint16_t vkb_vram_read(int x, int y) {
+    depth24_upload_policy();
     ensure_cpu();   /* gated by s_gpu_dirty; cheap when nothing was drawn */
     return s_vram ? s_vram[y * VRAM_W + x] : 0;
 }
@@ -2947,10 +2962,12 @@ static uint16_t vkb_vram_read(int x, int y) {
  * FMV present). Sync the GPU-authoritative VRAM down, then read out via the
  * software renderer on the shared array — mirrors the GL backend exactly. */
 static int vkb_render_display(uint32_t *o, int p, int dx, int dy, int dw, int dh) {
+    depth24_upload_policy();
     ensure_cpu();
     return sw_render_display(o, p, dx, dy, dw, dh);
 }
 static int vkb_render_display_hires(uint32_t *o, int p, int dx, int dy, int dw, int dh) {
+    depth24_upload_policy();
     ensure_cpu();
     return sw_render_display_hires(o, p, dx, dy, dw, dh);
 }
@@ -3190,13 +3207,15 @@ static void quad(float x0,float y0,float x1,float y1,float x2,float y2,float x3,
 
 /* Per-prim render state. Batch keys are compared at draw-append time (the draw
  * funcs flush when they change), so the setters only record state. */
-static void vkb_set_semi_transparency(int e, int m) { s_semi_en = e ? 1 : 0; s_semi_mode = m & 3; }
-static void vkb_set_mask_bits(int s, int c) { s_mask_set = s ? 1 : 0; s_mask_check = c ? 1 : 0; }
+static void vkb_set_semi_transparency(int e, int m) { s_semi_en = e ? 1 : 0; s_semi_mode = m & 3; sw_set_semi_transparency(e, m); }
+static void vkb_set_mask_bits(int s, int c) { s_mask_set = s ? 1 : 0; s_mask_check = c ? 1 : 0; sw_set_mask_bits(s, c); }
 static void vkb_set_texture_window(uint32_t raw) {
+    sw_set_texture_window(raw);
     s_tw_mask_x = (int)(raw & 0x1F);        s_tw_mask_y = (int)((raw >> 5) & 0x1F);
     s_tw_off_x  = (int)((raw >> 10) & 0x1F); s_tw_off_y  = (int)((raw >> 15) & 0x1F);
 }
 static void vkb_set_color_modulation(int r, int g, int b, int raw) {
+    sw_set_color_modulation(r, g, b, raw);
     s_mod_r = r; s_mod_g = g; s_mod_b = b; s_mod_raw = raw ? 1 : 0;
 }
 
@@ -3229,13 +3248,38 @@ static inline void precise_consumed(void) { s_pc_valid = 0; s_pq_valid = 0; }
 #define PCX(i, v) (s_pc_valid ? s_pc_x[i] : (float)(v))
 #define PCY(i, v) (s_pc_valid ? s_pc_y[i] : (float)(v))
 
+/* RGB888 scanout reads CPU VRAM, including ordinary GP0 draws between movie
+ * uploads. Preserve that native mirror while Vulkan keeps its render image.
+ * Pending texture uploads precede each draw on both paths. */
+static int depth24_cpu_draw_begin(void) {
+    depth24_upload_policy();
+    if (!s_depth24_skip_up) return -1;
+    flush_cpu_upload();
+    int previous = sw_faithful_authority();
+    sw_set_faithful_authority(1);
+    return previous;
+}
+static void depth24_cpu_draw_end(int previous) {
+    sw_set_faithful_authority(previous);
+}
+
 static void vkb_draw_flat_triangle(int x0,int y0,int x1,int y1,int x2,int y2,uint16_t c){
+    int native_previous = depth24_cpu_draw_begin();
+    if (native_previous >= 0) {
+        sw_draw_flat_triangle(x0,y0,x1,y1,x2,y2,c);
+        depth24_cpu_draw_end(native_previous);
+    }
     geo_prim_begin();
     float col[3]; col555(c, col);
     tri3(PCX(0,x0),PCY(0,y0),col, PCX(1,x1),PCY(1,y1),col, PCX(2,x2),PCY(2,y2),col);
     precise_consumed();
 }
 static void vkb_draw_gouraud_triangle(int x0,int y0,uint16_t c0,int x1,int y1,uint16_t c1,int x2,int y2,uint16_t c2){
+    int native_previous = depth24_cpu_draw_begin();
+    if (native_previous >= 0) {
+        sw_draw_gouraud_triangle(x0,y0,c0,x1,y1,c1,x2,y2,c2);
+        depth24_cpu_draw_end(native_previous);
+    }
     geo_prim_begin();
     float a[3],b[3],cc[3]; col555(c0,a); col555(c1,b); col555(c2,cc);
     tri3(PCX(0,x0),PCY(0,y0),a, PCX(1,x1),PCY(1,y1),b, PCX(2,x2),PCY(2,y2),cc);
@@ -3272,6 +3316,11 @@ static void wide_overlay_rect(int y, int h, uint16_t c, int semi) {
 }
 
 static void vkb_draw_flat_rect(int x,int y,int w,int h,uint16_t c){
+    int native_previous = depth24_cpu_draw_begin();
+    if (native_previous >= 0) {
+        sw_draw_flat_rect(x,y,w,h,c);
+        depth24_cpu_draw_end(native_previous);
+    }
     /* Full-screen 2D overlay under native-wide: the canonical rect must NOT
      * mirror 1:1 (it would cover only the translated 4:3 span) — suppress the
      * batch mirror and emit one full-wide-width rect instead, so the revealed
@@ -3306,10 +3355,20 @@ static void line_quad(int x0,int y0,int x1,int y1,const float ca[3],const float 
     tri3(ax0,ay0,ca, bx1,by1,cb_, bx0,by0,ca);
 }
 static void vkb_draw_line(int x0,int y0,int x1,int y1,uint16_t c){
+    int native_previous = depth24_cpu_draw_begin();
+    if (native_previous >= 0) {
+        sw_draw_line(x0,y0,x1,y1,c);
+        depth24_cpu_draw_end(native_previous);
+    }
     geo_prim_begin();
     float col[3]; col555(c, col); line_quad(x0,y0,x1,y1,col,col);
 }
 static void vkb_draw_shaded_line(int x0,int y0,uint16_t c0,int x1,int y1,uint16_t c1){
+    int native_previous = depth24_cpu_draw_begin();
+    if (native_previous >= 0) {
+        sw_draw_shaded_line(x0,y0,c0,x1,y1,c1);
+        depth24_cpu_draw_end(native_previous);
+    }
     geo_prim_begin();
     float a[3],b[3]; col555(c0,a); col555(c1,b); line_quad(x0,y0,x1,y1,a,b);
 }
@@ -3498,6 +3557,11 @@ static void gpu_textured_rect(int x,int y,int w,int h, int u0,int v0,int u1,int 
 
 static void vkb_draw_textured_triangle(int x0,int y0,int u0,int v0,int x1,int y1,int u1,int v1,
                                        int x2,int y2,int u2,int v2,uint16_t cx,uint16_t cy,uint16_t tp){
+    int native_previous = depth24_cpu_draw_begin();
+    if (native_previous >= 0) {
+        sw_draw_textured_triangle(x0,y0,u0,v0,x1,y1,u1,v1,x2,y2,u2,v2,cx,cy,tp);
+        depth24_cpu_draw_end(native_previous);
+    }
     int xs[3]={x0,x1,x2}, ys[3]={y0,y1,y2}, us[3]={u0,u1,u2}, vs[3]={v0,v1,v2};
     float mr=s_mod_r/255.0f, mg=s_mod_g/255.0f, mb=s_mod_b/255.0f;
     float col[9]={mr,mg,mb, mr,mg,mb, mr,mg,mb};
@@ -3508,6 +3572,11 @@ static void vkb_draw_shaded_textured_triangle(int x0,int y0,int u0,int v0,uint32
                                               int x1,int y1,int u1,int v1,uint32_t c1,
                                               int x2,int y2,int u2,int v2,uint32_t c2,
                                               uint16_t cx,uint16_t cy,uint16_t tp,int raw){
+    int native_previous = depth24_cpu_draw_begin();
+    if (native_previous >= 0) {
+        sw_draw_shaded_textured_triangle(x0,y0,u0,v0,c0,x1,y1,u1,v1,c1,x2,y2,u2,v2,c2,cx,cy,tp,raw);
+        depth24_cpu_draw_end(native_previous);
+    }
     int xs[3]={x0,x1,x2}, ys[3]={y0,y1,y2}, us[3]={u0,u1,u2}, vs[3]={v0,v1,v2};
     /* shaded-textured: per-vertex 24-bit colour modulates the texel (PS1 *2). */
     float col[9];
@@ -3516,9 +3585,19 @@ static void vkb_draw_shaded_textured_triangle(int x0,int y0,int u0,int v0,uint32
     precise_consumed();
 }
 static void vkb_draw_textured_rect(int x,int y,int w,int h,int u,int v,uint16_t cx,uint16_t cy,uint16_t tp){
+    int native_previous = depth24_cpu_draw_begin();
+    if (native_previous >= 0) {
+        sw_draw_textured_rect(x,y,w,h,u,v,cx,cy,tp);
+        depth24_cpu_draw_end(native_previous);
+    }
     gpu_textured_rect(x,y,w,h, u,v, u+w,v+h, cx,cy,tp, s_semi_en?s_semi_mode:-1);
 }
 static void vkb_draw_textured_rect_scaled(int x,int y,int w,int h,int u0,int v0,int u1,int v1,uint16_t cx,uint16_t cy,uint16_t tp){
+    int native_previous = depth24_cpu_draw_begin();
+    if (native_previous >= 0) {
+        sw_draw_textured_rect_scaled(x,y,w,h,u0,v0,u1,v1,cx,cy,tp);
+        depth24_cpu_draw_end(native_previous);
+    }
     gpu_textured_rect(x,y,w,h, u0,v0, u1,v1, cx,cy,tp, s_semi_en?s_semi_mode:-1);
 }
 
@@ -3526,7 +3605,9 @@ static void vkb_draw_textured_rect_scaled(int x,int y,int w,int h,int u0,int v0,
  * then blit scratch -> dest with STP/mask split. Mirrors the GL backend. */
 static void vkb_copy_rect(int sx,int sy,int dx,int dy,int w,int h){
     if (!s_ctx_ok || w <= 0 || h <= 0) return;
+    depth24_upload_policy();
     flush_cpu_upload();   /* the copy source may include pending CPU writes */
+    if (s_depth24_skip_up) sw_copy_rect(sx,sy,dx,dy,w,h);
     flush_tex_batch(); flush_geometry();
     if (sx + w > VRAM_W) w = VRAM_W - sx;
     if (dx + w > VRAM_W) w = VRAM_W - dx;
@@ -3554,7 +3635,7 @@ static void vkb_copy_rect(int sx,int sy,int dx,int dy,int w,int h){
     blit_region(dx, dy, w, h, s_scratch_view, s_scratch_img, &s_scratch_layout,
                 1, (sx - dx) * S, (sy - dy) * S, 0, 1);
 
-    if (s_vram) {   /* keep CPU mirror coherent for non-GPU readers */
+    if (s_vram && !s_depth24_skip_up) {   /* 24-bit copy already updated CPU */
         for (int row = 0; row < h; row++)
             for (int col = 0; col < w; col++)
                 s_vram[(dy + row) * VRAM_W + (dx + col)] = s_vram[(sy + row) * VRAM_W + (sx + col)];
@@ -3770,6 +3851,7 @@ static const GpuRenderBackend VK_BACKEND = {
     .wide_clear                    = vkb_wide_clear,
     .wide_clear_margins            = vkb_wide_clear_margins,
     .render_wide_display           = vkb_render_wide_display,
+    .display_mode_changed          = depth24_upload_policy,
 };
 
 /* Returned unconditionally (like gl_backend_get): the table is selected before

@@ -926,6 +926,23 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         message(STATUS "gl_scale_invariance_test: not registered (needs macOS, Linux or MinGW, Python 3 and SDL3)")
     endif()
     if(Python3_Interpreter_FOUND AND TARGET SDL3::SDL3-static)
+        find_program(_vk_depth24_glslc NAMES glslc
+            HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+        if(_vk_sync_test_include AND _vk_depth24_glslc AND NOT APPLE
+                AND (NOT WIN32 OR MINGW))
+            add_test(NAME vk_depth24_authority_test
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vk_depth24_authority.py"
+                    --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vk_depth24_authority.c"
+                    --cc "${CMAKE_C_COMPILER}"
+                    --sdl-include "$<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>"
+                    --sdl-library "$<TARGET_FILE:SDL3::SDL3-static>"
+                    --vulkan-include "${_vk_sync_test_include}"
+                    --glslc "${_vk_depth24_glslc}"
+                    --output "${CMAKE_CURRENT_BINARY_DIR}/vk-depth24-results")
+            set_tests_properties(vk_depth24_authority_test PROPERTIES
+                LABELS "gpu;vulkan;hardware" TIMEOUT 0 SKIP_RETURN_CODE 77)
+        endif()
         foreach(_depth_window 0 1)
             add_test(NAME gl_depth_clear_${_depth_window}_test
                 COMMAND "${Python3_EXECUTABLE}"
