@@ -251,13 +251,15 @@ static VkFormat         s_sc_format;
 static VkExtent2D       s_sc_extent;
 static uint32_t         s_sc_count;
 static VkImage          s_sc_images[8];
+/* A present wait outlives the submit fence. Reuse it only after acquiring
+ * the same swapchain image again, independently of the frame index. */
+static VkSemaphore      s_sem_present[8];
 static int              s_present_mode_req = 1;   /* 1 tear-free, 0 IMMEDIATE, -1 MAILBOX */
 
 /* Per-frame sync (double-buffered command recording). */
 #define VK_FRAMES 2
 static VkCommandBuffer  s_cmd[VK_FRAMES];
 static VkSemaphore      s_sem_acquire[VK_FRAMES];
-static VkSemaphore      s_sem_render[VK_FRAMES];
 static VkFence          s_fence[VK_FRAMES];
 static uint32_t         s_frame_idx;
 
@@ -958,6 +960,32 @@ static VkPresentModeKHR choose_present_mode(void) {
     return VK_PRESENT_MODE_FIFO_KHR;  /* always supported */
 }
 
+static void destroy_swapchain(void);
+
+static void destroy_present_semaphores(void) {
+    for (size_t i = 0; i < sizeof(s_sem_present) / sizeof(s_sem_present[0]); ++i) {
+        if (s_sem_present[i]) {
+            p_vkDestroySemaphore(s_dev, s_sem_present[i], NULL);
+            s_sem_present[i] = VK_NULL_HANDLE;
+        }
+    }
+}
+
+static int create_present_semaphores(void) {
+    if (s_sc_count == 0 || s_sc_count > sizeof(s_sem_present) / sizeof(s_sem_present[0]))
+        return 0;
+    VkSemaphoreCreateInfo info = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    for (uint32_t i = 0; i < s_sc_count; ++i) {
+        VkSemaphore semaphore = VK_NULL_HANDLE;
+        if (p_vkCreateSemaphore(s_dev, &info, NULL, &semaphore) != VK_SUCCESS) {
+            destroy_present_semaphores();
+            return 0;
+        }
+        s_sem_present[i] = semaphore;
+    }
+    return 1;
+}
+
 static int create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
     p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s_phys, s_surface, &caps);
@@ -1002,13 +1030,29 @@ static int create_swapchain(void) {
     ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     ci.presentMode = choose_present_mode();
     ci.clipped = VK_TRUE;
-    if (p_vkCreateSwapchainKHR(s_dev, &ci, NULL, &s_swapchain) != VK_SUCCESS)
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    if (p_vkCreateSwapchainKHR(s_dev, &ci, NULL, &swapchain) != VK_SUCCESS)
         return vk_die("vkCreateSwapchainKHR failed");
+    s_swapchain = swapchain;
 
-    s_sc_count = 0;
-    p_vkGetSwapchainImagesKHR(s_dev, s_swapchain, &s_sc_count, NULL);
-    if (s_sc_count > 8) s_sc_count = 8;
-    p_vkGetSwapchainImagesKHR(s_dev, s_swapchain, &s_sc_count, s_sc_images);
+    uint32_t image_count = 0;
+    VkResult images_result = p_vkGetSwapchainImagesKHR(s_dev, s_swapchain, &image_count, NULL);
+    if (images_result != VK_SUCCESS || image_count == 0 ||
+        image_count > sizeof(s_sc_images) / sizeof(s_sc_images[0])) {
+        destroy_swapchain();
+        return vk_die("unsupported swapchain image count or image query failed");
+    }
+    images_result = p_vkGetSwapchainImagesKHR(s_dev, s_swapchain, &image_count, s_sc_images);
+    if (images_result != VK_SUCCESS || image_count == 0 ||
+        image_count > sizeof(s_sc_images) / sizeof(s_sc_images[0])) {
+        destroy_swapchain();
+        return vk_die("swapchain image query failed");
+    }
+    s_sc_count = image_count;
+    if (!create_present_semaphores()) {
+        destroy_swapchain();
+        return vk_die("swapchain present semaphore creation failed");
+    }
     return 1;
 }
 
@@ -1017,7 +1061,10 @@ static void pp_destroy_all(void);
 
 static void destroy_swapchain(void) {
     pp_release_swapchain();   /* present-pass views/framebuffers/pipeline */
+    destroy_present_semaphores();
     if (s_swapchain) { p_vkDestroySwapchainKHR(s_dev, s_swapchain, NULL); s_swapchain = VK_NULL_HANDLE; }
+    s_sc_count = 0;
+    memset(s_sc_images, 0, sizeof(s_sc_images));
 }
 
 static int create_sync(void) {
@@ -1032,7 +1079,6 @@ static int create_sync(void) {
     fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     for (int i = 0; i < VK_FRAMES; i++) {
         if (p_vkCreateSemaphore(s_dev, &si, NULL, &s_sem_acquire[i]) != VK_SUCCESS ||
-            p_vkCreateSemaphore(s_dev, &si, NULL, &s_sem_render[i]) != VK_SUCCESS ||
             p_vkCreateFence(s_dev, &fi, NULL, &s_fence[i]) != VK_SUCCESS)
             return vk_die("sync object creation failed");
     }
@@ -1539,9 +1585,10 @@ int vk_renderer_init_context(SDL_Window *win) {
         return vk_die("vkCreateCommandPool(work) failed");
 
     if (!create_swapchain()) return 0;
-    if (!create_sync()) return 0;
-    if (!create_vram_image()) return 0;
-    if (!create_render_targets()) return 0;
+    if (!create_sync() || !create_vram_image() || !create_render_targets()) {
+        destroy_swapchain();  /* release the newly created image-owned waits */
+        return 0;
+    }
 
     s_ctx_ok = 1;
     vk_log("instance/device/swapchain/VRAM + raw mirror/pipelines ready");
@@ -1609,8 +1656,9 @@ void vk_renderer_shutdown(void) {
     if (s_up_mem)      p_vkFreeMemory(s_dev, s_up_mem, NULL);
     for (int i = 0; i < VK_FRAMES; i++) {
         if (s_sem_acquire[i]) p_vkDestroySemaphore(s_dev, s_sem_acquire[i], NULL);
-        if (s_sem_render[i])  p_vkDestroySemaphore(s_dev, s_sem_render[i], NULL);
         if (s_fence[i])       p_vkDestroyFence(s_dev, s_fence[i], NULL);
+        s_sem_acquire[i] = VK_NULL_HANDLE;
+        s_fence[i] = VK_NULL_HANDLE;
     }
     destroy_swapchain();
     if (s_work_pool) p_vkDestroyCommandPool(s_dev, s_work_pool, NULL);
@@ -1629,6 +1677,9 @@ void vk_renderer_set_present_mode(int mode) { s_present_mode_req = mode; }
  * blank (the image is cleared to black). Returns 1 on success. */
 static int acquire_present(VkImage *out_sc, VkCommandBuffer *out_cb,
                            uint32_t *out_idx, uint32_t *out_frame) {
+    /* A failed recreation leaves no image-owned handles. Retry before
+     * acquiring; frame acquire/fence resources remain separate. */
+    if (!s_swapchain && !create_swapchain()) return 0;
     uint32_t fr = s_frame_idx % VK_FRAMES;
     p_vkWaitForFences(s_dev, 1, &s_fence[fr], VK_TRUE, UINT64_MAX);
     uint32_t img_idx = 0;
@@ -1795,11 +1846,11 @@ static void submit_present(VkCommandBuffer cb, uint32_t img_idx, uint32_t fr) {
     si.waitSemaphoreCount = 1; si.pWaitSemaphores = &s_sem_acquire[fr];
     si.pWaitDstStageMask = &wait_stage;
     si.commandBufferCount = 1; si.pCommandBuffers = &cb;
-    si.signalSemaphoreCount = 1; si.pSignalSemaphores = &s_sem_render[fr];
+    si.signalSemaphoreCount = 1; si.pSignalSemaphores = &s_sem_present[img_idx];
     p_vkQueueSubmit(s_queue, 1, &si, s_fence[fr]);
 
     VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-    pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &s_sem_render[fr];
+    pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &s_sem_present[img_idx];
     pi.swapchainCount = 1; pi.pSwapchains = &s_swapchain;
     pi.pImageIndices = &img_idx;
     uint64_t present_start = SDL_GetPerformanceCounter();
