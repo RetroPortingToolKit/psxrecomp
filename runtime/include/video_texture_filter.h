@@ -8,8 +8,8 @@ extern "C" {
 #endif
 
 /* Values match [video] texture_filtering and gr_set_texture_filter().
- * STABLE_WORLD is set by a title's plugin (psx_mod_set_texture_filter);
- * the player setting does not offer it. */
+ * STABLE_WORLD filters proven 3D polygons on OpenGL; untracked UI stays
+ * nearest. Other backends use ordinary bilinear, including the UI. */
 #define PSX_TEXTURE_FILTER_NEAREST      0
 #define PSX_TEXTURE_FILTER_BILINEAR     1
 #define PSX_TEXTURE_FILTER_STABLE_WORLD 2

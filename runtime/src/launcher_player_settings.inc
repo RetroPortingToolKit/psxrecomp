@@ -156,6 +156,7 @@ int player_settings_option(void* context,const char* package,const char* feature
                   id=="video.internal_resolution"?" 1x is native; 4x is used until you choose. default keeps the game's own resolution. Hardware and memory limits may reduce the effective scale.":
                   id=="video.dynamic_resolution"?" Steps the internal resolution down when frames would be missed, between the floor and the Internal resolution choice.":
                   id=="video.crt_filter"?" raw shows the picture unfiltered.":
+                  id=="video.texture_filtering"?" Stable 3D filters recognized 3D geometry on OpenGL and keeps untracked UI nearest. Other backends use bilinear, including UI.":
                   id=="audio.spu_hq"?" On or off replaces the game's own choice.":
                   id=="video.rewind"?" Needs a build with rewind; the Rewind hotkey steps back.":
                   id=="video.pgxp_culling"?" Needs PGXP vertex correction. Never used in netplay.":
@@ -184,6 +185,12 @@ int player_settings_choice(void* context,const char* package,const char* feature
         if (!std::strcmp(option,"video.internal_resolution")) {
             if (value=="default") label="Game default";
             else for (const auto& preset:k_psx_ir_presets) if (value==preset.id) label=preset.label;
+        }
+        if (!std::strcmp(option,"video.texture_filtering")) {
+            if (value=="nearest") label="Nearest";
+            else if (value=="bilinear") label="Bilinear";
+            else if (value=="stable") label="Stable 3D (OpenGL)";
+            else if (value=="xbr") label="xBR";
         }
         std::snprintf(out->label,sizeof out->label,"%s",label); return 1;
     }

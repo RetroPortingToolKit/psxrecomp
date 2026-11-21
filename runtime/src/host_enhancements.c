@@ -181,6 +181,7 @@ int psx_host_enh_parse_dithering(const char* text) {
 int psx_host_enh_parse_texture_filter(const char* text) {
     if (is(text, "nearest")) return PSX_TEXTURE_FILTER_NEAREST;
     if (is(text, "bilinear")) return PSX_TEXTURE_FILTER_BILINEAR;
+    if (is(text, "stable")) return PSX_TEXTURE_FILTER_STABLE_WORLD;
     if (is(text, "xbr")) return PSX_TEXTURE_FILTER_XBR;
     return PSX_HOST_ENH_DEFAULT;
 }

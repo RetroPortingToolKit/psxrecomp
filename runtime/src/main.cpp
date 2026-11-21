@@ -1240,12 +1240,21 @@ extern "C" int psx_video_get_scanlines(float *strength) {
 
 /* Texture filtering for this session (PSX_TEXTURE_FILTER_*): the title's
  * [video] texture_filtering, or the player's Texture filtering setting. */
-static int           g_video_texfilter = 0; /* 0=nearest, 1=bilinear */
+static int           g_video_texfilter = PSX_TEXTURE_FILTER_NEAREST;
 static int           g_mod_texfilter = -1;
+/* A trusted plugin may choose the title's look, but an explicit player filter
+ * choice keeps its documented priority, including across session setup. */
+static int session_texture_filter(int mod_mode) {
+    PsxHostEnhRequests req;
+    psx_host_enh_requests(&req);
+    if (req.image && req.image_texture_filter != PSX_HOST_ENH_DEFAULT)
+        return req.image_texture_filter;
+    return mod_mode < 0 ? g_video_texfilter : mod_mode;
+}
 extern "C" void psx_mod_set_texture_filter(int mode) {
     if(mode < 0 || mode > 2) return;
     g_mod_texfilter = mode;
-    gr_set_texture_filter(mode);
+    gr_set_texture_filter(session_texture_filter(mode));
 }
 #if defined(RECOMP_LAUNCHER)
 /* recomp-ui's fixed rows for settings the runtime now offers on its own
@@ -22039,7 +22048,7 @@ session_reboot:
      * for a validation run. */
     session_host_look();
     if (const char* e = std::getenv("PSX_TEXTURE_FILTER")) g_video_texfilter = std::atoi(e);
-    gr_set_texture_filter(g_mod_texfilter < 0 ? g_video_texfilter : g_mod_texfilter);
+    gr_set_texture_filter(session_texture_filter(g_mod_texfilter));
     /* Sub-pixel vertex precision + perspective-correct UVs. Both default off;
      * with both off every setter below leaves the tracking caches disabled and
      * the draw path is the faithful integer one, unchanged. */

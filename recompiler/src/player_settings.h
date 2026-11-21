@@ -54,7 +54,7 @@ inline const PlayerSettingSpec kExtraPlayerSettings[] = {
     {"video","scanlines","Scanlines","Display",PlayerSettingKind::Boolean,0,1,"",kCrtFilter},
     {"video","scanline_strength","Scanline strength (0-1)","Display",PlayerSettingKind::Number,0,1,"",kCrtFilter},
     {"video","antialiasing","Smooth scaling","Display",PlayerSettingKind::Boolean,0,1,"",kImageFiltering},
-    {"video","texture_filtering","Texture filtering","Display",PlayerSettingKind::Choice,0,0,"nearest,bilinear,xbr",kImageFiltering},
+    {"video","texture_filtering","Texture filtering","Display",PlayerSettingKind::Choice,0,0,"nearest,bilinear,stable,xbr",kImageFiltering},
     {"video","fmv_filter","Movie filtering","Display",PlayerSettingKind::Choice,0,0,"nearest,bilinear,sharp,bicubic",kImageFiltering},
     {"video","dynamic_resolution","Automatic resolution","Display",PlayerSettingKind::Boolean,0,1,"",kAutomaticResolution},
     {"video","dynamic_resolution_min","Lowest resolution (floor)","Display",PlayerSettingKind::ResolutionFloor,0,0,"",kAutomaticResolution},

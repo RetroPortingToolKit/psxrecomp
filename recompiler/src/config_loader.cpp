@@ -995,9 +995,10 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             const auto mode = toml::find<std::string>(video, "texture_filtering");
             if (mode == "nearest")       rt.video_texture_filter = 0;
             else if (mode == "bilinear") rt.video_texture_filter = 1;
+            else if (mode == "stable")   rt.video_texture_filter = 2;
             else if (mode == "xbr")      rt.video_texture_filter = 3;
             else throw std::runtime_error(fmt::format(
-                "[video] texture_filtering must be \"nearest\", \"bilinear\" or \"xbr\": {}", mode));
+                "[video] texture_filtering must be \"nearest\", \"bilinear\", \"stable\" or \"xbr\": {}", mode));
         }
         if (video.contains("fmv_filter")) {
             const auto mode = toml::find<std::string>(video, "fmv_filter");
