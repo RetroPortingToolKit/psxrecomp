@@ -4132,11 +4132,9 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     struct RNetIceAgent *guest_agent = NULL;
 
     if (!cfg || !cfg->enabled) return -1;
-#if PSX_REQUIRED_HOST_PROFILES
     if(!cfg->host_profile_required){
         psx_lobby_set_last_error("Host simulation profile startup is required.");return -6;
     }
-#endif
     if (psx_mod_netplay_profile() && !psx_mod_netplay_is_active()) {
         fprintf(stderr, "psxrecomp: title netplay profile was not committed\n");
         return -1;
