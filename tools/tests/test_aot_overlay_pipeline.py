@@ -21,6 +21,36 @@ from test_bpe_container import MAGIC as BPE_MAGIC, container as bpe_container_by
 
 
 class ReleaseCompilerCacheTests(unittest.TestCase):
+    def test_native_identity_queries_wait_for_the_actual_result(self):
+        def completed_probe(command, **kwargs):
+            if kwargs.get('timeout') is not None:
+                raise pipeline.subprocess.TimeoutExpired(command, kwargs['timeout'])
+            return mock.Mock(returncode=0, stdout='12345678\n', stderr='')
+
+        with mock.patch.object(pipeline.subprocess, 'run', side_effect=completed_probe):
+            with self.subTest(query='codegen identity'):
+                pipeline.compiler.verify_recompiler_matches_tag('emitter', 0x12345678)
+            with self.subTest(query='overlay configuration identity'):
+                self.assertEqual(pipeline.compiler.overlay_config_hash('emitter', 'game.toml'),
+                                 0x12345678)
+
+    def test_default_pair_lock_waits_for_contention_to_clear(self):
+        import os
+        if os.name == 'nt':
+            import msvcrt
+            module, function = msvcrt, 'locking'
+        else:
+            import fcntl
+            module, function = fcntl, 'flock'
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(module, function, side_effect=[OSError('busy'), None, None]) as lock, \
+                mock.patch.object(pipeline.compiler.time, 'monotonic', side_effect=[0, 1000]), \
+                mock.patch.object(pipeline.compiler.time, 'sleep'):
+            with pipeline.compiler._shard_pair_lock(str(Path(directory) / 'pair.dll')):
+                acquired = True
+        self.assertTrue(acquired)
+        self.assertEqual(lock.call_count, 3)  # contention, acquisition, unlock
+
     def test_release_rejects_cache_namespace_the_runtime_cannot_load(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
