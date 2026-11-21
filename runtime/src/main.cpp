@@ -1242,9 +1242,11 @@ extern "C" int psx_video_get_scanlines(float *strength) {
  * [video] texture_filtering, or the player's Texture filtering setting. */
 static int           g_video_texfilter = PSX_TEXTURE_FILTER_NEAREST;
 static int           g_mod_texfilter = -1;
+static bool          g_video_texfilter_from_env = false;
 /* A trusted plugin may choose the title's look, but an explicit player filter
  * choice keeps its documented priority, including across session setup. */
 static int session_texture_filter(int mod_mode) {
+    if (g_video_texfilter_from_env) return g_video_texfilter;
     PsxHostEnhRequests req;
     psx_host_enh_requests(&req);
     if (req.image && req.image_texture_filter != PSX_HOST_ENH_DEFAULT)
@@ -1842,6 +1844,7 @@ static void reset_mod_owned_presentation(void) {
     g_mod_native_vblank_rate = false;
     g_mod_native_vblank_fps = 0;
     g_mod_texfilter = -1;
+    g_video_texfilter_from_env = false;
     gr_set_texture_filter(g_video_texfilter);
     if (!first) {
         psx_ram_reset_size_request();
@@ -22047,7 +22050,10 @@ session_reboot:
      * the first boot and for a rematch. The env overrides below still win
      * for a validation run. */
     session_host_look();
-    if (const char* e = std::getenv("PSX_TEXTURE_FILTER")) g_video_texfilter = std::atoi(e);
+    if (const char* e = std::getenv("PSX_TEXTURE_FILTER")) {
+        g_video_texfilter = std::atoi(e);
+        g_video_texfilter_from_env = true;
+    }
     gr_set_texture_filter(session_texture_filter(g_mod_texfilter));
     /* Sub-pixel vertex precision + perspective-correct UVs. Both default off;
      * with both off every setter below leaves the tracking caches disabled and

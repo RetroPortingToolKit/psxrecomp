@@ -52,6 +52,7 @@ static int g_render_thread=1,g_present_thread=1,g_frame_generation=0,g_video_asp
 static double g_guest_frame_period_ms=20,g_frame_period_ms=20;
 static bool g_mod_native_vblank_rate=false,g_ws_adaptive_view=false,g_turbo_loads_enabled=false;
 static int g_mod_native_vblank_fps,g_mod_texfilter,g_video_texfilter,g_ws_adaptive_max_num=16,g_ws_adaptive_max_den=9,g_ws_auto_ui_proportional_cfg;
+static bool g_video_texfilter_from_env=false;
 static std::string g_bezel_path;
 static float g_frame_interpolation_blend,g_frame_interpolation_blend_default;
 static int g_frame_interpolation_source;
@@ -104,6 +105,12 @@ precedence=r'''
     assert(psx_host_enh_player_set("video.texture_filtering","xbr"));psx_host_enh_reset();
     psx_mod_set_texture_filter(0);assert(observed_texture_filter==3);
     psx_mod_set_texture_filter(99);assert(observed_texture_filter==3);
+    g_video_texfilter_from_env=true;g_video_texfilter=1;
+    psx_mod_set_texture_filter(2);assert(observed_texture_filter==1);
+    psx_host_enh_player_clear();psx_host_enh_reset();
+    psx_mod_set_texture_filter(2);assert(observed_texture_filter==1);
+    g_video_texfilter_from_env=false;
+
 '''
 fixture=fixture.replace('int main() {','int main() {\n'+precedence)
 
