@@ -638,6 +638,14 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
             add_test(NAME break_guest_vector_interp_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_guest_vector_interp.py --cc ${CMAKE_C_COMPILER})
         endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            find_path(_vk_sync_test_include vulkan/vulkan.h
+                HINTS ${Vulkan_INCLUDE_DIRS} "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
+            if(_vk_sync_test_include)
+                add_test(NAME vk_present_semaphore_lifetime_test COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vk_present_semaphore_lifetime.py"
+                    --cc "${CMAKE_C_COMPILER}" --vulkan-include "${_vk_sync_test_include}"
+                    --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vk_present_semaphore_lifetime.c")
+            endif()
             add_test(NAME display_ring_capture_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_display_ring_capture.py"
                 --cc "${CMAKE_C_COMPILER}" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/display-ring-fixture")
