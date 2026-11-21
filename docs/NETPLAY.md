@@ -41,6 +41,10 @@ or replacement of player input. PSX SYNC flag `0x10` marks this retained-load
 retry (and a valid NACK offer, including tick zero); NACK flag `0x20` means no
 retained offer. `MEDIA_KF` on NACK advertises a retained host keyframe source.
 The shared PREFIX NACK flag `0x08` remains reserved for its SDK meaning.
+A progress advert cannot complete this correction. After the baseline and our
+complete replay are verified, a same-epoch, exact-tip COMMIT can acknowledge
+that the peer matched our POST even if its own POST was lost or reordered.
+Stale epochs, different tips and incomplete local replay remain parked.
 Normal strict build compatibility applies.
 
 A statically linked title can register `PSXModNetplayProfile` from

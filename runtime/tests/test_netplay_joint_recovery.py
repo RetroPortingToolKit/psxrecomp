@@ -19,6 +19,8 @@ def main():
     parser.add_argument('--compiler', required=True)
     args = parser.parse_args()
     source = (ROOT / 'runtime/src/psx_netplay_rb.c').read_text(encoding='utf-8')
+    assert 'joint_accept_peer_commit()' in function_body(
+        source, 'static int maybe_abandon_tip_extend(void)\n{')
     declarations = source[source.index('#define PSX_RB_SYNC_FLAG_RETAINED_LOAD'):
                           source.index('/* BASELINE that arrived before follow/begin')]
     functions = ''
@@ -28,6 +30,9 @@ def main():
         'static void joint_recovery_hold(uint32_t mismatch, uint32_t target, int slot)',
         'static int joint_host_transfer_load(uint32_t mismatch, uint32_t target, uint32_t *load)',
         'static uint32_t follower_frontier_hint(void)',
+        'static void joint_recovery_post_match(uint32_t tip)',
+        'static int joint_accept_peer_commit(void)',
+        'static void apply_peer_resolved(int from, uint32_t advert)',
     ):
         functions += signature + '\n{' + function_body(source, signature + '\n{') + '}\n'
     fixture = r'''
@@ -36,6 +41,7 @@ def main():
 #include <stdio.h>
 #include <stdlib.h>
 #include "netplay_hash_confirm.h"
+#include "netplay_peer_frontier.h"
 #include "recomp_net/rollback.h"
 #include "recomp_net/session.h"
 #include "retcomm_rbengine/snap_ring.h"
@@ -49,7 +55,33 @@ static int media_kf_enabled = 1;
 static int rb_media_kf_enabled(void) { return media_kf_enabled; }
 static int g_boot_dig0_synced, g_agreed_valid, g_pin_valid;
 static uint32_t g_agreed_span_lo, g_agreed_through, g_pin_tick;
+static RNetRbSession *g_rb;
+static NetplayPeerFrontier g_peer_frontier;
+static uint32_t g_peer_resolved_through, g_post_target;
+static int g_peer_resolved_gate_expired, g_past_frontier_sticky, g_local_post_sent;
+static uint64_t g_peer_resolved_wait_t0_ms;
+static int tip_hold_calls, ownership_calls, g_episode_baseline_matched;
+static uint32_t g_peer_commit_epoch, g_peer_commit_tick;
+static void ownership_on_post_match(uint32_t tip);
+static uint32_t psx_netplay_peer_seats(void) { return 2u; }
+static void enter_tip_hold(uint32_t tip) {
+    (void)tip; ++tip_hold_calls;
+    rnet_rb_set_phase(g_rb, nRNetRbPhaseTipHold);
+}
+static int inert_tick(void *ctx, uint32_t tick) { (void)ctx; (void)tick; return 1; }
+static uint8_t no_row(void *ctx, int32_t slot, uint32_t tick, RNetRbFrame *out) {
+    (void)ctx; (void)slot; (void)tick; (void)out; return 0;
+}
+
 ''' + declarations + functions + r'''
+/* The observer stands in for ownership policy after the proof gate; the
+ * actual production completion helper owns the latches being checked. */
+static void ownership_on_post_match(uint32_t tip) {
+    ++ownership_calls;
+    joint_recovery_post_match(tip);
+    enter_tip_hold(tip);
+}
+
 static void store(uint32_t tick) {
     uint8_t *blob = malloc(1); assert(blob); *blob = (uint8_t)tick;
     assert(rbe_snap_ring_store(g_snaps, tick, blob, 1));
@@ -112,8 +144,55 @@ int main(void) {
     assert(joint_retained_load(0, 21));
     g_pin_valid = 0; g_boot_dig0_synced = 0;
     assert(!joint_retained_load(0, 21));
+    /* A progress advert, including one from before this correction, cannot
+     * prove that our current POST matched or release the original mismatch. */
+    RNetRbConfig cfg = {0};
+    RNetRollbackVTable vt = {0};
+    RNetRbCorrection corr = {0};
+    cfg.slot_count = 2;
+    vt.load_state = inert_tick; vt.advance_sim = inert_tick; vt.get_input_row = no_row;
+    g_rb = rnet_rb_create(&cfg, &vt); assert(g_rb);
+    corr.epoch_id = 24; corr.mismatch_tick = 48; corr.load_tick = 47;
+    corr.target_tick = 66; corr.slot = 1; corr.initiator = 1;
+    rnet_rb_begin_episode(g_rb, &corr);
+    assert(rnet_rb_is_active(g_rb));
+    rnet_rb_set_phase(g_rb, nRNetRbPhaseVerify);
+    g_joint_recovery = 0; /* independent completion scenario */
+    joint_recovery_hold(48, 66, 1);
+    assert(g_joint_mismatch == 48 && g_joint_target == 66);
+    g_post_target = 66; g_local_post_sent = 1;
+    apply_peer_resolved(1, 96);
+    assert(rnet_rb_get_phase(g_rb) == nRNetRbPhaseVerify && g_joint_recovery);
+    assert(tip_hold_calls == 0);
+    g_episode_baseline_matched = 1;
+    g_peer_commit_epoch = 16; g_peer_commit_tick = 66;
+    assert(!joint_accept_peer_commit()); /* stale epoch */
+    g_peer_commit_epoch = 24; g_peer_commit_tick = 65;
+    assert(!joint_accept_peer_commit());
+    g_peer_commit_tick = 67;
+    assert(!joint_accept_peer_commit()); /* another tip is not our POST */
+    g_peer_commit_tick = 66; g_local_post_sent = 0;
+    assert(!joint_accept_peer_commit()); /* local replay still incomplete */
+    g_local_post_sent = 1; g_episode_baseline_matched = 0;
+    assert(!joint_accept_peer_commit());
+    g_episode_baseline_matched = 1; g_joint_target = 67;
+    assert(!joint_accept_peer_commit()); /* original correction not covered */
+    g_joint_target = 66;
+    assert(joint_accept_peer_commit());
+    assert(ownership_calls == 1 && !g_joint_recovery && !g_joint_transfer);
+    assert(!g_joint_load_valid && !g_joint_reopen && tip_hold_calls == 1);
+    assert(!joint_accept_peer_commit()); /* idempotent */
+    /* A direct matching POST follows the same production completion helper. */
+    joint_recovery_hold(48, 66, 1); g_joint_transfer = g_joint_load_valid = 1;
+    joint_recovery_post_match(65); assert(g_joint_recovery);
+    joint_recovery_post_match(66); assert(!g_joint_recovery && !g_joint_transfer);
+    /* Preserve the established ordinary-episode RESOLVED behavior. */
+    rnet_rb_set_phase(g_rb, nRNetRbPhaseVerify);
+    apply_peer_resolved(1, 96);
+    assert(rnet_rb_get_phase(g_rb) == nRNetRbPhaseTipHold && tip_hold_calls == 2);
+    rnet_rb_destroy(g_rb);
     rbe_snap_ring_destroy(g_snaps);
-    puts("production retained-prefix selection: PASS (old hint is not retained)");
+    puts("production retained-prefix and POST/COMMIT proof: PASS");
     return 0;
 }
 '''
@@ -128,6 +207,8 @@ int main(void) {
             '-I', str(ROOT / 'lib/recomp-net/include'),
             '-I', str(ROOT / 'lib/retcomm-rbengine/include'), str(c),
             str(ROOT / 'lib/recomp-net/src/rollback/rnet_hash_confirm.c'),
+            str(ROOT / 'lib/recomp-net/src/rollback/rnet_rollback.c'),
+            str(ROOT / 'lib/recomp-net/src/input/rnet_input_contract.c'),
             str(ROOT / 'lib/retcomm-rbengine/src/snap/rbe_snap_ring.c'),
             '-o', str(exe),
         ], check=True)

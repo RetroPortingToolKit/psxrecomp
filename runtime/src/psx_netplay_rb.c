@@ -3198,6 +3198,25 @@ static void maybe_heartbeat_agreed_resolved(void)
     advertise_agreed_resolved(g_local_advertised_through);
 }
 
+/* A same-epoch, exact-tip COMMIT proves the peer compared our completed POST.
+ * Unlike RESOLVED, it cannot be a watermark from before this correction.
+ * Reuse that acknowledgment when the peer's own POST was lost or reordered. */
+static int joint_accept_peer_commit(void)
+{
+    uint32_t tip;
+    if (!g_joint_recovery || !g_rb || !rnet_rb_is_active(g_rb) ||
+        rnet_rb_get_phase(g_rb) != nRNetRbPhaseVerify ||
+        !g_episode_baseline_matched || !g_local_post_sent)
+        return 0;
+    tip = rnet_rb_get_target_tick(g_rb);
+    if (g_peer_commit_epoch != rnet_rb_get_epoch_id(g_rb) ||
+        g_peer_commit_tick != tip || g_post_target != tip ||
+        tip < g_joint_target || tip < g_joint_mismatch)
+        return 0;
+    ownership_on_post_match(tip);
+    return 1;
+}
+
 /* §42c / §91: tip-extend abandon on peer OP_COMMIT (never sticky RESOLVED).
  *
  * 2026-08-03 soak: guest ownership Live @T sent COMMIT while host TipHold
@@ -3221,6 +3240,8 @@ static int maybe_abandon_tip_extend(void)
 
     if (!g_rb || !rnet_rb_is_active(g_rb))
         return 0;
+    if (joint_accept_peer_commit())
+        return 1;
     phase = rnet_rb_get_phase(g_rb);
     tip_hold_path = (phase == nRNetRbPhaseTipHold) ? 1 : 0;
     if (phase != nRNetRbPhaseVerify && phase != nRNetRbPhaseTipHold &&
@@ -3382,12 +3403,15 @@ static void apply_peer_resolved(int from, uint32_t advert)
             g_past_frontier_sticky = 0;
     }
     rnet_rb_set_peer_convergence(g_rb, resolved);
-    /* Peer already POST-matched and tip-held this tip (or later). If we are
+    /* Joint recovery requires POST proof for this exact epoch, not a progress
+     * watermark from before the correction. Its COMMIT acknowledgment is
+     * handled separately by joint_accept_peer_commit().
+     * Peer already POST-matched and tip-held this tip (or later). If we are
      * still stuck in Verify waiting for their POST, trust RESOLVED as the
      * missing half of the handshake — otherwise a single lost POST leaves us
      * here until verify timeout while they advance Live on the same tip
      * (2026-08-01 soak). */
-    if (rnet_rb_is_active(g_rb) &&
+    if (!g_joint_recovery && rnet_rb_is_active(g_rb) &&
         rnet_rb_get_phase(g_rb) == nRNetRbPhaseVerify &&
         g_local_post_sent && g_post_target > 0u &&
         resolved >= g_post_target) {
@@ -4140,6 +4164,16 @@ static void joint_recovery_hold(uint32_t mismatch, uint32_t target, int slot)
         g_joint_target = target;
     g_joint_recovery = 1;
     g_joint_slot = slot;
+}
+
+/* Clear the hold only after proof covering the complete original correction. */
+static void joint_recovery_post_match(uint32_t tip)
+{
+    if (g_joint_recovery && tip >= g_joint_target && tip >= g_joint_mismatch) {
+        g_joint_recovery = 0;
+        g_joint_load_valid = g_joint_reopen = 0;
+        g_joint_transfer = 0;
+    }
 }
 
 /* Existing keyframe authority remains slot zero. A recent host prefix can
@@ -5634,13 +5668,9 @@ static void ownership_on_post_match(uint32_t tip)
     uint32_t frontier;
     uint32_t min_ahead;
 
-    /* This is reached only after the complete POST quorum matched. Neither
-     * accepting an offer nor loading a baseline resolves the bad input. */
-    if (g_joint_recovery && tip >= g_joint_target && tip >= g_joint_mismatch) {
-        g_joint_recovery = 0;
-        g_joint_load_valid = g_joint_reopen = 0;
-        g_joint_transfer = 0;
-    }
+    /* The POST quorum or an exact episode COMMIT proves the peer matched our
+     * POST. Neither a progress advert nor a baseline load resolves bad input. */
+    joint_recovery_post_match(tip);
     /* Contiguous frontier from the tick after the verified tip. */
     frontier = psx_netplay_rb_confirmed_frontier(tip + 1u);
     /* §102: peer-ahead light tip — one Verify then Live (no SPAN hops). */
