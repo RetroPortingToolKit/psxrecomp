@@ -17,8 +17,11 @@ def check_load_timeline(compiler, source):
         found = re.search(r"^static\s+(?:int|u?int(?:8|16|32|64)_t)\s+" + name + r"\s*(?:=[^;]*)?;", source, re.M)
         assert found, name
         declarations.append(found.group(0))
-    functions = ""
+    mdec = (Path(__file__).resolve().parents[1] / "src/mdec.c").read_text()
+    functions = "int mdec_recently_active(uint32_t within_frames)\n{" + function_body(
+        mdec, "int mdec_recently_active(uint32_t within_frames)") + "}\n"
     for signature in (
+        "static int rb_fmv_media_active(void)",
         "static void rb_clear_fmv_desync_hold(const char *why)",
         "void psx_netplay_rb_clear_fmv_desync_hold(const char *why)",
         "static void rb_fmv_tick_settle(void)",
@@ -43,17 +46,18 @@ static RNetSession session;
 static void *g_rb;
 static struct { void *hc; } g_b;
 static int media, restart_calls, restart_clear;
+static uint64_t psx_cycle_count, mdec_last_color_decode_cycle;
 static RNetSession *sess(void) { return &session; }
 static uint32_t rnet_session_sim_tick(RNetSession *s) { return s->tick; }
-static int rb_fmv_media_active(void) { return media; }
 static int rnet_rb_is_tip_holding(void *p) { (void)p; return 0; }
 static uint32_t rnet_rb_get_target_tick(void *p) { (void)p; return 0; }
 static void finalize_tip_hold(void) { assert(0); }
-static void cdrom_debug_snapshot(CDROMDebugState *s) { memset(s,0,sizeof(*s)); }
+static void cdrom_debug_snapshot(CDROMDebugState *s) {
+    memset(s,0,sizeof(*s));s->reading=1;s->mode_reg=0xe0;
+}
 static int gpu_display_is_depth24(void) { return media; }
-static int mdec_recently_active(unsigned t) { (void)t; return 0; }
 static int cdrom_xa_stream_active(void) { return 0; }
-static int cdrom_fmv_stream_pending(void) { return 0; }
+static int cdrom_fmv_stream_pending(void) { return 1; }
 static int gpu_vblank_present_pending(void) { return 0; }
 static void netplay_hc_prime_after(void *p, uint32_t t) { (void)p; (void)t; }
 static void rb_fmv_update_lockstep_gate(uint32_t t) { (void)t; }
@@ -78,6 +82,10 @@ static void rb_start(int clear_guest_resume) {
 int main(int argc, char **argv) {
     (void)argv;
     session.tick=0;
+    /* First ordinary sample after a user load: historical device activity is
+     * nonzero, but its age in restored guest cycles is expired. Resetting
+     * only the network clock must not fabricate a fresh movie. */
+    psx_cycle_count=60000000;mdec_last_color_decode_cycle=5000000;
     g_fmv_settle_until=5240;g_fmv_lockstep_until=5396;
     g_fmv_media_end_sim=5216;g_fmv_dense_through=5460;
     g_fmv_media_lo=4000;g_fmv_media_hi=5216;g_auth_snap_through=5586;
@@ -89,6 +97,8 @@ int main(int argc, char **argv) {
     }
     assert(restart_calls==1 && restart_clear==0);
     assert(!g_fmv_media_end_sim && !g_fmv_media_hi && !g_fmv_dense_through);
+    assert(!g_was_in_fmv && !mdec_recently_active(RB_FMV_MDEC_HYSTERESIS));
+    assert(psx_cycle_count==60000000 && mdec_last_color_decode_cycle==5000000);
     /* No load: the current deadline is still a real protection window. */
     session.tick=100;g_fmv_settle_until=150;g_fmv_lockstep_until=200;
     assert(rb_in_fmv_defer_rewind_window() && rb_in_fmv_lockstep_window());
@@ -105,6 +115,12 @@ int main(int argc, char **argv) {
     assert(g_fmv_lockstep_until==1+RB_FMV_LOCKSTEP_MIN);
     session.tick=1+RB_FMV_SETTLE_TICKS;
     assert(!rb_in_fmv_defer_rewind_window());
+    /* A genuinely recent restored decode also remains a real media input,
+     * even without depth24 output or active XA. */
+    session.tick=0;mdec_last_color_decode_cycle=psx_cycle_count;
+    psx_netplay_rb_restart_after_load();
+    assert(rb_in_fmv_defer_rewind_window() && rb_in_fmv_lockstep_window());
+    assert(g_was_in_fmv);
     puts("production coordinated-load timeline reset and restored-media protection: PASS");
     return 0;
 }
