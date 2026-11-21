@@ -28,6 +28,25 @@ default false) get content negotiation; titles without a trusted simulation
 profile keep vanilla netplay (simulation mods cleared), the MOTK1 LAN protocol
 and plan-free lobby caps.
 
+For two-seat non-media rollback recovery, a follow-NACK offers a retained,
+verified snapshot strictly before the original mispredicted input. A progress
+watermark alone is insufficient. The peers park Live, reopen BEGIN for that
+same correction, exchange sealed input rows, match the restored baseline, and
+match POST after replay before resuming. If there is no usable recent shared
+snapshot, the existing slot-zero host can transfer its retained pre-mismatch
+keyframe before baseline verification and full input replay. Keyframe authority
+stays with that host. Missing host history or an unreplayable input range stays
+parked with a reconnect diagnostic; it never authorizes a unilateral restore
+or replacement of player input. PSX SYNC flag `0x10` marks this retained-load
+retry (and a valid NACK offer, including tick zero); NACK flag `0x20` means no
+retained offer. `MEDIA_KF` on NACK advertises a retained host keyframe source.
+The shared PREFIX NACK flag `0x08` remains reserved for its SDK meaning.
+A progress advert cannot complete this correction. After the baseline and our
+complete replay are verified, a same-epoch, exact-tip COMMIT can acknowledge
+that the peer matched our POST even if its own POST was lost or reordered.
+Stale epochs, different tips and incomplete local replay remain parked.
+Normal strict build compatibility applies.
+
 A statically linked title can register `PSXModNetplayProfile` from
 `runtime/include/mod_netplay.h` for a shared simulation such as experimental
 co-op. The profile forces its native simulation plugin and permitted fixed view
