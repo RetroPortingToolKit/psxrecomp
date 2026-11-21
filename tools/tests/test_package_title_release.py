@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for tools/package_title_release.py (no build, no disc, no game).
+"""Unit tests for tools/package_title_release.py (no guest build, no disc, no game).
 
 Pins the release contract every title now shares: --channel is required with
 no default, owned CMake flags cannot be overridden by a title, artifact names
@@ -118,6 +118,43 @@ def zip_stage(stage, artifact):
                 archive.write(path, path.relative_to(stage).as_posix())
     Path(str(artifact) + '.sha256').write_text(
         '%s  %s\n' % (hashlib.sha256(artifact.read_bytes()).hexdigest(), artifact.name))
+
+
+class BaselineProjectHook(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('cmake') and shutil.which('ninja'),
+                         'native CMake and Ninja are required')
+    def test_baseline_removes_a_cached_project_hook(self):
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        root = fixture.root
+        build = root / 'runtime'
+        build.mkdir()
+        poison = root / 'old-pgo-hook.cmake'
+        poison.write_text('message(FATAL_ERROR "stale PGO hook executed")\n')
+        (build / 'CMakeCache.txt').write_text(
+            'CMAKE_PROJECT_INCLUDE:FILEPATH=%s\n' % poison.as_posix())
+        # project() itself rejects an empty include path on CMake 3.28.
+        # Keep the assertion too: newer CMake must not retain a defined hook.
+        (root / 'CMakeLists.txt').write_text(
+            'cmake_minimum_required(VERSION 3.20)\n'
+            'project(PackageBaseline NONE)\n'
+            'if(DEFINED CMAKE_PROJECT_INCLUDE)\n'
+            '  message(FATAL_ERROR "baseline project hook is still defined")\n'
+            'endif()\n'
+            'set(PSX_PUBLIC_RELEASE ON CACHE BOOL "fixture public channel")\n'
+            'add_custom_target(psx-runtime)\n')
+        tc = SimpleNamespace(cmake=shutil.which('cmake'), generator='Ninja',
+                             gcc=shutil.which('gcc') or 'gcc',
+                             gxx=shutil.which('g++') or 'g++',
+                             make=shutil.which('ninja'), env=None)
+        config = fixture.config()
+        config.selective_pgo = False
+        ctx = SimpleNamespace(root=root, work=root, runtime_build=build,
+                              config=config, channel='public',
+                              platform=ptr.host_platform(), version='v1.2.3',
+                              jobs=1, prov={'source_commit': 'fixture'}, tc=tc)
+        ptr.configure_and_build(ctx)
+        self.assertNotIn('CMAKE_PROJECT_INCLUDE', ptr.cmake_cache(build))
 
 
 class ChannelIsRequired(unittest.TestCase):
