@@ -71,8 +71,16 @@ static bool psx_install_required_host_profile(PsxNetplayConfig& cfg,uint32_t ini
         return refuse("Host simulation policy could not be installed before transport.");
     char hex[65];const char digits[]="0123456789abcdef";
     for(unsigned i=0;i<32;++i){hex[i*2]=digits[artifact[i]>>4];hex[i*2+1]=digits[artifact[i]&15];}hex[64]=0;
-    std::fprintf(stderr,"psxrecomp: actual-image-sha256=%s cpu-arch=%u features=%llx backend=%u fp=%u overlays=interpreted offers=%u\n",
-        hex,cpu.architecture,(unsigned long long)cpu.features,compiled,fp,caps.offer_count);
+    std::fprintf(stderr,"psxrecomp: actual-image-sha256=%s cpu-arch=%u features=%llx backend=%u fp=%u overlays=interpreted offers=%u features-known=%u compiled-backends=%u available-backends=%u\n",
+        hex,cpu.architecture,(unsigned long long)cpu.features,compiled,fp,caps.offer_count,
+        cpu.features_known,caps.compiled_backends,caps.available_backends);
+    for(unsigned o=0;o<caps.offer_count;++o){
+        char qualification[65];
+        for(unsigned i=0;i<32;++i){qualification[i*2]=digits[caps.offers[o].qualification[i]>>4];
+            qualification[i*2+1]=digits[caps.offers[o].qualification[i]&15];}qualification[64]=0;
+        std::fprintf(stderr,"psxrecomp: host offer profile=%s revision=%u backend=%u qualification_sha256=%s\n",
+            caps.offers[o].profile,caps.offers[o].revision,caps.offers[o].backend,qualification);
+    }
     return true;
 }
 /* The initial admit barrier has completed. This is called exactly once before
