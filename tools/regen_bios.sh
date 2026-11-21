@@ -199,6 +199,12 @@ else
             exit 4
         fi
         _compare_tmp_root=$(cd "${TMPDIR:-/tmp}" && pwd -P)
+        # A PATH utility may come from another MSYS installation, whose /tmp
+        # names a different directory. Use this shell's own converter so the
+        # native emitter and every comparison utility see the same files.
+        if [ -x "${BASH%/*}/cygpath" ]; then
+            _compare_tmp_root=$("${BASH%/*}/cygpath" -m "$_compare_tmp_root")
+        fi
         _compare_dir=$(mktemp -d "$_compare_tmp_root/psx-bios-compare.XXXXXXXX")
         _compare_stamp_tmp=""
         cleanup_compare() {
@@ -240,8 +246,17 @@ else
         _compare_changed=0
         for _file in "${_compare_new[@]}"; do
             _name=${_file##*/}
-            if [ -L "$_file" ] || [ ! -f "$OUT/$_name" ] || [ -L "$OUT/$_name" ] ||
-               ! cmp -s "$_file" "$OUT/$_name"; then
+            _compare_result=0
+            if [ -L "$_file" ] || [ ! -f "$OUT/$_name" ] || [ -L "$OUT/$_name" ]; then
+                _compare_result=1
+            else
+                cmp -s "$_file" "$OUT/$_name" || _compare_result=$?
+                if [ "$_compare_result" -gt 1 ]; then
+                    echo "regen_bios: $STEM unverified: cannot compare $_name; previous output/stamp unchanged" >&2
+                    exit 4
+                fi
+            fi
+            if [ "$_compare_result" -eq 1 ]; then
                 echo "regen_bios: $STEM generated output changed: $_name" >&2
                 _compare_changed=1
             fi
