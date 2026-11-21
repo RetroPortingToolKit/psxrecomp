@@ -7568,6 +7568,29 @@ static void pad_ext_host_extras(void*, int s, uint32_t* flags, uint32_t* lt,
 extern "C" int debug_server_get_trigger_override(uint32_t* lt, uint32_t* rt);
 #endif
 
+/* No pad input in the first ticks of a netplay session.
+ *
+ * A rollback episode is safe only when both peers load the same snapshot: a
+ * peer that reloads a snapshot does not land on the state of a peer that ran
+ * straight through. In the first ticks of a session no interval snapshot is
+ * hash-confirmed yet, so an input misprediction there makes the rollback
+ * engine load a tip snapshot the other peer has already dropped. That peer
+ * refuses, each peer then reloads a snapshot of its own, and the two never
+ * agree again (a fork at sim 22, in four of five runs at 60 ms one-way delay).
+ *
+ * The guest does not read a pad that early; the BIOS is still booting. So the
+ * pad this peer feeds into the session is idle for the first
+ * NETPLAY_EARLY_IDLE_TICKS sim ticks. Idle is what the other peer predicts,
+ * so nothing is mispredicted and no episode opens before interval snapshots
+ * exist. Every source passes through here: a controller, the keyboard, a
+ * debug override. The blob's pad type and connection are kept. */
+#define NETPLAY_EARLY_IDLE_TICKS 64u
+static void netplay_early_input_idle(PsxNetPad* pad) {
+    if (psx_netplay_sim_tick() >= NETPLAY_EARLY_IDLE_TICKS) return;
+    pad->buttons = 0xFFFFu;
+    pad->lx = pad->ly = pad->rx = pad->ry = 0x80u;
+}
+
 /* Netplay input transform ([[plugin]] netplay = "input"): this player's own
  * title pad transform runs on its local pad before staging, so the
  * transformed pad (buttons, sticks, presented type, NeGcon I/II) is what every
@@ -7829,6 +7852,7 @@ static void netplay_barrier_admit(int override) {
                 capture_local_human_pad(&local);
             }
             netplay_transform_local_pad(&local, override >= 0);
+            netplay_early_input_idle(&local);
             psx_netplay_stage_local(&local);
         } else if (psx_start_bisect_spin_log() && !g_headless) {
             /* Dense SDL-only samples while admit waits without capture. */
