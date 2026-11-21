@@ -706,9 +706,16 @@ typedef struct NpPartSlot {
     uint32_t spu;
     uint32_t mdec;
     uint32_t aux;
+    /* Rows actually applied for this execution. Promoting mutable history
+     * cannot certify a core produced by different inputs. */
+    PsxNetPad executed[NP_SLOT_CAP];
+    uint32_t executed_mask;
+    uint32_t authoritative_mask;
     uint8_t  valid;
 } NpPartSlot;
 static NpPartSlot s_part_ring[NP_PART_RING];
+static uint32_t s_commit_next_tick;
+static int s_commit_anchor_ready;
 static int s_core_diverge_logged;
 static uint32_t s_live_dig_last_tick = 0xffffffffu;
 /* §54: HC-fork recovery — a live core fork with no pad mispredict never
@@ -730,6 +737,8 @@ static int s_deferred_rw_logged;
 static void np_part_ring_reset(void)
 {
     memset(s_part_ring, 0, sizeof(s_part_ring));
+    s_commit_next_tick = 0;
+    s_commit_anchor_ready = 0;
     s_core_diverge_logged = 0;
     s_live_dig_last_tick = 0xffffffffu;
     s_fork_tick = 0xffffffffu;
@@ -741,12 +750,83 @@ static void np_part_ring_reset(void)
     s_deferred_rw_logged = 0;
 }
 
+/* The rollback owner calls this only for its accepted execution baseline. */
+void psx_netplay_execution_anchor(uint32_t tick)
+{
+    unsigned i;
+    for (i = 0; i < NP_PART_RING; ++i) {
+        NpPartSlot *part = &s_part_ring[i];
+        if (part->tick > tick)
+            memset(part, 0, sizeof(*part));
+    }
+    s_commit_next_tick = tick + 1u;
+    s_commit_anchor_ready = 1;
+}
+
+static NpPartSlot *np_part_ring_execution(uint32_t tick)
+{
+    NpPartSlot *part = &s_part_ring[tick % NP_PART_RING];
+    if (part->tick != tick) {
+        memset(part, 0, sizeof(*part));
+        part->tick = tick;
+    }
+    return part;
+}
+
+static void np_note_executed_pad(int slot, uint32_t tick,
+                                 const PsxNetPad *pad, int authoritative)
+{
+    NpPartSlot *part;
+    uint32_t bit;
+    if (!pad || slot < 0 || slot >= g_np.slot_count || slot >= NP_SLOT_CAP)
+        return;
+    part = np_part_ring_execution(tick);
+    /* A later publication cannot rewrite a completed execution. An accepted
+     * load retires its provisional descendants before republishing them. */
+    if (part->valid) return;
+    bit = 1u << slot;
+    part->executed[slot] = *pad;
+    part->executed_mask |= bit;
+    if (authoritative) part->authoritative_mask |= bit;
+    else part->authoritative_mask &= ~bit;
+}
+
+static int np_execution_inputs_confirmed(NpPartSlot *part)
+{
+    int slot;
+    for (slot = 0; slot < g_np.slot_count; ++slot) {
+        uint32_t bit = 1u << slot;
+        RNetRbFrame row;
+        PsxNetPad truth;
+        if (!(part->executed_mask & bit)) return 0;
+        if (part->authoritative_mask & bit) continue;
+        if (!netplay_ih_get(&g_np.ih, slot, part->tick, &row) ||
+            !row.is_valid || row.is_predicted) return 0;
+        netplay_ih_frame_to_pad(&row, &truth);
+        if (memcmp(&truth, &part->executed[slot], sizeof(truth))) return 0;
+        part->authoritative_mask |= bit;
+    }
+    return 1;
+}
+
+static void np_invalidate_execution_from(uint32_t tick)
+{
+    unsigned i;
+    for (i = 0; i < NP_PART_RING; ++i) {
+        NpPartSlot *part = &s_part_ring[i];
+        if (part->tick >= tick)
+            memset(part, 0, sizeof(*part));
+    }
+    /* Correct current pads cannot validate descendants of a wrong old pad.
+     * The existing sealed replay must rebuild them from an agreed anchor. */
+    if (s_commit_next_tick > tick) s_commit_next_tick = tick;
+}
+
 static void np_part_ring_put(uint32_t tick, const NetplayCoreParts *parts,
                              uint32_t av, uint32_t cd, uint32_t spu,
                              uint32_t mdec, uint32_t aux)
 {
-    NpPartSlot *s = &s_part_ring[tick % NP_PART_RING];
-    s->tick = tick;
+    NpPartSlot *s = np_part_ring_execution(tick);
     s->parts = *parts;
     s->av = av;
     s->cd = cd;
@@ -1167,6 +1247,31 @@ static void np_drain_peer_frame_commits(void)
     np_check_core_diverge();
 }
 
+static void np_flush_confirmed_frame_commits(void)
+{
+    unsigned count;
+    if (!g_np.session || psx_netplay_collective_transfer_active()) return;
+    for (count = 0; count < NP_PART_RING; ++count) {
+        uint32_t tick = s_commit_next_tick;
+        NpPartSlot *part = &s_part_ring[tick % NP_PART_RING];
+        if (!part->valid || part->tick != tick) break;
+        /* Preserve boot-dig0. Later executions inherit it only once both
+         * peers have actually accepted that initial state. */
+        if (tick != 0u && !s_commit_anchor_ready) {
+            if (psx_netplay_rb_boot_dig0_gate()) break;
+            s_commit_anchor_ready = 1;
+        }
+        if (tick != 0u && !np_execution_inputs_confirmed(part)) break;
+        netplay_hc_note_local(&g_np.hc, tick, part->parts.core);
+        if (tick == 0u) psx_netplay_rb_boot_dig0_note_local(part->parts.core);
+        (void)rnet_session_send_rb_frame_commit(g_np.session, tick,
+                                               part->parts.core);
+        s_commit_next_tick = tick + 1u;
+    }
+    (void)netplay_hc_heal_stale_gap(&g_np.hc);
+    np_check_core_diverge();
+}
+
 static void np_emit_frame_commit(uint32_t tick)
 {
     NetplayCoreParts parts;
@@ -1209,11 +1314,7 @@ static void np_emit_frame_commit(uint32_t tick)
         aux = aux_crc ^ 0xFFFFFFFFu;
     }
     np_part_ring_put(tick, &parts, av, cd, spu, mdec, aux);
-    netplay_hc_note_local(&g_np.hc, tick, parts.core);
-    if (tick == 0u)
-        psx_netplay_rb_boot_dig0_note_local(parts.core);
-    (void)rnet_session_send_rb_frame_commit(g_np.session, tick, parts.core);
-    (void)netplay_hc_heal_stale_gap(&g_np.hc);
+    np_flush_confirmed_frame_commits();
     /* Breadcrumbs so both peers' logs line up by sim tick. Tag is local-only
      * (not peer agreement — that is hash_confirm resolved_through). */
     if (crumb && s_live_dig_last_tick != tick) {
@@ -2554,9 +2655,11 @@ static PsxNetplaySimPadCache s_sim_pad_cache;
 /* Host-only presentation request; see psx_netplay_present_local_view. */
 static PsxNetplayLocalView s_local_view;
 
-static void note_sim_pad(int slot, uint32_t tick, const PsxNetPad *pad)
+static void note_sim_pad(int slot, uint32_t tick, const PsxNetPad *pad,
+                         int authoritative)
 {
     psx_netplay_sim_pad_cache_publish(&s_sim_pad_cache, slot, tick, pad);
+    np_note_executed_pad(slot, tick, pad, authoritative);
 }
 
 static void apply_pad_slot(int slot, const PsxNetPad *pad)
@@ -2674,7 +2777,7 @@ static void host_publish(rnet_u32 tick, const RNetInputSample *by_slot, int slot
         PsxNetPad pad;
         decode_pad(&by_slot[i], &pad);
         apply_pad_slot(i, &pad);
-        note_sim_pad(i, tick, &pad);
+        note_sim_pad(i, tick, &pad, 1);
     }
 }
 
@@ -2701,13 +2804,13 @@ static void np_publish_hist_sio(uint32_t tick)
             continue;
         netplay_ih_frame_to_pad(&row, &pad);
         apply_pad_slot(i, &pad);
-        note_sim_pad(i, tick, &pad);
+        note_sim_pad(i, tick, &pad, !row.is_predicted);
     }
 }
 
 static void np_rb_apply_frame_slot(int slot, uint32_t tick, uint16_t buttons,
                                    int8_t sx, int8_t sy, uint8_t analog,
-                                   uint8_t rx, uint8_t ry)
+                                   uint8_t rx, uint8_t ry, uint8_t authoritative)
 {
     RNetRbFrame row;
     PsxNetPad pad;
@@ -2720,10 +2823,13 @@ static void np_rb_apply_frame_slot(int slot, uint32_t tick, uint16_t buttons,
     row.rx = rx;
     row.ry = ry;
     row.is_valid = 1;
+    row.is_predicted = authoritative ? 0u : 1u;
     netplay_ih_frame_to_pad(&row, &pad);
     force_session_pads_connected(g_np.slot_count);
     apply_pad_slot(slot, &pad);
-    note_sim_pad(slot, tick, &pad);
+    note_sim_pad(slot, tick, &pad, authoritative);
+    /* These inputs were actually replayed, not retroactively promoted. */
+    (void)netplay_ih_put(&g_np.ih, slot, &row);
 }
 
 static void np_rb_bind_and_start(void)
@@ -3092,6 +3198,9 @@ static void np_rollback_reconcile_wire(void)
                           (pub_c.stick_x != wire_c.stick_x) ||
                           (pub_c.stick_y != wire_c.stick_y);
             completed = (sim > t) ? 1u : 0u;
+            if (pads_differ && completed &&
+                !netplay_hc_confirm_through(&g_np.hc, t))
+                np_invalidate_execution_from(t);
 
             /* §46: digital mispredict whose FRAME_COMMIT digests already
              * matched through t — both peers agree the guest state after
@@ -3299,6 +3408,7 @@ static void np_rollback_reconcile_wire(void)
             fflush(stderr);
         }
     }
+    np_flush_confirmed_frame_commits();
 }
 
 

@@ -4445,7 +4445,8 @@ static void publish_sealed_sio(uint32_t tick)
         if (!rnet_rb_get_sealed_frame(g_rb, slot, tick, &row) || !row.is_valid)
             continue;
         g_b.apply_frame_slot(slot, tick, row.buttons, row.stick_x, row.stick_y,
-                             row.analog, row.rx, row.ry);
+                             row.analog, row.rx, row.ry,
+                             (uint8_t)rnet_rb_seat_row_authoritative(g_rb, slot, tick));
     }
 }
 
@@ -5076,12 +5077,17 @@ static void arm_rereplay_after_load(uint32_t reload_tick)
 
     if (!g_rb || !s)
         return;
+    if (!g_episode_baseline_matched) {
+        abort_episode("rereplay without matched baseline");
+        return;
+    }
     resim_audit_cache_invalidate(); /* §67: snap load — fin cache stale */
     target = rnet_rb_get_target_tick(g_rb);
     first = reload_tick + 1u;
     /* Drop TipHold-Live invent FRAME_COMMITs; sealed resim rebuilds the span. */
     if (g_b.hc)
         netplay_hc_prime_after(g_b.hc, reload_tick);
+    psx_netplay_execution_anchor(reload_tick);
     g_tip_extend_prime_tick = reload_tick;
     g_episode_snap_applied = 1;
     g_pending_load_valid = 0;
@@ -5360,6 +5366,7 @@ static void maybe_enter_replay(void)
      * real VBlank period. */
     if (g_b.hc)
         netplay_hc_prime_after(g_b.hc, load);
+    psx_netplay_execution_anchor(load);
     rnet_rb_set_phase(g_rb, nRNetRbPhaseReplay);
     g_local_post_sent = 0;
     g_peer_post_ok = 0;
