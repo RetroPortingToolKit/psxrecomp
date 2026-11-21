@@ -37,9 +37,10 @@ snapshot, the existing slot-zero host can transfer its retained pre-mismatch
 keyframe before baseline verification and full input replay. Keyframe authority
 stays with that host. Missing host history or an unreplayable input range stays
 parked with a reconnect diagnostic; it never authorizes a unilateral restore
-or replacement of player input. PSX SYNC flag `0x08` marks this retained-load
-retry (and a valid NACK offer, including tick zero); NACK flag `0x10` means no
+or replacement of player input. PSX SYNC flag `0x10` marks this retained-load
+retry (and a valid NACK offer, including tick zero); NACK flag `0x20` means no
 retained offer. `MEDIA_KF` on NACK advertises a retained host keyframe source.
+The shared PREFIX NACK flag `0x08` remains reserved for its SDK meaning.
 Normal strict build compatibility applies.
 
 A statically linked title can register `PSXModNetplayProfile` from

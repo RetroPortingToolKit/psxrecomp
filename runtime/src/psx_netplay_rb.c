@@ -380,8 +380,9 @@ static int g_follow_nack_sends;
 /* Two-seat, non-media NACK recovery keeps the original correction alive.
  * A progress watermark is not a promise that a snapshot is still retained.
  * The extra flag distinguishes a retained tick 0 from an absent offer. */
-#define PSX_RB_SYNC_FLAG_RETAINED_LOAD 0x08u
-#define PSX_RB_SYNC_FLAG_NO_RETAINED_LOAD 0x10u
+/* 0x08 is the shared driver's PREFIX NACK; keep host extensions disjoint. */
+#define PSX_RB_SYNC_FLAG_RETAINED_LOAD 0x10u
+#define PSX_RB_SYNC_FLAG_NO_RETAINED_LOAD 0x20u
 static int g_joint_recovery;
 static uint32_t g_joint_mismatch;
 static uint32_t g_joint_target;

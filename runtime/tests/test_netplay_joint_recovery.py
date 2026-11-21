@@ -37,6 +37,7 @@ def main():
 #include <stdlib.h>
 #include "netplay_hash_confirm.h"
 #include "recomp_net/rollback.h"
+#include "recomp_net/session.h"
 #include "retcomm_rbengine/snap_ring.h"
 #define NetplaySnapRing RbeSnapRing
 #define netplay_snap_ring_has rbe_snap_ring_has
@@ -98,6 +99,12 @@ int main(void) {
     assert(g_joint_mismatch == 19 && g_joint_target == 28);
     /* Explicit validity separates a real retained zero from no offer. */
     assert(PSX_RB_SYNC_FLAG_RETAINED_LOAD != PSX_RB_SYNC_FLAG_NO_RETAINED_LOAD);
+    /* Engine-owned extensions may not reinterpret shared protocol flags. */
+    const unsigned shared_flags = RNET_RB_SYNC_FLAG_LIGHT_TIP |
+        RNET_RB_SYNC_FLAG_REREPLAY | RNET_RB_SYNC_FLAG_MEDIA_KF |
+        RNET_RB_SYNC_FLAG_PREFIX;
+    assert(!(PSX_RB_SYNC_FLAG_RETAINED_LOAD & shared_flags));
+    assert(!(PSX_RB_SYNC_FLAG_NO_RETAINED_LOAD & shared_flags));
     rbe_snap_ring_clear(g_snaps); store(22);
     assert(!joint_offer_below(20, 21, &offer));
     /* A pinned snapshot remains loadable after the ring removes its slot. */
