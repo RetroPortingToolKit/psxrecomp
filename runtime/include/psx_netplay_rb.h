@@ -39,6 +39,10 @@ typedef struct PsxNetplayRbBindings {
 void psx_netplay_rb_bind(const PsxNetplayRbBindings *b);
 void psx_netplay_rb_start(void);
 void psx_netplay_rb_shutdown(void);
+/* A coordinated user load resets network ticks to zero. Recreate the existing
+ * host timeline/ring while preserving restored CPU/IRQ resume state. Device
+ * observers still protect media present in the restored guest. */
+void psx_netplay_rb_restart_after_load(void);
 /* Soft-return / rematch: wipe RB host residue that rb_shutdown leaves
  * (follow-NACK, tip-dense FIFO, episode wire, dig0 latch). Safe with no session. */
 void psx_netplay_rb_cold_reset(void);

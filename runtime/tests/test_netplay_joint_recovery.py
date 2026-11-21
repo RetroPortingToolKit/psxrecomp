@@ -5,6 +5,7 @@ This is a retention/epoch-range gate, not a guest reconvergence test. Native
 changing-input peers must additionally qualify BEGIN, restore, replay and POST.
 """
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -14,10 +15,120 @@ from test_netplay_load_apply_flow import function_body
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def check_transfer_ownership(compiler):
+    """Execute production admission decisions, not a simulated rollback."""
+    source = (ROOT / 'runtime/src/psx_netplay.c').read_text(encoding='utf-8')
+    rb = (ROOT / 'runtime/src/psx_netplay_rb.c').read_text(encoding='utf-8')
+    signature = 'int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)\n{'
+    begin = function_body(rb[rb.rindex(signature):], signature)
+    assert begin.index('psx_netplay_defer_recovery_for_transfer') < begin.index('g_platform_accepted_fork')
+    signature = 'void psx_netplay_rb_pump(void)\n{'
+    pump = function_body(rb[rb.rindex(signature):], signature)
+    assert pump.index('psx_netplay_collective_transfer_active') < pump.index('rb_media_kf_host_drive()')
+    reconcile = function_body(source, 'static void np_rollback_reconcile_wire(void)\n{')
+    assert 'psx_netplay_collective_transfer_active()' in reconcile
+    assert 's_deferred_rw_valid = 1' in reconcile
+    for name in ('save', 'load'):
+        request = function_body(source, f'int psx_netplay_request_{name}(int slot)\n{{')
+        assert request.index('psx_netplay_rb_active()') < request.index('rnet_session_state_probe(')
+    start = source.index('typedef enum {\n    NP_XFER_NONE')
+    declarations = source[start:source.index('} NpXferPhase;', start) + len('} NpXferPhase;')]
+    functions = ''
+    for signature in (
+        'int psx_netplay_collective_transfer_active(void)',
+        'int psx_netplay_defer_recovery_for_transfer(uint32_t tick, int slot)',
+        'static void np_det_selftest_tick(uint32_t done)',
+        'static void np_try_hc_fork_recovery(uint32_t fork_tick)',
+    ):
+        functions += signature + '\n{' + function_body(source, signature + '\n{') + '}\n'
+    fixture = r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+''' + declarations + r'''
+static struct { void *session; int rollback, local_slot, slot_count; NpXferPhase xfer; } g_np;
+static int s_deferred_rw_valid, s_deferred_rw_slot, s_deferred_rw_logged;
+static uint32_t s_deferred_rw_tick, s_fork_tick, s_fork_first_sim, s_fork_last_attempt_sim;
+static unsigned begin_calls, heal_calls;
+static uint32_t sim, requested_tick;
+static int active, tip_hold, load_pending;
+static int psx_netplay_rb_active(void) { return active; }
+static int psx_netplay_rb_tip_holding(void) { return tip_hold; }
+static int psx_netplay_rb_load_pending(void) { return load_pending; }
+static int psx_netplay_rb_rewind_suppressed(void) { return 0; }
+static int psx_netplay_rb_platform_fork_accepted(uint32_t t) { (void)t; return 0; }
+static int psx_netplay_rb_fmv_defer_rewind(void) { return 0; }
+static int psx_netplay_rb_fmv_desync_hold(void) { return 0; }
+static int psx_netplay_rb_post_fmv_heal_eligible(void) { return 0; }
+static int psx_netplay_rb_lockstep_no_invent(void) { return 0; }
+static int psx_netplay_rb_fmv_episode_unsafe(uint32_t t) { (void)t; return 0; }
+static uint32_t psx_netplay_rb_baseline_fork_cap(void) { return 0; }
+static uint32_t rnet_session_sim_tick(void *s) { (void)s; return sim; }
+/* These are call observers. Admission decisions below are production code;
+ * the existing real-ring fixture and native peers qualify actual recovery. */
+static int psx_netplay_rb_begin_rewind(uint32_t t, int slot) {
+    assert(slot == 1); ++begin_calls; requested_tick = t; return 1;
+}
+static void psx_netplay_rb_request_post_fmv_heal_kf(void) { ++heal_calls; }
+''' + functions + r'''
+int main(void) {
+    g_np.session = &g_np; g_np.rollback = 1; g_np.slot_count = 2;
+    /* The actual SAVE_COORD collision: diagnostic due at64 must not steal
+     * the accepted collective operation, nor consume its next cadence. */
+    g_np.xfer = NP_XFER_SAVE_COORD;
+    np_det_selftest_tick(64);
+    if (begin_calls != 0) { fputs("FAIL: diagnostic stole SAVE_COORD\n", stderr); return 3; }
+    for (int phase = NP_XFER_MC_UPLOAD; phase <= NP_XFER_LOAD_READY; ++phase) {
+        g_np.xfer = (NpXferPhase)phase;
+        np_det_selftest_tick(64);
+        assert(begin_calls == 0);
+    }
+    g_np.xfer = NP_XFER_NONE;
+    np_det_selftest_tick(64);
+    assert(begin_calls == 1 && requested_tick == 48);
+
+    /* Ordinary completed-input corrections retain the earliest original
+     * mismatch while the transfer owns the boundary. */
+    g_np.xfer = NP_XFER_LOAD_PROBE;
+    assert(psx_netplay_defer_recovery_for_transfer(80, 1));
+    assert(psx_netplay_defer_recovery_for_transfer(64, 1));
+    assert(psx_netplay_defer_recovery_for_transfer(72, 1));
+    assert(s_deferred_rw_valid && s_deferred_rw_tick == 64 && s_deferred_rw_slot == 1);
+    g_np.xfer = NP_XFER_NONE;
+    assert(!psx_netplay_defer_recovery_for_transfer(96, 1));
+    assert(s_deferred_rw_valid && s_deferred_rw_tick == 64);
+
+    /* A previously observed core desync also waits without resetting its
+     * persistence or spending an attempt; it can proceed after release. */
+    s_fork_tick = 17; s_fork_first_sim = 84; sim = 100;
+    g_np.xfer = NP_XFER_LOAD_READY;
+    np_try_hc_fork_recovery(17);
+    assert(begin_calls == 1 && heal_calls == 0 && s_fork_last_attempt_sim == 0);
+    g_np.xfer = NP_XFER_NONE;
+    np_try_hc_fork_recovery(17);
+    assert(begin_calls == 2 && requested_tick == 17 && heal_calls == 1);
+    np_det_selftest_tick(128);
+    assert(begin_calls == 3 && requested_tick == 112);
+    puts("production transfer/ordinary/desync/diagnostic ownership: PASS");
+    return 0;
+}
+'''
+    with tempfile.TemporaryDirectory(prefix='psx-transfer-owner-') as directory:
+        directory = Path(directory)
+        c = directory / 'owner.c'
+        exe = directory / 'owner.exe'
+        c.write_text(fixture, encoding='utf-8')
+        subprocess.run([compiler, '-std=c11', '-O2', '-Wall', '-Wextra', str(c),
+                        '-o', str(exe)], check=True)
+        subprocess.run([str(exe)], env={**os.environ, 'PSX_RB_DET_SELFTEST': '64'}, check=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--compiler', required=True)
     args = parser.parse_args()
+    check_transfer_ownership(args.compiler)
     source = (ROOT / 'runtime/src/psx_netplay_rb.c').read_text(encoding='utf-8')
     assert 'joint_accept_peer_commit()' in function_body(
         source, 'static int maybe_abandon_tip_extend(void)\n{')

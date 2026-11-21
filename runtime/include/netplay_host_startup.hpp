@@ -1,7 +1,7 @@
 #ifndef PSX_NETPLAY_HOST_STARTUP_HPP
 #define PSX_NETPLAY_HOST_STARTUP_HPP
 #include "psx_netplay.h"
-#include "mod_netplay.h"
+#include "netplay_host_catalog.h"
 #include "host_executable_identity.h"
 #include "host_fp_environment.h"
 #include "build_manifest.h"
@@ -16,13 +16,17 @@
 static bool psx_install_required_host_profile(PsxNetplayConfig& cfg,uint32_t initialized,
                                                const PsxBiosBackend *builtin_bios,
                                                int renderer,int retained_banks,std::string& error){
-    cfg.host_profile_required=1;error.clear();
+    error.clear();
+    /* A normal offline consumer needs no network catalog. An explicitly
+     * required profile still receives the existing CPU/backend validation. */
+    if(!cfg.enabled&&!cfg.host_profile_required)return true;
+    cfg.host_profile_required=1;
     (void)psx_netplay_host_profile_register(nullptr,nullptr);
     auto refuse=[&](const char *why){error=why;
         if(code_provider_session_interpreted_sealed())(void)code_provider_session_end_interpreted();
         return false;};
-    const PSXModNetplayProfile *title=psx_mod_netplay_profile();
-    if(!title||!title->host_profiles)return refuse("This title has no qualified host simulation catalog.");
+    const PSXModNetplayHostProfiles profiles=psx_mod_netplay_host_profiles();
+    if(!profiles)return refuse("This title has no qualified host simulation catalog.");
     if(psx_simulation_testing::first_configured_override())
         return refuse("Simulation testing overrides are not qualified for netplay host profiles.");
     if(!psx_host_fp_environment_is_default())return refuse("The host floating-point environment is not canonical.");
@@ -57,7 +61,7 @@ static bool psx_install_required_host_profile(PsxNetplayConfig& cfg,uint32_t ini
     context.renderer=renderer;context.retained_texture_banks=retained_banks;
     context.aspect_index=psx_mod_netplay_aspect();context.observer=cfg.spectator?1:0;
     PSXHostProfileCatalog cat{};
-    if(!title->host_profiles(&context,&cat)||!cat.rules||!cat.count||cat.count>PSX_HOST_MAX_OFFERS)
+    if(!profiles(&context,&cat)||!cat.rules||!cat.count||cat.count>PSX_HOST_MAX_OFFERS)
         return refuse("No qualified simulation profile is available for this host.");
     for(unsigned i=0;i<cat.count;++i){
         if(cfg.spectator&&!(cat.rules[i].flags&PSX_HOST_PROFILE_OBSERVER))continue;
@@ -71,8 +75,16 @@ static bool psx_install_required_host_profile(PsxNetplayConfig& cfg,uint32_t ini
         return refuse("Host simulation policy could not be installed before transport.");
     char hex[65];const char digits[]="0123456789abcdef";
     for(unsigned i=0;i<32;++i){hex[i*2]=digits[artifact[i]>>4];hex[i*2+1]=digits[artifact[i]&15];}hex[64]=0;
-    std::fprintf(stderr,"psxrecomp: actual-image-sha256=%s cpu-arch=%u features=%llx backend=%u fp=%u overlays=interpreted offers=%u\n",
-        hex,cpu.architecture,(unsigned long long)cpu.features,compiled,fp,caps.offer_count);
+    std::fprintf(stderr,"psxrecomp: actual-image-sha256=%s cpu-arch=%u features=%llx backend=%u fp=%u overlays=interpreted offers=%u features-known=%u compiled-backends=%u available-backends=%u\n",
+        hex,cpu.architecture,(unsigned long long)cpu.features,compiled,fp,caps.offer_count,
+        cpu.features_known,caps.compiled_backends,caps.available_backends);
+    for(unsigned o=0;o<caps.offer_count;++o){
+        char qualification[65];
+        for(unsigned i=0;i<32;++i){qualification[i*2]=digits[caps.offers[o].qualification[i]>>4];
+            qualification[i*2+1]=digits[caps.offers[o].qualification[i]&15];}qualification[64]=0;
+        std::fprintf(stderr,"psxrecomp: host offer profile=%s revision=%u backend=%u qualification_sha256=%s\n",
+            caps.offers[o].profile,caps.offers[o].revision,caps.offers[o].backend,qualification);
+    }
     return true;
 }
 /* The initial admit barrier has completed. This is called exactly once before
