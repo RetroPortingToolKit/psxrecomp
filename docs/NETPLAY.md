@@ -28,6 +28,16 @@ default false) get content negotiation; titles without a trusted simulation
 profile keep vanilla netplay (simulation mods cleared), the MOTK1 LAN protocol
 and plan-free lobby caps.
 
+For two-seat non-media rollback recovery, a follow-NACK offers a retained,
+verified snapshot strictly before the original mispredicted input. A progress
+watermark alone is insufficient. The peers park Live, reopen BEGIN for that
+same correction, exchange sealed input rows, match the restored baseline, and
+match POST after replay before resuming. Missing retained history remains
+parked with a reconnect diagnostic; it never authorizes a unilateral restore
+or replacement of player input. PSX SYNC flag `0x08` marks this retained-load
+retry (and a valid NACK offer, including tick zero); NACK flag `0x10` means no
+retained offer. Normal strict build compatibility applies.
+
 A statically linked title can register `PSXModNetplayProfile` from
 `runtime/include/mod_netplay.h` for a shared simulation such as experimental
 co-op. The profile forces its native simulation plugin and permitted fixed view

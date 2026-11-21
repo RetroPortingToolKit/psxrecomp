@@ -34,6 +34,8 @@ def main():
     assert "rb_reset_session_peer_state" not in episode
     declarations = source[source.index("static struct {\n    int valid;\n    uint32_t epoch, load, dig_m"):
                           source.index("static uint32_t g_peer_post_digest;")]
+    declarations += source[source.index("#define PSX_RB_SYNC_FLAG_RETAINED_LOAD"):
+                           source.index("/* BASELINE that arrived before follow/begin")]
     fixture = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -58,12 +60,16 @@ int main(void) {
     g_join_valid = g_joining = 1;
     g_join_epoch = g_join_mismatch = g_join_load = g_join_target = 900;
     g_join_slot = 3; g_join_flags = 7;
+    g_joint_recovery = g_joint_load_valid = g_joint_reopen = 1;
+    g_joint_mismatch = 21; g_joint_target = 28; g_joint_load = 16; g_joint_slot = 1;
     assert(!rb_owing_seats_progressed(15));
     for (int seat = 0; seat < 4; ++seat) s_session.tip[seat]++;
     assert(rb_owing_seats_progressed(15));
     rb_reset_session_peer_state();
     assert(!g_join_valid && !g_joining && !g_join_epoch && !g_join_mismatch);
     assert(!g_join_load && !g_join_target && !g_join_slot && !g_join_flags);
+    assert(!g_joint_recovery && !g_joint_load_valid && !g_joint_reopen);
+    assert(!g_joint_mismatch && !g_joint_target && !g_joint_load && !g_joint_slot);
     for (int seat = 0; seat < 4; ++seat) {
         assert(!g_stash_bl_seat[seat].valid && !g_stash_bl_seat[seat].epoch);
         s_session.tip[seat] = 1;
