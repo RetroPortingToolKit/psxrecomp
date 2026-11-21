@@ -79,6 +79,7 @@ static void reset(void){
 }
 static bool install(uint32_t initialized=PSX_HOST_BACKENDS_ALL,const PsxBiosBackend *builtin=&bios,int observer_config=0){
     PsxNetplayConfig config{};std::string error;
+    config.enabled=1;
     config.slot_count=2;config.player_count=2;config.occupied_mask=3;config.spectator=observer_config;
     bool ok=psx_install_required_host_profile(config,initialized,builtin,1,1,error);
     CHECK(config.host_profile_required==1);CHECK(clears==1);
@@ -156,4 +157,19 @@ static void routes(void){
     CHECK(!np_host_direct_loopback_scope(0,0,0,"127.0.0.1:4000","192.168.1.1:4001"));
     CHECK(!np_host_direct_loopback_scope(0,0,0,"127.0.0.1:4000",nullptr));
 }
-int main(void){refusal();success();settlement();routes();std::puts("host startup: PASS");}
+static void offline_without_catalog(void){
+    reset();title.host_profiles=nullptr;
+    PsxNetplayConfig config{};std::string error="prior failure";
+    CHECK(psx_install_required_host_profile(config,0,nullptr,0,0,error));
+    CHECK(error.empty()&&!config.host_profile_required&&!clears&&!callbacks&&
+          !shutdowns&&!seals&&!installs);
+    /* A genuinely required profile is not waived just because it is offline. */
+    reset();config.host_profile_required=1;fp_ok=false;
+    CHECK(!psx_install_required_host_profile(config,3,&bios,1,1,error));
+    CHECK(config.host_profile_required&&clears==1&&!callbacks&&!seals&&!installs);
+    /* The same missing-catalog baseline must refuse a real network session. */
+    reset();title.host_profiles=nullptr;config={};config.enabled=1;
+    CHECK(!psx_install_required_host_profile(config,3,&bios,1,1,error));
+    CHECK(config.host_profile_required&&!callbacks&&!seals&&!installs);
+}
+int main(void){refusal();success();settlement();routes();offline_without_catalog();std::puts("host startup: PASS");}

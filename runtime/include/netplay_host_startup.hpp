@@ -16,7 +16,11 @@
 static bool psx_install_required_host_profile(PsxNetplayConfig& cfg,uint32_t initialized,
                                                const PsxBiosBackend *builtin_bios,
                                                int renderer,int retained_banks,std::string& error){
-    cfg.host_profile_required=1;error.clear();
+    error.clear();
+    /* A normal offline consumer needs no network catalog. An explicitly
+     * required profile still receives the existing CPU/backend validation. */
+    if(!cfg.enabled&&!cfg.host_profile_required)return true;
+    cfg.host_profile_required=1;
     (void)psx_netplay_host_profile_register(nullptr,nullptr);
     auto refuse=[&](const char *why){error=why;
         if(code_provider_session_interpreted_sealed())(void)code_provider_session_end_interpreted();
