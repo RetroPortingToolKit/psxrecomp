@@ -85,6 +85,18 @@ if(BUILD_TESTING)
         target_compile_options(player_settings_provider_test PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG> $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
         add_test(NAME player_settings_provider_test COMMAND player_settings_provider_test)
+        add_executable(legacy_player_settings_test tests/test_legacy_player_settings.cpp
+            src/legacy_player_settings.cpp src/host_enhancements.c
+            src/mod_packages.cpp src/mod_media.cpp src/iso_reader.cpp src/cue_sheet.cpp
+            src/crc32.c src/psx_sha256.c
+            ../recompiler/src/config_loader.cpp ../recompiler/src/ps1_exe_parser.cpp)
+        target_include_directories(legacy_player_settings_test PRIVATE include ../recompiler/src
+            ../recompiler/include ../recompiler/lib/fmt/include ../recompiler/lib/toml11 "${RECOMP_UI_ROOT}/src")
+        target_compile_definitions(legacy_player_settings_test PRIVATE RECOMP_LAUNCHER FMT_HEADER_ONLY=1)
+        target_compile_options(legacy_player_settings_test PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG> $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+        target_link_libraries(legacy_player_settings_test PRIVATE chdr-static)
+        add_test(NAME legacy_player_settings_test COMMAND legacy_player_settings_test)
         if(EXISTS "${RECOMP_UI_ROOT}/tests/psx_settings_draw_test.cpp")
             # The runtime target included this inside its function scope.
             # Initialize UI source/asset variables in this fixture's scope too.
@@ -1549,21 +1561,16 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_compile_definitions(pgxp_demand_receipts_test PRIVATE PSX_PGXP_DEMAND_REGIONS=1)
     add_test(NAME pgxp_demand_receipts_test COMMAND pgxp_demand_receipts_test)
 
-    # psx.enhancement.pgxp at session start (docs/ENHANCEMENTS.md G1.11): the
-    # real builtin activation (mod API stubbed) and the pgxp_session.h
-    # resolver main.cpp's renderer setup uses, in main.cpp's order. Pins that
-    # the [video] baseline no longer undoes the mod, that a cleared (netplay)
-    # plan keeps the baseline, and that the env overrides win.
-    # The session arming main.cpp runs (src/pgxp_session.cpp) against the
-    # real mod runtime, the real builtin plugin and the builtin's own
-    # manifest: default-on, netplay clear, the off switch, options, env
-    # overrides and [video] pgxp_mod_only.
+    # PGXP at session start (docs/ENHANCEMENTS.md G1.11): the session arming
+    # main.cpp runs (src/pgxp_session.cpp) with the player's PGXP settings, a
+    # title mod's request (pgxp_mod_request), netplay, the env overrides and
+    # [video] pgxp_mod_only.
     # Run the same session fixture in both real compilation flavors.
     foreach(_pgxp_session_test IN ITEMS pgxp_session_test pgxp_session_hooks_test)
         add_executable(${_pgxp_session_test} tests/test_pgxp_session.cpp
             src/mod_immediate.c src/func_override.c
             src/host_overlay.c src/host_span_ring.c
-            src/pgxp_session.cpp src/mod_builtin_pgxp.c src/pgxp.cpp
+            src/pgxp_session.cpp src/pgxp.cpp
             src/psx_ram_geometry.c
             src/mod_runtime.cpp src/mod_function_replacements.c
             src/mod_packages.cpp
@@ -1577,8 +1584,6 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
             include
             ../recompiler/include
             ../recompiler/lib/toml11)
-        target_compile_definitions(${_pgxp_session_test} PRIVATE
-            PSX_BUILTIN_PGXP_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/../mods/builtin/packages/psx.enhancement.pgxp/1.0.0/manifest.toml")
         target_link_libraries(${_pgxp_session_test} PRIVATE chdr-static)
         target_sources(${_pgxp_session_test} PRIVATE src/mod_netplay.c)
         psxrecomp_sha256_file(${_pgxp_session_test})
@@ -2165,8 +2170,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         src/mod_packages.cpp
         src/mod_media.cpp src/iso_reader.cpp src/cue_sheet.cpp
         src/crc32.c
-        src/psx_sha256.c
-        src/host_enhancements.c)
+        src/psx_sha256.c)
     target_include_directories(builtin_mod_manifests_test PRIVATE
         include
         ../recompiler/include
@@ -2684,19 +2688,16 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_include_directories(mod_internal_resolution_test PRIVATE include)
     add_test(NAME mod_internal_resolution_test COMMAND mod_internal_resolution_test)
 
-    # The built-in host enhancement mods (CRT Filter, Image Filtering,
-    # Enhanced Audio, Rewind, Internal Resolution): the real plugins and their
-    # session requests against a fake mod runtime (host_enhancements.h).
+    # The player's host enhancement settings (internal resolution, CRT
+    # filter, image filtering, enhanced audio, post-processing, rewind) and
+    # the session requests made from them (host_enhancements.h).
     add_executable(host_enhancements_test
         tests/test_host_enhancements.c
-        src/host_enhancements.c
-        src/mod_builtin_crt_filter.c
-        src/mod_builtin_image_filtering.c
-        src/mod_builtin_enhanced_audio.c
-        src/mod_builtin_rewind.c
-        src/mod_builtin_internal_resolution.c
-        src/mod_builtin_post_processing.c)
+        src/host_enhancements.c)
     target_include_directories(host_enhancements_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(host_enhancements_test PRIVATE m)
+    endif()
     add_test(NAME host_enhancements_test COMMAND host_enhancements_test)
 
     add_executable(memcard_extensions_test

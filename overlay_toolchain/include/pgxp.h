@@ -127,7 +127,7 @@ int  pgxp_culling(void);
  * agreement and tolerance clamp; else 0. Counts nclip_precise. */
 int pgxp_gte_nclip_precise(const uint32_t sxy[3], int64_t *cross);
 
-/* Mod-owned request (the framework's psx.enhancement.pgxp package).
+/* Mod-owned request (a title mod that ships PGXP).
  *
  * The mod's activation runs at session start, before main.cpp's renderer
  * setup, and that setup applies the [video] baseline (geometry_correction,

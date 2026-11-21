@@ -1,27 +1,20 @@
-/* test_host_enhancements.c -- the built-in host enhancement mods (CRT Filter,
- * Image Filtering, Enhanced Audio, Rewind, Internal Resolution) and their
- * session requests
- * (host_enhancements.h, beads-eio.3.398).
+/* test_host_enhancements.c -- the player's host enhancement settings
+ * (internal resolution, CRT filter, image filtering, enhanced audio,
+ * post-processing, rewind) and the session requests made from them
+ * (host_enhancements.h).
  *
- * Links the real plugins and host_enhancements.c against a fake mod runtime
- * (registration + option values), and pins:
- *   - resolve(): disabled Internal Resolution is native; other disabled mods
- *     keep the title's baseline; an option at
- *     Game default keeps the baseline value; an enabled option replaces it;
- *     the scanline strength belongs to the player's own scanlines;
- *   - each plugin's activation RECORDS a request from its options (unknown or
- *     missing text falls back to the documented default) and applies
- *     nothing itself;
- *   - reset forgets every request (a session with the mod off, or a netplay
- *     clear, cannot inherit one);
- *   - the CRT Filter / Image Filtering option-changed callbacks re-record and
- *     report live only once main.cpp registered its applier;
- *   - the Internal Resolution mod: Game default keeps the title's value and
- *     dynamic resolution, Auto turns dynamic resolution on, a fixed choice
- *     turns it off; its option change reports what main.cpp's resolution
- *     applier answers (it can refuse: no live-capable backend, netplay). */
+ * Links host_enhancements.c alone and checks:
+ *   - resolve(): without a request the title's baseline stands; a setting at
+ *     Game default keeps the baseline value; a chosen value replaces it; the
+ *     scanline strength belongs to the player's own scanlines;
+ *   - the player record: psx_host_enh_player_set() takes the settings.toml
+ *     ids and values, psx_host_enh_reset() makes them this session's
+ *     requests, psx_host_enh_player_clear() forgets them (4x internal
+ *     resolution, everything else off or Game default);
+ *   - internal resolution: Game default keeps the title's value and dynamic
+ *     resolution, Auto turns dynamic resolution on, a fixed choice turns it
+ *     off, and the player's Automatic resolution switch wins over both. */
 #include "host_enhancements.h"
-#include "mod_plugins.h"
 #include "video_texture_filter.h"
 
 #include <stdio.h>
@@ -30,77 +23,25 @@
 static int g_fail = 0;
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
 
-/* ---- fake mod runtime ---------------------------------------------------- */
-typedef struct { const char* id; PSXModActivationCallback cb; } Act;
-typedef struct { const char* id; PSXModOptionChangedCallback cb; } Opt;
-static Act g_act[8]; static int g_nact;
-static Opt g_opt[8]; static int g_nopt;
-typedef struct { const char* pkg; const char* feature; const char* option; const char* value; } Val;
-static Val g_val[32]; static int g_nval;
-
-int psx_mod_register_activation_plugin(const char* id, PSXModActivationCallback cb) {
-    g_act[g_nact].id = id; g_act[g_nact].cb = cb; g_nact++;
-    return 1;
-}
-int psx_mod_register_option_changed_plugin(const char* id, PSXModOptionChangedCallback cb) {
-    g_opt[g_nopt].id = id; g_opt[g_nopt].cb = cb; g_nopt++;
-    return 1;
-}
-int psx_mod_option_value(const char* pkg, const char* feature, const char* option,
-                         char* out, uint32_t out_size) {
-    for (int i = g_nval - 1; i >= 0; --i)
-        if (!strcmp(g_val[i].pkg, pkg) && !strcmp(g_val[i].feature, feature) &&
-            !strcmp(g_val[i].option, option)) {
-            snprintf(out, out_size, "%s", g_val[i].value);
-            return 1;
-        }
-    if (out && out_size) out[0] = '\0';
-    return 0;
-}
-static void set_opt(const char* pkg, const char* feature, const char* option, const char* value) {
-    g_val[g_nval].pkg = pkg; g_val[g_nval].feature = feature;
-    g_val[g_nval].option = option; g_val[g_nval].value = value; g_nval++;
-}
-static void activate(const char* id) {
-    int found = 0;
-    for (int i = 0; i < g_nact; ++i)
-        if (!strcmp(g_act[i].id, id)) { g_act[i].cb(); found = 1; }
-    CHECK(found);
-}
-static int option_changed(const char* id, const char* option, const char* value) {
-    for (int i = 0; i < g_nopt; ++i)
-        if (!strcmp(g_opt[i].id, id)) return g_opt[i].cb(option, value);
-    return -1;
-}
-static int g_applied;
-static void applier(void) { ++g_applied; }
-static int g_res_applied, g_res_answer;
-static int res_applier(void) { ++g_res_applied; return g_res_answer; }
-
-#define CRT "psx.enhancement.crt-filter"
-#define IMG "psx.enhancement.image-filtering"
-#define RWD "psx.feature.rewind"
-#define IR  "psx.enhancement.internal-resolution"
-
-int psx_mod_current_resource_path(const char* id, char* out, unsigned cap) {
-    (void)id;
-    snprintf(out, cap, "%s", "custom.pfx");
-    return 1;
-}
-
 static void test_post_processing(void) {
     const PsxHostPostLook base = {1, 0.37f, "title.pfx"};
     PsxHostEnhRequests req;
+    psx_host_enh_player_clear();
     psx_host_enh_reset();
-    activate("psx.post-processing");
     psx_host_enh_requests(&req);
     PsxHostPostLook out = psx_host_enh_resolve_post(&base, &req);
     CHECK(out.antialiasing == 1 && out.bloom == 0.37f && !strcmp(out.shader, "title.pfx"));
-    psx_host_enh_request_post(2, 1, 150, 1, "custom.pfx");
+    CHECK(psx_host_enh_player_set("video.antialiasing_mode", "fxaa_hq"));
+    CHECK(psx_host_enh_player_set("video.bloom", "1.5"));
+    CHECK(psx_host_enh_player_set("video.post_shader", "custom.pfx"));
+    psx_host_enh_reset();
     psx_host_enh_requests(&req);
     out = psx_host_enh_resolve_post(&base, &req);
     CHECK(out.antialiasing == 2 && out.bloom == 1.5f && !strcmp(out.shader, "custom.pfx"));
-    psx_host_enh_request_post(0, 0, 150, 0, "ignored.pfx");
+    CHECK(psx_host_enh_player_set("video.antialiasing_mode", "off"));
+    CHECK(psx_host_enh_player_set("video.bloom", "0"));
+    CHECK(psx_host_enh_player_set("video.post_shader", ""));
+    psx_host_enh_reset();
     psx_host_enh_requests(&req);
     out = psx_host_enh_resolve_post(&base, &req);
     CHECK(out.antialiasing == 0 && out.bloom == 0 && !*out.shader);
@@ -160,11 +101,9 @@ static void test_resolution(void) {
         CHECK(psx_host_enh_parse_internal_resolution(choices[i].text) == choices[i].value);
     CHECK(psx_host_enh_parse_internal_resolution(NULL) == PSX_HOST_ENH_RESOLUTION_DEFAULT);
 
-    /* The plugin: activation records, an option change asks the applier. */
+    /* The player setting: a fresh profile is a fixed 4x. */
+    psx_host_enh_player_clear();
     psx_host_enh_reset();
-    psx_host_enh_requests(&req);
-    CHECK(!req.resolution && req.resolution_value == PSX_IR_UNSET);
-    activate("psx.internal-resolution");                /* fresh profile: fixed 4x */
     psx_host_enh_requests(&req);
     CHECK(req.resolution && req.resolution_value == PSX_IR_SCALE(4));
     const PsxHostResolution old_4k = {2160, 1};
@@ -172,28 +111,34 @@ static void test_resolution(void) {
     CHECK(r.internal_resolution == PSX_IR_SCALE(4) && r.dynamic_resolution == 0);
     CHECK(psx_resolve_internal_scale(r.internal_resolution, 240, 0, 32) == 4);
     CHECK(psx_resolve_internal_scale(r.internal_resolution, 480, 0, 32) == 4);
-    set_opt(IR, "internal-resolution", "resolution", "auto");
-    psx_host_enh_reset();
-    activate("psx.internal-resolution");
-    psx_host_enh_requests(&req);
-    CHECK(req.resolution && req.resolution_value == PSX_IR_AUTO);
-    /* No applier yet (renderer setup has not run): not live. */
-    set_opt(IR, "internal-resolution", "resolution", "1440p");
-    CHECK(option_changed("psx.internal-resolution", "resolution", "1440p") == 0);
-    psx_host_enh_set_resolution_applier(res_applier);
-    g_res_answer = 0;                                   /* backend cannot, or netplay */
-    CHECK(option_changed("psx.internal-resolution", "resolution", "1440p") == 0 &&
-          g_res_applied == 1);
-    g_res_answer = 1;
-    CHECK(option_changed("psx.internal-resolution", "resolution", "1440p") == 1 &&
-          g_res_applied == 2);
-    psx_host_enh_requests(&req);
-    CHECK(req.resolution_value == 1440);
-    psx_host_enh_set_resolution_applier(NULL);
-    CHECK(psx_host_enh_apply_resolution_live() == 0);
+    /* The Automatic resolution switch keeps the fixed ceiling. */
+    CHECK(psx_host_enh_player_set("video.dynamic_resolution", "true"));
     psx_host_enh_reset();
     psx_host_enh_requests(&req);
-    CHECK(!req.resolution && req.resolution_value == PSX_IR_UNSET);
+    r = psx_host_enh_resolve_resolution(&old_4k, &req);
+    CHECK(r.internal_resolution == PSX_IR_SCALE(4) && r.dynamic_resolution == 1);
+    CHECK(psx_host_enh_player_set("video.internal_resolution", "16x"));
+    CHECK(psx_host_enh_player_set("video.dynamic_resolution", "false"));
+    psx_host_enh_reset();
+    psx_host_enh_requests(&req);
+    r = psx_host_enh_resolve_resolution(&old_4k, &req);
+    CHECK(r.internal_resolution == PSX_IR_SCALE(16) && r.dynamic_resolution == 0);
+    /* Game default: the title's own choice and its dynamic resolution. */
+    psx_host_enh_player_clear();
+    CHECK(psx_host_enh_player_set("video.internal_resolution", "default"));
+    psx_host_enh_reset();
+    psx_host_enh_requests(&req);
+    r = psx_host_enh_resolve_resolution(&old_4k, &req);
+    CHECK(r.internal_resolution == 2160 && r.dynamic_resolution == 1);
+    /* A session's requests are a copy: changing the record later does not
+     * reach the running session until the next reset. */
+    CHECK(psx_host_enh_player_set("video.internal_resolution", "2x"));
+    psx_host_enh_requests(&req);
+    CHECK(req.resolution_value == PSX_IR_UNSET);
+    psx_host_enh_reset();
+    psx_host_enh_requests(&req);
+    CHECK(req.resolution_value == PSX_IR_SCALE(2));
+    psx_host_enh_player_clear();
 }
 
 static void test_resolve(void) {
@@ -290,75 +235,75 @@ static void test_parsers(void) {
     CHECK(psx_host_enh_parse_rewind_interval("4") == 4 && psx_host_enh_parse_rewind_interval("5") == 15);
 }
 
-static void test_plugins(void) {
+static void test_player(void) {
     PsxHostEnhRequests req;
+    psx_host_enh_player_clear();
     psx_host_enh_reset();
     psx_host_enh_requests(&req);
     CHECK(!req.crt && !req.image && !req.audio && !req.rewind);
 
-    /* Activation with no option values (defaults): requests recorded with
-     * Game default everywhere, the documented numbers otherwise. */
-    activate("psx.crt-filter");
-    activate("psx.image-filtering");
-    activate("psx.enhanced-audio");
-    activate("psx.rewind");
-    psx_host_enh_requests(&req);
-    CHECK(req.crt && req.crt_screen_kind == PSX_HOST_ENH_DEFAULT &&
-          req.crt_scanlines == PSX_HOST_ENH_DEFAULT && req.crt_strength_pct == 50);
-    CHECK(req.image && req.image_smoothing == PSX_HOST_ENH_DEFAULT &&
-          req.image_texture_filter == PSX_HOST_ENH_DEFAULT &&
-          req.image_fmv_filter == PSX_HOST_ENH_DEFAULT &&
-          req.image_dithering == PSX_HOST_ENH_DEFAULT);
-    CHECK(req.audio);
-    CHECK(req.rewind && req.rewind_depth == 50 && req.rewind_interval == 15);
+    /* Unknown ids are not this record's (the caller applies them). */
+    CHECK(!psx_host_enh_player_set("video.renderer", "opengl"));
+    CHECK(!psx_host_enh_player_set(NULL, "x") && !psx_host_enh_player_set("video.rewind", NULL));
 
-    /* Chosen options. */
-    set_opt(CRT, "crt-filter", "screen_model", "trinitron");
-    set_opt(CRT, "crt-filter", "scanlines", "on");
-    set_opt(CRT, "crt-filter", "scanline_strength", "35");
-    set_opt(IMG, "image-filtering", "smoothing", "sharp");
-    set_opt(IMG, "image-filtering", "texture_filtering", "bilinear");
-    set_opt(IMG, "image-filtering", "fmv_filtering", "bicubic");
-    set_opt(IMG, "image-filtering", "dithering", "fine");
-    set_opt(RWD, "rewind", "buffer", "200");
-    set_opt(RWD, "rewind", "interval", "1");
-    psx_host_enh_reset();
-    activate("psx.crt-filter");
-    activate("psx.image-filtering");
-    activate("psx.rewind");
+    CHECK(psx_host_enh_player_set("video.crt_filter", "trinitron"));
+    CHECK(psx_host_enh_player_set("video.scanlines", "true"));
+    CHECK(psx_host_enh_player_set("video.scanline_strength", "0.35"));
+    CHECK(psx_host_enh_player_set("video.antialiasing", "false"));
+    CHECK(psx_host_enh_player_set("video.texture_filtering", "bilinear"));
+    CHECK(psx_host_enh_player_set("video.fmv_filter", "bicubic"));
+    CHECK(psx_host_enh_player_set("video.dithering", "fine"));
+    CHECK(psx_host_enh_player_set("audio.spu_hq", "true"));
+    CHECK(psx_host_enh_player_set("video.rewind", "true"));
+    CHECK(psx_host_enh_player_set("video.rewind_depth", "200"));
+    CHECK(psx_host_enh_player_set("video.rewind_interval", "1"));
+    /* Not a session's request until the next session start. */
     psx_host_enh_requests(&req);
-    CHECK(req.crt_screen_kind == 3 && req.crt_scanlines == 1 && req.crt_strength_pct == 35);
-    CHECK(req.image_smoothing == 0 && req.image_texture_filter == PSX_TEXTURE_FILTER_BILINEAR &&
+    CHECK(!req.crt && !req.image && !req.audio && !req.rewind);
+    psx_host_enh_reset();
+    psx_host_enh_requests(&req);
+    CHECK(req.crt && req.crt_screen_kind == 3 && req.crt_scanlines == 1 &&
+          req.crt_strength_pct == 35);
+    CHECK(req.image && req.image_smoothing == 0 &&
+          req.image_texture_filter == PSX_TEXTURE_FILTER_BILINEAR &&
           req.image_fmv_filter == 3 && req.image_dithering == 2);
-    CHECK(!req.audio);   /* not activated this session */
-    CHECK(req.rewind_depth == 200 && req.rewind_interval == 1);
+    CHECK(req.audio == 1);
+    CHECK(req.rewind && req.rewind_depth == 200 && req.rewind_interval == 1);
 
-    /* Reset: a session without the mods inherits nothing. */
+    /* The resolved look over a title's baseline. */
+    const PsxHostLook base = {2, 0, 30, 1, PSX_TEXTURE_FILTER_NEAREST, 0, 0, 0};
+    PsxHostLook out = psx_host_enh_resolve(&base, &req);
+    CHECK(out.screen_kind == 3 && out.scanlines == 1 && out.scanline_strength_pct == 35);
+    CHECK(out.present_linear == 0 && out.texture_filter == PSX_TEXTURE_FILTER_BILINEAR);
+    CHECK(out.fmv_filter == 3 && out.dithering == 2 && out.spu_hq == 1);
+    /* Enhanced audio off is an explicit off over a title that has it on. */
+    CHECK(psx_host_enh_player_set("audio.spu_hq", "false"));
     psx_host_enh_reset();
     psx_host_enh_requests(&req);
-    CHECK(!req.crt && !req.image && !req.audio && !req.rewind);
+    CHECK(req.audio == 2);
+    PsxHostLook hq = base;
+    hq.spu_hq = 1;
+    out = psx_host_enh_resolve(&hq, &req);
+    CHECK(out.spu_hq == 0);
+    /* The player spelling "on" is the native dither. */
+    CHECK(psx_host_enh_player_set("video.dithering", "on"));
+    psx_host_enh_reset();
+    psx_host_enh_requests(&req);
+    CHECK(req.image_dithering == 1);
+    /* Out-of-range text falls back to the documented defaults. */
+    CHECK(psx_host_enh_player_set("video.rewind_depth", "75"));
+    CHECK(psx_host_enh_player_set("video.rewind_interval", "5"));
+    CHECK(psx_host_enh_player_set("video.scanline_strength", "2"));
+    psx_host_enh_reset();
+    psx_host_enh_requests(&req);
+    CHECK(req.rewind_depth == 50 && req.rewind_interval == 15 && req.crt_strength_pct == 50);
 
-    /* Live option change: re-recorded; live only once main.cpp registered. */
-    activate("psx.crt-filter");
-    CHECK(option_changed("psx.crt-filter", "scanlines", "off") == 0);
-    set_opt(CRT, "crt-filter", "scanlines", "off");
-    psx_host_enh_set_live_applier(applier);
-    CHECK(option_changed("psx.crt-filter", "scanlines", "off") == 1 && g_applied == 1);
+    /* Clear: the next session inherits nothing but the 4x default. */
+    psx_host_enh_player_clear();
+    psx_host_enh_reset();
     psx_host_enh_requests(&req);
-    CHECK(req.crt && req.crt_scanlines == 0);
-    set_opt(IMG, "image-filtering", "texture_filtering", "xbr");
-    CHECK(option_changed("psx.image-filtering", "texture_filtering", "xbr") == 1 && g_applied == 2);
-    psx_host_enh_requests(&req);
-    CHECK(req.image && req.image_texture_filter == PSX_TEXTURE_FILTER_XBR);
-    set_opt(IMG, "image-filtering", "dithering", "off");
-    CHECK(option_changed("psx.image-filtering", "dithering", "off") == 1 && g_applied == 3);
-    psx_host_enh_requests(&req);
-    CHECK(req.image_dithering == 0);
-    psx_host_enh_set_live_applier(NULL);
-    CHECK(psx_host_enh_apply_live() == 0);
-    /* Enhanced Audio and Rewind change at the next start (no live callback). */
-    CHECK(option_changed("psx.enhanced-audio", "x", "y") == -1);
-    CHECK(option_changed("psx.rewind", "buffer", "100") == -1);
+    CHECK(!req.crt && !req.image && !req.audio && !req.rewind && !req.post);
+    CHECK(req.resolution && req.resolution_value == PSX_IR_SCALE(4));
 }
 
 static void test_explicit_supersampling(void) {
@@ -375,12 +320,12 @@ int main(void) {
     test_post_processing();
     test_resolve();
     test_parsers();
-    test_plugins();
+    test_player();
     test_resolution();
     if (g_fail) {
         fprintf(stderr, "host_enhancements_test: %d failure(s)\n", g_fail);
         return 1;
     }
-    puts("host enhancements: baseline, Game default, requests, reset and live apply PASS");
+    puts("host enhancements: baseline, Game default, player settings and reset PASS");
     return 0;
 }

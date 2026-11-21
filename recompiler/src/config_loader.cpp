@@ -3247,6 +3247,9 @@ UserSettings load_user_settings(const fs::path& path) {
         const auto n = toml::find<int64_t>(doc, "settings_format");
         if (n > 0 && n < 1000) s.settings_format = (int)n;
     });
+    if (doc.contains("legacy_builtin_settings_migrated")) try_get([&]{
+        s.legacy_builtin_settings_migrated=toml::find<bool>(doc,"legacy_builtin_settings_migrated");
+    });
 
     if (doc.contains("video")) {
         const toml::value& v = toml::find(doc, "video");
@@ -3256,24 +3259,17 @@ UserSettings load_user_settings(const fs::path& path) {
             else if (m == "opengl") { s.renderer = 1; s.has_renderer = true; }
             else if (m == "vulkan") { s.renderer = 2; s.has_renderer = true; }
         });
-        // supersampling and internal_resolution are no longer player
-        // settings: the built-in Internal Resolution mod
-        // (psx.enhancement.internal-resolution) owns the internal resolution
-        // over the title's [video] baseline, Auto included. Old keys are
-        // ignored, not errors, and the next save drops them
-        // (docs/config_schema.md). dynamic_resolution, dynamic_resolution_min
-        // and supersample are player settings (player_settings.h), read below.
+        // internal_resolution, dynamic_resolution, dynamic_resolution_min
+        // and supersample are player settings (player_settings.h), read
+        // below. The legacy supersampling key is ignored, not an error, and
+        // the next save drops it (docs/config_schema.md).
         if (v.contains("window_width")) try_get([&]{
             const auto n = toml::find<int64_t>(v, "window_width");
             if (n >= 320 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
         });
-        // antialiasing, texture_filtering, fmv_filter, crt_filter, scanlines
-        // and scanline_strength are no longer player settings: they are the
-        // built-in CRT Filter and Image Filtering mods (mods/state.toml), over
-        // the title's [video] baseline. Old keys are ignored, not errors, and
-        // the next save drops them (docs/config_schema.md).
-        // geometry_correction and perspective_texturing are player settings
-        // (player_settings.h, PGXP page), read below.
+        // antialiasing, texture_filtering, fmv_filter, crt_filter,
+        // scanlines, scanline_strength and the PGXP keys are player settings
+        // (player_settings.h), read below.
         if (v.contains("fov_scale")) try_get([&]{
             const auto& n = toml::find(v, "fov_scale");
             if (n.is_floating())     s.fov_scale = n.as_floating();
@@ -3361,11 +3357,12 @@ UserSettings load_user_settings(const fs::path& path) {
             s.adaptive_view = toml::find<bool>(v, "adaptive_view");
             s.has_adaptive_view = true;
         });
-        // rewind / rewind_depth / rewind_interval moved to the built-in
-        // Rewind mod (psx.feature.rewind); the old keys are ignored.
+        // rewind / rewind_depth / rewind_interval are player settings
+        // (player_settings.h), read below.
     }
-    // Only host volume is a player audio setting. Sample rate and HQ remain
-    // owned by the runtime and the Enhanced Audio mod.
+    // [audio] frequency (the output sample rate) is the runtime's built-in
+    // rate: the old key is ignored and the next save drops it. spu_hq is a
+    // player setting (player_settings.h), read below.
     if (doc.contains("audio")) {
         const auto& a = toml::find(doc, "audio");
         if (a.contains("volume")) try_get([&] {
@@ -3681,6 +3678,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     // read as the player's own lines in a file of this format, and as an old
     // launcher's echo in a file without it.
     f << "settings_format = " << UserSettings::kFormat << "\n\n";
+    if (s.legacy_builtin_settings_migrated)
+        f << "legacy_builtin_settings_migrated = true\n\n";
 
     auto has_extra = [&](const char* section) {
         for (const auto& spec:kExtraPlayerSettings)

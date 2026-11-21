@@ -3,9 +3,10 @@ thread while the game runs: they must not write runtime state (psxrecomp#674
 review P1).
 
 settings_get reads only the main-thread snapshot (mh_video_get), and the
-menu's game info reads no live video globals. Neither offers the internal
-resolution: the built-in Internal Resolution mod owns it (its option changes
-live through the Mods page), so the Settings view never draws that row."""
+menu's game info reads no live video globals. Neither offers recomp-ui's
+fixed Internal resolution row: the internal resolution is the runtime's own
+player setting (video.internal_resolution), so the Settings view never draws
+that row."""
 import re
 from pathlib import Path
 from test_netplay_load_apply_flow import function_body, require
@@ -25,9 +26,9 @@ for sig in ("void mh_launcher_settings_get(RecompLauncherCSettings* out)",
 
 gi = function_body(source, "void mh_launcher_game_info(RecompLauncherCGameInfo* out)")
 require("internal_resolution" not in gi,
-        "menu game info offers no Internal resolution row (the mod owns it)")
+        "menu game info offers no fixed Internal resolution row")
 require("psx_launcher_hide_mod_owned_rows(&gi);" in gi,
-        "menu game info clears the mod-owned rows, Internal resolution included")
+        "menu game info clears recomp-ui's fixed rows, Internal resolution included")
 ls_get = function_body(source, "void mh_launcher_settings_get(RecompLauncherCSettings* out)")
 require("internal_resolution" not in ls_get and "supersample" not in ls_get,
         "settings_get hands the Settings view no internal resolution")
