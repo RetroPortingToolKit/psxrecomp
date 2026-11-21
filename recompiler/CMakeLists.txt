@@ -1034,6 +1034,18 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_emitter_stamps.py
                 --cmake ${CMAKE_COMMAND})
+        set_tests_properties(bios_emitter_stamps PROPERTIES TIMEOUT 0)
+        find_program(_bios_compare_bash NAMES bash)
+        find_program(_bios_compare_ninja NAMES ninja ninja-build)
+        if(_bios_compare_bash AND _bios_compare_ninja)
+            add_test(NAME bios_regen_compare
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_regen_compare.py
+                    --cmake ${CMAKE_COMMAND} --bash ${_bios_compare_bash}
+                    --ninja ${_bios_compare_ninja}
+                    --work-dir ${CMAKE_CURRENT_BINARY_DIR}/bios-compare-fixtures)
+            set_tests_properties(bios_regen_compare PROPERTIES TIMEOUT 0)
+        endif()
         # tools/bios_emitter_fingerprint.cmake reads its file list from the
         # psxrecomp-bios target. CMake hands the test that target's own list
         # of sources, so the script's reading is checked in both directions.
