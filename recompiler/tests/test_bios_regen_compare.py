@@ -140,6 +140,21 @@ esac
         assert stamp.read_text(encoding="utf-8").strip() == tree.fingerprint("bios/T.toml")
         assert (root / "built.marker").exists()
         assert "--out-dir" in (root / "invocation").read_text()
+        reset("equal")
+        error_bin = root / "comparison error"
+        error_bin.mkdir()
+        error_cmp = error_bin / "cmp"
+        error_cmp.write_text("#!/usr/bin/env bash\nexit 2\n", encoding="utf-8", newline="\n")
+        error_cmp.chmod(0o755)
+        result = run(extra_env={"PATH": str(error_bin) + os.pathsep + env["PATH"]})
+        assert result.returncode == 4 and "unverified" in result.stderr, (
+            "comparison tool error", result.stdout, result.stderr)
+        unchanged()
+        # /tmp can belong to a different MSYS root from a PATH-selected cmp.
+        # Real Windows tools need one unambiguous absolute comparison path.
+        reset("equal")
+        result = run(extra_env={"TMPDIR": "/tmp"})
+        assert result.returncode == 0, ("default temporary root", result.stdout, result.stderr)
         for mode in ("changed", "removed", "added"):
             reset(mode)
             result = run()
@@ -180,6 +195,7 @@ esac
         assert (generated / "T_full.c").read_text() == "changed\n"
         assert stamp.read_text(encoding="utf-8").strip() == tree.fingerprint("bios/T.toml")
         print("PASS: neutral refresh; changed/added/removed output; failed/unstable inputs; "
+              "comparison tool failure/default temporary root; "
               "unpinned/foreign-build/legacy/escaping-stem refusal; normal regeneration")
     return 0
 
