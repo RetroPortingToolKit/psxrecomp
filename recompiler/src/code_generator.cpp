@@ -4049,7 +4049,9 @@ GeneratedFunction CodeGenerator::generate_function(
         // public function retains its one cleanup scope and all entry hooks;
         // this helper may only be called after those hooks/edges were consumed.
         annotation_prefix+="#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 9\n__attribute__((noipa,cold))\n#elif defined(__GNUC__) || defined(__clang__)\n__attribute__((noinline,cold))\n#elif defined(_MSC_VER)\n__declspec(noinline)\n#endif\n";
-        annotation_prefix+=fmt::format("static void {}_canonical(CPUState *cpu,uint32_t entry) {{\n    switch(entry) {{\n",precision_region_owner_);
+        annotation_prefix+=fmt::format("static void {}_canonical(CPUState *cpu,uint32_t entry) {{\n",precision_region_owner_);
+        annotation_prefix+=dsl_decls();
+        annotation_prefix+="    switch(entry) {\n";
         std::set<uint32_t> entries(cps_cur_continuations_.begin(),cps_cur_continuations_.end());
         entries.insert(func.start_addr);
         for(uint32_t pc:entries) {

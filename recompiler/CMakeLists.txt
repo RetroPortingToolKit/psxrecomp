@@ -1376,6 +1376,8 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cop2_delay_slot_load.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
+                    --compiler ${CMAKE_C_COMPILER}
+                    --guest ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_load_delay_generated.c
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(
             NAME dirty_text_continuation_guards
