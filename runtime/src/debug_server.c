@@ -6992,6 +6992,40 @@ static void handle_c0_history(int id, const char *json)
     send_fmt("%s", buf);
 }
 
+#include "gpu_render_record.h"
+
+/* {"cmd":"gr_record_start","path":P}: record software renderer calls to P
+ * for offline replay (gpu_render_record.h). */
+static void handle_gr_record_start(int id, const char *json)
+{
+    char path[1024];
+    if (!json_get_str(json, "path", path, sizeof(path))) {
+        send_err(id, "path required"); return;
+    }
+    path[sizeof(path) - 1] = '\0';
+    if (!gr_record_start(path)) {
+        send_err(id, "software backend without wide compositor required, or file not writable");
+        return;
+    }
+    send_ok(id);
+}
+
+/* {"cmd":"gr_record_stop"}: close the recording; reports per-op call counts. */
+static void handle_gr_record_stop(int id, const char *json)
+{
+    (void)json;
+    uint64_t counts[GRR_OP_COUNT];
+    for (int op = 0; op < GRR_OP_COUNT; ++op) counts[op] = gr_record_count(op);
+    if (!gr_record_stop()) { send_err(id, "no recording open, or a write failed"); return; }
+    char body[2048];
+    int n = snprintf(body, sizeof(body), "{\"id\":%d,\"ok\":true,\"ops\":[", id);
+    for (int op = 0; op < GRR_OP_COUNT && n < (int)sizeof(body) - 32; ++op)
+        n += snprintf(body + n, sizeof(body) - (size_t)n, "%s%llu", op ? "," : "",
+                      (unsigned long long)counts[op]);
+    snprintf(body + n, sizeof(body) - (size_t)n, "]}");
+    send_fmt("%s", body);
+}
+
 static void handle_gpu_opcodes(int id, const char *json)
 {
     (void)json;
@@ -17103,6 +17137,8 @@ static const CmdEntry s_commands[] = {
     { "screenshot_wide_hires", handle_screenshot_wide_hires },
     { "wide_shot",         handle_wide_shot },
     { "gpu_opcodes",       handle_gpu_opcodes },
+    { "gr_record_start",   handle_gr_record_start },
+    { "gr_record_stop",    handle_gr_record_stop },
     { "gpu_ring_stats",    handle_gpu_ring_stats },
     { "gpu_frame_dump",    handle_gpu_frame_dump },
     { "a0_history",        handle_a0_history },
