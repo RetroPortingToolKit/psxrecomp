@@ -33,6 +33,8 @@ for stem in "${STEMS[@]}"; do
     echo "${stem}: stamp current (${now:0:12})"
   else
     echo "error: ${stem}: stamp ${stamp:0:12} != fingerprint ${now:0:12} on this machine" >&2
+    echo "  for an expected output-neutral edit: bash tools/regen_bios.sh --compare --config ${profile}" >&2
+    echo "  this rebuilds and byte-compares fresh output before refreshing the stamp; missing inputs remain unverified" >&2
     echo "  per-input digests on this machine:" >&2
     (cd "${FRAMEWORK}" && PSXRECOMP_FP_DEBUG=1 bash tools/bios_emitter_fingerprint.sh "${profile}" 2>&1 >/dev/null | sed 's/^/    /') >&2
     echo "  tools: $(command -v bash) $(bash --version | head -1); $(command -v sha256sum); $(command -v tr)" >&2

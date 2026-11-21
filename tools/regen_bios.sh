@@ -17,6 +17,8 @@
 # Usage:
 #   tools/regen_bios.sh                               # regen from bios/SCPH1001.toml
 #   tools/regen_bios.sh --config bios/OpenBIOS.toml   # regen another BIOS profile
+#   tools/regen_bios.sh --compare --config bios/OpenBIOS.toml
+#       # rebuild, compare fresh C/h, refresh the stamp only if output is identical
 #   PSXRECOMP_BIOS_BUILD=recompiler/build tools/regen_bios.sh   # custom build dir
 #
 # PSXRECOMP_BIOS_BUILD is relative to the framework ROOT (this script cd's there
@@ -34,6 +36,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 PROFILE="bios/SCPH1001.toml"
+COMPARE_ONLY=0
+if [ "${1:-}" = "--compare" ]; then
+    COMPARE_ONLY=1
+    shift
+fi
 if [ $# -gt 0 ]; then
     if [ $# -eq 2 ] && [ "$1" = "--config" ] && [ -n "$2" ]; then
         PROFILE="$2"
@@ -41,10 +48,14 @@ if [ $# -gt 0 ]; then
         # A typo'd flag silently regenerating the DEFAULT profile would be a
         # nasty surprise — reject anything but the exact supported form.
         echo "regen_bios: unrecognized arguments: $*" >&2
-        echo "usage: tools/regen_bios.sh [--config <bios profile.toml>]" >&2
+        echo "usage: tools/regen_bios.sh [--compare] [--config <bios profile.toml>]" >&2
         exit 2
     fi
 fi
+
+toml_value() {
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$PROFILE" | head -1
+}
 
 # Locate the recompiler build dir (where psxrecomp-bios[.exe] lives or will be
 # built). Both failure paths below report the SAME missing step — configuring
@@ -124,16 +135,37 @@ fi
 }
 reject_unfinished_build_dir "$BUILD"
 
+if [ "$COMPARE_ONLY" -eq 1 ]; then
+    if [ -n "${PSXRECOMP_BIOS_ROM:-}${PSXRECOMP_BIOS_SEEDS:-}${PSXRECOMP_BIOS_OUT:-}" ]; then
+        echo "regen_bios: unverified: --compare requires a pinned profile, not legacy env overrides" >&2
+        exit 4
+    fi
+    [ -f "$PROFILE" ] || { echo "regen_bios: unverified: profile missing: $PROFILE" >&2; exit 4; }
+    _compare_pin="$(toml_value sha256)"
+    if [[ ! "$_compare_pin" =~ ^[[:xdigit:]]{64}$ ]]; then
+        echo "regen_bios: unverified: --compare requires the profile's quoted image sha256 pin" >&2
+        exit 4
+    fi
+    # A configured tree for another checkout can build successfully but cannot
+    # certify this checkout's fingerprint. Resolve native Windows paths too.
+    _compare_source_dir=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$BUILD/CMakeCache.txt" | tr -d '\r' | head -1)
+    if command -v cygpath >/dev/null 2>&1; then
+        _compare_source_dir=$(cygpath -u "$_compare_source_dir")
+    fi
+    if [ ! -d "$_compare_source_dir" ] ||
+       [ "$(cd "$_compare_source_dir" && pwd -P)" != "$(cd "$ROOT/recompiler" && pwd -P)" ]; then
+        echo "regen_bios: unverified: $BUILD is configured for another recompiler source tree" >&2
+        exit 4
+    fi
+    _compare_before=$("$BASH" "$ROOT/tools/bios_emitter_fingerprint.sh" "$PROFILE")
+fi
+
 # 1. Build the emitter FRESH so the regen always reflects current source.
 echo "regen_bios: building psxrecomp-bios in $BUILD"
 cmake --build "$BUILD" --target psxrecomp-bios >/dev/null
 
 EXE="$BUILD/psxrecomp-bios.exe"; [ -f "$EXE" ] || EXE="$BUILD/psxrecomp-bios"
 [ -f "$EXE" ] || { echo "regen_bios: psxrecomp-bios not found in $BUILD after build"; exit 1; }
-
-toml_value() {
-    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$PROFILE" | head -1
-}
 
 if [ -n "${PSXRECOMP_BIOS_ROM:-}${PSXRECOMP_BIOS_SEEDS:-}${PSXRECOMP_BIOS_OUT:-}" ]; then
     # 2a. Legacy env-override regen (positional invocation, profile bypassed).
@@ -150,8 +182,87 @@ else
     OUT="$(toml_value out_dir)";  OUT="${OUT:-generated}"
     STEM="$(toml_value out_stem)"
     [ -n "$STEM" ] || { echo "regen_bios: no out_stem in $PROFILE"; exit 1; }
+    if [ "$COMPARE_ONLY" -eq 1 ] && [[ ! "$STEM" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]]; then
+        echo "regen_bios: unverified: --compare requires a flat out_stem, without path separators" >&2
+        exit 4
+    fi
     echo "regen_bios: emit-full --config $PROFILE (stem: $STEM)"
     mkdir -p "$OUT"
+    if [ "$COMPARE_ONLY" -eq 1 ]; then
+        # Compare a genuinely fresh output set: emitting over generated/ would
+        # conceal files the generator stopped producing. Include underscore
+        # and dot suffixes so an added/removed C file or header is not ignored.
+        shopt -s nullglob
+        _compare_old=("$OUT/${STEM}_"*.c "$OUT/${STEM}_"*.h "$OUT/${STEM}."*.c "$OUT/${STEM}."*.h)
+        if [ ${#_compare_old[@]} -eq 0 ]; then
+            echo "regen_bios: unverified: no previous $STEM C/h output; run normal regeneration first" >&2
+            exit 4
+        fi
+        _compare_tmp_root=$(cd "${TMPDIR:-/tmp}" && pwd -P)
+        _compare_dir=$(mktemp -d "$_compare_tmp_root/psx-bios-compare.XXXXXXXX")
+        _compare_stamp_tmp=""
+        cleanup_compare() {
+            # Only this fresh directory is owned. Never recurse through an
+            # unexpected directory/link or remove protected/unexpected trees.
+            if [[ "$_compare_dir" != "$_compare_tmp_root"/psx-bios-compare.* ]] ||
+               [ -L "$_compare_dir" ]; then
+                echo "regen_bios: retained unexpected comparison path $_compare_dir" >&2
+                return
+            fi
+            _compare_entries=("$_compare_dir"/* "$_compare_dir"/.[!.]* "$_compare_dir"/..?*)
+            for _entry in "${_compare_entries[@]}"; do
+                if [ ! -f "$_entry" ] || [ -L "$_entry" ]; then
+                    echo "regen_bios: retained comparison directory with unexpected entry: $_compare_dir" >&2
+                    return
+                fi
+            done
+            if [ ${#_compare_entries[@]} -gt 0 ]; then rm -- "${_compare_entries[@]}"; fi
+            rmdir -- "$_compare_dir"
+            if [ -n "$_compare_stamp_tmp" ] && [ -f "$_compare_stamp_tmp" ]; then
+                rm -- "$_compare_stamp_tmp"
+            fi
+        }
+        trap cleanup_compare EXIT
+        if ! "$EXE" --config "$PROFILE" --out-dir "$_compare_dir"; then
+            echo "regen_bios: $STEM unverified: regeneration failed; previous output/stamp unchanged" >&2
+            exit 4
+        fi
+        _compare_after=$("$BASH" "$ROOT/tools/bios_emitter_fingerprint.sh" "$PROFILE")
+        if [ "$_compare_before" != "$_compare_after" ]; then
+            echo "regen_bios: $STEM unverified: inputs changed during build/regeneration; stamp unchanged" >&2
+            exit 4
+        fi
+        _compare_new=("$_compare_dir/${STEM}_"*.c "$_compare_dir/${STEM}_"*.h "$_compare_dir/${STEM}."*.c "$_compare_dir/${STEM}."*.h)
+        if [ ${#_compare_new[@]} -eq 0 ]; then
+            echo "regen_bios: $STEM unverified: no fresh C/h output; stamp unchanged" >&2
+            exit 4
+        fi
+        _compare_changed=0
+        for _file in "${_compare_new[@]}"; do
+            _name=${_file##*/}
+            if [ -L "$_file" ] || [ ! -f "$OUT/$_name" ] || [ -L "$OUT/$_name" ] ||
+               ! cmp -s "$_file" "$OUT/$_name"; then
+                echo "regen_bios: $STEM generated output changed: $_name" >&2
+                _compare_changed=1
+            fi
+        done
+        for _file in "${_compare_old[@]}"; do
+            if [ ! -f "$_compare_dir/${_file##*/}" ]; then
+                echo "regen_bios: $STEM generated output removed: ${_file##*/}" >&2
+                _compare_changed=1
+            fi
+        done
+        if [ "$_compare_changed" -ne 0 ]; then
+            echo "regen_bios: $STEM output changed; previous output/stamp unchanged. Run normal regeneration and review the change." >&2
+            exit 3
+        fi
+        _compare_stamp_tmp=$(mktemp "$OUT/${STEM}.emitter.sha.XXXXXXXX")
+        printf '%s\n' "$_compare_after" > "$_compare_stamp_tmp"
+        mv -- "$_compare_stamp_tmp" "$OUT/$STEM.emitter.sha"
+        _compare_stamp_tmp=""
+        echo "regen_bios: $STEM output-neutral (${#_compare_new[@]} C/h files); verified fingerprint refreshed"
+        exit 0
+    fi
     "$EXE" --config "$PROFILE"
 fi
 
