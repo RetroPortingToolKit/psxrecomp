@@ -154,6 +154,7 @@ cmake_args = ["-DPSX_SDL_BACKEND=SDL3", "-DPSX_PGXP_VARIANT=OFF"]
 # binary_identity = "{version}+{commit12}"   # bytes the executable must contain
 # selective_pgo = true                # default for supported native GNU/Ninja
 # pgo_train_frames = 600               # actual guest frames, integer 1..18000
+# pgo_train_headless = true            # software boot work, no SDL window/audio
 # Legacy pgo_train_seconds maps to seconds * 60 guest frames; it is not a deadline.
 
 [aot]
