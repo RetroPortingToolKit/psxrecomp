@@ -26,8 +26,8 @@ static int s_takeover_armed;
 static int s_settings_switched;
 static uint32_t (*s_digests)[5];
 static uint32_t s_digest_count, s_digest_next;
-static unsigned s_digests_checked, s_div_parts;
-static uint32_t s_div_frame;
+static unsigned s_digests_checked, s_div_parts, s_fail_parts;
+static uint32_t s_div_frame, s_fail_frame;
 static int s_diverged;
 static int s_power_on, s_cards_installed;
 
@@ -99,6 +99,12 @@ static void write_verdict(ReplayResult result, const char *reason)
                 digest_parts_text(s_div_parts, parts, sizeof parts));
     else
         fprintf(f, "  \"first_divergence_frame\": null,\n  \"divergence_parts\": null,\n");
+    /* The first divergence that decides the result: not AV alone. */
+    if (s_fail_parts)
+        fprintf(f, "  \"first_failing_frame\": %u,\n  \"failing_parts\": \"%s\",\n", (unsigned)s_fail_frame,
+                digest_parts_text(s_fail_parts, parts, sizeof parts));
+    else
+        fprintf(f, "  \"first_failing_frame\": null,\n  \"failing_parts\": null,\n");
     fprintf(f, "  \"digests_checked\": %u,\n", s_digests_checked);
     if (s_end_reached)
         fprintf(f, "  \"end_cycle\": %llu,\n  \"recorded_end_cycle\": %llu,\n  \"differing_ram_pages\": %u,\n",
@@ -176,7 +182,8 @@ int replay_session_play_file(const char *path)
     s_rec_platform[0] = s_player_platform[0] = s_rec_codegen[0] = s_player_codegen[0] = 0;
     s_cross_platform = s_power_on = s_diverged = s_end_reached = 0;
     s_play_frame = s_play_frames = 0;
-    s_digests_checked = s_div_parts = 0;
+    s_digests_checked = s_div_parts = s_fail_parts = 0;
+    s_fail_frame = 0;
     if (!path || !(f = fopen(path, "rb"))) return refuse_play("cannot open the file");
     info = (ReplayFileInfo *)malloc(sizeof *info);
     steps = (ReplayStep *)calloc(REPLAY_FILE_MAX_STEPS, sizeof *steps);
@@ -305,7 +312,19 @@ static void check_digest(void)
     if (!replay_host_state_digest(d)) return;
     s_digests_checked++;
     for (unsigned k = 0; k < 4; ++k) parts |= (unsigned)(d[k] != want[k]) << k;
-    if (!parts || s_diverged) return;
+    if (!parts) return;
+    /* AV alone is reported but does not fail a replay, so the checks go on
+     * looking for the first divergence that does. */
+    if ((parts & ~REPLAY_DIGEST_AV) && !s_fail_parts) {
+        s_fail_frame = s_play_frame;
+        s_fail_parts = parts;
+        if (s_diverged) {
+            fprintf(stdout, "replay_diverged: frame=%u parts=%s failing\n", (unsigned)s_play_frame,
+                    digest_parts_text(parts, text, sizeof text));
+            fflush(stdout);
+        }
+    }
+    if (s_diverged) return;
     s_diverged = 1;
     s_div_frame = s_play_frame;
     s_div_parts = parts;
@@ -330,7 +349,7 @@ static void finish(void)
     cyc = now->cycle == s_end.cycle;
     for (uint32_t p = 0; p < REPLAY_FILE_RAM_PAGES; ++p) differing += now->pages[p] != s_end.pages[p];
     /* AV alone does not fail a replay (see REPLAY_DIGEST_AV). */
-    state = !(s_diverged && (s_div_parts & ~REPLAY_DIGEST_AV));
+    state = !s_fail_parts;
     s_end_reached = 1;
     s_end_cycle = now->cycle;
     s_end_recorded_cycle = s_end.cycle;
