@@ -14,6 +14,9 @@
  *                                    ([audio] spu_hq)
  *   psx.feature.rewind               Rewind: the local rewind ring, its buffer
  *                                    depth and capture interval
+ *   psx.feature.replay-recording     Record Replays: a power-on replay of each
+ *                                    session (replay_session.h); enabled by
+ *                                    default
  *   psx.enhancement.internal-resolution
  *                                    Internal Resolution: fixed 1x..32x or height
  *                                    ([video] internal_resolution), Auto
@@ -94,6 +97,7 @@ typedef struct PsxHostEnhRequests {
     int rewind;                 /* Rewind enabled */
     int rewind_depth;           /* 50 / 100 / 150 / 200 */
     int rewind_interval;        /* 1 / 4 / 8 / 12 / 15 */
+    int replay_recording;       /* Record Replays enabled */
     int resolution;             /* Internal Resolution enabled */
     int resolution_value;       /* PSX_IR_UNSET (Game default) or a PSX_IR_*
                                  * value (internal_resolution.h), Auto included;
@@ -219,6 +223,7 @@ void psx_host_enh_request_image(int smoothing, int texture_filter, int fmv_filte
 void psx_host_enh_request_image_dithering(int mode);
 void psx_host_enh_request_audio(void);
 void psx_host_enh_request_rewind(int depth, int interval);
+void psx_host_enh_request_replay_recording(void);
 void psx_host_enh_request_resolution(int value);
 void psx_host_enh_request_resolution_options(int minimum, int supersample_milli, int dynamic);
 void psx_host_enh_request_post(int aa, int bloom, int strength, int shader_mode,

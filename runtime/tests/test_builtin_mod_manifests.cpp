@@ -38,7 +38,8 @@ int main(int argc, char** argv) {
     bool saw_8mb = false;
     /* The host enhancements that used to be Settings rows (beads-eio.3.398):
      * package id -> {feature id, plugin id, option id -> default}. Each is
-     * host-only; Internal Resolution defaults on at 4x, the others off.
+     * host-only; Internal Resolution defaults on at 4x and Record Replays
+     * on, the others off.
      * Each targets every game (netplay =
      * "host_only"): the player's own in a match, never in the fingerprint. */
     struct HostEnhancement {
@@ -56,6 +57,7 @@ int main(int argc, char** argv) {
         {"psx.enhancement.enhanced-audio", {"enhanced-audio", "psx.enhanced-audio", {}}},
         {"psx.feature.rewind", {"rewind", "psx.rewind",
             {{"buffer", "50"}, {"interval", "15"}}}},
+        {"psx.feature.replay-recording", {"replay-recording", "psx.replay-recording", {}}},
         {"psx.enhancement.internal-resolution", {"internal-resolution",
             "psx.internal-resolution", {{"resolution", "4x"}, {"minimum", "default"}, {"supersample", "default"}, {"dynamic_resolution", "default"}}}},
         {"psx.enhancement.post-processing", {"post-processing", "psx.post-processing",
@@ -109,7 +111,8 @@ int main(int argc, char** argv) {
             const std::string who = package.id + ": ";
             check(package.features.size() == 1 && package.features[0].id == want.feature,
                   who + "exposes exactly its one feature");
-            const bool default_on = package.id == "psx.enhancement.internal-resolution";
+            const bool default_on = package.id == "psx.enhancement.internal-resolution" ||
+                                    package.id == "psx.feature.replay-recording";
             check(!package.features.empty() && package.features[0].default_enabled == default_on,
                   who + "has its documented feature default");
             check(!package.features.empty() && package.features[0].host_only,

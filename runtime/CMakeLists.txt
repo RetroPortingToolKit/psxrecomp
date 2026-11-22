@@ -477,6 +477,10 @@ if(BUILD_TESTING)
         target_include_directories(replay_session_test PRIVATE include)
         target_compile_options(replay_session_test PRIVATE -UNDEBUG)
         add_test(NAME replay_session_test COMMAND replay_session_test)
+        add_executable(replay_frontend_test tests/test_replay_frontend.c src/replay_frontend.c)
+        target_include_directories(replay_frontend_test PRIVATE include)
+        target_compile_options(replay_frontend_test PRIVATE -UNDEBUG)
+        add_test(NAME replay_frontend_test COMMAND replay_frontend_test)
         add_executable(boot_state_native_capture_test tests/test_capture_writer.c src/mod_snapshot.c)
         target_include_directories(boot_state_native_capture_test PRIVATE include src)
         target_compile_definitions(boot_state_native_capture_test PRIVATE PSX_COSIM=1 PSX_NATIVE_CAPTURE_JOBS=1)
@@ -2704,6 +2708,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         src/mod_builtin_image_filtering.c
         src/mod_builtin_enhanced_audio.c
         src/mod_builtin_rewind.c
+        src/mod_builtin_replay_recording.c
         src/mod_builtin_internal_resolution.c
         src/mod_builtin_post_processing.c)
     target_include_directories(host_enhancements_test PRIVATE include)

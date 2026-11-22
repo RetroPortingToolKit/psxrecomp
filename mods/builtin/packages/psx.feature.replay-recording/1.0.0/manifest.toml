@@ -1,0 +1,25 @@
+format_version = 11
+id = "psx.feature.replay-recording"
+version = "1.0.0"
+name = "Record Replays"
+author = "psxrecomp"
+description = "Record each game you play from power-on into a replay file in the game's save folder, replays/<serial>-boot-<time>.psxrpl. A replay holds the P1 pad and the memory cards the game booted with, and plays back on the same build. Off in netplay and with a multitap."
+resolver = "declarative"
+save_compatibility = "shared"
+
+# A replay is a host tool, not a property of any particular disc, so this
+# ships with the framework and applies to every game.
+[[target]]
+game_id = "*"
+
+[[feature]]
+id = "replay-recording"
+name = "Record Replays"
+description = "Enabled by default. Turn it off to stop writing a replay file for each session. Applies at the next game start."
+group = "Quality of Life"
+default_enabled = true
+
+[[plugin]]
+feature = "replay-recording"
+id = "psx.replay-recording"
+netplay = "host_only"
