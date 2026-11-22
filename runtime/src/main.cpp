@@ -7400,6 +7400,48 @@ static void capture_local_human_pad(PsxNetPad* out) {
     bisect_cap(idx, 1);
 }
 
+/* QA-only input workload from Alexbeav's issue #475 reproduction. A word is
+ * a function of the session sim tick, so repeated TipHold samples agree.
+ * It uses the ordinary authoritative publisher and never writes guest SIO.
+ * Unset/zero leaves player input and recording choices untouched. */
+static bool netplay_test_input(PsxNetPad* out) {
+#ifndef PSX_NO_DEBUG_TOOLS
+    static int seed_read = 0;
+    static uint32_t seed = 0, from = 0, hold = 0;
+    if (!seed_read) {
+        seed_read = 1;
+        if (const char* e = std::getenv("PSX_NET_TEST_INPUT_SEED"))
+            seed = (uint32_t)std::strtoul(e, nullptr, 10);
+        if (const char* e = std::getenv("PSX_NET_TEST_INPUT_FROM"))
+            from = (uint32_t)std::strtoul(e, nullptr, 10);
+        if (const char* e = std::getenv("PSX_NET_TEST_INPUT_HOLD"))
+            hold = (e[0] == '1') ? 1u : 0u;
+        if (seed)
+            std::fprintf(stderr,
+                "psxrecomp: netplay TEST INPUT on (PSX_NET_TEST_INPUT_SEED=%u, "
+                "from sim tick %u): QA-only scripted player pad.\n",
+                (unsigned)seed, (unsigned)from);
+    }
+    if (!seed) return false;
+    const uint32_t tick = psx_netplay_sim_tick();
+    uint32_t x = seed ^ ((tick / 8u) * 2654435761u);
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15;
+    x *= 0x846ca68bu; x ^= x >> 16;
+    const uint16_t held = (uint16_t)((1u << (4u + (x >> 28) % 4u)) |
+                                     (1u << (12u + (x >> 24) % 4u)));
+    out->buttons = (tick >= from && ((x >> 20) & 1u)) ? (uint16_t)~held : 0xFFFFu;
+    if (hold)
+        out->buttons = tick >= from ? (uint16_t)~(1u << 14) : 0xFFFFu;
+    out->lx = out->ly = out->rx = out->ry = 0x80u;
+    out->analog = 1;
+    out->connected = 1;
+    return true;
+#else
+    (void)out;
+    return false;
+#endif
+}
+
 /* Build a netplay pad blob from a debug-server override without writing SIO. */
 static void capture_override_pad(int override_word, PsxNetPad* out) {
     PlayerInput& p = g_players[0];
@@ -7815,7 +7857,9 @@ static void netplay_barrier_admit(int override) {
              * into content negotiation, whose headless fixtures use the same
              * negotiated pad mode and local-to-session routing as windowed
              * injected input. */
-            if (override >= 0 || (g_headless && g_netplay_content_negotiation && !virtual_host)) {
+            if (netplay_test_input(&local)) {
+                /* Explicit QA workload; all ordinary routing stays below. */
+            } else if (override >= 0 || (g_headless && g_netplay_content_negotiation && !virtual_host)) {
                 capture_override_pad(override >= 0 ? override : 0xFFFF, &local);
             } else if (virtual_host) {
                 capture_host_layer_pad(&local, host_word, host_sticks, false, false,
