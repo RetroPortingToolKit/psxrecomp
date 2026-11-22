@@ -294,7 +294,7 @@ static void test_plugins(void) {
     PsxHostEnhRequests req;
     psx_host_enh_reset();
     psx_host_enh_requests(&req);
-    CHECK(!req.crt && !req.image && !req.audio && !req.rewind);
+    CHECK(!req.crt && !req.image && !req.audio && !req.rewind && !req.replay_recording);
 
     /* Activation with no option values (defaults): requests recorded with
      * Game default everywhere, the documented numbers otherwise. */
@@ -302,7 +302,9 @@ static void test_plugins(void) {
     activate("psx.image-filtering");
     activate("psx.enhanced-audio");
     activate("psx.rewind");
+    activate("psx.replay-recording");
     psx_host_enh_requests(&req);
+    CHECK(req.replay_recording);
     CHECK(req.crt && req.crt_screen_kind == PSX_HOST_ENH_DEFAULT &&
           req.crt_scanlines == PSX_HOST_ENH_DEFAULT && req.crt_strength_pct == 50);
     CHECK(req.image && req.image_smoothing == PSX_HOST_ENH_DEFAULT &&

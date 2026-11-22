@@ -46,6 +46,10 @@ void psx_host_enh_request_rewind(int depth, int interval) {
     s_req.rewind_interval = interval;
 }
 
+void psx_host_enh_request_replay_recording(void) {
+    s_req.replay_recording = 1;
+}
+
 void psx_host_enh_request_resolution(int value) {
     s_req.resolution = 1;
     s_req.resolution_value = value;
