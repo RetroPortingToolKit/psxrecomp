@@ -3948,12 +3948,18 @@ static void overlay_image_warm_seed_boot_text(void) {
     overlay_image_warm_queue(indices, count);
 }
 
+static int unit_admitted(const char *path);
+
 static int lazy_is_loadable(int li, uint32_t region_start, uint32_t seg,
                             uint32_t phys, int require_region_start) {
     if (li < 0 || li >= s_lazy_man_n) return 0;
     LazyMan *lm = &s_lazy_man[li];
     int ci = lm->cache_idx;
     if (ci < 0 || ci >= s_cache_idx_count) return 0;
+    /* A replay chooses only among the units its recording could run: a
+     * newer unit this cache has and the recording did not would otherwise
+     * win the choice, fail admission, and delay the admitted one. */
+    if (!unit_admitted(s_cache_idx[ci].path)) return 0;
     /* A manifest's entries are in its directory's segment (checked when the
      * index is built), so lazy_man_contains()'s segment test selects the
      * shards of `seg`. */
