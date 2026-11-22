@@ -1,80 +1,141 @@
-/* host_enhancements.c -- this session's requests from the built-in host
- * enhancement mods and the option-text parsers their plugins share
+/* host_enhancements.c -- the player's host enhancement settings, this
+ * session's requests made from them, and the setting-text parsers
  * (host_enhancements.h). No SDL, no GL: runtime/tests/test_host_enhancements.c
- * links it with the plugins and the real mod runtime. */
+ * links it alone. */
 #include "host_enhancements.h"
 #include "video_texture_filter.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
 static PsxHostEnhRequests s_req;
-static PsxHostEnhApplier s_applier;
-static PsxHostEnhResolutionApplier s_resolution_applier;
+static PsxHostEnhRequests s_player;
+static int s_player_ready;
+
+static void player_ready(void) {
+    if (!s_player_ready) psx_host_enh_player_clear();
+}
 
 void psx_host_enh_reset(void) {
-    memset(&s_req, 0, sizeof s_req);
-}
-
-void psx_host_enh_request_crt(int screen_kind, int scanlines, int strength_pct) {
-    s_req.crt = 1;
-    s_req.crt_screen_kind = screen_kind;
-    s_req.crt_scanlines = scanlines;
-    s_req.crt_strength_pct = strength_pct;
-}
-
-void psx_host_enh_request_image(int smoothing, int texture_filter, int fmv_filter) {
-    s_req.image = 1;
-    s_req.image_smoothing = smoothing;
-    s_req.image_texture_filter = texture_filter;
-    s_req.image_fmv_filter = fmv_filter;
-    s_req.image_dithering = PSX_HOST_ENH_DEFAULT;
-}
-
-void psx_host_enh_request_image_dithering(int mode) {
-    s_req.image_dithering = mode >= 0 && mode <= 2 ? mode : PSX_HOST_ENH_DEFAULT;
-}
-
-void psx_host_enh_request_audio(void) {
-    s_req.audio = 1;
-}
-
-void psx_host_enh_request_rewind(int depth, int interval) {
-    s_req.rewind = 1;
-    s_req.rewind_depth = depth;
-    s_req.rewind_interval = interval;
+    player_ready();
+    s_req = s_player;
 }
 
 void psx_host_enh_request_replay_recording(void) {
     s_req.replay_recording = 1;
 }
 
-void psx_host_enh_request_resolution(int value) {
-    s_req.resolution = 1;
-    s_req.resolution_value = value;
-}
-
 void psx_host_enh_requests(PsxHostEnhRequests* out) {
     if (out) *out = s_req;
 }
 
-void psx_host_enh_set_live_applier(PsxHostEnhApplier fn) {
-    s_applier = fn;
+void psx_host_enh_player_clear(void) {
+    memset(&s_player, 0, sizeof s_player);
+    s_player.crt_strength_pct = PSX_HOST_ENH_STRENGTH_DEFAULT;
+    s_player.rewind_depth = PSX_HOST_ENH_REWIND_DEPTH_DEFAULT;
+    s_player.rewind_interval = PSX_HOST_ENH_REWIND_INTERVAL_DEFAULT;
+    s_player.resolution = 1;
+    s_player.resolution_value = PSX_HOST_ENH_RESOLUTION_DEFAULT;
+    s_player.resolution_min = PSX_IR_UNSET;
+    s_player_ready = 1;
 }
 
-int psx_host_enh_apply_live(void) {
-    if (!s_applier) return 0;
-    s_applier();
+static void player_crt(void) {
+    if (s_player.crt) return;
+    s_player.crt = 1;
+    s_player.crt_screen_kind = PSX_HOST_ENH_DEFAULT;
+    s_player.crt_scanlines = PSX_HOST_ENH_DEFAULT;
+}
+
+static void player_image(void) {
+    if (s_player.image) return;
+    s_player.image = 1;
+    s_player.image_smoothing = PSX_HOST_ENH_DEFAULT;
+    s_player.image_texture_filter = PSX_HOST_ENH_DEFAULT;
+    s_player.image_fmv_filter = PSX_HOST_ENH_DEFAULT;
+    s_player.image_dithering = PSX_HOST_ENH_DEFAULT;
+}
+
+static void player_post(void) {
+    if (s_player.post) return;
+    s_player.post = 1;
+    s_player.post_antialiasing = PSX_HOST_ENH_DEFAULT;
+    s_player.post_bloom = PSX_HOST_ENH_DEFAULT;
+    s_player.post_bloom_pct = 25;
+    s_player.post_shader_mode = PSX_HOST_ENH_DEFAULT;
+}
+
+static int is(const char* a, const char* b);
+
+static int flag(const char* value) {
+    return is(value, "true");
+}
+
+int psx_host_enh_player_set(const char* id, const char* value) {
+    player_ready();
+    if (!id || !value) return 0;
+    if (is(id, "video.internal_resolution")) {
+        s_player.resolution = 1;
+        s_player.resolution_value = psx_host_enh_parse_internal_resolution(value);
+    } else if (is(id, "video.dynamic_resolution")) {
+        s_player.resolution_dynamic = flag(value) ? 2 : 1;
+    } else if (is(id, "video.dynamic_resolution_min")) {
+        s_player.resolution_min = psx_host_enh_parse_resolution_min(value);
+    } else if (is(id, "video.supersample")) {
+        s_player.resolution_supersample = psx_host_enh_parse_supersample(value);
+    } else if (is(id, "video.crt_filter")) {
+        player_crt();
+        s_player.crt_screen_kind = psx_host_enh_parse_screen_kind(value);
+    } else if (is(id, "video.scanlines")) {
+        player_crt();
+        s_player.crt_scanlines = flag(value);
+    } else if (is(id, "video.scanline_strength")) {
+        const double v = strtod(value, NULL);
+        player_crt();
+        s_player.crt_strength_pct = v >= 0.0 && v <= 1.0 ? (int)floor(v * 100.0 + 0.5)
+                                                         : PSX_HOST_ENH_STRENGTH_DEFAULT;
+    } else if (is(id, "video.antialiasing")) {
+        player_image();
+        s_player.image_smoothing = flag(value);
+    } else if (is(id, "video.texture_filtering")) {
+        player_image();
+        s_player.image_texture_filter = psx_host_enh_parse_texture_filter(value);
+    } else if (is(id, "video.fmv_filter")) {
+        player_image();
+        s_player.image_fmv_filter = psx_host_enh_parse_fmv_filter(value);
+    } else if (is(id, "video.dithering")) {
+        /* The player spelling is off / on / fine. */
+        player_image();
+        s_player.image_dithering = psx_host_enh_parse_dithering(is(value, "on") ? "native" : value);
+    } else if (is(id, "video.antialiasing_mode")) {
+        player_post();
+        s_player.post_antialiasing = psx_host_enh_parse_post_aa(value);
+    } else if (is(id, "video.bloom")) {
+        const double v = strtod(value, NULL);
+        player_post();
+        s_player.post_bloom = v > 0.0 ? 1 : 0;
+        if (v > 0.0) {
+            const int pct = (int)floor(v * 100.0 + 0.5);
+            s_player.post_bloom_pct = pct < 1 ? 1 : pct > 200 ? 200 : pct;
+        }
+    } else if (is(id, "video.post_shader")) {
+        player_post();
+        s_player.post_shader_mode = *value ? 1 : 0;
+        snprintf(s_player.post_shader, sizeof s_player.post_shader, "%s", value);
+    } else if (is(id, "audio.spu_hq")) {
+        s_player.audio = flag(value) ? 1 : 2;
+    } else if (is(id, "video.rewind")) {
+        s_player.rewind = flag(value);
+    } else if (is(id, "video.rewind_depth")) {
+        s_player.rewind_depth = psx_host_enh_parse_rewind_depth(value);
+    } else if (is(id, "video.rewind_interval")) {
+        s_player.rewind_interval = psx_host_enh_parse_rewind_interval(value);
+    } else {
+        return 0;
+    }
     return 1;
-}
-
-void psx_host_enh_set_resolution_applier(PsxHostEnhResolutionApplier fn) {
-    s_resolution_applier = fn;
-}
-
-int psx_host_enh_apply_resolution_live(void) {
-    return s_resolution_applier ? (s_resolution_applier() ? 1 : 0) : 0;
 }
 
 static int is(const char* a, const char* b) {
@@ -124,6 +185,7 @@ int psx_host_enh_parse_dithering(const char* text) {
 int psx_host_enh_parse_texture_filter(const char* text) {
     if (is(text, "nearest")) return PSX_TEXTURE_FILTER_NEAREST;
     if (is(text, "bilinear")) return PSX_TEXTURE_FILTER_BILINEAR;
+    if (is(text, "stable")) return PSX_TEXTURE_FILTER_STABLE_WORLD;
     if (is(text, "xbr")) return PSX_TEXTURE_FILTER_XBR;
     return PSX_HOST_ENH_DEFAULT;
 }
@@ -151,22 +213,6 @@ int psx_host_enh_parse_internal_resolution(const char* text) {
     for (int i = 0; i < PSX_IR_PRESET_COUNT; i++)
         if (is(text, k_psx_ir_presets[i].id)) return k_psx_ir_presets[i].value;
     return PSX_HOST_ENH_RESOLUTION_DEFAULT;
-}
-
-void psx_host_enh_request_resolution_options(int minimum, int supersample_milli, int dynamic) {
-    s_req.resolution_min = minimum;
-    s_req.resolution_supersample = supersample_milli;
-    s_req.resolution_dynamic = dynamic;
-}
-
-void psx_host_enh_request_post(int aa, int bloom, int strength, int shader_mode,
-                               const char* shader) {
-    s_req.post = 1;
-    s_req.post_antialiasing = aa;
-    s_req.post_bloom = bloom;
-    s_req.post_bloom_pct = strength;
-    s_req.post_shader_mode = shader_mode;
-    snprintf(s_req.post_shader, sizeof s_req.post_shader, "%s", shader ? shader : "");
 }
 
 int psx_host_enh_parse_resolution_min(const char* text) {

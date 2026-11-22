@@ -1,13 +1,25 @@
 #include "mod_netplay.h"
+#include "netplay_host_catalog.h"
 #include "psx_sha256.h"
 #include <stddef.h>
 #include <string.h>
 
 static const PSXModNetplayProfile *title_profile;
+static PSXModNetplayHostProfiles vanilla_host_profiles;
 static int profile_active;
 static int profile_aspect;
 static char options_identity[65];
 static int profile_loading;
+
+int psx_mod_register_vanilla_host_profiles(PSXModNetplayHostProfiles profiles) {
+    if (!profiles) return 0;
+    if (vanilla_host_profiles) return vanilla_host_profiles == profiles;
+    vanilla_host_profiles = profiles;
+    return 1;
+}
+PSXModNetplayHostProfiles psx_mod_netplay_host_profiles(void) {
+    return title_profile ? title_profile->host_profiles : vanilla_host_profiles;
+}
 
 int psx_mod_register_netplay_profile(const PSXModNetplayProfile *profile) {
     unsigned mask;

@@ -98,6 +98,17 @@ int psx_presentation_phase(uint64_t earlier_display_ns,
     uint64_t newer_display_ns, uint64_t newer_ready_ns, uint64_t now_ns,
     double *alpha);
 
+typedef struct PsxPresentationSlot {
+    uint64_t target_ns;
+    uint64_t expires_ns;
+    double alpha;
+} PsxPresentationSlot;
+
+/* Plan the next optional sample after a qualified midpoint present. The
+ * caller owns the native deadline and can iterate by increasing slot_index. */
+int psx_presentation_extra_slot(uint64_t midpoint_ns, uint64_t native_ns,
+    uint64_t display_interval_ns, unsigned slot_index, PsxPresentationSlot *slot);
+
 #ifdef __cplusplus
 }
 #endif

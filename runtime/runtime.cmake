@@ -34,7 +34,6 @@ include("${PSXRECOMP_ROOT}/cmake/psx_precision_slices.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_pgxp_dataflow.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_precision_operations.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_sha256_file.cmake")
-option(PSX_REQUIRED_HOST_PROFILES "Candidate required pre-guest host-profile admission" OFF)
 include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
@@ -503,8 +502,6 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/tas_checkpoint.c
     ${PSXRECOMP_ROOT}/runtime/src/replay_file.c
     ${PSXRECOMP_ROOT}/runtime/src/replay_identity.c
-    ${PSXRECOMP_ROOT}/runtime/src/replay_session.c
-    ${PSXRECOMP_ROOT}/runtime/src/replay_frontend.c
     ${PSXRECOMP_ROOT}/runtime/src/disc_identity.cpp
     ${PSXRECOMP_ROOT}/runtime/src/cue_sheet.cpp
     ${PSXRECOMP_ROOT}/runtime/src/disc_path.cpp
@@ -546,19 +543,13 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_debug.c
     ${PSXRECOMP_ROOT}/runtime/src/debug_bulk_write.c
     ${PSXRECOMP_ROOT}/runtime/src/debug_server_policy.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_pgxp.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_internal_resolution.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_bezel.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_ram.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_hd_textures.c
     ${PSXRECOMP_ROOT}/runtime/src/host_enhancements.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_crt_filter.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_image_filtering.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_enhanced_audio.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_rewind.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_replay_recording.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_internal_resolution.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_post_processing.c
+    ${PSXRECOMP_ROOT}/runtime/src/legacy_player_settings.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_packages.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_media.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_runtime.cpp
@@ -1302,18 +1293,6 @@ endfunction()
 # this title declines to ship (runtime/psx_mod_catalog_select.cmake).
 function(_psxrt_stage_mod_catalog target preloaded_dir)
     set(_excluded_builtins ${ARGN})
-    # A build without local rewind (-DPSX_REWIND=OFF) has no ring for the
-    # built-in Rewind mod to arm, so the package is declined like any other
-    # excluded builtin: absent from the catalog and recorded as excluded for
-    # the release packager, rather than listed as a switch that does nothing.
-    # A title that overrides the id with its own package keeps it.
-    if(NOT PSXRECOMP_HAS_RBENGINE_SNAP AND
-       EXISTS "${PSXRECOMP_ROOT}/mods/builtin/packages/psx.feature.rewind" AND
-       NOT "psx.feature.rewind" IN_LIST _excluded_builtins AND
-       NOT (NOT preloaded_dir STREQUAL "" AND NOT preloaded_dir STREQUAL "NONE" AND
-            IS_DIRECTORY "${preloaded_dir}/packages/psx.feature.rewind"))
-        list(APPEND _excluded_builtins "psx.feature.rewind")
-    endif()
     set(_out "$<TARGET_FILE_DIR:${target}>")
     set(_ids "")
     set(_copy "")
@@ -1573,6 +1552,7 @@ function(psxrecomp_add_runtime_target target)
         LAUNCHER_BOXART
         LAUNCHER_PAD
         LAUNCHER_BRAND
+        LAUNCHER_THEME
         EXE_NAME
         GAME_VERSION
         MAX_PLAYERS
@@ -1797,12 +1777,9 @@ function(psxrecomp_add_runtime_target target)
     endforeach()
     psxrecomp_pgxp_dataflow(${target} GENERATED_SOURCES ${_pgxp_flow_generated})
     psxrecomp_precision_operations(${target} GENERATED_SOURCES ${_pgxp_flow_generated})
-    target_compile_definitions(${target} PRIVATE PSX_REQUIRED_HOST_PROFILES=$<BOOL:${PSX_REQUIRED_HOST_PROFILES}>)
-    if(PSX_REQUIRED_HOST_PROFILES)
-        set(_host_required 1)
-    else()
-        set(_host_required 0)
-    endif()
+    # Host agreement is a correctness boundary, not an optional build feature.
+    # A cached legacy PSX_REQUIRED_HOST_PROFILES=OFF cannot bypass admission.
+    set(_host_required 1)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/host-profile/${target}")
     set(_host_policy_source "${CMAKE_CURRENT_BINARY_DIR}/host-profile/${target}/selected.c")
     file(CONFIGURE OUTPUT "${_host_policy_source}" CONTENT
@@ -1811,6 +1788,9 @@ function(psxrecomp_add_runtime_target target)
         NAME host-profile-admission CONTRACT immutable-host-catalog-${_host_required}-v1
         HLE_SOURCES "${_host_policy_source}" LLE_SOURCES "${_host_policy_source}"
         CONTRACT_FILES "${PSXRECOMP_ROOT}/runtime/include/netplay_host_startup.hpp"
+                       "${PSXRECOMP_ROOT}/runtime/include/netplay_host_catalog.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/mod_netplay.h"
+                       "${PSXRECOMP_ROOT}/runtime/src/mod_netplay.c"
                        "${PSXRECOMP_ROOT}/runtime/src/netplay_host_profile.c"
                        "${PSXRECOMP_ROOT}/runtime/src/netplay_host_gate.c"
                        "${PSXRECOMP_ROOT}/runtime/src/netplay_host_cpu_sdl3.c"
@@ -2487,6 +2467,9 @@ function(psxrecomp_add_runtime_target target)
         if(PSXRT_LAUNCHER_BRAND)
             list(APPEND _psx_recomp_ui_args BRAND "${PSXRT_LAUNCHER_BRAND}")
         endif()
+        if(PSXRT_LAUNCHER_THEME)
+            list(APPEND _psx_recomp_ui_args THEME "${PSXRT_LAUNCHER_THEME}")
+        endif()
         recomp_target_launcher_ui(${target} ${_psx_recomp_ui_args})
         target_compile_definitions(${target} PRIVATE
             RECOMP_UI_PSX_HAS_REWIND=$<BOOL:${PSXRECOMP_HAS_RBENGINE_SNAP}>)
@@ -2644,6 +2627,7 @@ function(psxrecomp_add_runtime_target target)
             target_include_directories(${target} PRIVATE "${_vk_inc}")
         endif()
         target_compile_definitions(${target} PRIVATE PSX_HAVE_VULKAN=1)
+        target_sources(${target} PRIVATE ${PSXRECOMP_ROOT}/runtime/src/gpu_vk_pipeline_file.cpp)
         # Compile every shader under runtime/shaders/ to SPIR-V (glslc) and embed
         # them into one generated header (vk_shaders_spv.h) of uint32_t arrays, so
         # gpu_vk_renderer.c creates shader modules with no runtime file deps.
@@ -2813,6 +2797,7 @@ endfunction()
 #     CODEGEN_SETUP_SOURCES codegen_setup.c
 #     DEFAULT_GAME_CONFIG_PATH "game.toml"
 #     LAUNCHER_BOXART "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/img/boxart.tga"
+#     LAUNCHER_THEME "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/theme.ini" # optional game colors
 #     APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico"
 #     MAX_PLAYERS 2
 #     MEMCARD_SLOTS 1          # optional; title only uses memory card port 1

@@ -723,6 +723,32 @@ if(BUILD_TESTING)
                          ${CMAKE_CURRENT_BINARY_DIR}/draw_distance_interp_stderr.txt)
     endif()
 
+    # R3000A load delay in the dirty-RAM interpreter: MFC2/CFC2 and game-RAM
+    # loads show the old value to the delay-slot instruction, including a
+    # branch-delay-slot MFC2 into the branch target. Twin of
+    # cop2_delay_slot_load.
+    if(NOT MSVC)
+        add_executable(interp_load_delay_test
+            ../runtime/tests/test_interp_load_delay.c
+            ../runtime/src/ws_aspect_cone_math.c)
+        target_include_directories(interp_load_delay_test PRIVATE
+            ../runtime/include
+            ../runtime/src)
+        target_compile_options(interp_load_delay_test PRIVATE
+            -O2 -flto -ffunction-sections -fdata-sections)
+        if(APPLE)
+            target_link_options(interp_load_delay_test PRIVATE
+                -flto -Wl,-dead_strip)
+        else()
+            target_link_options(interp_load_delay_test PRIVATE
+                -flto -Wl,--gc-sections)
+        endif()
+        if(NOT WIN32)
+            target_link_libraries(interp_load_delay_test PRIVATE m)
+        endif()
+        add_test(NAME interp_load_delay_test COMMAND interp_load_delay_test)
+    endif()
+
     # [[mod_immediate.sites]] runtime store, selectors and word substitution
     # (mod_immediate.c). The interpreter call site is pinned by
     # runtime/tests/test_interp_mod_immediate_guards.py.
@@ -1034,6 +1060,18 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_emitter_stamps.py
                 --cmake ${CMAKE_COMMAND})
+        set_tests_properties(bios_emitter_stamps PROPERTIES TIMEOUT 0)
+        find_program(_bios_compare_bash NAMES bash)
+        find_program(_bios_compare_ninja NAMES ninja ninja-build)
+        if(_bios_compare_bash AND _bios_compare_ninja)
+            add_test(NAME bios_regen_compare
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_regen_compare.py
+                    --cmake ${CMAKE_COMMAND} --bash ${_bios_compare_bash}
+                    --ninja ${_bios_compare_ninja}
+                    --work-dir ${CMAKE_CURRENT_BINARY_DIR}/bios-compare-fixtures)
+            set_tests_properties(bios_regen_compare PROPERTIES TIMEOUT 0)
+        endif()
         # tools/bios_emitter_fingerprint.cmake reads its file list from the
         # psxrecomp-bios target. CMake hands the test that target's own list
         # of sources, so the script's reading is checked in both directions.
@@ -1332,6 +1370,14 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_branch_link_condition_order.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        add_test(
+            NAME cop2_delay_slot_load
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cop2_delay_slot_load.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>
+                    --compiler ${CMAKE_C_COMPILER}
+                    --guest ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_load_delay_generated.c
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(
             NAME dirty_text_continuation_guards

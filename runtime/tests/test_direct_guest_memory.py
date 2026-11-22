@@ -527,7 +527,7 @@ def main():
                 argv += [str(root / "runtime/tests/test_direct_guest_memory.c")]
                 argv += [str(root / "runtime/src" / name) for name in
                          ("memory.c", "psx_ram_geometry.c", "kernel_patch_ranges.c",
-                          "parity_trace.c", "card_data_writes.c")]
+                          "parity_trace.c", "card_data_writes.c", "text_source_guard.c", "crc32.c")]
                 argv += [str(work / "stubs.c"), str(work / "trace.c"),
                          "-Wl,--gc-sections", "-o", str(exe)]
                 subprocess.run(argv, check=True)

@@ -145,6 +145,15 @@ static inline int psx_direct_pending_cycles(void) {return g_overlay_flush_pendin
 static inline void psx_direct_callback_barrier(void) {}
 #endif
 
+/* The live main-RAM mask. A BIOS module build maps the name g_psx_ram_mask
+ * to the host's mask (psx_bios_module.h), so the view field of that name
+ * cannot be spelled there; the mapped value is the same mask. */
+#if defined(PSX_BIOS_MODULE_BUILD)
+#define PSX_DM_RAM_MASK() (g_psx_ram_mask)
+#else
+#define PSX_DM_RAM_MASK() PSX_DM_VALUE(g_psx_ram_mask)
+#endif
+
 static inline void psx_memory_note_inline_width(unsigned store, unsigned region,
                                                 uint32_t width) {
 #ifdef PSX_OVERLAY_DLL_BUILD
@@ -210,8 +219,8 @@ static inline uint8_t *psx_direct_store_view(uint32_t address, uint32_t width) {
         return NULL;
     uint32_t phys = address & 0x1FFFFFFFu;
     if (phys < PSX_MAIN_RAM_WINDOW_BYTES) {
-        phys &= PSX_DM_VALUE(g_psx_ram_mask);
-        if (width > PSX_DM_VALUE(g_psx_ram_mask) + 1u - phys || phys < 0x10000u ||
+        phys &= PSX_DM_RAM_MASK();
+        if (width > PSX_DM_RAM_MASK() + 1u - phys || phys < 0x10000u ||
             (phys & 0xFFFu) > 0x1000u - width ||
             PSX_DM_VALUE(g_parity_trace_armed) || PSX_DM_VALUE(g_card_data_write_armed) ||
             g_debug_last_store_pc == 0x00001CE4u)
@@ -269,7 +278,7 @@ static inline void psx_direct_observe_store(uint32_t addr, const uint8_t *p,
     uint32_t old_value = p[0];
     if (width >= 2u) old_value |= (uint32_t)p[1] << 8;
     if (width == 4u) old_value |= (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-    if (phys < PSX_MAIN_RAM_WINDOW_BYTES) phys &= PSX_DM_VALUE(g_psx_ram_mask);
+    if (phys < PSX_MAIN_RAM_WINDOW_BYTES) phys &= PSX_DM_RAM_MASK();
 #ifdef PSX_OVERLAY_DLL_BUILD
     g_psx_overlay_memory_view->record_write(phys, old_value, value, (uint8_t)width);
 #else

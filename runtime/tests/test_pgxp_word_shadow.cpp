@@ -111,7 +111,71 @@ static void geometry_control_ownership() {
     }
 #endif
 }
+static void delayed_register_precision() {
+    CPUState cpu{};cpu.gpr[8]=Packed;
+    pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_projection_tracking(1);
+    CHECK(pgxp_set_source_tracking(1));
+    pgxp_invalidate_all();
+    seed(Address,Packed,(8<<16)+16384);CHECK(pgxp_tag_word_source(Address,Packed,101));
+    psx_pgxp_load(&cpu,0x8c080000u,Address,Packed);
+    const auto old=capture(Address,Packed);
+    CHECK(psx_pgxp_load_delay_prepare(8));psx_pgxp_load_delay_arm(8);
+    seed(Other,Packed,(8<<16)+49152);CHECK(pgxp_tag_word_source(Other,Packed,202));
+    const auto loaded=capture(Other,Packed);
+    psx_pgxp_load(&cpu,0x8c080000u,Other,Packed);
+    psx_pgxp_store(&cpu,0xac080000u,Address+60,Packed);
+    const auto premature=capture(Address+60,Packed);
+    CHECK(premature.x16!=old.x16 && premature.x16==loaded.x16);
+    CHECK(pgxp_load_source(Address+60,Packed)==202);
+    pgxp_checkpoint_begin();
+    psx_pgxp_load_delay_begin(8);
+    /* Real GTE/packet hooks consume identical integer words with distinct
+     * fractional coordinates and lineage; integer validation alone cannot
+     * detect the wrong register view. */
+    cpu.gte_data[0]=cpu.gpr[8];
+    psx_pgxp_cop2(&cpu,0x48880000u,cpu.gpr[8],0);
+    psx_pgxp_cop2(&cpu,0xe8000000u,Packed,Address+64);
+    auto observed=capture(Address+64,Packed);auto wanted=old;wanted.address=observed.address;
+    check_attributes(wanted,observed);CHECK(pgxp_load_source(Address+64,Packed)==101);
+    psx_pgxp_load_delay_end(8,0);
+    psx_pgxp_store(&cpu,0xac080000u,Address+68,Packed);
+    observed=capture(Address+68,Packed);wanted=loaded;wanted.address=observed.address;
+    check_attributes(wanted,observed);CHECK(pgxp_load_source(Address+68,Packed)==202);
+    pgxp_checkpoint_rollback();
+    psx_pgxp_load_delay_begin(8);
+    psx_pgxp_store(&cpu,0xac080000u,Address+72,Packed);
+    observed=capture(Address+72,Packed);wanted=old;wanted.address=observed.address;
+    check_attributes(wanted,observed);CHECK(pgxp_load_source(Address+72,Packed)==101);
+    psx_pgxp_load_delay_end(8,0);
+
+    cpu.gpr[8]=42;
+    CHECK(pgxp_native_scalar_gpr(&cpu,8,42.25,1));
+    CHECK(psx_pgxp_load_delay_prepare(8));psx_pgxp_load_delay_arm(8);
+    CHECK(pgxp_native_scalar_gpr(&cpu,8,42.75,1));
+    psx_pgxp_load_delay_begin(8);double scalar=0;
+    CHECK(pgxp_native_gpr_scalar(8,42,&scalar)&&scalar==42.25);
+    psx_pgxp_load_delay_end(8,0);
+    CHECK(pgxp_native_gpr_scalar(8,42,&scalar)&&scalar==42.75);
+    CHECK(psx_pgxp_load_delay_prepare(8));psx_pgxp_load_delay_arm(8);
+    CHECK(pgxp_native_scalar_gpr(&cpu,8,42.5,1));
+    psx_pgxp_load_delay_end(8,1); // actual IRQ/TCB delivery drains the window
+    psx_pgxp_load_delay_begin(8);
+    CHECK(pgxp_native_gpr_scalar(8,42,&scalar)&&scalar==42.5);
+    CHECK(psx_pgxp_load_delay_prepare(8));psx_pgxp_load_delay_arm(8);
+    CHECK(pgxp_native_scalar_gpr(&cpu,8,42.75,1));
+    psx_pgxp_load_delay_begin(8);
+    CHECK(pgxp_native_scalar_gpr(&cpu,8,42.875,1));
+    psx_pgxp_load_delay_end(8,1); // the successor's own write wins
+    CHECK(pgxp_native_gpr_scalar(8,42,&scalar)&&scalar==42.875);
+    CHECK(psx_pgxp_load_delay_prepare(8));psx_pgxp_load_delay_arm(8);
+    pgxp_invalidate_all(); // the existing ordinary snapshot/rewind policy
+    psx_pgxp_load_delay_begin(8);
+    CHECK(!pgxp_native_gpr_scalar(8,42,&scalar));
+    pgxp_set_source_tracking(0);
+}
+
 int main() {
+    delayed_register_precision();
     geometry_control_ownership();
     pgxp_set_enabled(1);pgxp_set_cpu_mode(1);pgxp_set_projection_tracking(1);
     seed(Address,Packed,(8<<16)+16384);

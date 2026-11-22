@@ -33,12 +33,16 @@ typedef struct PsxNetplayRbBindings {
     void (*publish_sio)(uint32_t tick); /* publish history or sealed rows to SIO */
     void (*apply_frame_slot)(int slot, uint32_t tick, uint16_t buttons,
                              int8_t sx, int8_t sy, uint8_t analog,
-                             uint8_t rx, uint8_t ry);
+                             uint8_t rx, uint8_t ry, uint8_t authoritative);
 } PsxNetplayRbBindings;
 
 void psx_netplay_rb_bind(const PsxNetplayRbBindings *b);
 void psx_netplay_rb_start(void);
 void psx_netplay_rb_shutdown(void);
+/* A coordinated user load resets network ticks to zero. Recreate the existing
+ * host timeline/ring while preserving restored CPU/IRQ resume state. Device
+ * observers still protect media present in the restored guest. */
+void psx_netplay_rb_restart_after_load(void);
 /* Soft-return / rematch: wipe RB host residue that rb_shutdown leaves
  * (follow-NACK, tip-dense FIFO, episode wire, dig0 latch). Safe with no session. */
 void psx_netplay_rb_cold_reset(void);
@@ -152,6 +156,9 @@ int  psx_netplay_rb_fmv_unlock_grace_active(void);
 
 /* Drain peer RB_* + drive Seal/Baseline/Replay/Verify. Call from pump. */
 void psx_netplay_rb_pump(void);
+
+/* Commit owner: establish ancestry at an accepted execution baseline. */
+void psx_netplay_execution_anchor(uint32_t tick);
 
 /* 1 while Live should not leave dig0: local dig0 not published yet, or peer
  * dig0 not received. Latches open once both digests match (sticky latches —

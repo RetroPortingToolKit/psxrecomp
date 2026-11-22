@@ -35,6 +35,7 @@
 #include "cdrom.h"
 #include "dma.h"
 #include "cpu_state.h"
+#include "dirty_ram_interp.h"
 #include "debug_server.h"
 #include "event_ring.h"
 #include "lockstep.h"
@@ -1533,6 +1534,7 @@ void psx_check_interrupts(CPUState* cpu) {
                 s_defer_switch_pending = 0;
                 s_defer_switch_target  = 0;
                 s_defer_switch_from    = 0;
+                dirty_ram_ld_delay_flush(cpu);
                 psx_sched_save_context(cpu, from_tcb, resume_pc);
                 psx_sched_set_current_tcb(cpu, to_tcb);
                 debug_server_log_thread_event(32, cpu, from_tcb, to_tcb, resume_pc);
@@ -1663,6 +1665,10 @@ irq_deliver_eval:
 #endif
         PSX_CHECK_INTERRUPTS_RETURN();
     } /* No deliverable interrupt source (hw masked and no sw pending) */
+
+    /* An exception drains the pending load before a handler can save or
+     * replace this guest thread. Untaken edges retain the successor's delay. */
+    dirty_ram_ld_delay_flush(cpu);
 
     /* Architectural take-PC = the resume PC (same selection the async-RFE block
      * below uses): the dirty-interp commits the exact interrupted instruction in
@@ -2217,7 +2223,7 @@ irq_deliver_eval:
 
     if (!(cpu->cop0[COP0_SR] & 0x01)) {
         uint32_t sr2 = cpu->cop0[COP0_SR];
-        cpu->cop0[COP0_SR] = (sr2 & 0xFFFFFFC0u) | ((sr2 >> 2) & 0x0Fu);
+        cpu->cop0[COP0_SR] = (sr2 & 0xFFFFFFF0u) | ((sr2 >> 2) & 0x0Fu);
     }
 
     /* Nested delivery: a level-2 exit must leave level-1 flagged. */

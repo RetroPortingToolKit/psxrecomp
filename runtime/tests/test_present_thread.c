@@ -64,6 +64,7 @@ static void run(int slots, long us, int expect_waits) {
     PtConfig c = cfg(slots);
     check(pt_start(&c), "start");
     check(pt_current() == 0, "first slot is 0");
+    check(pt_optional_room() == (slots >= 3), "optional submit reserves a native slot");
     int bad_reuse = 0, bad_token = 0;
     for (int f = 1; f <= N_FRAMES; f++) {
         const int cur = pt_current();
@@ -82,6 +83,7 @@ static void run(int slots, long us, int expect_waits) {
         last_done[cur] = (((uintptr_t)f) << 8) | (uintptr_t)cur | 0x80u;
     }
     pt_drain();
+    check(pt_optional_room() == (slots >= 3), "drain restores optional capacity");
     check(atomic_load(&n_presented) == N_FRAMES, "every submitted slot presented");
     int ordered = 1;
     for (int i = 0; i < N_FRAMES; i++) if (presented[i] != (uintptr_t)(i + 1)) ordered = 0;
@@ -106,6 +108,7 @@ static void run(int slots, long us, int expect_waits) {
     check(atomic_load(&disposed) > 0, "stop disposes uncollected tokens");
     check(ctx_on == 1 && ctx_off == 1, "context taken and released once");
     check(!pt_running() && pt_submit(NULL, NULL, NULL) == -1, "stopped");
+    check(!pt_optional_room(), "stopped queue refuses optional work");
 }
 
 int main(void) {

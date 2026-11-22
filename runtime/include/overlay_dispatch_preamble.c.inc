@@ -1,5 +1,6 @@
 #include "overlay_api.h"
 #include "psx_native_span.h"
+#include "psx_load_delay.h"
 #include "ws_cull_edge.h"   /* psx_ws_cull_bgez / psx_ws_clip_edge_x math */
 
 /* ---- Overlay dispatch shim (inserted by compile_overlays.py) ----------- */
@@ -79,6 +80,18 @@ void psx_check_interrupts_at(CPUState *cpu, uint32_t resume_pc) {
     overlay_flush_cycles();
     if (g_cbs.check_interrupts_at) g_cbs.check_interrupts_at(cpu, resume_pc);
     else g_cbs.check_interrupts(cpu);
+}
+/* Data-only pipeline ownership: do not flush pending clocks here. Staging
+ * must publish the load before an observation can switch the guest stream. */
+void dirty_ram_ld_delay_stage(CPUState *cpu, uint32_t rt, uint32_t value,
+                              uint32_t successor_pc) {
+    g_cbs.ld_delay_stage(cpu, rt, value, successor_pc);
+}
+uint64_t dirty_ram_ld_delay_begin(CPUState *cpu, uint32_t pc, uint32_t instruction) {
+    return g_cbs.ld_delay_begin(cpu, pc, instruction);
+}
+void dirty_ram_ld_delay_end(CPUState *cpu, uint64_t cookie, uint32_t instruction) {
+    g_cbs.ld_delay_end(cpu, cookie, instruction);
 }
 /* The CPU charge (psx_cycles.h): overlay code is guest CPU work, so its
  * charges accumulate here raw and publish through cpu_charge, the host's

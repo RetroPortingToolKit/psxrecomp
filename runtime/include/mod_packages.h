@@ -713,10 +713,4 @@ struct ModPluginAudit {
 ModPluginAudit mod_audit_registered_plugins(
     const std::vector<std::filesystem::path>& manifest_roots);
 
-/* Import old Settings choices only for features with no explicit mod selection.
- * Newer mod choices always win; the original settings file is never rewritten here. */
-bool migrate_legacy_video_settings(ModPackageManager& manager,
-                                   const std::filesystem::path& settings_path,
-                                   std::string* error = nullptr);
-
 } // namespace PSXRecompV4

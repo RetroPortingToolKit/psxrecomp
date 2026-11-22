@@ -30,8 +30,13 @@ extern "C" { extern uint64_t clock_now; extern uint32_t i_stat; }
 using SDL_Window = int;
 using SDL_MouseButtonFlags = unsigned;
 constexpr unsigned SDL_BUTTON_LMASK=1, SDL_BUTTON_RMASK=4;
+constexpr unsigned SDL_BUTTON_LEFT=1, SDL_BUTTON_RIGHT=3;
+constexpr unsigned SDL_TOUCH_MOUSEID=~0u, SDL_PEN_MOUSEID=~1u;
+struct SDL_MouseButtonEvent { unsigned windowID, which, button; };
+static unsigned SDL_GetWindowID(SDL_Window*) { return 1; }
 static int window, fake_x, fake_y, fake_buttons, capture_calls;
 static bool focused=true, host_ui=false, capture_ok=true, menu=false, rewind_open=false, netplay=false, g_headless=false;
+static bool input_guard=false;
 static SDL_Window* sdl_window=&window;
 struct PlayerInput { int kind=0; };
 static PlayerInput g_players[PSX_MAX_PLAYERS];
@@ -41,6 +46,7 @@ static bool psx_runtime_menu_is_open() { return menu; }
 static bool psx_rewind_is_open() { return rewind_open; }
 static bool psx_netplay_active() { return netplay; }
 static bool host_hotkey_input_focused() { return focused; }
+static bool savestate_input_guard_active() { return input_guard; }
 static bool SDL_SetWindowRelativeMouseMode(SDL_Window*,bool) { ++capture_calls; return capture_ok; }
 static unsigned SDL_GetRelativeMouseState(float* x,float* y) {
     *x=(float)fake_x; *y=(float)fake_y; fake_x=fake_y=0; return fake_buttons;
@@ -59,11 +65,24 @@ int main() {
     fake_x=5; fake_y=-3; fake_buttons=SDL_BUTTON_LMASK;
     sample_mouse_ports();
     EXPECT(0,"production SDL motion reaches native SIO",0xff,0x12,0x5a,0xff,0xf4,5,0xfd);
+    latch_mouse_button_down({1,0,SDL_BUTTON_LEFT});
+    fake_buttons=0;
+    sample_mouse_ports();
+    EXPECT(0,"released before sample still fires",0xff,0x12,0x5a,0xff,0xf4,0,0);
+    EXPECT(0,"short click is consumed",0xff,0x12,0x5a,0xff,0xfc,0,0);
+    latch_mouse_button_down({2,0,SDL_BUTTON_LEFT});
+    latch_mouse_button_down({1,SDL_TOUCH_MOUSEID,SDL_BUTTON_LEFT});
+    latch_mouse_button_down({1,SDL_PEN_MOUSEID,SDL_BUTTON_LEFT});
+    input_guard=true;
+    latch_mouse_button_down({1,0,SDL_BUTTON_LEFT});
+    input_guard=false;
+    EXPECT(0,"other windows, pseudo-mice and guarded clicks are ignored",0xff,0x12,0x5a,0xff,0xfc,0,0);
     g_mouse_sensitivity=0.5; fake_buttons=0;
     fake_x=1; sample_mouse_ports();
     EXPECT(0,"fractional motion carries",0xff,0x12,0x5a,0xff,0xfc,0,0);
     fake_x=1; sample_mouse_ports();
     EXPECT(0,"fractional carry reaches next sample",0xff,0x12,0x5a,0xff,0xfc,1,0);
+    latch_mouse_button_down({1,0,SDL_BUTTON_LEFT});
     focused=false; fake_x=42; fake_buttons=SDL_BUTTON_RMASK; sample_mouse_ports();
     EXPECT(0,"lost focus releases buttons and motion",0xff,0x12,0x5a,0xff,0xfc,0,0);
     check(!g_mouse_captured,"lost focus releases capture");

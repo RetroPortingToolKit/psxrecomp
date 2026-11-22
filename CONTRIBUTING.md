@@ -90,14 +90,26 @@ repeat the diff or PR description.
 
 ### BIOS emitter changes
 
-After changing a BIOS fingerprint input, run
-`bash tools/regen_bios.sh --config bios/OpenBIOS.toml` and commit the regenerated
-OpenBIOS output and stamp together. PR CI checks the committed stamps without
-requiring a retail BIOS dump. Never update a stamp without regenerating.
+After an expected output-neutral edit to a BIOS fingerprint input, run
+`bash tools/regen_bios.sh --compare --config bios/OpenBIOS.toml`. This rebuilds
+the emitter, generates into a fresh temporary directory and compares the complete
+C/h output set. Only identical output with unchanged build inputs refreshes the
+stamp. Changed output, a failed generation or unavailable input leaves the old
+output/stamp intact and returns a nonzero result. Temporary output is cleaned up.
+
+Commit the verified OpenBIOS stamp with the source change. This avoids a separate
+blind stamp update. Generated guest C/h stays local and gitignored. PR CI retains
+the conservative source-fingerprint check without requiring a retail BIOS dump.
+For an intentional output change, run the normal
+`bash tools/regen_bios.sh --config bios/OpenBIOS.toml` and qualify that change.
+Never update a stamp without regenerating.
 
 Retail-dump users must also regenerate each linked retail stem, for example
-`bash tools/regen_bios.sh --config bios/SCPH1001.toml`. Retail dumps and generated
-retail C/stamps stay local and gitignored. In the PR validation notes, name the
+`bash tools/regen_bios.sh --compare --config bios/SCPH1001.toml` for an expected
+output-neutral edit. The comparison requires an existing generated baseline and
+a profile with a quoted image SHA-256 pin; legacy environment overrides are
+rejected. Retail dumps and generated retail C/stamps stay local and gitignored.
+In the PR validation notes, name the
 BIOS stems checked and whether their output changed; explicitly say when a
 retail stem was not checked. Unchanged OpenBIOS output does not establish
 unchanged SCPH1001 output.
