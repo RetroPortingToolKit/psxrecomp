@@ -2458,7 +2458,7 @@ int main(int argc, char** argv) {
         check(psx_mod_register_activation_plugin("runtime.option-renderer", option_renderer_activate),
               "profile option renderer registration");
     write_text(root / "bundled/local.diagnostics/1.0.0/manifest.toml",
-        "format_version = 5\nid = \"local.diagnostics\"\nversion = \"1.0.0\"\nname = \"Local diagnostics\"\n"
+        "format_version = 11\nid = \"local.diagnostics\"\nversion = \"1.0.0\"\nname = \"Local diagnostics\"\n"
         "[[target]]\ngame_id = \"SLUS-RUNTIME\"\n"
         "[[feature]]\nid = \"recording\"\nname = \"Recording\"\ndefault_enabled = true\n"
         "[[plugin]]\nfeature = \"recording\"\nid = \"local.diagnostics\"\nnetplay = \"host_only\"\n");
