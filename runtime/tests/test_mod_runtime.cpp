@@ -2457,6 +2457,10 @@ int main(int argc, char** argv) {
     if (profile_options && !option_renderer_missing)
         check(psx_mod_register_activation_plugin("runtime.option-renderer", option_renderer_activate),
               "profile option renderer registration");
+    write_text(root / "bundled/local.diagnostics/1.0.0/manifest.toml",
+        "format_version = 5\nid = \"local.diagnostics\"\nversion = \"1.0.0\"\nname = \"Local diagnostics\"\n"
+        "[[feature]]\nid = \"recording\"\nname = \"Recording\"\ndefault_enabled = true\n"
+        "[[plugin]]\nfeature = \"recording\"\nid = \"local.diagnostics\"\nnetplay = \"host_only\"\n");
     check(psx_mod_register_netplay_profile(&profile), "trusted profile registration");
     check(PSXRecompV4::mod_runtime_initialize(root, "SLUS-RUNTIME", 0x80002000, {}, &error),
           "profile reinitialize offline catalog");
@@ -2604,6 +2608,36 @@ int main(int argc, char** argv) {
     check(!psx_mod_netplay_is_active() && psx_mod_netplay_savestates_supported() &&
           PSXRecompV4::mod_runtime_fingerprint().empty(), "profile end clears hooks and snapshot policy");
     check(read_selection() == offline_selection, "profile end preserves offline selection file");
+
+    {
+    using namespace PSXRecompV4;
+    // Real state.toml choices remain local under an executable-owned profile.
+    // No diagnostic setting may become a shared simulation requirement.
+    std::string local_choice_identity;
+    for (bool enabled : {true, false, true}) {
+        ModPackageManager local_choices(root);
+        check(local_choices.scan(&error) && local_choices.load_state(&error) &&
+              local_choices.set_feature_enabled("local.diagnostics", "recording", enabled, &error) &&
+              local_choices.save_state(&error), "persist local recording choice");
+        const auto saved_choices = read_selection();
+        check(mod_runtime_initialize(root, "SLUS-RUNTIME", 0x80002000, {}, &error), error.c_str());
+        check(mod_runtime_local_feature_enabled("local.diagnostics", "recording") == enabled,
+              "offline recording choice comes from the real saved catalog");
+        check(!mod_runtime_local_feature_enabled("runtime.test", "vblank-plugin") &&
+              !mod_runtime_local_feature_enabled("missing", "recording"),
+              "local accessor refuses simulation and missing features");
+        test_match_caps = {};
+        check(mod_runtime_commit_netplay(iso_path, &error), error.c_str());
+        check(mod_runtime_local_feature_enabled("local.diagnostics", "recording") == enabled &&
+              !mod_runtime_snapshot_package_active("local.diagnostics"),
+              "trusted online plan preserves the local choice without a simulation package");
+        if (local_choice_identity.empty()) local_choice_identity = mod_runtime_fingerprint();
+        check(mod_runtime_fingerprint() == local_choice_identity && read_selection() == saved_choices,
+              "recording choice neither changes simulation identity nor rewrites saved state");
+        mod_runtime_end_netplay();
+    }
+
+    }
 
     {
         const auto a = root / "portable-default-a";

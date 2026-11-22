@@ -85,6 +85,10 @@ std::vector<std::string> mod_runtime_netplay_view_features(const ModResolution& 
  * publishes it and a host's plan never switches it. */
 bool mod_runtime_feature_host_only(const std::string& package_id,
                                    const std::string& feature_id);
+/* The player's persisted/default choice for a host-only feature, even while
+ * a trusted online profile owns the simulation plan. Never use for simulation. */
+bool mod_runtime_local_feature_enabled(const std::string& package_id,
+                                       const std::string& feature_id);
 const std::string& mod_runtime_fingerprint();
 /* Empty scope preserves existing slots. Isolated packages require a committed,
  * verified content plan; resource preparation/preview alone establishes none. */

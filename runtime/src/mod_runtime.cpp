@@ -2637,6 +2637,12 @@ bool mod_runtime_feature_host_only(const std::string& package_id,
     return false;
 }
 
+bool mod_runtime_local_feature_enabled(const std::string& package_id,
+                                       const std::string& feature_id) {
+    return mod_runtime_feature_host_only(package_id, feature_id) &&
+           state().manager.feature_enabled(package_id, feature_id);
+}
+
 std::vector<std::string> mod_runtime_netplay_view_features(const ModResolution& plan) {
     /* A feature stays on online only when everything it contributes is a
      * local-view plugin: no EXE/disc write, overlay or derived disc (those
