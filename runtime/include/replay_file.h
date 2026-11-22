@@ -76,17 +76,25 @@ extern "C" {
  *            recording ran with, taken after the compiler was held:
  *            count=<units>, digest=<SHA-256 hex over the sorted unit lines,
  *            each followed by a newline>, then one "unit=<path>" line per
- *            unit when they all fit. A file without it plays as before. */
+ *            unit when they all fit. A file without it plays as before.
+ *   CODE_LOG ASCII lines "<frame> <op> <unit>", in frame order, <unit> as
+ *            in CODE_SET: when each native overlay unit became runnable.
+ *            op S: at the start (frame 0); L: loaded when its compile was
+ *            published, before the boundary of <frame>; I: indexed by a
+ *            cache rescan then, loaded when the guest first calls it.
+ *            Playback admits each unit at the same frame. */
 #define REPLAY_TAG_THUMB       0x80000304u
 #define REPLAY_TAG_NAME        0x80000305u
 #define REPLAY_TAG_PRODUCT     0x80000308u
 #define REPLAY_TAG_CODE_SET    0x80000309u
+#define REPLAY_TAG_CODE_LOG    0x8000030Au
 
 #define REPLAY_FILE_DIGEST_BYTES 20u
 #define REPLAY_FILE_SETTINGS_MAX 4096u
 #define REPLAY_FILE_NAME_MAX 96u
 #define REPLAY_FILE_PRODUCT_MAX 1024u
 #define REPLAY_FILE_CODE_SET_MAX 4096u
+#define REPLAY_FILE_CODE_LOG_MAX (4u << 20)
 #define REPLAY_FILE_THUMB_MAX (4u + 4u * 256u * 256u)
 #define REPLAY_FILE_CARD_BYTES (128u * 1024u)
 
@@ -154,6 +162,8 @@ typedef struct {
     long cards_offset;              /* the first inserted card's image */
     char product[REPLAY_FILE_PRODUCT_MAX + 1];
     char code_set[REPLAY_FILE_CODE_SET_MAX + 1];   /* "" when absent */
+    long code_log_offset;           /* CODE_LOG text; length 0 when absent */
+    uint32_t code_log_length;
 } ReplayFileInfo;
 
 /* What replay_file_write writes. NULL or zero members are left out; exactly
@@ -176,6 +186,7 @@ typedef struct {
     const char *name;
     const char *product;
     const char *code_set;
+    const char *code_log;           /* CODE_LOG text, up to REPLAY_FILE_CODE_LOG_MAX */
 } ReplayFileOut;
 
 /* Reads a whole replay from the current position (the magic). Up to

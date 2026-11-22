@@ -10020,24 +10020,40 @@ extern "C" int replay_host_cards_install(const uint8_t *images, uint32_t mask) {
 extern "C" void replay_host_cards_restore(void) { memcard_replay_end(); }
 /* An overlay compile publishes its code at the first frame after it finishes
  * on the host, so a recording and its playback would switch code at
- * different frames. A replay keeps the code it starts with; a compile still
- * running is stopped and its output discarded. A session already sealed
- * (netplay) stays sealed. */
-static bool s_replay_code_froze_compiler = false;
-extern "C" int replay_host_code_freeze(void) {
-    s_replay_code_froze_compiler = false;
-    if (autocompile_session_interpreted_sealed()) return 1;
-    if (!autocompile_session_set_interpreted(1)) {
-        autocompile_shutdown();
-        if (!autocompile_session_set_interpreted(1)) return 0;
+ * different frames. The compiler keeps running; a recording logs the frame
+ * each unit became runnable, and a playback runs it from that frame
+ * (replay_session.h, REPLAY_TAG_CODE_LOG). */
+extern "C" void replay_host_code_watch(void (*fn)(char op, const char *unit)) {
+    overlay_loader_set_code_observer(fn);
+}
+extern "C" void replay_host_code_admit(int on) {
+    if (on) overlay_loader_admit_begin();
+    else overlay_loader_admit_end();
+}
+extern "C" int replay_host_code_admit_unit(const char *unit) { return overlay_loader_admit(unit); }
+/* A unit the local compiler has not written yet: run the capture and the
+ * compiler in this frame until it is there, up to PSX_REPLAY_CODE_WAIT_MS
+ * (default five minutes). The guest does not run meanwhile. */
+extern "C" int replay_host_code_unit(const char *unit, int load, int wait) {
+    const char *ms = std::getenv("PSX_REPLAY_CODE_WAIT_MS");
+    const uint64_t limit = ms && *ms ? std::strtoull(ms, nullptr, 10) : 300000u;
+    const uint64_t t0 = SDL_GetTicks64();
+    for (bool waited = false;;) {
+        if (overlay_loader_unit_present(unit)) {
+            if (waited)
+                std::fprintf(stdout, "replay_code_wait: unit=%s ms=%llu\n", unit,
+                             (unsigned long long)(SDL_GetTicks64() - t0));
+            return load ? overlay_loader_load_unit(unit) : 1;
+        }
+        if (!wait || SDL_GetTicks64() - t0 >= limit) return 0;
+        waited = true;
+        overlay_autocapture_tick();
+        const CodeProvider *cp = code_provider_active();
+        if (cp->poll_main) cp->poll_main();
+        SDL_Delay(5);
     }
-    s_replay_code_froze_compiler = true;
-    return 1;
 }
-extern "C" void replay_host_code_thaw(void) {
-    if (s_replay_code_froze_compiler) (void)autocompile_session_set_interpreted(0);
-    s_replay_code_froze_compiler = false;
-}
+extern "C" void replay_host_code_rescan(void) { overlay_loader_rescan(); }
 /* The overlay cache units the loader has indexed: what a replay can run
  * natively once the compiler is held. */
 extern "C" char *replay_host_code_set(unsigned *count) { return overlay_loader_code_set_lines(count); }

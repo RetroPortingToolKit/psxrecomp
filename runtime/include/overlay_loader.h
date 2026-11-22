@@ -129,12 +129,33 @@ void overlay_loader_rescan(void);
  * shard cache directory, so a toolchain staged from a different emitter writes where nobody reads. */
 unsigned overlay_loader_codegen_hash(void);
 
-/* The indexed native overlay units, one per line ('\n' after each, in index
- * order): each path under <cache_dir>/<game_id>/ with '/' separators, e.g.
+/* The native overlay units the loader can run now, one per line ('\n'
+ * after each): the indexed ones in index order, then those loaded with no
+ * index entry yet. A unit is named by its path under <cache_dir>/<game_id>/
+ * with '/' separators, e.g.
  * "gcc/<arch-abi>/cg<ver>_<hash>_gc<config>_f<flavor>/<addr>_<crc>_<artifact>.dll".
  * *count is the number of lines. malloc'd (the caller frees it); NULL when
  * the loader is not active. A replay records it to name the code it ran. */
 char *overlay_loader_code_set_lines(unsigned *count);
+
+/* Replays: when native code became runnable is part of the guest's timing
+ * (a native call and the interpreter leave different cycle counts).
+ * The observer, while set, is called on the emulation thread for each unit
+ * that becomes runnable: op 'L' when a published compile is loaded, 'I'
+ * when a rescan indexes it (it loads when the guest first calls it). NULL
+ * clears it. */
+typedef void (*OverlayCodeObserver)(char op, const char *unit);
+void overlay_loader_set_code_observer(OverlayCodeObserver fn);
+/* Admission, for a playback: between begin and end only admitted units
+ * load, by any path (a call, a publication, the BIOS-resident preload).
+ * The loader keeps indexing and the compiler keeps writing the cache. */
+void overlay_loader_admit_begin(void);
+int  overlay_loader_admit(const char *unit);   /* 0 out of memory or not begun */
+void overlay_loader_admit_end(void);
+/* 1 when the unit is loaded or its file is in the cache. */
+int  overlay_loader_unit_present(const char *unit);
+/* Loads the unit now: 1 loaded (or already), 0 no file yet, -1 failed. */
+int  overlay_loader_load_unit(const char *unit);
 
 /* Two-phase live publication: the compile-output watcher maps a freshly
  * published image off the emulation thread, then the emulation thread performs
@@ -143,6 +164,9 @@ char *overlay_loader_code_set_lines(unsigned *count);
 typedef struct OverlayPreparedImage OverlayPreparedImage;
 OverlayPreparedImage *overlay_loader_prepare_published(const char *dll_path);
 int overlay_loader_commit_published(OverlayPreparedImage *image);
+/* commit_published's result for an image a playback does not admit yet
+ * (overlay_loader_admit): not a load failure. */
+#define OVERLAY_COMMIT_HELD (-2)
 void overlay_loader_discard_prepared(OverlayPreparedImage *image);
 
 /* True if the cache holds <region_start8>_<crc8>.{dll,so}. */

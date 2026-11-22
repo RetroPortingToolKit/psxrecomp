@@ -67,16 +67,32 @@ int replay_host_cards_install(const uint8_t *images, uint32_t mask)
     return 1;
 }
 void replay_host_cards_restore(void) { s_cards_out++; }
-/* Compiled code held fixed: frozen while a replay records or plays. */
-static int s_can_freeze = 1, s_freezes, s_thaws;
-int replay_host_code_freeze(void)
+/* Native code during a replay: the recording's watcher, and what a
+ * playback admits and loads (s_code_trace: "<op>:<unit>;" per call, op a
+ * admitted, l loaded, p present, r rescan). */
+static void (*s_watch)(char op, const char *unit);
+static int s_admitting, s_unit_ok = 1;
+static char s_code_trace[1024];
+static void trace(const char *what, const char *unit)
 {
-    if (!s_can_freeze) return 0;
-    s_freezes++;
+    const size_t n = strlen(s_code_trace);
+    snprintf(s_code_trace + n, sizeof s_code_trace - n, "%s:%s;", what, unit);
+}
+void replay_host_code_watch(void (*fn)(char op, const char *unit)) { s_watch = fn; }
+void replay_host_code_admit(int on) { s_admitting = on; }
+int replay_host_code_admit_unit(const char *unit)
+{
+    CHECK(s_admitting);
+    trace("a", unit);
     return 1;
 }
-void replay_host_code_thaw(void) { s_thaws++; }
-static int frozen(void) { return s_freezes - s_thaws; }
+int replay_host_code_unit(const char *unit, int load, int wait)
+{
+    trace(load ? "l" : wait ? "w" : "p", unit);
+    /* gcc/x/late.dll is never compiled; the start units are all here. */
+    return s_unit_ok && strcmp(unit, "gcc/x/late.dll") ? 1 : 0;
+}
+void replay_host_code_rescan(void) { trace("r", "-"); }
 /* The code set the host names, unsorted; NULL names none. */
 #define CODE_LINES "gcc/x/b.dll\ngcc/x/a.dll\n"
 static const char *s_code_lines = CODE_LINES;
@@ -195,6 +211,8 @@ static void reset_host(void)
     s_player_product = "exe_sha256=aa\nplatform=windows-x64\n";
     s_code_lines = CODE_LINES;
     s_code_count = 2;
+    s_code_trace[0] = 0;
+    s_unit_ok = 1;
     remove(VERDICT);
 }
 
@@ -288,7 +306,7 @@ int main(void)
     write_replay(0, s_digest);
     CHECK(replay_session_play_file(REPLAY) == 1);
     CHECK(replay_session_state() == REPLAY_LOADING && s_loads == 1);
-    CHECK(frozen() == 1);
+    CHECK(!s_admitting);   /* a file with no code log */
     CHECK(s_anchor_size == 64 && s_anchor_first == 0xA5);
     CHECK(s_settings_in == 1 && !strcmp(s_settings, "cd_speed=2\n"));
     CHECK(!replay_session_owns_p1());
@@ -299,7 +317,7 @@ int main(void)
     CHECK(replay_session_digests_checked() == 3);
     CHECK(s_settings_out == 1 && s_cards_in == 0);
     CHECK(verdict_has("\"result\": \"in_sync\"") && verdict_has("\"frames_played\": 130"));
-    CHECK(frozen() == 0);
+    CHECK(!s_admitting);
     /* A file without a code set (as older recorders wrote) plays as before
      * and compares nothing. */
     CHECK(verdict_has("\"recorded_code_units\": null") && verdict_has("\"recorded_code_digest\": null"));
@@ -393,7 +411,7 @@ int main(void)
     CHECK(replay_session_state() == REPLAY_IDLE && s_settings_out == 1);
     CHECK(verdict_has("\"player_build\": \"f123456789abcdef0123456789abcdef01234567\""));
     CHECK(replay_session_play_file("replay_session_missing.psxrpl") == 0);
-    CHECK(frozen() == 0);
+    CHECK(!s_admitting && !s_watch);
 
     /* Anchored recording: arms, waits for the anchor, records each boundary's
      * live word, and plays back in sync from that anchor. */
@@ -402,12 +420,12 @@ int main(void)
     s_anchor_take = 0;
     CHECK(replay_session_record_to(REPLAY) == 1);
     CHECK(replay_session_state() == REPLAY_ARMING && s_anchor_requests == 1);
-    CHECK(frozen() == 1);
+    CHECK(!s_watch);   /* the code log starts with the recording */
     CHECK(replay_session_record_to(REPLAY) == 0); /* one at a time */
     CHECK(replay_session_boundary(0xFFFFu, centre, &b, s) == 0); /* anchor pending */
     s_anchor_take = 1;
     CHECK(record(75, 0) == 75);
-    CHECK(frozen() == 0);
+    CHECK(!s_watch);
     {
         ReplayFileInfo info;
         static ReplayStep steps[128];
@@ -429,6 +447,7 @@ int main(void)
             snprintf(expect + n, sizeof expect - n, "\nunit=gcc/x/a.dll\nunit=gcc/x/b.dll\n");
             CHECK(!strcmp(info.code_set, expect));
         }
+        CHECK(info.code_log_length == strlen("0 S gcc/x/b.dll\n0 S gcc/x/a.dll\n"));
     }
     CHECK(play_back(REPLAY, 75) && s_anchor_size == 48 && s_anchor_first == 0x5A);
     CHECK(verdict_has("\"code_set_match\": true") && verdict_has("\"recorded_code_units\": 2"));
@@ -445,6 +464,86 @@ int main(void)
     s_code_lines = CODE_LINES;
     s_code_count = 2;
     CHECK(replay_session_record_to(REPLAY) == 0); /* the file exists */
+
+    /* The compiler runs while recording: units that become runnable are
+     * logged with the boundary they come before, and a playback admits each
+     * at that frame, loading a published one and rescanning for an indexed
+     * one. */
+    reset_host();
+    remove(REPLAY);
+    s_at_power_on = 1;
+    CHECK(replay_session_record_power_on(REPLAY) == 1 && s_watch);
+    for (uint32_t i = 0; i < 40; ++i) {
+        const uint8_t sticks[4] = {(uint8_t)i, 0x80, 0x81, 0x82};
+        if (i == 10) s_watch('L', "gcc/x/c.dll");
+        if (i == 25) { s_watch('I', "gcc/x/d.dll"); s_watch('I', "gcc/x/e.dll"); }
+        replay_session_boundary(rec_word(i), sticks, &b, s);
+    }
+    replay_session_shutdown();
+    CHECK(!s_watch);
+    {
+        static const char want[] = "0 S gcc/x/b.dll\n0 S gcc/x/a.dll\n10 L gcc/x/c.dll\n"
+                                   "25 I gcc/x/d.dll\n25 I gcc/x/e.dll\n";
+        ReplayFileInfo info;
+        static ReplayStep steps[128];
+        char text[256] = "";
+        FILE *f = fopen(REPLAY, "rb");
+        CHECK(f && replay_file_read(f, &info, steps, 128) == NULL);
+        CHECK(f && info.code_log_length == strlen(want) && !fseek(f, info.code_log_offset, SEEK_SET) &&
+              fread(text, 1, info.code_log_length, f) == info.code_log_length);
+        if (f) fclose(f);
+        CHECK(!strcmp(text, want));
+    }
+    {
+        /* Playback, frame by frame: nothing is loaded before its frame. */
+        const uint8_t centre4[4] = {0x80, 0x80, 0x80, 0x80};
+        uint32_t fed = 0;
+        int seen10 = 0, seen25 = 0;
+        CHECK(replay_session_play_file(REPLAY) == 1 && s_admitting);
+        CHECK(!strcmp(s_code_trace, "a:gcc/x/b.dll;p:gcc/x/b.dll;a:gcc/x/a.dll;p:gcc/x/a.dll;r:-;"));
+        s_code_trace[0] = 0;
+        for (int guard = 0; guard < 100 && replay_session_state() != REPLAY_IDLE; ++guard) {
+            const int ok = replay_session_boundary(0xFFFFu, centre4, &b, s);
+            if (fed == 10 && !seen10) {
+                CHECK(!strcmp(s_code_trace, "a:gcc/x/c.dll;l:gcc/x/c.dll;"));
+                seen10 = 1;
+                s_code_trace[0] = 0;
+            } else if (fed == 25 && !seen25) {
+                CHECK(!strcmp(s_code_trace, "a:gcc/x/d.dll;w:gcc/x/d.dll;a:gcc/x/e.dll;w:gcc/x/e.dll;r:-;"));
+                seen25 = 1;
+                s_code_trace[0] = 0;
+            } else {
+                CHECK(!s_code_trace[0]);
+            }
+            fed += (uint32_t)ok;
+        }
+        CHECK(seen10 && seen25 && fed == 39 && replay_session_last_result() == REPLAY_RESULT_IN_SYNC);
+        CHECK(!s_admitting);
+        CHECK(verdict_has("\"code_log_events\": 5") && verdict_has("\"code_units_missing_at_start\": 0"));
+    }
+    /* A unit the player cannot compile in time stops the playback. */
+    s_code_trace[0] = 0;
+    s_unit_ok = 0;
+    {
+        const uint8_t centre4[4] = {0x80, 0x80, 0x80, 0x80};
+        CHECK(replay_session_play_file(REPLAY) == 1);
+        for (int guard = 0; guard < 100 && replay_session_state() != REPLAY_IDLE; ++guard)
+            replay_session_boundary(0xFFFFu, centre4, &b, s);
+        CHECK(replay_session_last_result() == REPLAY_RESULT_FAILED && !s_admitting);
+        CHECK(verdict_has("not compiled in time") && verdict_has("\"frames_played\": 10"));
+        CHECK(verdict_has("\"code_units_missing_at_start\": 2"));
+    }
+    s_unit_ok = 1;
+    /* A file without a code log plays with no admission. */
+    reset_host();
+    write_replay(0, s_digest);
+    s_load_result = 1;
+    CHECK(replay_session_play_file(REPLAY) == 1 && !s_admitting);
+    {
+        int fed_ok;
+        CHECK(run(0xFFFFu, &fed_ok) == FRAMES && fed_ok);
+    }
+    CHECK(!s_code_trace[0] && verdict_has("\"code_log_events\": null"));
 
     /* Power-on recording: only at boot; it keeps the inserted card, ends at
      * shutdown, and plays back with that card installed. */
@@ -469,21 +568,7 @@ int main(void)
     CHECK(replay_session_record_to(REPLAY) == 1);
     replay_session_shutdown(); /* armed, nothing recorded: no file */
     CHECK(replay_session_state() == REPLAY_IDLE && replay_session_play_file(REPLAY) == 0);
-    CHECK(frozen() == 0);
-
-    /* A host that cannot hold its compiled code refuses to play or record,
-     * and nothing is left frozen. */
-    reset_host();
-    write_replay(0, s_digest);
-    s_can_freeze = 0;
-    CHECK(replay_session_play_file(REPLAY) == 0 && replay_session_state() == REPLAY_IDLE);
-    CHECK(s_settings_in == 0 && verdict_has("overlay compiler"));
-    remove(REPLAY);
-    CHECK(replay_session_record_to(REPLAY) == 0 && replay_session_state() == REPLAY_IDLE);
-    s_at_power_on = 1;
-    CHECK(replay_session_record_power_on(REPLAY) == 0 && replay_session_state() == REPLAY_IDLE);
-    s_can_freeze = 1;
-    CHECK(frozen() == 0 && s_freezes > 0);
+    CHECK(!s_watch);
 
     remove(REPLAY);
     remove(VERDICT);

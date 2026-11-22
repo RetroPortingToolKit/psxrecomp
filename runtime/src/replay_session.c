@@ -31,13 +31,85 @@ static unsigned s_digests_checked, s_div_parts, s_fail_parts;
 static uint32_t s_div_frame, s_fail_frame;
 static int s_diverged;
 static int s_power_on, s_cards_installed;
-/* 1 while this session holds the host's compiled-code set fixed. */
-static int s_code_frozen;
+/* Playback of the CODE_LOG: when each native unit may run. */
+typedef struct {
+    uint32_t frame;
+    char op;            /* 'S' at the start, 'L' loaded, 'I' indexed */
+    const char *unit;   /* into s_code_text */
+} CodeEvent;
+static char *s_code_text;
+static CodeEvent *s_code_ev;
+static uint32_t s_code_ev_n, s_code_ev_next;
+static int s_code_admitting, s_code_log_events = -1;
+static unsigned s_code_missing;
 
-static void code_thaw(void)
+static void code_play_end(void)
 {
-    if (s_code_frozen) replay_host_code_thaw();
-    s_code_frozen = 0;
+    if (s_code_admitting) replay_host_code_admit(0);
+    s_code_admitting = 0;
+    free(s_code_ev);
+    s_code_ev = NULL;
+    free(s_code_text);
+    s_code_text = NULL;
+    s_code_ev_n = s_code_ev_next = 0;
+}
+
+/* Splits a CODE_LOG ("<frame> <op> <unit>" lines) in place. NULL, or what
+ * is wrong with it. */
+static const char *code_log_parse(char *text, uint32_t frames)
+{
+    uint32_t n = 0, cap = 0, last = 0;
+    for (char *p = text; *p;) {
+        char *e = strchr(p, '\n'), *q = p;
+        uint64_t frame = 0;
+        if (!e) return "a line without its end";
+        *e = 0;
+        if (*q < '0' || *q > '9') return "a frame number";
+        while (*q >= '0' && *q <= '9' && frame <= frames) frame = frame * 10u + (uint64_t)(*q++ - '0');
+        if (frame > frames || frame < last || q[0] != ' ' || !q[1] || q[2] != ' ' || !q[3])
+            return "a frame number";
+        if (q[1] != 'S' && q[1] != 'L' && q[1] != 'I') return "an operation";
+        if (q[1] == 'S' && frame) return "a start unit after the start";
+        if (n == cap) {
+            CodeEvent *grown;
+            cap = cap ? cap * 2u : 64u;
+            if (!(grown = (CodeEvent *)realloc(s_code_ev, cap * sizeof *grown))) return "out of memory";
+            s_code_ev = grown;
+        }
+        s_code_ev[n].frame = (uint32_t)frame;
+        s_code_ev[n].op = q[1];
+        s_code_ev[n].unit = q + 3;
+        last = (uint32_t)frame;
+        ++n;
+        p = e + 1;
+    }
+    s_code_ev_n = n;
+    return NULL;
+}
+
+/* Units that became runnable before this boundary in the recording become
+ * runnable now: a published one is loaded, an indexed one is callable after
+ * the rescan. The local compiler may still be writing one: the host waits.
+ * 0 when one is not there in time or does not load. */
+static int code_apply(uint32_t frame, const char **why)
+{
+    int rescan = 0;
+    while (s_code_ev_next < s_code_ev_n && s_code_ev[s_code_ev_next].frame <= frame) {
+        const CodeEvent *ev = &s_code_ev[s_code_ev_next++];
+        int r;
+        if (!replay_host_code_admit_unit(ev->unit)) { *why = "out of memory"; return 0; }
+        r = replay_host_code_unit(ev->unit, ev->op == 'L', 1);
+        if (r <= 0) {
+            fprintf(stderr, "replay: native code unit %s (frame %u) %s\n", ev->unit, (unsigned)ev->frame,
+                    r ? "does not load" : "was not compiled in time");
+            *why = r ? "Replay stopped: a native code unit does not load"
+                     : "Replay stopped: a native code unit was not compiled in time";
+            return 0;
+        }
+        rescan |= ev->op == 'I';
+    }
+    if (rescan) replay_host_code_rescan();
+    return 1;
 }
 
 static int cmp_line(const void *a, const void *b)
@@ -190,6 +262,9 @@ static void write_verdict(ReplayResult result, const char *reason)
     fputs(",\n  \"player_code_digest\": ", f);
     if (s_player_code_digest[0]) json_string(f, s_player_code_digest); else fputs("null", f);
     fprintf(f, ",\n  \"code_set_match\": %s", s_code_match < 0 ? "null" : s_code_match ? "true" : "false");
+    if (s_code_log_events < 0) fputs(",\n  \"code_log_events\": null", f);
+    else fprintf(f, ",\n  \"code_log_events\": %d", s_code_log_events);
+    fprintf(f, ",\n  \"code_units_missing_at_start\": %u", s_code_missing);
     fputs(",\n  \"replay\": ", f); json_string(f, s_play_path);
     fputs(",\n  \"reason\": ", f); json_string(f, reason ? reason : "");
     fputs("\n}\n", f);
@@ -203,7 +278,7 @@ static void end_playback(ReplayResult result, const char *osd)
     s_settings_switched = 0;
     if (s_cards_installed) replay_host_cards_restore();
     s_cards_installed = 0;
-    code_thaw();
+    code_play_end();
     free(s_steps);
     s_steps = NULL;
     free(s_digests);
@@ -297,6 +372,9 @@ int replay_session_play_file(const char *path)
     s_fail_frame = 0;
     s_rec_code_count[0] = s_rec_code_digest[0] = s_player_code_count[0] = s_player_code_digest[0] = 0;
     s_code_match = -1;
+    s_code_log_events = -1;
+    s_code_missing = 0;
+    code_play_end();
     if (!path || !(f = fopen(path, "rb"))) return refuse_play("cannot open the file");
     info = (ReplayFileInfo *)malloc(sizeof *info);
     steps = (ReplayStep *)calloc(REPLAY_FILE_MAX_STEPS, sizeof *steps);
@@ -325,6 +403,16 @@ int replay_session_play_file(const char *path)
             if (digests[i][0] > info->frames || (i && digests[i][0] <= digests[i - 1][0]))
                 error = "state digest order";
     }
+    if (!error && info->code_log_length) {
+        char *text = (char *)read_at(f, info->code_log_offset, info->code_log_length);
+        if (text && !(s_code_text = (char *)realloc(text, (size_t)info->code_log_length + 1u))) free(text);
+        if (!s_code_text) {
+            error = "cannot read the code log";
+        } else {
+            s_code_text[info->code_log_length] = 0;
+            if (code_log_parse(s_code_text, info->frames)) error = "its code log is damaged";
+        }
+    }
     free(dig);
     fclose(f);
     if (!error && !replay_host_identity(&player, why, sizeof why)) error = why;
@@ -333,15 +421,33 @@ int replay_session_play_file(const char *path)
         match = replay_identity_check(&info->id, info->product, &player, product, why, sizeof why);
         if (match == REPLAY_IDENTITY_REFUSE) error = why;
     }
-    /* Code that changes at a host-timed frame changes the guest's timing. */
-    if (!error && !(s_code_frozen = replay_host_code_freeze())) error = "the overlay compiler cannot be paused";
     if (error) {
         char e[256];
         snprintf(e, sizeof e, "%s", error);
         free(info); free(steps); free(anchor); free(cards); free(digests);
+        code_play_end();
         return refuse_play(e);
     }
     compare_code_sets(info->code_set);
+    if (s_code_text) {
+        /* Native code runs from the frame it could in the recording: the
+         * units the recording started with now, the rest at their frames. */
+        replay_host_code_admit(1);
+        s_code_admitting = 1;
+        s_code_log_events = (int)s_code_ev_n;
+        for (; s_code_ev_next < s_code_ev_n && s_code_ev[s_code_ev_next].op == 'S'; ++s_code_ev_next) {
+            (void)replay_host_code_admit_unit(s_code_ev[s_code_ev_next].unit);
+            s_code_missing += replay_host_code_unit(s_code_ev[s_code_ev_next].unit, 0, 0) <= 0;
+        }
+        replay_host_code_rescan();
+        fprintf(stdout, "replay_code_log: events=%u start_units=%u missing=%u\n", (unsigned)s_code_ev_n,
+                (unsigned)s_code_ev_next, s_code_missing);
+        if (s_code_missing)
+            fprintf(stderr, "replay: %u native code units the recording started with are not in this cache; "
+                            "playing on, it may go out of sync\n", s_code_missing);
+    } else {
+        fprintf(stderr, "replay: the file has no code log: native code may start at other frames\n");
+    }
     snprintf(s_rec_build, sizeof s_rec_build, "%s", info->id.build);
     snprintf(s_player_build, sizeof s_player_build, "%s", player.build);
     replay_identity_line_value(info->product, "exe_sha256", s_rec_exe, sizeof s_rec_exe);
@@ -494,6 +600,11 @@ static int play_boundary(uint16_t live, const uint8_t live_sticks[4], uint16_t *
                          uint8_t out_sticks[4])
 {
     const ReplayStep *s;
+    const char *why = NULL;
+    if (s_code_admitting && !code_apply(s_play_frame, &why)) {
+        end_playback(REPLAY_RESULT_FAILED, why);
+        return 0;
+    }
     check_digest();
     if (s_play_frame == s_play_frames) {
         finish();
@@ -534,6 +645,9 @@ static ReplayIdentity s_rec_id;
 static char s_rec_settings[REPLAY_FILE_SETTINGS_MAX + 1];
 static char s_rec_product[REPLAY_FILE_PRODUCT_MAX + 1];
 static char s_rec_code_set[REPLAY_FILE_CODE_SET_MAX + 1];
+static char *s_rec_code_log;
+static size_t s_rec_code_log_len, s_rec_code_log_cap;
+static int s_rec_code_log_full;
 static uint8_t *s_anchor;
 static size_t s_anchor_size;
 /* RAM and cycle at the last recorded boundary: the END checkpoint, so a
@@ -556,9 +670,70 @@ static void free_recording(void)
     free(s_rec_cards); s_rec_cards = NULL; s_rec_cards_mask = 0;
     s_rec_power_on = 0;
     s_rec_code_set[0] = 0;
+    replay_host_code_watch(NULL);
+    free(s_rec_code_log); s_rec_code_log = NULL;
+    s_rec_code_log_len = s_rec_code_log_cap = 0;
+    s_rec_code_log_full = 0;
     s_frames = s_rec_steps = 0;
     s_stop_requested = 0;
-    code_thaw();
+}
+
+/* One CODE_LOG line. Past REPLAY_FILE_CODE_LOG_MAX the log is dropped. */
+static void code_log_add(uint32_t frame, char op, const char *unit)
+{
+    char head[24];
+    const int hn = snprintf(head, sizeof head, "%u %c ", (unsigned)frame, op);
+    const size_t need = (size_t)hn + strlen(unit) + 1u;
+    if (s_rec_code_log_full) return;
+    for (const char *q = unit; *q; ++q)
+        if ((unsigned char)*q < 0x21 || (unsigned char)*q > 0x7e) return;
+    if (!unit[0] || s_rec_code_log_len + need > REPLAY_FILE_CODE_LOG_MAX) {
+        if (unit[0]) {
+            s_rec_code_log_full = 1;
+            fprintf(stderr, "replay: the code log is full; this recording will not name when native code ran\n");
+        }
+        return;
+    }
+    if (s_rec_code_log_len + need + 1u > s_rec_code_log_cap) {
+        size_t cap = s_rec_code_log_cap ? s_rec_code_log_cap : 4096u;
+        char *grown;
+        while (cap < s_rec_code_log_len + need + 1u) cap *= 2u;
+        if (!(grown = (char *)realloc(s_rec_code_log, cap))) {
+            s_rec_code_log_full = 1;
+            return;
+        }
+        s_rec_code_log = grown;
+        s_rec_code_log_cap = cap;
+    }
+    s_rec_code_log_len += (size_t)snprintf(s_rec_code_log + s_rec_code_log_len, need + 1u, "%s%s\n", head, unit);
+}
+
+/* A unit became runnable before the boundary s_frames records next. */
+static void code_watch(char op, const char *unit)
+{
+    if (s_state == REPLAY_RECORDING) code_log_add(s_frames, op, unit);
+}
+
+/* At the recording's first boundary: the units it starts with, and from
+ * now each one that becomes runnable. The compiler keeps running. */
+static void code_log_start(void)
+{
+    unsigned count = 0;
+    char *lines = replay_host_code_set(&count);
+    if (code_set_text(s_rec_code_set, sizeof s_rec_code_set)) {
+        char n[16], digest[72];
+        code_set_values(s_rec_code_set, n, sizeof n, digest, sizeof digest);
+        fprintf(stdout, "replay_code_set: recorded=%s:%s\n", n, digest);
+    }
+    for (char *p = lines; p && *p;) {
+        char *e = strchr(p, '\n');
+        if (!e) break;
+        *e = 0;
+        code_log_add(0, 'S', p);
+        p = e + 1;
+    }
+    free(lines);
+    replay_host_code_watch(code_watch);
 }
 
 static int refuse_record(const char *why)
@@ -615,22 +790,12 @@ static int begin_recording(const char *path, int power_on)
         free_recording();
         return refuse_record("the memory cards cannot be read");
     }
-    if (!(s_code_frozen = replay_host_code_freeze())) {
-        free_recording();
-        return refuse_record("the overlay compiler cannot be paused");
-    }
     if (!power_on && !replay_host_request_anchor()) {
         free_recording();
         return refuse_record("the anchor state cannot be saved now");
     }
     replay_host_settings_capture(s_rec_settings, sizeof s_rec_settings);
     replay_host_product(s_rec_product, sizeof s_rec_product);
-    /* The code the recording runs with, now that it is held fixed. */
-    if (code_set_text(s_rec_code_set, sizeof s_rec_code_set)) {
-        char count[16], digest[72];
-        code_set_values(s_rec_code_set, count, sizeof count, digest, sizeof digest);
-        fprintf(stdout, "replay_code_set: recorded=%s:%s\n", count, digest);
-    }
     snprintf(s_rec_path, sizeof s_rec_path, "%s", path);
     s_result = REPLAY_RESULT_NONE;
     if (!power_on) {
@@ -639,6 +804,7 @@ static int begin_recording(const char *path, int power_on)
     }
     s_rec_power_on = 1;
     s_state = REPLAY_RECORDING;
+    code_log_start();
     replay_host_osd("Recording replay from power-on", 1600);
     fprintf(stdout, "replay_recording: path=%s power_on=1 cards=%u\n", s_rec_path, (unsigned)s_rec_cards_mask);
     fflush(stdout);
@@ -678,6 +844,7 @@ static const char *write_recording(const char *path)
         o.digest_count = s_rec_digest_count;
         o.product = s_rec_product[0] ? s_rec_product : NULL;
         o.code_set = s_rec_code_set[0] ? s_rec_code_set : NULL;
+        o.code_log = s_rec_code_log_len && !s_rec_code_log_full ? s_rec_code_log : NULL;
         if (s_rec_power_on) {
             o.power_on = 1;
             o.cards_mask = s_rec_cards_mask;
@@ -696,7 +863,8 @@ static const char *write_recording(const char *path)
         if (r) fclose(r);
         if (!error && (info->frames != s_last_frame || info->anchor_length != s_anchor_size ||
                        info->digest_count != s_rec_digest_count || info->power_on != s_rec_power_on ||
-                       info->cards_mask != s_rec_cards_mask || strcmp(info->code_set, s_rec_code_set)))
+                       info->cards_mask != s_rec_cards_mask || strcmp(info->code_set, s_rec_code_set) ||
+                       info->code_log_length != (s_rec_code_log_full ? 0u : (uint32_t)s_rec_code_log_len)))
             error = "the replay does not read back identically";
         free(info);
         free(steps);
@@ -785,6 +953,7 @@ static int arm_boundary(void)
         return 0;
     }
     s_state = REPLAY_RECORDING;
+    code_log_start();
     replay_host_osd("Recording replay", 1200);
     fprintf(stdout, "replay_recording: path=%s power_on=0\n", s_rec_path);
     fflush(stdout);

@@ -84,7 +84,9 @@ unsigned replay_session_digests_checked(void);
  * stopped_by_input, failed, incomplete), frames, first divergence, the
  * recorded and player builds and exe SHA-256s, power_on, and the recorded
  * and player compiled-code sets (unit count and digest) with code_set_match
- * (true, false, or null when the file or the host names none). NULL clears. */
+ * (true, false, or null when the file or the host names none), the code log
+ * events (null without a log) and the units it starts with that this cache
+ * lacks (code_units_missing_at_start). NULL clears. */
 void replay_session_set_verdict_path(const char *path);
 
 /* Process exit, a disc change or a session restart: write a recording, or
@@ -114,16 +116,24 @@ void replay_host_settings_restore(void);
  * the inserted ones are read). Its writes stay in memory. 0 on failure. */
 int replay_host_cards_install(const uint8_t *images, uint32_t mask);
 void replay_host_cards_restore(void);
-/* Hold the compiled-code set fixed while a replay records or plays: no
- * overlay compile may publish new code at a host-timed frame. 0 when the
- * host cannot hold it. Thaw is called once for each successful freeze. */
-int replay_host_code_freeze(void);
-void replay_host_code_thaw(void);
 /* The native code units the host can run, one identity per line with '\n'
  * after each, in any order (overlay_loader_code_set_lines); *count is the
- * number of lines. malloc'd; NULL when the host has no code set to name.
- * Read after the freeze, so it stays what the replay runs with. */
+ * number of lines. malloc'd; NULL when the host has no code set to name. */
 char *replay_host_code_set(unsigned *count);
+/* Native code while a replay runs (REPLAY_TAG_CODE_LOG): the frame a unit
+ * starts to run natively changes the guest's timing, so a playback runs
+ * each unit from the frame its recording did. The overlay compiler keeps
+ * running in both. A recording is told each unit that becomes runnable
+ * (op 'L' loaded, 'I' indexed) through `fn`; NULL stops it. */
+void replay_host_code_watch(void (*fn)(char op, const char *unit));
+/* Playback: 1 begins (no unit runs natively until admitted), 0 ends. */
+void replay_host_code_admit(int on);
+int replay_host_code_admit_unit(const char *unit);   /* 0 out of memory */
+/* The unit's file: waited for while the local compiler may write it (wait),
+ * and loaded now (load). 1 ready, 0 not there (in time), -1 it does not load. */
+int replay_host_code_unit(const char *unit, int load, int wait);
+/* A cache rescan: the admitted units in the cache become callable. */
+void replay_host_code_rescan(void);
 /* 0 with the reason when this session cannot record: netplay, a
  * multitap, a port without a pad, memory cards the format cannot hold. */
 int replay_host_can_record(char *why, size_t cap);
