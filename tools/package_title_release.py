@@ -51,6 +51,7 @@ re-checks a finished ZIP or AppImage by extracting it.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -592,26 +593,45 @@ def native_toolchain_args(toolchain):
 
 
 def wait_training_guest_frames(process, stdout_path, frames):
-    """Observe the existing guest-counter BENCH completion; startup has no deadline."""
+    """Read published log bytes; the live producer has no startup deadline."""
     expected = dict(first=1, last=1 + frames, frames=frames)
     pending = b''
-    with Path(stdout_path).open('rb') as output:
+    offset = 0
+    with Path(stdout_path).open('rb', buffering=0) as output:
         while True:
-            raw = output.readline()
-            if raw:
-                pending += raw
-                if not pending.endswith(b'\n'):
+            available = os.fstat(output.fileno()).st_size - offset
+            if available < 0:
+                fail('PGO training output was truncated')
+            raw = b''
+            if available:
+                output.seek(offset)
+                try:
+                    raw = output.read(min(available, 64 * 1024))
+                except OSError as error:
+                    # DrvFS can publish the new length before the append is
+                    # readable. Retry that exact range while its owner lives.
+                    if error.errno != getattr(errno, 'ENODATA', 61) or process.poll() is not None:
+                        raise
+                    time.sleep(0.025)
                     continue
-                match = re.match(rb'^\[BENCH\] window=(\d+):(\d+) frames=(\d+)\b', pending)
-                pending = b''
-                if match:
-                    observed = dict(zip(('first', 'last', 'frames'), map(int, match.groups())))
-                    if observed != expected:
-                        fail('PGO guest-frame completion does not match the requested workload: %s' % observed)
-                    return observed
+            if raw:
+                offset += len(raw)
+                pending += raw
+                while b'\n' in pending:
+                    line, pending = pending.split(b'\n', 1)
+                    match = re.match(rb'^\[BENCH\] window=(\d+):(\d+) frames=(\d+)\b', line)
+                    if match:
+                        observed = dict(zip(('first', 'last', 'frames'), map(int, match.groups())))
+                        if observed != expected:
+                            fail('PGO guest-frame completion does not match the requested workload: %s' % observed)
+                        return observed
             else:
                 code = process.poll()
                 if code is not None:
+                    # The last append can race the first size query. Read it
+                    # before deciding that a completed child missed its marker.
+                    if not available and os.fstat(output.fileno()).st_size > offset:
+                        continue
                     fail('PGO boot exited early (exit %s), before completing %d guest frames' % (code, frames))
                 time.sleep(0.025)
 

@@ -7,9 +7,11 @@ follow the channel, forbidden content fails the payload gates, diagnostics
 recording/display defaults remain independent, and a finished ZIP is re-verified by extraction.
 """
 import contextlib
+import errno
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -544,6 +546,41 @@ class SelectiveReleasePgoTests(unittest.TestCase):
         self.assertGreaterEqual(len(polls), 3)
         self.assertEqual(result['frame_completion'], {'first': 1, 'last': 601, 'frames': 600})
         self.assertEqual(result['elapsed_seconds'], 100000)
+        process.wait.assert_called_once_with()
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
+    def test_live_log_reads_published_ranges_and_retries_enodata(self):
+        self.training_files()
+        process = self.training_process()
+        original_open = Path.open
+        reads = []
+        class PublishedReader:
+            def __init__(self, raw): self.raw = raw
+            def __enter__(self): return self
+            def __exit__(self, *args): self.raw.close()
+            def __getattr__(self, name): return getattr(self.raw, name)
+            def readline(self, *args):
+                raise OSError(getattr(errno, 'ENODATA', 61), 'No data available at a live log boundary')
+            def read(self, size):
+                reads.append(size)
+                if len(reads) == 1:
+                    raise OSError(getattr(errno, 'ENODATA', 61), 'Append length is visible before its bytes')
+                if size <= 0 or size > os.fstat(self.raw.fileno()).st_size - self.raw.tell():
+                    raise AssertionError('reader crossed the published log boundary')
+                return self.raw.read(size)
+        def live_log(path, mode='r', *args, **kwargs):
+            raw = original_open(path, mode, *args, **kwargs)
+            return PublishedReader(raw) if path.name == 'stdout.log' and mode == 'rb' else raw
+        with mock.patch.object(ptr.subprocess, 'Popen', side_effect=self.frame_boot(process)), \
+                mock.patch.object(Path, 'open', new=live_log), \
+                mock.patch.object(ptr.time, 'sleep'), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'verify_inputs'), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'profiles', return_value={'validated': True}):
+            result = ptr.train_release_pgo(self.ctx, {'commands': {}})
+        self.assertGreaterEqual(len(reads), 2)
+        self.assertEqual(result['frame_completion'], dict(first=1, last=601, frames=600))
+        self.assertEqual(result['close']['exit_code'], 0)
         process.wait.assert_called_once_with()
         process.terminate.assert_not_called()
         process.kill.assert_not_called()

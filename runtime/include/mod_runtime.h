@@ -86,7 +86,8 @@ std::vector<std::string> mod_runtime_netplay_view_features(const ModResolution& 
 bool mod_runtime_feature_host_only(const std::string& package_id,
                                    const std::string& feature_id);
 /* The player's persisted/default choice for a host-only feature, even while
- * a trusted online profile owns the simulation plan. Never use for simulation. */
+ * a trusted online profile owns the simulation plan. Read at activation; later
+ * edits may be pending for the next launch. Never use for simulation. */
 bool mod_runtime_local_feature_enabled(const std::string& package_id,
                                        const std::string& feature_id);
 const std::string& mod_runtime_fingerprint();
