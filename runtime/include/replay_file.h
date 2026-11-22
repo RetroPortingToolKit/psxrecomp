@@ -81,8 +81,10 @@ extern "C" {
  *            in CODE_SET: when each native overlay unit became runnable.
  *            op S: at the start (frame 0); L: loaded when its compile was
  *            published, before the boundary of <frame>; I: indexed by a
- *            cache rescan then, loaded when the guest first calls it.
- *            Playback admits each unit at the same frame. */
+ *            cache rescan then, loaded when the guest first calls it;
+ *            R (unit "-"): the host rescanned its cache then. Playback
+ *            admits each unit and rescans at the same frame, and at no
+ *            other. */
 #define REPLAY_TAG_THUMB       0x80000304u
 #define REPLAY_TAG_NAME        0x80000305u
 #define REPLAY_TAG_PRODUCT     0x80000308u

@@ -3361,13 +3361,18 @@ void overlay_loader_resync_validation_after_restore(void)
  * dll_already_loaded() makes the re-walk idempotent. */
 unsigned overlay_loader_codegen_hash(void) { return (unsigned)PSX_OVERLAY_CODEGEN_HASH; }
 
+static int rescan_held(void);
 void overlay_loader_rescan(void) {
-    if (!s_active || !overlay_loads_allowed()) return;
+    if (!s_active || !overlay_loads_allowed() || rescan_held()) return;
     const uint64_t span_t0 = host_span_begin();
     const int indexed_before = s_cache_idx_count;
     scan_cache_dir();
     for (int i = indexed_before; i < s_cache_idx_count; i++)
         code_observe('I', s_cache_idx[i].path);
+    /* A rescan also lets the guest call indexed units that a stale lazy
+     * check (lazy_man_matches, the miss cache) kept out until now, so a
+     * replay records each one, whether or not it indexed a unit. */
+    code_observe('R', NULL);
     load_bios_resident_shards();
     s_nchecked = 0;
     lazy_miss_invalidate_loader();
@@ -3593,8 +3598,8 @@ static int s_admit_n, s_admit_cap;
 static void code_observe(char op, const char *path) {
     char line[768];
     if (!s_code_observer) return;
-    unit_line(path, line, sizeof(line));
-    s_code_observer(op, line);
+    if (path) unit_line(path, line, sizeof(line));
+    s_code_observer(op, path ? line : NULL);
 }
 
 void overlay_loader_set_code_observer(OverlayCodeObserver fn) { s_code_observer = fn; }
@@ -3640,6 +3645,18 @@ void overlay_loader_admit_end(void) {
     s_admit = NULL;
     s_admit_n = s_admit_cap = 0;
     s_admit_on = 0;
+}
+
+/* While a playback admits units, a rescan runs only at a frame its
+ * recording logged one (overlay_loader_admit_rescan): the compiler's own
+ * rescans come at host-timed frames. */
+static int s_rescan_admitted;
+static int rescan_held(void) { return s_admit_on && !s_rescan_admitted; }
+
+void overlay_loader_admit_rescan(void) {
+    s_rescan_admitted = 1;
+    overlay_loader_rescan();
+    s_rescan_admitted = 0;
 }
 
 static int line_loaded(const char *line) {

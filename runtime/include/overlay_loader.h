@@ -142,8 +142,9 @@ char *overlay_loader_code_set_lines(unsigned *count);
  * (a native call and the interpreter leave different cycle counts).
  * The observer, while set, is called on the emulation thread for each unit
  * that becomes runnable: op 'L' when a published compile is loaded, 'I'
- * when a rescan indexes it (it loads when the guest first calls it). NULL
- * clears it. */
+ * when a rescan indexes it (it loads when the guest first calls it), and
+ * 'R' with a NULL unit after every rescan (it also makes indexed units
+ * callable that a stale lazy check kept out). NULL clears it. */
 typedef void (*OverlayCodeObserver)(char op, const char *unit);
 void overlay_loader_set_code_observer(OverlayCodeObserver fn);
 /* Admission, for a playback: between begin and end only admitted units
@@ -152,6 +153,9 @@ void overlay_loader_set_code_observer(OverlayCodeObserver fn);
 void overlay_loader_admit_begin(void);
 int  overlay_loader_admit(const char *unit);   /* 0 out of memory or not begun */
 void overlay_loader_admit_end(void);
+/* The rescan of a playback, at a frame its recording rescanned. Between
+ * admit_begin and admit_end overlay_loader_rescan does nothing. */
+void overlay_loader_admit_rescan(void);
 /* 1 when the unit is loaded or its file is in the cache. */
 int  overlay_loader_unit_present(const char *unit);
 /* Loads the unit now: 1 loaded (or already), 0 no file yet, -1 failed. */

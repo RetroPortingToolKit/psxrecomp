@@ -477,13 +477,14 @@ int main(void)
         const uint8_t sticks[4] = {(uint8_t)i, 0x80, 0x81, 0x82};
         if (i == 10) s_watch('L', "gcc/x/c.dll");
         if (i == 25) { s_watch('I', "gcc/x/d.dll"); s_watch('I', "gcc/x/e.dll"); }
+        if (i == 30) s_watch('R', NULL);   /* a rescan that indexed nothing */
         replay_session_boundary(rec_word(i), sticks, &b, s);
     }
     replay_session_shutdown();
     CHECK(!s_watch);
     {
         static const char want[] = "0 S gcc/x/b.dll\n0 S gcc/x/a.dll\n10 L gcc/x/c.dll\n"
-                                   "25 I gcc/x/d.dll\n25 I gcc/x/e.dll\n";
+                                   "25 I gcc/x/d.dll\n25 I gcc/x/e.dll\n30 R -\n";
         ReplayFileInfo info;
         static ReplayStep steps[128];
         char text[256] = "";
@@ -498,9 +499,10 @@ int main(void)
         /* Playback, frame by frame: nothing is loaded before its frame. */
         const uint8_t centre4[4] = {0x80, 0x80, 0x80, 0x80};
         uint32_t fed = 0;
-        int seen10 = 0, seen25 = 0;
+        int seen10 = 0, seen25 = 0, seen30 = 0;
         CHECK(replay_session_play_file(REPLAY) == 1 && s_admitting);
-        CHECK(!strcmp(s_code_trace, "a:gcc/x/b.dll;p:gcc/x/b.dll;a:gcc/x/a.dll;p:gcc/x/a.dll;r:-;"));
+        /* No rescan at the start: the recording had none there. */
+        CHECK(!strcmp(s_code_trace, "a:gcc/x/b.dll;p:gcc/x/b.dll;a:gcc/x/a.dll;p:gcc/x/a.dll;"));
         s_code_trace[0] = 0;
         for (int guard = 0; guard < 100 && replay_session_state() != REPLAY_IDLE; ++guard) {
             const int ok = replay_session_boundary(0xFFFFu, centre4, &b, s);
@@ -512,14 +514,18 @@ int main(void)
                 CHECK(!strcmp(s_code_trace, "a:gcc/x/d.dll;w:gcc/x/d.dll;a:gcc/x/e.dll;w:gcc/x/e.dll;r:-;"));
                 seen25 = 1;
                 s_code_trace[0] = 0;
+            } else if (fed == 30 && !seen30) {
+                CHECK(!strcmp(s_code_trace, "r:-;"));   /* the rescan alone, no unit */
+                seen30 = 1;
+                s_code_trace[0] = 0;
             } else {
                 CHECK(!s_code_trace[0]);
             }
             fed += (uint32_t)ok;
         }
-        CHECK(seen10 && seen25 && fed == 39 && replay_session_last_result() == REPLAY_RESULT_IN_SYNC);
+        CHECK(seen10 && seen25 && seen30 && fed == 39 && replay_session_last_result() == REPLAY_RESULT_IN_SYNC);
         CHECK(!s_admitting);
-        CHECK(verdict_has("\"code_log_events\": 5") && verdict_has("\"code_units_missing_at_start\": 0"));
+        CHECK(verdict_has("\"code_log_events\": 6") && verdict_has("\"code_units_missing_at_start\": 0"));
     }
     /* A unit the player cannot compile in time stops the playback. */
     s_code_trace[0] = 0;

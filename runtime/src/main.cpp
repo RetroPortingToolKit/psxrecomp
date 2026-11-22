@@ -10053,7 +10053,7 @@ extern "C" int replay_host_code_unit(const char *unit, int load, int wait) {
         SDL_Delay(5);
     }
 }
-extern "C" void replay_host_code_rescan(void) { overlay_loader_rescan(); }
+extern "C" void replay_host_code_rescan(void) { overlay_loader_admit_rescan(); }
 /* The overlay cache units the loader has indexed: what a replay can run
  * natively once the compiler is held. */
 extern "C" char *replay_host_code_set(unsigned *count) { return overlay_loader_code_set_lines(count); }

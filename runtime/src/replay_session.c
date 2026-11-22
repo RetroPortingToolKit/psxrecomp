@@ -34,7 +34,7 @@ static int s_power_on, s_cards_installed;
 /* Playback of the CODE_LOG: when each native unit may run. */
 typedef struct {
     uint32_t frame;
-    char op;            /* 'S' at the start, 'L' loaded, 'I' indexed */
+    char op;            /* 'S' at the start, 'L' loaded, 'I' indexed, 'R' rescan */
     const char *unit;   /* into s_code_text */
 } CodeEvent;
 static char *s_code_text;
@@ -68,8 +68,9 @@ static const char *code_log_parse(char *text, uint32_t frames)
         while (*q >= '0' && *q <= '9' && frame <= frames) frame = frame * 10u + (uint64_t)(*q++ - '0');
         if (frame > frames || frame < last || q[0] != ' ' || !q[1] || q[2] != ' ' || !q[3])
             return "a frame number";
-        if (q[1] != 'S' && q[1] != 'L' && q[1] != 'I') return "an operation";
+        if (q[1] != 'S' && q[1] != 'L' && q[1] != 'I' && q[1] != 'R') return "an operation";
         if (q[1] == 'S' && frame) return "a start unit after the start";
+        if (q[1] == 'R' && strcmp(q + 3, "-")) return "a rescan with a unit";
         if (n == cap) {
             CodeEvent *grown;
             cap = cap ? cap * 2u : 64u;
@@ -89,14 +90,16 @@ static const char *code_log_parse(char *text, uint32_t frames)
 
 /* Units that became runnable before this boundary in the recording become
  * runnable now: a published one is loaded, an indexed one is callable after
- * the rescan. The local compiler may still be writing one: the host waits.
- * 0 when one is not there in time or does not load. */
+ * the rescan, which runs where the recording's did. The local compiler may
+ * still be writing a unit: the host waits. 0 when one is not there in time
+ * or does not load. */
 static int code_apply(uint32_t frame, const char **why)
 {
     int rescan = 0;
     while (s_code_ev_next < s_code_ev_n && s_code_ev[s_code_ev_next].frame <= frame) {
         const CodeEvent *ev = &s_code_ev[s_code_ev_next++];
         int r;
+        if (ev->op == 'R') { rescan = 1; continue; }
         if (!replay_host_code_admit_unit(ev->unit)) { *why = "out of memory"; return 0; }
         r = replay_host_code_unit(ev->unit, ev->op == 'L', 1);
         if (r <= 0) {
@@ -435,11 +438,12 @@ int replay_session_play_file(const char *path)
         replay_host_code_admit(1);
         s_code_admitting = 1;
         s_code_log_events = (int)s_code_ev_n;
+        /* No rescan here: the recording started with no rescan either, and
+         * a rescan changes which indexed units the guest can call. */
         for (; s_code_ev_next < s_code_ev_n && s_code_ev[s_code_ev_next].op == 'S'; ++s_code_ev_next) {
             (void)replay_host_code_admit_unit(s_code_ev[s_code_ev_next].unit);
             s_code_missing += replay_host_code_unit(s_code_ev[s_code_ev_next].unit, 0, 0) <= 0;
         }
-        replay_host_code_rescan();
         fprintf(stdout, "replay_code_log: events=%u start_units=%u missing=%u\n", (unsigned)s_code_ev_n,
                 (unsigned)s_code_ev_next, s_code_missing);
         if (s_code_missing)
@@ -708,10 +712,11 @@ static void code_log_add(uint32_t frame, char op, const char *unit)
     s_rec_code_log_len += (size_t)snprintf(s_rec_code_log + s_rec_code_log_len, need + 1u, "%s%s\n", head, unit);
 }
 
-/* A unit became runnable before the boundary s_frames records next. */
+/* A unit became runnable before the boundary s_frames records next, or
+ * (op 'R', no unit) the host rescanned its code cache. */
 static void code_watch(char op, const char *unit)
 {
-    if (s_state == REPLAY_RECORDING) code_log_add(s_frames, op, unit);
+    if (s_state == REPLAY_RECORDING) code_log_add(s_frames, op, unit ? unit : "-");
 }
 
 /* At the recording's first boundary: the units it starts with, and from
