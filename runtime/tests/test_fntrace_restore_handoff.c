@@ -4,7 +4,6 @@
 
 static int effects;
 void dirty_ram_clear_image_baseline(void) { ++effects; }
-void memory_clear_low_boot_scratch(void) { ++effects; }
 void cdrom_notify_game_started(void) { ++effects; }
 void boot_state_trigger_capture(const CPUState* cpu) { (void)cpu; ++effects; }
 static void check(int ok, const char* message) {
@@ -19,9 +18,9 @@ int main(void) {
     fntrace_restore_game_started(0);
     check(!fntrace_is_game_started() && !effects, "pre-game restore resets warm latch");
     fntrace_mark_game_started(&cpu);
-    check(effects == 4, "normal boot retains all handoff effects");
+    check(effects == 3, "normal boot retains required handoff effects");
     fntrace_mark_game_started(&cpu);
-    check(effects == 4, "handoff remains one-shot");
+    check(effects == 3, "handoff remains one-shot");
     puts("restored handoff checks passed");
     return 0;
 }

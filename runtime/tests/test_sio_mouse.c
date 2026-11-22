@@ -134,6 +134,29 @@ int main(void) {
     sio_set_mouse_buttons(0,0,0);
     EXPECT(0,"motion is consumed by the read", 0xFF,0x12,0x5A,0xFF,0xFC,0x00,0x00);
 
+    /* A down event arrives even when the host sample already sees release. */
+    sio_mouse_latch_press(0,1,0);
+    sio_set_mouse_buttons(0,0,0);
+    EXPECT(0,"short left click fires",    0xFF,0x12,0x5A,0xFF,0xF4,0x00,0x00);
+    EXPECT(0,"short click is consumed",  0xFF,0x12,0x5A,0xFF,0xFC,0x00,0x00);
+    sio_mouse_latch_press(0,1,0);
+    EXPECT(0,"another click fires",       0xFF,0x12,0x5A,0xFF,0xF4,0x00,0x00);
+    sio_set_mouse_buttons(0,0,1);
+    EXPECT(0,"held right stays pressed", 0xFF,0x12,0x5A,0xFF,0xF8,0x00,0x00);
+    EXPECT(0,"held right on next poll",  0xFF,0x12,0x5A,0xFF,0xF8,0x00,0x00);
+    sio_set_mouse_buttons(0,0,0);
+    sio_mouse_latch_press(0,0,1);
+    clock_now += 33868800u / 4u;
+    EXPECT(0,"stale click is dropped",   0xFF,0x12,0x5A,0xFF,0xFC,0x00,0x00);
+    sio_mouse_latch_press(0,1,0);
+    clock_now += 33868800u / 8u;
+    sio_mouse_latch_press(0,0,1);
+    clock_now += 33868800u / 8u;
+    EXPECT(0,"right click does not refresh expired left",0xFF,0x12,0x5A,0xFF,0xF8,0x00,0x00);
+    sio_mouse_latch_press(0,1,0);
+    sio_mouse_clear_input(0);
+    EXPECT(0,"capture release clears clicks", 0xFF,0x12,0x5A,0xFF,0xFC,0x00,0x00);
+
     /* Carry past one byte (host policy): +300 reads 7F 7F 2E 00. */
     sio_mouse_add_motion(0,300,-300);
     EXPECT(0,"carry read 1", 0xFF,0x12,0x5A,0xFF,0xFC,0x7F,0x80);
@@ -197,6 +220,7 @@ int main(void) {
     /* Restore actual unread device input after a kind switch and consumption. */
     {
         sio_mouse_add_motion(1,300,-300); sio_set_mouse_buttons(1,1,0);
+        sio_mouse_latch_press(1,0,1);
         uint32_t n = sio_snapshot_bytes();
         uint8_t *saved = (uint8_t*)malloc(n);
         check(saved != NULL,"allocate peripheral snapshot");
@@ -205,7 +229,7 @@ int main(void) {
         check(sio_snapshot_read(saved,n),"restore peripheral snapshot");
         free(saved);
         check(sio_get_port_device(1) == SIO_DEVICE_MOUSE,"restore peripheral kind");
-        EXPECT(1,"restored unread peripheral payload",0xff,0x12,0x5a,0xff,0xf4,0x7f,0x80);
+        EXPECT(1,"restored unread motion and click",0xff,0x12,0x5a,0xff,0xf0,0x7f,0x80);
         EXPECT(1,"restored motion carry",0xff,0x12,0x5a,0xff,0xf4,0x7f,0x80);
     }
 

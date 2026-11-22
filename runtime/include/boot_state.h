@@ -47,16 +47,18 @@ extern "C" {
  * v5 = v4 + CD-ROM Sub-Q replacement state;
  * v6 = v5 + per-word GPU DMA2 linked-list progress;
  * v7 = v6 + pending XA DATA_END IRQ state. */
-#define BOOT_STATE_VERSION 12u
+#define BOOT_STATE_VERSION 14u
 /* v11 adds timer one-shot/reset state; v12 also requires trusted-title host
  * state. Older execution snapshots do not contain the new timer latches. */
-#define BOOT_STATE_VERSION_WITHOUT_HOST 11u
+#define BOOT_STATE_VERSION_WITHOUT_HOST 13u
+/* v13 always carries the canonical CPU load-delay window (old operand and
+ * successor PC). v14 also requires trusted-title host state. */
 /* v8 added allocated enhancement memory (vanilla v8-era writers kept v7); older
  * runtimes must not accept enhanced snapshots while ignoring their arenas. */
 /* v9 persists the BIOS-to-game handoff latch. Engine overlays may have
  * replaced the original entry code by the time a gameplay state is loaded. */
 /* Reject older snapshots at the header before changing the live machine. */
-#define BOOT_STATE_VERSION_MIN_READ 11u
+#define BOOT_STATE_VERSION_MIN_READ 13u
 /* Section pad bit0: payload is u32 LE uncompressed_len + zlib deflate bytes. */
 #define BOOT_STATE_SEC_ZLIB 1u
 
@@ -93,13 +95,10 @@ typedef struct {
  * never allowed) -> normal boot + recapture.
  */
 enum {
-    /* Checkpoint resume sections (debug feature). Written only while
-     * boot_state_resume_sections_enabled(); optional on load, at most one
-     * each. They carry state a load otherwise resets, so a resumed run
-     * matches the uninterrupted one. */
-    BS_SEC_CPU_EXEC   = 0x17, /* 9 u32: 5 reserved zero words, then the
-                                 interpreter's pending load (rt, value,
-                                 age, armed) */
+    /* CPU_EXEC is required architectural pipeline state in every v13+ save.
+     * The other resume sections remain optional debug checkpoint data. */
+    BS_SEC_CPU_EXEC   = 0x17, /* 9 u32: old operand, successor PC, 3 reserved
+                                 zero words, rt, loaded value, age, armed */
     BS_SEC_SCHED      = 0x18, /* 4 u32: scheduler switch-back TCB, 3 zero */
     BS_SEC_MEMCTRL    = 0x1A, /* 18 u32: memory control, RAM_SIZE, CACHE_CTRL */
     BS_SEC_IRQ_TIMING = 0x1F, /* 64 B: IRQ cooldown, SIO progress and the

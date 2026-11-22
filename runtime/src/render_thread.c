@@ -167,6 +167,9 @@ static __thread int t_render;
 int rt_running(void)          { return atomic_load(&R.running); }
 int rt_on_render_thread(void) { return t_render; }
 int rt_held(void)             { return R.held; }
+int rt_has_pending_records(void) {
+    return atomic_load(&R.wpos) != atomic_load(&R.rpos);
+}
 uint64_t rt_render_idle_ns(void) { return atomic_load(&R.idle_ns); }
 uint64_t rt_now_ns(void) { return now_ns(); }
 uint64_t rt_backpressure_events(void) { return atomic_load(&R.bp_events); }

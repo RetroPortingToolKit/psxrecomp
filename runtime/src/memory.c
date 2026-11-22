@@ -237,11 +237,6 @@ int psx_peek_word(uint32_t addr, uint32_t *out) {
     if (out) memcpy(out, p, sizeof(*out));
     return 1;
 }
-void memory_clear_low_boot_scratch(void) {
-    memset(ram, 0, 0x10u);
-    psx_kernel_bless_note_range(0u, 0x10u);   /* raw write: see the rule there */
-}
-
 /* ---- Dirty-page tracking for install-at-runtime code (CLAUDE.md Rule 18) ----
  *
  * The PS1 BIOS writes 4-instruction dispatch stubs into kernel RAM at runtime
@@ -2286,16 +2281,9 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
 
     uint32_t phys = psx_phys_addr_store(addr);
 
-    /* The generated BIOS mirrors its exception trampoline to 0x80000000 during
-     * boot. On hardware this mirror copy is not visible in RAM; only the real
-     * exception vector at 0x80000080 is. Tomba 2 later passes buffer=0 to the
-     * BIOS card write routine, so stale mirror bytes at 0 corrupt the sector 63
-     * management write and leave the load menu stuck checking the card.
-     * Keys for relocated SCPH-1001 code go through scph1001_relocated_store()
-     * (runtime PC, ROM address); Kernel Part 2 runs at 0x500 from ROM
-     * 0xBFC10000. */
-    if (fntrace_is_game_started() &&
-        phys < 0x10u && scph1001_relocated_store(0x00000F00u, 0xBFC10A00u)) return;
+    /* PSX-SPX kernelbios, "C(07h) - InstallExceptionHandlers()": the BIOS
+     * copies the exception opcodes to both RAM 80..8F and 0..0F. Relocated
+     * installation stores therefore use the ordinary RAM write path below. */
 
     /* BIOS helpers use RAM address zero as a tiny delay-loop scratch between
      * device-register polls. Treat these two dummy stores as non-visible; real

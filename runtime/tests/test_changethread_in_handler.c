@@ -52,6 +52,10 @@
     fflush(stdout); _Exit(1); \
 } while (0)
 #include "rfe_guest_fixture.h"
+#ifdef FX_REAL_LOAD_DELAY
+#include "dirty_ram_interp.h"
+#include "psx_load_delay.h"
+#endif
 
 #define WORK_ENTRY   0x80010000u /* the worker thread's function */
 #define WORK_LOOP    0x80010020u /* its loop head, a block leader */
@@ -91,6 +95,19 @@ static uint64_t entries_at_poll;
 static unsigned polls, irqs, plain_resumes, self_resumes, outside_resumes;
 static unsigned main_runs, main_afters, worker_resumes, handler_continued, exits;
 static uint32_t count_at_switch;  /* WORK_COUNT when the handler called ChangeThread */
+#ifdef FX_REAL_LOAD_DELAY
+static void check_load_successor(CPUState *cpu) {
+    const uint32_t value = 0x77000000u + polls;
+    const uint32_t old = value ^ 0x01000000u;
+    const uint32_t move = 0x01004821u; /* addu t1,t0,zero */
+    uint64_t cookie = dirty_ram_ld_delay_begin(cpu, WORK_LOOP, move);
+    /* An actual exception drains the load; an untaken observation does not. */
+    FX_CHECK(cpu->gpr[8] == (polls % 3u == 0u ? value : old));
+    cpu->gpr[9] = cpu->gpr[8];
+    dirty_ram_ld_delay_end(cpu, cookie, move);
+    FX_CHECK(cpu->gpr[8] == value);
+}
+#endif
 
 void psx_changethread_in_handler_stats(uint32_t out[6]);
 int psx_syscall(CPUState *cpu, uint32_t code);
@@ -147,6 +164,10 @@ block_work_loop:
     psx_cycle_count += 1000u;
     if (++polls % 3u == 0u) i_stat |= 8u;
     cpu->gpr[8] = 0x77000000u + polls;       /* a register that changes per pass */
+#ifdef FX_REAL_LOAD_DELAY
+    cpu->gpr[8] ^= 0x01000000u;
+    dirty_ram_ld_delay_stage(cpu, 8u, 0x77000000u + polls, WORK_LOOP);
+#endif
     capture(cpu, &interrupted);
     interrupted_live = 1;
     entries_at_poll = fx_exception_entries;
@@ -164,6 +185,9 @@ block_work_loop:
         else plain_resumes++;
     }
 after_poll:
+#ifdef FX_REAL_LOAD_DELAY
+    check_load_successor(cpu);
+#endif
     fx_write(WORK_COUNT, fx_read(WORK_COUNT) + 1u);
     if (fx_read(WORK_COUNT) < PASSES) goto block_work_loop;
     cpu->pc = cpu->gpr[31];

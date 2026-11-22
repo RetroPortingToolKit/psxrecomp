@@ -1,7 +1,7 @@
 /* pgxp_session.cpp -- the per-session PGXP arming main.cpp runs
  * (docs/ENHANCEMENTS.md G1.11/G1.12). See pgxp_session.h for the sequence.
  * Kept out of main.cpp so runtime/tests/test_pgxp_session.cpp runs exactly
- * this code against the real mod runtime and builtin plugin. */
+ * this code without the rest of the runtime. */
 #include "pgxp_session.h"
 #include "pgxp.h"
 
@@ -41,6 +41,8 @@ extern "C" PSXPgxpSessionArm psx_pgxp_session_arm(
     in.netplay = config->netplay ? 1 : 0;
     in.player_geometry_set=config->player_geometry_set;
     in.player_texture_set=config->player_texture_set;
+    in.player_cpu_mode_set = config->player_cpu_mode_set ? 1 : 0;
+    in.player_culling = config->player_culling ? 1 : 0;
     /* Take, not peek: the request belongs to this session alone. */
     in.mod_enabled = pgxp_mod_request_take(&in.mod_cpu_mode, &in.mod_culling);
     in.mod_corrections_set = s_corrections_set;

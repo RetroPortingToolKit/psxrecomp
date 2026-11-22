@@ -395,7 +395,7 @@ static void exec_one(CPUState* cpu) {
         case 0x10: /* RFE */
             if ((insn & 0x3F) == 0x10) {
                 uint32_t sr = cpu->cop0[12];
-                cpu->cop0[12] = (sr & 0xFFFFFFC0u) | ((sr >> 2) & 0x0Fu);
+                cpu->cop0[12] = (sr & 0xFFFFFFF0u) | ((sr >> 2) & 0x0Fu);
             }
             break;
         default:

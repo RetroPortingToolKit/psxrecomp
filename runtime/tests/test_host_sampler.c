@@ -1,6 +1,7 @@
 #include "host_sampler.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 
 uint64_t s_frame_count;
@@ -20,8 +21,30 @@ static void busy_interval(void) {
     while (clock() < end) value = value * 1664525u + 1013904223u;
 }
 
+#if defined(_WIN32) && !(defined(PSX_DISABLE_HOST_SAMPLER) && PSX_DISABLE_HOST_SAMPLER)
+/* Registered before host_sampler_start, so it runs after the sampler's own
+ * atexit handler. exit() then terminates the sampler thread; if it still
+ * suspends this thread at that point, the process can stay suspended for
+ * good (PS1B-674: a Spyro recording that never exited). */
+static void sampler_stopped_at_exit(void) {
+    const uint64_t at_exit = host_sampler_seq();
+    busy_interval();
+    if (host_sampler_seq() != at_exit) {
+        fprintf(stderr, "FAIL: the sampler still suspends the exiting thread during exit (%llu samples)\n",
+                (unsigned long long)(host_sampler_seq() - at_exit));
+        fflush(stderr);
+        _Exit(1);
+    }
+    puts("PASS: the sampler is stopped before exit terminates its thread");
+    fflush(stdout);
+}
+#endif
+
 int main(void) {
     HostSample sample;
+#if defined(_WIN32) && !(defined(PSX_DISABLE_HOST_SAMPLER) && PSX_DISABLE_HOST_SAMPLER)
+    atexit(sampler_stopped_at_exit);
+#endif
     CHECK(!host_sampler_get(0, &sample));
     s_frame_count = 42;
     g_psx_last_fn_entry = 0x80010000u;

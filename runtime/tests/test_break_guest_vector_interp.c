@@ -81,7 +81,7 @@ int psx_get_in_exception(void) { return 0; }
 void psx_check_interrupts(CPUState *cpu) { (void)cpu; }
 void psx_check_interrupts_at(CPUState *cpu, uint32_t resume_pc) { (void)cpu; (void)resume_pc; }
 void psx_rfe_escape_check(CPUState *cpu) { (void)cpu; }
-int psx_defer_switch_pending(void) { return 0; }
+int psx_deferred_switch_is_pending(void) { return 0; }
 int psx_kernel_bless_dispatchable(uint32_t phys) { (void)phys; return 0; }
 int psx_kernel_patch_range_ends_at(uint32_t phys) { (void)phys; return 0; }
 int psx_overlay_static_can_dispatch(uint32_t addr) { (void)addr; return 0; }

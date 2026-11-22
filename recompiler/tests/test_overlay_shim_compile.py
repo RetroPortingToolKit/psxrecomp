@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import ctypes
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -56,6 +57,40 @@ void func_80010000(CPUState *cpu) {
     if (psx_slice_block(cpu, 0x80010000u, 1u, 0)) return;
     debug_server_log_call_entry(0x80010000u);
 }
+
+static unsigned load_calls, begin_calls, end_calls, charged;
+static CPUState *load_cpu;
+static void fixture_charge(uint32_t cycles) { charged += cycles; }
+static void fixture_stage(CPUState *cpu, uint32_t rt, uint32_t value, uint32_t pc) {
+    if (cpu == load_cpu && rt == 8u && value == 0x2222u && pc == 0x80010008u)
+        ++load_calls;
+}
+static uint64_t fixture_begin(CPUState *cpu, uint32_t pc, uint32_t instruction) {
+    if (cpu == load_cpu && pc == 0x80010008u && instruction == 0x48880000u)
+        ++begin_calls;
+    return UINT64_C(0x1234567801);
+}
+static void fixture_end(CPUState *cpu, uint64_t cookie, uint32_t instruction) {
+    if (cpu == load_cpu && cookie == UINT64_C(0x1234567801) && instruction == 0x48880000u)
+        ++end_calls;
+}
+PSX_OVERLAY_EXPORT int fixture_load_window(void) {
+    CPUState cpu = {0};
+    OverlayCallbacks callbacks = {0};
+    callbacks.cpu_charge = fixture_charge;
+    callbacks.ld_delay_stage = fixture_stage;
+    callbacks.ld_delay_begin = fixture_begin;
+    callbacks.ld_delay_end = fixture_end;
+    load_cpu = &cpu;
+    overlay_init(&callbacks);
+    psx_cpu_charge(17u);
+    dirty_ram_ld_delay_stage(&cpu, 8u, 0x2222u, 0x80010008u);
+    uint64_t cookie = dirty_ram_ld_delay_begin(&cpu, 0x80010008u, 0x48880000u);
+    dirty_ram_ld_delay_end(&cpu, cookie, 0x48880000u);
+    if (charged || load_calls != 1u || begin_calls != 1u || end_calls != 1u) return 1;
+    overlay_flush_cycles();
+    return charged == 17u ? 0 : 2;
+}
 '''
     gcc = find_gcc()
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -84,7 +119,16 @@ void func_80010000(CPUState *cpu) {
             return result.returncode
         if not out_path.is_file():
             raise AssertionError("overlay compiler reported success without output")
-    print("PASS: overlay callback shim compiles against runtime headers")
+        library = ctypes.CDLL(str(out_path))
+        library.fixture_load_window.restype = ctypes.c_int
+        if library.fixture_load_window() != 0:
+            raise AssertionError("load window forwarding lost its host owner or flushed clocks early")
+        # Release the Windows module before TemporaryDirectory cleanup.
+        if os.name == "nt":
+            import _ctypes
+            _ctypes.FreeLibrary(library._handle)
+        del library
+    print("PASS: overlay shim compiles and forwards the load window before clock observation")
     return 0
 
 

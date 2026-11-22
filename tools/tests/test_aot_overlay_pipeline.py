@@ -12,11 +12,117 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import aot_compiler_cache as compiler_cache
 import aot_overlay_pipeline as pipeline
 import audit_aot_cache as auditor
 import indexed_lzss_pack as lzss_pack
 import prepared_files
 from test_bpe_container import MAGIC as BPE_MAGIC, container as bpe_container_bytes, encode_block
+
+
+class ReleaseCompilerCacheTests(unittest.TestCase):
+    def test_native_identity_queries_wait_for_the_actual_result(self):
+        def completed_probe(command, **kwargs):
+            if kwargs.get('timeout') is not None:
+                raise pipeline.subprocess.TimeoutExpired(command, kwargs['timeout'])
+            return mock.Mock(returncode=0, stdout='12345678\n', stderr='')
+
+        with mock.patch.object(pipeline.subprocess, 'run', side_effect=completed_probe):
+            with self.subTest(query='codegen identity'):
+                pipeline.compiler.verify_recompiler_matches_tag('emitter', 0x12345678)
+            with self.subTest(query='overlay configuration identity'):
+                self.assertEqual(pipeline.compiler.overlay_config_hash('emitter', 'game.toml'),
+                                 0x12345678)
+
+    def test_default_pair_lock_waits_for_contention_to_clear(self):
+        import os
+        if os.name == 'nt':
+            import msvcrt
+            module, function = msvcrt, 'locking'
+        else:
+            import fcntl
+            module, function = fcntl, 'flock'
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(module, function, side_effect=[OSError('busy'), None, None]) as lock, \
+                mock.patch.object(pipeline.compiler.time, 'monotonic', side_effect=[0, 1000]), \
+                mock.patch.object(pipeline.compiler.time, 'sleep'):
+            with pipeline.compiler._shard_pair_lock(str(Path(directory) / 'pair.dll')):
+                acquired = True
+        self.assertTrue(acquired)
+        self.assertEqual(lock.call_count, 3)  # contention, acquisition, unlock
+
+    def test_release_rejects_cache_namespace_the_runtime_cannot_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / 'game-build'
+            tool = root / 'compiler-build'
+            exe = tool / 'psxrecomp-game'
+            header = runtime / 'psxrecomp_codegen_include/overlay_codegen_hash.h'
+            tool_header = tool / 'runtime/include/overlay_codegen_hash.h'
+            for path, tag in ((header, '12345678'), (tool_header, '87654321')):
+                path.parent.mkdir(parents=True)
+                path.write_text(f'#define PSX_OVERLAY_CODEGEN_HASH 0x{tag}u\n')
+            with mock.patch.object(pipeline.compiler, 'verify_recompiler_matches_tag') as verify:
+                with self.assertRaisesRegex(pipeline.ProfileError, 'Runtime reads codegen 12345678'):
+                    pipeline.require_release_codegen(runtime, exe)
+                verify.assert_not_called()
+                tool_header.write_text(header.read_text())
+                pipeline.require_release_codegen(runtime, exe)
+                verify.assert_called_once_with(str(exe), 0x12345678)
+
+    def test_completed_recipes_survive_new_workspace_and_invalid_bytes_rebuild(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / 'game.toml'
+            inventory = dict(jobs=[dict(input='invented.json', name='image', recipe_sha256='first')])
+            relative = Path('TEST/gcc/platform/tag')
+            builds = []
+
+            def compile_fixture(command, **kwargs):
+                builds.append(command)
+                target = Path(command[command.index('--out-dir') + 1]) / relative
+                target.mkdir(parents=True)
+                (target / ('region' + pipeline.compiler.overlay_ext())).write_bytes(b'library')
+                (target / 'region.ranges').write_bytes(b'guarded ranges')
+                (target / 'region_patched.c').write_bytes(b'generated source')
+
+            with (
+                mock.patch.object(pipeline, 'release_inputs', return_value=('toolchain', 'context')),
+                mock.patch.object(pipeline.subprocess, 'run', side_effect=compile_fixture),
+            ):
+                for i in range(4):
+                    if i == 2:
+                        next((root / 'persistent').rglob('*.zip')).write_bytes(b'interrupted write')
+                    if i == 3:
+                        inventory['jobs'][0]['recipe_sha256'] = 'changed'
+                    result = pipeline.build(inventory, config, root / 'emitter', root / str(i),
+                                            'gcc', 1, reuse_dir=root / 'persistent')
+                    self.assertEqual((result / relative / 'region.ranges').read_bytes(), b'guarded ranges')
+                    self.assertFalse((result / relative / 'region_patched.c').exists())
+                    self.assertEqual(len(builds), (1, 1, 2, 3)[i])
+
+    def test_shared_guest_unit_keeps_references_and_has_no_dll_state(self):
+        preamble = 'int overlay_id(void) { return 13; }\n'
+        source = ('typedef struct CPUState CPUState;\n' + preamble +
+                  '/* Forward declarations */\n'
+                  'void func_80010400(CPUState* cpu);\n'
+                  'void func_80010004(CPUState* cpu);\n'
+                  'void func_80010004(CPUState* cpu)\n{\n    func_80010400(cpu);\n}\n'
+                  'void func_80010400(CPUState* cpu)\n{\n    (void)cpu;\n}\n'
+                  'PSX_OVERLAY_EXPORT uint64_t overlay_pair_id(void) {\n    return 1;\n}\n')
+        shim, units = compiler_cache.split_overlay(source, preamble)
+        self.assertEqual(len(units), 2)
+        self.assertIn(preamble, shim)
+        self.assertIn('void func_80010400(CPUState* cpu);', units[0])
+        self.assertNotIn(preamble, units[0])
+        changed = source.replace('    (void)cpu;', '    if (cpu) return;').replace('return 1;', 'return 2;')
+        next_shim, next_units = compiler_cache.split_overlay(changed, preamble)
+        self.assertEqual(units[0], next_units[0])
+        self.assertNotEqual(units[1], next_units[1])
+        self.assertNotEqual(shim, next_shim)
+        self.assertIsNone(compiler_cache.split_overlay(
+            source.replace('void func_80010004(CPUState* cpu)\n{',
+                           'static int state;\nvoid func_80010004(CPUState* cpu)\n{'), preamble))
 
 
 class PgxpReleaseNamespaceTests(unittest.TestCase):
@@ -75,7 +181,7 @@ class PgxpReleaseNamespaceTests(unittest.TestCase):
                     game_id='TEST', disc_hashes=dict(sha256='invented'))))
                 inventory = dict(game_id='TEST', profile_sha256='profile',
                     original_disc_sha256='disc', required_images=[],
-                    jobs=[dict(input='invented.json', name='image')])
+                    jobs=[dict(input='invented.json', name='image', recipe_sha256='recipe')])
                 commands = []
                 def compile_fixture(command, **kwargs):
                     commands.append(command)
@@ -91,6 +197,7 @@ class PgxpReleaseNamespaceTests(unittest.TestCase):
                      mock.patch.object(pipeline, 'extract', return_value=inventory), \
                      mock.patch.object(pipeline, 'audit', return_value={'published_pairs': 0}), \
                      mock.patch.object(pipeline, 'stage'), \
+                     mock.patch.object(pipeline, 'release_inputs', return_value=('toolchain', 'context')), \
                      mock.patch.object(pipeline.subprocess, 'run', side_effect=compile_fixture), \
                      contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(pipeline.run(), 0)

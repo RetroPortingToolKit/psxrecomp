@@ -1303,7 +1303,7 @@ TranslateResult StrictTranslator::translate_impl(const PSXRecomp::DecodedInstruc
             // preserving the top bits.
             r.c_code =
                 "{ uint32_t sr = cpu->cop0[12]; "
-                "cpu->cop0[12] = (sr & 0xFFFFFFC0u) | ((sr >> 2) & 0x0Fu); } "
+                "cpu->cop0[12] = (sr & 0xFFFFFFF0u) | ((sr >> 2) & 0x0Fu); } "
                 "/* rfe -- slice terminator (per session approval, RFE substitutes for "
                 "FIRST_MILESTONE.md \"ERET\" since R3000A has no ERET) */ return;";
             r.comment = "rfe";

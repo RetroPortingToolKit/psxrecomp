@@ -85,6 +85,18 @@ if(BUILD_TESTING)
         target_compile_options(player_settings_provider_test PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG> $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
         add_test(NAME player_settings_provider_test COMMAND player_settings_provider_test)
+        add_executable(legacy_player_settings_test tests/test_legacy_player_settings.cpp
+            src/legacy_player_settings.cpp src/host_enhancements.c
+            src/mod_packages.cpp src/mod_media.cpp src/iso_reader.cpp src/cue_sheet.cpp
+            src/crc32.c src/psx_sha256.c
+            ../recompiler/src/config_loader.cpp ../recompiler/src/ps1_exe_parser.cpp)
+        target_include_directories(legacy_player_settings_test PRIVATE include ../recompiler/src
+            ../recompiler/include ../recompiler/lib/fmt/include ../recompiler/lib/toml11 "${RECOMP_UI_ROOT}/src")
+        target_compile_definitions(legacy_player_settings_test PRIVATE RECOMP_LAUNCHER FMT_HEADER_ONLY=1)
+        target_compile_options(legacy_player_settings_test PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG> $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+        target_link_libraries(legacy_player_settings_test PRIVATE chdr-static)
+        add_test(NAME legacy_player_settings_test COMMAND legacy_player_settings_test)
         if(EXISTS "${RECOMP_UI_ROOT}/tests/psx_settings_draw_test.cpp")
             # The runtime target included this inside its function scope.
             # Initialize UI source/asset variables in this fixture's scope too.
@@ -169,6 +181,10 @@ if(BUILD_TESTING)
             add_test(NAME direct_guest_memory
                 COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_direct_guest_memory.py
+                    --cc ${CMAKE_C_COMPILER})
+            add_test(NAME lowram_game_handoff
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lowram_game_handoff.py
                     --cc ${CMAKE_C_COMPILER})
         endif()
     endif()
@@ -472,15 +488,6 @@ if(BUILD_TESTING)
         target_include_directories(replay_file_test PRIVATE include)
         target_compile_options(replay_file_test PRIVATE -UNDEBUG)
         add_test(NAME replay_file_test COMMAND replay_file_test)
-        add_executable(replay_session_test tests/test_replay_session.c src/replay_session.c
-            src/replay_file.c src/replay_identity.c src/psx_sha256.c)
-        target_include_directories(replay_session_test PRIVATE include)
-        target_compile_options(replay_session_test PRIVATE -UNDEBUG)
-        add_test(NAME replay_session_test COMMAND replay_session_test)
-        add_executable(replay_frontend_test tests/test_replay_frontend.c src/replay_frontend.c)
-        target_include_directories(replay_frontend_test PRIVATE include)
-        target_compile_options(replay_frontend_test PRIVATE -UNDEBUG)
-        add_test(NAME replay_frontend_test COMMAND replay_frontend_test)
         add_executable(boot_state_native_capture_test tests/test_capture_writer.c src/mod_snapshot.c)
         target_include_directories(boot_state_native_capture_test PRIVATE include src)
         target_compile_definitions(boot_state_native_capture_test PRIVATE PSX_COSIM=1 PSX_NATIVE_CAPTURE_JOBS=1)
@@ -627,10 +634,19 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
             add_test(NAME rfe_irq_context_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_irq_context.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME rfe_syscall_depth_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_syscall_depth.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME changethread_in_handler_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_changethread_in_handler.py --cc ${CMAKE_C_COMPILER})
+            add_test(NAME load_delay_irq_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_load_delay_irq.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME deferred_switch_interp_spin_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deferred_switch_interp_spin.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME break_guest_vector_interp_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_guest_vector_interp.py --cc ${CMAKE_C_COMPILER})
         endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            find_path(_vk_sync_test_include vulkan/vulkan.h
+                HINTS ${Vulkan_INCLUDE_DIRS} "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
+            if(_vk_sync_test_include)
+                add_test(NAME vk_present_semaphore_lifetime_test COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vk_present_semaphore_lifetime.py"
+                    --cc "${CMAKE_C_COMPILER}" --vulkan-include "${_vk_sync_test_include}"
+                    --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vk_present_semaphore_lifetime.c")
+            endif()
             add_test(NAME display_ring_capture_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_display_ring_capture.py"
                 --cc "${CMAKE_C_COMPILER}" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/display-ring-fixture")
@@ -671,6 +687,9 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
                 --cc "${CMAKE_C_COMPILER}")
         endif()
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            add_test(NAME menu_exit_teardown_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_menu_exit_teardown.py"
+                --cc "${CMAKE_C_COMPILER}" --cxx "${CMAKE_CXX_COMPILER}")
             add_test(NAME resolved_pad_guard_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_resolved_pad_guard.py"
                 --cxx "${CMAKE_CXX_COMPILER}")
@@ -911,6 +930,23 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         message(STATUS "gl_scale_invariance_test: not registered (needs macOS, Linux or MinGW, Python 3 and SDL3)")
     endif()
     if(Python3_Interpreter_FOUND AND TARGET SDL3::SDL3-static)
+        find_program(_vk_depth24_glslc NAMES glslc
+            HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+        if(_vk_sync_test_include AND _vk_depth24_glslc AND NOT APPLE
+                AND (NOT WIN32 OR MINGW))
+            add_test(NAME vk_depth24_authority_test
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_vk_depth24_authority.py"
+                    --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vk_depth24_authority.c"
+                    --cc "${CMAKE_C_COMPILER}"
+                    --sdl-include "$<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>"
+                    --sdl-library "$<TARGET_FILE:SDL3::SDL3-static>"
+                    --vulkan-include "${_vk_sync_test_include}"
+                    --glslc "${_vk_depth24_glslc}"
+                    --output "${CMAKE_CURRENT_BINARY_DIR}/vk-depth24-results")
+            set_tests_properties(vk_depth24_authority_test PROPERTIES
+                LABELS "gpu;vulkan;hardware" TIMEOUT 0 SKIP_RETURN_CODE 77)
+        endif()
         foreach(_depth_window 0 1)
             add_test(NAME gl_depth_clear_${_depth_window}_test
                 COMMAND "${Python3_EXECUTABLE}"
@@ -1563,21 +1599,16 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_compile_definitions(pgxp_demand_receipts_test PRIVATE PSX_PGXP_DEMAND_REGIONS=1)
     add_test(NAME pgxp_demand_receipts_test COMMAND pgxp_demand_receipts_test)
 
-    # psx.enhancement.pgxp at session start (docs/ENHANCEMENTS.md G1.11): the
-    # real builtin activation (mod API stubbed) and the pgxp_session.h
-    # resolver main.cpp's renderer setup uses, in main.cpp's order. Pins that
-    # the [video] baseline no longer undoes the mod, that a cleared (netplay)
-    # plan keeps the baseline, and that the env overrides win.
-    # The session arming main.cpp runs (src/pgxp_session.cpp) against the
-    # real mod runtime, the real builtin plugin and the builtin's own
-    # manifest: default-on, netplay clear, the off switch, options, env
-    # overrides and [video] pgxp_mod_only.
+    # PGXP at session start (docs/ENHANCEMENTS.md G1.11): the session arming
+    # main.cpp runs (src/pgxp_session.cpp) with the player's PGXP settings, a
+    # title mod's request (pgxp_mod_request), netplay, the env overrides and
+    # [video] pgxp_mod_only.
     # Run the same session fixture in both real compilation flavors.
     foreach(_pgxp_session_test IN ITEMS pgxp_session_test pgxp_session_hooks_test)
         add_executable(${_pgxp_session_test} tests/test_pgxp_session.cpp
             src/mod_immediate.c src/func_override.c
             src/host_overlay.c src/host_span_ring.c
-            src/pgxp_session.cpp src/mod_builtin_pgxp.c src/pgxp.cpp
+            src/pgxp_session.cpp src/pgxp.cpp
             src/psx_ram_geometry.c
             src/mod_runtime.cpp src/mod_function_replacements.c
             src/mod_packages.cpp
@@ -1591,8 +1622,6 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
             include
             ../recompiler/include
             ../recompiler/lib/toml11)
-        target_compile_definitions(${_pgxp_session_test} PRIVATE
-            PSX_BUILTIN_PGXP_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/../mods/builtin/packages/psx.enhancement.pgxp/1.0.0/manifest.toml")
         target_link_libraries(${_pgxp_session_test} PRIVATE chdr-static)
         target_sources(${_pgxp_session_test} PRIVATE src/mod_netplay.c)
         psxrecomp_sha256_file(${_pgxp_session_test})
@@ -2179,8 +2208,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         src/mod_packages.cpp
         src/mod_media.cpp src/iso_reader.cpp src/cue_sheet.cpp
         src/crc32.c
-        src/psx_sha256.c
-        src/host_enhancements.c)
+        src/psx_sha256.c)
     target_include_directories(builtin_mod_manifests_test PRIVATE
         include
         ../recompiler/include
@@ -2510,6 +2538,10 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_include_directories(cdrom_sector_fifo_test PRIVATE include src)
     add_test(NAME cdrom_sector_fifo_test COMMAND cdrom_sector_fifo_test)
 
+    add_executable(cdrom_held_command_pickup_test tests/test_cdrom_held_command_pickup.c)
+    target_include_directories(cdrom_held_command_pickup_test PRIVATE include src)
+    add_test(NAME cdrom_held_command_pickup_test COMMAND cdrom_held_command_pickup_test)
+
     add_executable(cdrom_read_motor_test tests/test_cdrom_read_motor.c)
     target_include_directories(cdrom_read_motor_test PRIVATE include src)
     add_test(NAME cdrom_read_motor_test COMMAND cdrom_read_motor_test)
@@ -2698,20 +2730,16 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_include_directories(mod_internal_resolution_test PRIVATE include)
     add_test(NAME mod_internal_resolution_test COMMAND mod_internal_resolution_test)
 
-    # The built-in host enhancement mods (CRT Filter, Image Filtering,
-    # Enhanced Audio, Rewind, Internal Resolution): the real plugins and their
-    # session requests against a fake mod runtime (host_enhancements.h).
+    # The player's host enhancement settings (internal resolution, CRT
+    # filter, image filtering, enhanced audio, post-processing, rewind) and
+    # the session requests made from them (host_enhancements.h).
     add_executable(host_enhancements_test
         tests/test_host_enhancements.c
-        src/host_enhancements.c
-        src/mod_builtin_crt_filter.c
-        src/mod_builtin_image_filtering.c
-        src/mod_builtin_enhanced_audio.c
-        src/mod_builtin_rewind.c
-        src/mod_builtin_replay_recording.c
-        src/mod_builtin_internal_resolution.c
-        src/mod_builtin_post_processing.c)
+        src/host_enhancements.c)
     target_include_directories(host_enhancements_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(host_enhancements_test PRIVATE m)
+    endif()
     add_test(NAME host_enhancements_test COMMAND host_enhancements_test)
 
     add_executable(memcard_extensions_test
@@ -3193,12 +3221,27 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         add_test(NAME restore_edge_irq_check_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_restore_edge_irq_check.py)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            add_test(NAME netplay_test_input_test
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_test_input.py
+                             --compiler ${CMAKE_CXX_COMPILER})
+        endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME netplay_rb_session_reset_test
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_rb_session_reset.py
                              --compiler ${CMAKE_C_COMPILER})
             if(PSXRECOMP_TEST_HAS_RBENGINE)
+                add_test(NAME netplay_commit_lineage_test
+                         COMMAND ${Python3_EXECUTABLE}
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_commit_lineage.py
+                                 --compiler ${CMAKE_C_COMPILER}
+                                 --recomp-net ${_RNET_ROOT})
+                add_test(NAME netplay_joint_recovery_test
+                         COMMAND ${Python3_EXECUTABLE}
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_joint_recovery.py
+                                 --compiler ${CMAKE_C_COMPILER})
                 # Multi-seat Verify with a lost POST (#636): production Verify
                 # code, controlled clock and lossy transport.
                 add_test(NAME netplay_rb_verify_lost_post_test
@@ -3211,6 +3254,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
             add_test(NAME overlay_retry_c11_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_retry_c11.py --compiler ${CMAKE_C_COMPILER})
         endif()
         add_test(NAME setup_bios_assets_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_bios_assets.py)
+        add_test(NAME cli_generate_bios_profile_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli_generate_bios_profile.py)
         # The hand-over to the product forces the launcher for a player and
         # honours a headless start. Without recomp-ui or a C compiler it
         # cannot run and exits 77: "Skipped", not "Passed".

@@ -28,6 +28,25 @@ default false) get content negotiation; titles without a trusted simulation
 profile keep vanilla netplay (simulation mods cleared), the MOTK1 LAN protocol
 and plan-free lobby caps.
 
+For two-seat non-media rollback recovery, a follow-NACK offers a retained,
+verified snapshot strictly before the original mispredicted input. A progress
+watermark alone is insufficient. The peers park Live, reopen BEGIN for that
+same correction, exchange sealed input rows, match the restored baseline, and
+match POST after replay before resuming. If there is no usable recent shared
+snapshot, the existing slot-zero host can transfer its retained pre-mismatch
+keyframe before baseline verification and full input replay. Keyframe authority
+stays with that host. Missing host history or an unreplayable input range stays
+parked with a reconnect diagnostic; it never authorizes a unilateral restore
+or replacement of player input. PSX SYNC flag `0x10` marks this retained-load
+retry (and a valid NACK offer, including tick zero); NACK flag `0x20` means no
+retained offer. `MEDIA_KF` on NACK advertises a retained host keyframe source.
+The shared PREFIX NACK flag `0x08` remains reserved for its SDK meaning.
+A progress advert cannot complete this correction. After the baseline and our
+complete replay are verified, a same-epoch, exact-tip COMMIT can acknowledge
+that the peer matched our POST even if its own POST was lost or reordered.
+Stale epochs, different tips and incomplete local replay remain parked.
+Normal strict build compatibility applies.
+
 A statically linked title can register `PSXModNetplayProfile` from
 `runtime/include/mod_netplay.h` for a shared simulation such as experimental
 co-op. The profile forces its native simulation plugin and permitted fixed view
@@ -196,9 +215,9 @@ Cost: extra CPU for the 1× SW pass. Benefit: peers can use different GL
 settings without desyncing the sim. SW-only netplay forces scale 1 for the
 whole path. Offline play keeps full supersampling with no dual-raster tax.
 
-**Internal resolution is a per-peer presentation choice.** It is the built-in
-Internal Resolution mod (`psx.enhancement.internal-resolution`), a host-only
-mod (below), so it stays each player's own in netplay: each peer keeps its own
+**Internal resolution is a per-peer presentation choice.** It is a player
+setting (`settings.toml [video] internal_resolution`), never part of the
+netplay plan, so it stays each player's own in netplay: each peer keeps its own
 preset, clamped to its own GPU, and one peer at 4K next to another at Native is
 a supported match. Its option does not change during a match (the scale is
 held); a change made then applies at the next session. Only the GL present surface changes; the 1×
@@ -493,9 +512,10 @@ repeat on a resim (e.g. `psx_mod_set_host_rumble`) check
 `psx_netplay_is_resimulating()` themselves.
 
 A fourth class, `netplay = "host_only"` (format 11), is for plugins that never
-touch guest execution at all -- the framework's CRT Filter, Image Filtering,
-Enhanced Audio, Rewind and Internal Resolution mods: they only set host
-presentation, audio output or host-tool state. Their features are no part of the plan fingerprint and stay
+touch guest execution at all: they only set host presentation, audio output or
+host-tool state. (The CRT filter, image filtering, enhanced audio,
+post-processing, rewind and internal resolution are player settings, not mods,
+and are each player's own in the same way.) Their features are no part of the plan fingerprint and stay
 each player's own in every mode, content negotiation included: a host never
 publishes them and a host's plan never switches them (docs/MOD_PACKAGES.md
 "Host-only plugins").

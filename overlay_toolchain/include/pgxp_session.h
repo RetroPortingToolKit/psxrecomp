@@ -9,8 +9,8 @@
  * runtime/tests/test_pgxp_session.cpp links and drives the same way:
  *
  *   reset_mod_owned_presentation()  -> psx_pgxp_session_reset()
- *   mod_runtime_activate_plugins()  -> psx.enhancement.pgxp's activation
- *                                      records pgxp_mod_request(...)
+ *   mod_runtime_activate_plugins()  -> a title mod's activation may record
+ *                                      pgxp_mod_request(...)
  *   renderer setup (session_reboot) -> psx_pgxp_session_arm(&config, ...)
  *
  * The arm TAKES the mod request (reads and clears it), so a request lives only
@@ -24,8 +24,8 @@
  *      when unset, else 0 or 1). They win over everything, so an A/B run can
  *      switch PGXP off under an enabled mod.
  *   2. video_* OR mod_*: the [video] baseline (game.toml, then settings.toml
- *      and the launcher) and the psx.enhancement.pgxp request this session's
- *      activation recorded. Either one arms a correction. With mod_only
+ *      and the launcher) and any request a title mod's activation
+ *      recorded. Either one arms a correction. With mod_only
  *      ([video] pgxp_mod_only, a title that ships PGXP through the mod) the
  *      baseline is ignored and the mod is the one switch.
  *

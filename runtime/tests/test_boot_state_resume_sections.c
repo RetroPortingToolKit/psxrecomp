@@ -1,7 +1,7 @@
-/* Checkpoint resume sections (CPU_EXEC, SCHED, IRQ_TIMING, MEMCTRL) through
+/* Required CPU_EXEC plus checkpoint-only SCHED, IRQ_TIMING and MEMCTRL through
  * the real boot_state writer and loader, on the handoff fixture's hardware
- * doubles. Switch off: saves are the same bytes as without the feature.
- * Switch on: the four sections are added, round-trip, and a malformed or
+ * doubles. Switch off: CPU_EXEC remains in ordinary player snapshots.
+ * Switch on: three additional sections round-trip, and a malformed or
  * repeated one refuses the whole state before anything changes. */
 #define main boot_state_handoff_tests
 #include "test_boot_state_handoff.c"
@@ -25,6 +25,7 @@ static void env_set(const char *k, const char *v) {
 static void put32(uint8_t *p, uint32_t v) { u32(p, v); }
 
 static void seed_live(void) {
+    fixture_ld.old = 0x11223344u; fixture_ld.next = 0x80050044u;
     fixture_ld.rt = 7; fixture_ld.val = 0xCAFEF00Du; fixture_ld.age = 1; fixture_ld.armed = 1;
     fixture_return_tcb = TCB_BASE + 2u * 0xC0u;
     fixture_irq_timing.cooldown_until = 0x123456789ull;
@@ -160,11 +161,12 @@ int main(void) {
     assert(!boot_state_resume_sections_enabled());
     {
         size_t len; uint8_t *image = save(&cpu, 0, &len);
-        for (unsigned k = 0; k < 4; k++)
+        assert(test_find_section(image, len, BS_SEC_CPU_EXEC, NULL, NULL));
+        for (unsigned k = 1; k < 4; k++)
             assert(!test_find_section(image, len, resume_tags[k], NULL, NULL));
         free(image);
     }
-    puts("PASS: resume sections are compiled out under PSX_NO_DEBUG_TOOLS");
+    puts("PASS: player pipeline remains; optional resume sections compiled out");
     return 0;
 #else
     switch_off();
@@ -179,26 +181,28 @@ int main(void) {
         size_t off_len, on_len, cut_len, x_len;
         uint8_t *off, *on, *cut, *x;
 
-        /* Off: no resume section, and a load leaves the four seams alone. */
+        /* Off: the player pipeline restores without the three debug seams. */
         seed_live();
         off = save(&cpu, compressed, &off_len);
-        for (unsigned k = 0; k < 4; k++)
+        assert(test_find_section(off, off_len, BS_SEC_CPU_EXEC, NULL, NULL));
+        for (unsigned k = 1; k < 4; k++)
             assert(!test_find_section(off, off_len, resume_tags[k], NULL, NULL));
         clobber_live(&cpu);
         assert(load(off, off_len, &cpu));
         assert(cpu.pc == 0x80050044 && ram[0x100] == 0xab);
-        assert(!fixture_ld_from_state && !fixture_irq_timing_set &&
+        assert(fixture_ld_from_state && fixture_ld.old == 0x11223344u &&
+               fixture_ld.next == 0x80050044u && !fixture_irq_timing_set &&
                fixture_return_tcb == 0x11111111u);
 
-        /* On: the same state plus exactly the four sections. */
+        /* On: the same player state plus exactly three debug sections. */
         seed_live();
         env_set("PSX_TAS_SAVE_STATE_AT", "5");
         on = save(&cpu, compressed, &on_len);
         switch_off();
-        assert(test_u32(on + 28) == test_u32(off + 28) + 4);
+        assert(test_u32(on + 28) == test_u32(off + 28) + 3);
         for (unsigned k = 0; k < 4; k++)
             assert(test_find_section(on, on_len, resume_tags[k], NULL, NULL));
-        cut = strip(on, on_len, resume_tags, 4, &cut_len);
+        cut = strip(on, on_len, resume_tags + 1, 3, &cut_len);
         assert(cut_len == off_len && !memcmp(cut, off, off_len));
         free(cut);
 
@@ -207,19 +211,19 @@ int main(void) {
         assert(load(on, on_len, &cpu));
         assert(cpu.pc == 0x80050044 && ram[0x100] == 0xab && live_is_seeded());
 
-        /* A state may hold any subset: here SCHED alone. */
+        /* A state may hold a debug subset: SCHED plus mandatory CPU_EXEC. */
         {
-            const uint32_t three[3] = {BS_SEC_CPU_EXEC, BS_SEC_IRQ_TIMING, BS_SEC_MEMCTRL};
-            x = strip(on, on_len, three, 3, &x_len);
+            const uint32_t two[2] = {BS_SEC_IRQ_TIMING, BS_SEC_MEMCTRL};
+            x = strip(on, on_len, two, 2, &x_len);
             clobber_live(&cpu);
             assert(load(x, x_len, &cpu));
             assert(fixture_return_tcb == TCB_BASE + 2u * 0xC0u &&
-                   !fixture_ld_from_state && !fixture_irq_timing_set);
+                   fixture_ld_from_state && !fixture_irq_timing_set);
             free(x);
         }
 
         /* Malformed payloads. */
-        refused_word(on, on_len, BS_SEC_CPU_EXEC, 0, 1, &cpu, "CPU_EXEC reserved word 0");
+        refused_word(on, on_len, BS_SEC_CPU_EXEC, 2, 1, &cpu, "CPU_EXEC reserved word 2");
         refused_word(on, on_len, BS_SEC_CPU_EXEC, 4, 1, &cpu, "CPU_EXEC reserved word 4");
         refused_word(on, on_len, BS_SEC_CPU_EXEC, 5, 32, &cpu, "CPU_EXEC rt 32");
         refused_word(on, on_len, BS_SEC_CPU_EXEC, 7, 2, &cpu, "CPU_EXEC age 2");
@@ -262,14 +266,14 @@ int main(void) {
             free(x);
         }
 
-        /* An old state after a resume load: the seams are not touched. */
+        /* An ordinary current state restores its pipeline after a debug load. */
         clobber_live(&cpu);
         assert(load(off, off_len, &cpu));
-        assert(!fixture_ld_from_state && !fixture_irq_timing_set &&
+        assert(fixture_ld_from_state && !fixture_irq_timing_set &&
                fixture_return_tcb == 0x11111111u);
         free(off); free(on);
     }
-    puts("PASS: checkpoint resume sections: off unchanged, on round-trips, malformed refused");
+    puts("PASS: required player pipeline, optional checkpoint sections, atomic malformed rejection");
     return 0;
 #endif
 }

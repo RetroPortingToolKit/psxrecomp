@@ -345,11 +345,11 @@ static void snapshot_setloc_and_paused_head(void) {
     CHECK(cdrom_snapshot_read(wire,size) && !setloc_pending);
     exec_command(0x1B);ack();
     CHECK(msf_to_lba(read_min,read_sec,read_sect)==151);
-    wire[size-1-CDROM_SNAP_CDF5_BYTES]=2;CHECK(!cdrom_snapshot_validate(wire,size));
+    wire[size-1-CDROM_SNAP_CDF6_BYTES-CDROM_SNAP_CDF5_BYTES]=2;CHECK(!cdrom_snapshot_validate(wire,size));
     /* CDF2 states remain readable and retain the paused drive position. */
     exec_command(0x09);ack();
     PstW writer;pst_w_init(&writer,wire,size);
-    const uint32_t cdf2=size-CDROM_SNAP_CDF5_BYTES-CDROM_SNAP_CDF4_BYTES;
+    const uint32_t cdf2=size-CDROM_SNAP_CDF6_BYTES-CDROM_SNAP_CDF5_BYTES-CDROM_SNAP_CDF4_BYTES;
     CHECK(cdrom_snap_emit(&writer,1) && writer.written==cdf2);
     read_sec=9;
     CHECK(cdrom_snapshot_read(wire,cdf2));
@@ -417,11 +417,11 @@ static void snapshot_cd_volume(void) {
     memcpy(cd_pending_vol,identity,4); memcpy(cd_decode_vol,identity,4);
     CHECK(cdrom_snapshot_read(wire,size));
     CHECK(!memcmp(cd_pending_vol,pending,4) && !memcmp(cd_decode_vol,applied,4));
-    wire[size-CDROM_SNAP_CDF5_BYTES]^=1; CHECK(!cdrom_snapshot_validate(wire,size));
+    wire[size-CDROM_SNAP_CDF6_BYTES-CDROM_SNAP_CDF5_BYTES]^=1; CHECK(!cdrom_snapshot_validate(wire,size));
     PstW writer; pst_w_init(&writer,wire,size);
-    CHECK(cdrom_snap_emit(&writer,2) && writer.written==size-CDROM_SNAP_CDF5_BYTES);
+    CHECK(cdrom_snap_emit(&writer,2) && writer.written==size-CDROM_SNAP_CDF6_BYTES-CDROM_SNAP_CDF5_BYTES);
     memcpy(cd_decode_vol,identity,4);
-    CHECK(cdrom_snapshot_read(wire,size-CDROM_SNAP_CDF5_BYTES));
+    CHECK(cdrom_snapshot_read(wire,size-CDROM_SNAP_CDF6_BYTES-CDROM_SNAP_CDF5_BYTES));
     CHECK(!memcmp(cd_decode_vol,identity,4) && !memcmp(cd_pending_vol,pending,4));
     memcpy(cd_pending_vol,identity,4);
     free(wire);

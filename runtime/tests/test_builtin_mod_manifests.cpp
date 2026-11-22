@@ -6,14 +6,10 @@
  *
  * Usage: builtin_mod_manifests_test <mods/builtin/packages dir> */
 #include "mod_packages.h"
-#include "host_enhancements.h"
-#include "internal_resolution.h"
 
-#include <chrono>
 #include <filesystem>
 #include <iostream>
-#include <fstream>
-#include <map>
+#include <set>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -36,34 +32,16 @@ int main(int argc, char** argv) {
     const fs::path root(argv[1]);
     int parsed = 0;
     bool saw_8mb = false;
-    /* The host enhancements that used to be Settings rows (beads-eio.3.398):
-     * package id -> {feature id, plugin id, option id -> default}. Each is
-     * host-only; Internal Resolution defaults on at 4x and Record Replays
-     * on, the others off.
-     * Each targets every game (netplay =
-     * "host_only"): the player's own in a match, never in the fingerprint. */
-    struct HostEnhancement {
-        std::string feature, plugin;
-        std::map<std::string, std::string> defaults;
-        bool seen = false;
-    };
-    std::map<std::string, HostEnhancement> host_enhancements = {
-        {"psx.enhancement.crt-filter", {"crt-filter", "psx.crt-filter",
-            {{"screen_model", "default"}, {"scanlines", "default"},
-             {"scanline_strength", "50"}}}},
-        {"psx.enhancement.image-filtering", {"image-filtering", "psx.image-filtering",
-            {{"smoothing", "default"}, {"texture_filtering", "default"},
-             {"fmv_filtering", "default"}, {"dithering", "default"}}}},
-        {"psx.enhancement.enhanced-audio", {"enhanced-audio", "psx.enhanced-audio", {}}},
-        {"psx.feature.rewind", {"rewind", "psx.rewind",
-            {{"buffer", "50"}, {"interval", "15"}}}},
-        {"psx.feature.replay-recording", {"replay-recording", "psx.replay-recording", {}}},
-        {"psx.enhancement.internal-resolution", {"internal-resolution",
-            "psx.internal-resolution", {{"resolution", "4x"}, {"minimum", "default"}, {"supersample", "default"}, {"dynamic_resolution", "default"}}}},
-        {"psx.enhancement.post-processing", {"post-processing", "psx.post-processing",
-            {{"antialiasing", "default"}, {"bloom", "default"}, {"bloom_strength", "25"}, {"shader", "default"}}}},
+    /* Player settings, not mods: the built-in setting packages that used to
+     * stand in for them must not come back (docs/PLAYER_SETTINGS.md). */
+    const std::set<std::string> former_setting_mods = {
+        "psx.enhancement.internal-resolution", "psx.enhancement.crt-filter",
+        "psx.enhancement.image-filtering", "psx.enhancement.enhanced-audio",
+        "psx.enhancement.post-processing", "psx.enhancement.pgxp",
+        "psx.feature.rewind",
     };
     bool saw_debug_server = false;
+    bool saw_replay_recording = false;
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
         if (!entry.is_regular_file() || entry.path().filename() != "manifest.toml")
             continue;
@@ -90,6 +68,20 @@ int main(int argc, char** argv) {
             check(package.targets.size() == 1 && package.targets[0].game_id == "*",
                   "TCP server package applies to every game");
         }
+        if (package.id == "psx.feature.replay-recording") {
+            saw_replay_recording = true;
+            check(package.features.size() == 1 && package.features[0].id == "replay-recording" &&
+                      package.features[0].default_enabled && !package.features[0].hidden &&
+                      package.features[0].host_only,
+                  "Record Replays is visible, host-only and enabled by default");
+            check(package.plugins.size() == 1 && package.plugins[0].id == "psx.replay-recording" &&
+                      package.plugins[0].netplay_host_only,
+                  "Record Replays activates its host_only plugin");
+            check(package.targets.size() == 1 && package.targets[0].game_id == "*",
+                  "Record Replays applies to every game");
+            check(package.save_compatibility == "shared" && package.options.empty(),
+                  "Record Replays has no options and never isolates save states");
+        }
         if (package.id == "psx.enhancement.8mb-ram") {
             saw_8mb = true;
             check(package.features.size() == 1 && package.features[0].id == "8mb-ram",
@@ -104,174 +96,12 @@ int main(int argc, char** argv) {
             check(package.targets.size() == 1 && package.targets[0].game_id == "*",
                   "8 MB package applies to every game");
         }
-        auto he = host_enhancements.find(package.id);
-        if (he != host_enhancements.end()) {
-            HostEnhancement& want = he->second;
-            want.seen = true;
-            const std::string who = package.id + ": ";
-            check(package.features.size() == 1 && package.features[0].id == want.feature,
-                  who + "exposes exactly its one feature");
-            const bool default_on = package.id == "psx.enhancement.internal-resolution" ||
-                                    package.id == "psx.feature.replay-recording";
-            check(!package.features.empty() && package.features[0].default_enabled == default_on,
-                  who + "has its documented feature default");
-            check(!package.features.empty() && package.features[0].host_only,
-                  who + "is host-only");
-            check(package.targets.size() == 1 && package.targets[0].game_id == "*",
-                  who + "applies to every game");
-            check(package.plugins.size() == 1 && package.plugins[0].id == want.plugin &&
-                      package.plugins[0].netplay_host_only,
-                  who + "activates its host_only plugin");
-            check(package.save_compatibility == "shared",
-                  who + "never isolates save states");
-            check(package.options.size() == want.defaults.size(),
-                  who + "declares exactly its documented options");
-            for (const ModOption& option : package.options) {
-                auto d = want.defaults.find(option.id);
-                check(d != want.defaults.end() && option.default_value == d->second,
-                      who + option.id + " defaults to its documented value");
-            }
-        }
-        /* Internal Resolution offers Game default and exactly the runtime's
-         * preset vocabulary (internal_resolution.h), Auto included, and every
-         * choice parses to the value the runtime resolves. */
-        if (package.id == "psx.enhancement.internal-resolution") {
-            const ModOption& option = package.options[0];
-            check(option.choices.size() == (size_t)PSX_IR_PRESET_COUNT + 1,
-                  "Internal Resolution offers Game default plus every preset");
-            check(!option.choices.empty() && option.choices[0].value == "default" &&
-                      option.choices[0].label == "Game default",
-                  "Internal Resolution's first choice is Game default");
-            for (int i = 0; i < PSX_IR_PRESET_COUNT && i + 1 < (int)option.choices.size(); ++i) {
-                const ModChoice& c = option.choices[i + 1];
-                check(c.value == k_psx_ir_presets[i].id && c.label == k_psx_ir_presets[i].label,
-                      "Internal Resolution choice " + c.value + " matches the preset table");
-                check(psx_host_enh_parse_internal_resolution(c.value.c_str()) ==
-                          k_psx_ir_presets[i].value,
-                      "Internal Resolution choice " + c.value + " parses to its value");
-            }
-        }
+        check(!former_setting_mods.count(package.id),
+              package.id + " is a player setting, not a builtin mod");
     }
     check(parsed > 0, "no builtin manifests found under " + root.string());
     check(saw_8mb, "psx.enhancement.8mb-ram builtin package missing");
-    for (const auto& [id, want] : host_enhancements)
-        check(want.seen, id + " builtin package missing");
-    // Use the real shared manifest and state writer: defaults only apply to
-    // fresh profiles, never overwrite an explicit saved enable/option choice.
-    const fs::path scratch = fs::temp_directory_path() /
-        ("psxrecomp-ir-default-test-" + std::to_string(
-            std::chrono::steady_clock::now().time_since_epoch().count()));
-    const fs::path fixture = scratch / "bundled/psx.enhancement.internal-resolution/1.0.0";
-    fs::create_directories(fixture);
-    fs::copy_file(root / "psx.enhancement.internal-resolution/1.0.0/manifest.toml",
-                  fixture / "manifest.toml");
-    const std::string id = "psx.enhancement.internal-resolution";
-    const std::string feature = "internal-resolution";
-    std::string error;
-    {
-        ModPackageManager fresh(scratch);
-        check(fresh.scan(&error) && fresh.load_state(&error), "fresh IR profile loads: " + error);
-        check(fresh.feature_enabled(id, feature), "fresh IR profile is enabled");
-        check(fresh.feature_option_value(id, feature, "resolution") == "4x", "fresh IR profile uses 4x");
-        check(fresh.set_feature_enabled(id, feature, false, &error) &&
-              fresh.set_feature_option(id, feature, "resolution", "4k", &error) &&
-              fresh.save_state(&error), "save explicit disabled legacy choice: " + error);
-    }
-    std::string previous = "4k";
-    for (const std::string choice : {"default", "32x"}) {
-        ModPackageManager saved(scratch);
-        check(saved.scan(&error) && saved.load_state(&error), "saved IR profile loads: " + error);
-        check(!saved.feature_enabled(id, feature), "saved disabled choice survives new defaults");
-        check(saved.feature_option_value(id, feature, "resolution") == previous,
-              "saved legacy/default choice survives reload");
-        check(saved.set_feature_option(id, feature, "resolution", choice, &error) &&
-              saved.save_state(&error), "save retained IR option: " + error);
-        previous = choice;
-    }
-    {
-        ModPackageManager saved(scratch);
-        check(saved.scan(&error) && saved.load_state(&error), "32x IR profile loads: " + error);
-        check(!saved.feature_enabled(id, feature) &&
-              saved.feature_option_value(id, feature, "resolution") == "32x",
-              "saved disabled 32x choice survives reload");
-        check(saved.set_feature_enabled(id, feature, true, &error) && saved.save_state(&error),
-              "save explicit enabled 32x choice: " + error);
-    }
-    {
-        ModPackageManager saved(scratch);
-        check(saved.scan(&error) && saved.load_state(&error), "enabled IR profile loads: " + error);
-        check(saved.feature_enabled(id, feature) &&
-              saved.feature_option_value(id, feature, "resolution") == "32x",
-              "saved enabled 32x choice survives reload");
-    }
-
-    // Old config spellings map to the new choice without losing saved choices.
-    for (const auto& spelling : std::map<std::string, std::string>{
-            {"on", "native"}, {"scaled", "native"}, {"fine", "fine"}, {"off", "off"}}) {
-        const fs::path dither_root = scratch / ("dither-" + spelling.first);
-        const fs::path manifest = dither_root / "bundled/psx.enhancement.image-filtering/1.0.0/manifest.toml";
-        fs::create_directories(manifest.parent_path());
-        fs::copy_file(root / "psx.enhancement.image-filtering/1.0.0/manifest.toml", manifest);
-        const fs::path settings = dither_root / "settings.toml";
-        { std::ofstream file(settings); file << "[video]\ndithering = \"" << spelling.first << "\"\n"; }
-        ModPackageManager imported(dither_root);
-        check(imported.scan(&error) && imported.load_state(&error) &&
-                  migrate_legacy_video_settings(imported, settings, &error), error);
-        ModPackageManager saved(dither_root);
-        check(saved.scan(&error) && saved.load_state(&error) &&
-                  saved.feature_enabled("psx.enhancement.image-filtering", "image-filtering") &&
-                  saved.feature_option_value("psx.enhancement.image-filtering", "image-filtering", "dithering") == spelling.second,
-              "legacy dithering survives normal state reload: " + spelling.first);
-    }
-
-    // Exercise migration against the shipped manifests, then reload real state.
-    const fs::path legacy_root = scratch / "legacy";
-    for (const auto& entry : fs::recursive_directory_iterator(root)) {
-        if (!entry.is_regular_file() || entry.path().filename() != "manifest.toml") continue;
-        const auto destination = legacy_root / "bundled" / fs::relative(entry.path(), root);
-        fs::create_directories(destination.parent_path());
-        fs::copy_file(entry.path(), destination);
-    }
-    const fs::path legacy_settings = legacy_root / "settings.toml";
-    const std::string old_settings =
-        "[video]\ninternal_resolution = \"4k\"\ndynamic_resolution = true\n"
-        "dynamic_resolution_min = \"native\"\nsupersample = 1.333\n"
-        "texture_filtering = \"bilinear\"\nantialiasing = false\ndithering = \"fine\"\n"
-        "crt_filter = \"raw\"\nscanlines = true\nscanline_strength = 0.35\n"
-        "geometry_correction = false\nperspective_texturing = true\n"
-        "rewind = true\nrewind_depth = 200\nrewind_interval = 4\n"
-        "[audio]\nspu_hq = true\nfrequency = 48000\n";
-    { std::ofstream file(legacy_settings); file << old_settings; }
-    ModPackageManager legacy(legacy_root);
-    check(legacy.scan(&error) && legacy.load_state(&error), "legacy fixture loads: " + error);
-    check(legacy.set_feature_enabled("psx.enhancement.image-filtering", "image-filtering", false, &error), error);
-    check(legacy.set_feature_option("psx.enhancement.image-filtering", "image-filtering", "texture_filtering", "xbr", &error), error);
-    check(legacy.set_feature_option("psx.enhancement.image-filtering", "image-filtering", "dithering", "off", &error), error);
-    check(migrate_legacy_video_settings(legacy, legacy_settings, &error), "legacy video migration: " + error);
-    check(legacy.feature_option_value(id, feature, "resolution") == "4k" &&
-          legacy.feature_option_value(id, feature, "minimum") == "native" &&
-          legacy.feature_option_value(id, feature, "dynamic_resolution") == "on" &&
-          legacy.feature_option_value(id, feature, "supersample") == "1.333", "resolution choices retain their exact meaning");
-    check(!legacy.feature_enabled("psx.enhancement.image-filtering", "image-filtering") &&
-          legacy.feature_option_value("psx.enhancement.image-filtering", "image-filtering", "texture_filtering") == "xbr" &&
-          legacy.feature_option_value("psx.enhancement.image-filtering", "image-filtering", "dithering") == "off",
-          "newer explicit mod choices win over old settings");
-    check(legacy.feature_option_value("psx.enhancement.crt-filter", "crt-filter", "screen_model") == "raw" &&
-          legacy.feature_option_value("psx.enhancement.crt-filter", "crt-filter", "scanline_strength") == "35", "CRT choices migrate");
-    check(legacy.feature_option_value("psx.enhancement.pgxp", "pgxp", "geometry") == "false" &&
-          legacy.feature_option_value("psx.enhancement.pgxp", "pgxp", "perspective") == "true", "independent PGXP choices migrate");
-    check(legacy.feature_enabled("psx.feature.rewind", "rewind") &&
-          legacy.feature_option_value("psx.feature.rewind", "rewind", "buffer") == "200", "rewind migrates");
-    check(legacy.feature_enabled("psx.enhancement.enhanced-audio", "enhanced-audio"), "SPU mix choice migrates");
-    check(!legacy.set_feature_option(id, feature, "supersample", "nan", &error) &&
-          !legacy.set_feature_option(id, feature, "supersample", "4.01", &error), "invalid supersample input is rejected");
-    ModPackageManager reloaded(legacy_root);
-    error.clear();
-    check(reloaded.scan(&error) && reloaded.load_state(&error), "migrated state reloads: " + error);
-    { std::ofstream file(legacy_settings); file << "[video]\ninternal_resolution = \"720p\"\nsupersample = 2.0\n"; }
-    check(migrate_legacy_video_settings(reloaded, legacy_settings, &error) &&
-          reloaded.feature_option_value(id, feature, "supersample") == "1.333", "migration never overwrites an existing mod choice on later starts");
-    fs::remove_all(scratch); // Only this test's unique fixture and state.
+    check(saw_replay_recording, "psx.feature.replay-recording builtin package missing");
     check(saw_debug_server, "psx.integration.debug-server builtin package missing");
     if (failures == 0)
         std::cout << "PASS builtin mod manifests (" << parsed << " packages)\n";

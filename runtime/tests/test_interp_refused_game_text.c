@@ -60,6 +60,7 @@ int psx_dispatch_game_compiled(CPUState *cpu, uint32_t addr) {
 /* No interrupt is pending; no kernel slot, overlay, mod hook or thread switch
  * applies on this path. */
 int psx_get_in_exception(void) { return 0; }
+int psx_deferred_switch_is_pending(void) { return 0; }
 void psx_check_interrupts(CPUState *cpu) { (void)cpu; }
 void psx_check_interrupts_at(CPUState *cpu, uint32_t resume_pc) { (void)cpu; (void)resume_pc; }
 int psx_interrupts_checked_at_current_cycle(uint32_t pc) { (void)pc; return 1; }

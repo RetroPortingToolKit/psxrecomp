@@ -319,10 +319,10 @@ class InternalResolutionGuards(unittest.TestCase):
         self.assertRegex(MAIN, r"if \(g_video_hidpi_window\)\s*win_flags \|= PSX_SDL_WINDOW_HIGH_DENSITY;")
 
     def test_launcher_never_carries_the_internal_resolution(self):
-        # The internal resolution is the built-in Internal Resolution mod's
-        # (psx.enhancement.internal-resolution), not a launcher row: no
-        # launcher seed, adoption or settings.toml write may carry it, and the
-        # row is cleared for an older recomp-ui whose profile still offers it.
+        # The internal resolution is the runtime's own player setting
+        # (video.internal_resolution, Display page), not recomp-ui's fixed
+        # row: no launcher seed or adoption carries it through that row, and
+        # the row is cleared for a recomp-ui whose profile still offers it.
         for field in ("internal_resolution_labels", "ls.internal_resolution",
                       "seed.internal_resolution", "us.internal_resolution",
                       "ls.supersampling", "seed.supersampling", "us.supersampling",
@@ -331,10 +331,10 @@ class InternalResolutionGuards(unittest.TestCase):
         self.assertIn("gi->has_supersampling = 0;",
                       body(MAIN, "static void psx_launcher_hide_mod_owned_rows("))
 
-    def test_session_resolves_the_mod_over_the_title(self):
+    def test_session_resolves_the_setting_over_the_title(self):
         # Every session start restores the title's baseline (its value, dynamic
-        # resolution, legacy factor and supersample) and lays the mod's choice
-        # over it, before the env overrides and the scale resolution.
+        # resolution, legacy factor and supersample) and lays the player's
+        # setting over it, before the env overrides and the scale resolution.
         fn = body(MAIN, "static void session_internal_resolution(void)")
         self.assertIn("psx_host_enh_resolve_resolution(&g_title_resolution, &req)", fn)
         self.assertIn("g_video_scale = g_title_scale;", fn)
@@ -349,7 +349,7 @@ class InternalResolutionGuards(unittest.TestCase):
 
     def test_env_override_is_never_persisted(self):
         # PSX_INTERNAL_RESOLUTION wins for the run only, over the session's
-        # choice (the Internal Resolution mod's or the title's).
+        # choice (the player's setting or the title's).
         self.assertIn("if (psx_ir_parse(e, &v)) g_video_internal_res_env = v;", MAIN)
         self.assertNotRegex(MAIN, r"g_video_internal_res\s*=\s*v;")
         self.assertIn("g_video_internal_res_env != PSX_IR_UNSET ? g_video_internal_res_env",

@@ -135,7 +135,9 @@
  * v38: live host observation clock/edge view; no common DLL publication. */
 /* v39: live direct-memory view appends the mandatory pre-write history
  * callback. Reject old DLLs before init so inline stores cannot omit history. */
-#define PSX_OVERLAY_ABI_VERSION 39
+/* v40: shared checkpointed load-delay window; DLLs must publish a staged
+ * branch-delay load before any interrupt/thread handoff can leave the shard. */
+#define PSX_OVERLAY_ABI_VERSION 40
 
 /* Process-lifetime overlay candidate capacity.  Every accepted manifest F
  * record consumes one slot, even when another DLL carries an identical
@@ -419,6 +421,9 @@ typedef struct OverlayCallbacks {
     uint64_t (*bus_callback_widths)[3];
     const struct PSXDirectMemoryView *direct_memory; /* ABI v37, live guards */
     const struct PSXObservationView *observation_time; /* ABI v38, live clock */
+    void (*ld_delay_stage)(CPUState *, uint32_t, uint32_t, uint32_t);
+    uint64_t (*ld_delay_begin)(CPUState *, uint32_t, uint32_t);
+    void (*ld_delay_end)(CPUState *, uint64_t, uint32_t);
 } OverlayCallbacks;
 
 #ifdef __cplusplus

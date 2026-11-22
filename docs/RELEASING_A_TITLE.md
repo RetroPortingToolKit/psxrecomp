@@ -25,8 +25,8 @@ once with `PACKAGING FAILED`. Artifacts land in `dist/`:
 
 | Channel | Diagnostics default | Windows | Linux |
 |---|---|---|---|
-| `public` | off | `<Name>-v<ver>-windows-x64.zip` | `<Name>-v<ver>-linux-x86_64.AppImage` |
-| `playtest` | on | `<Name>-v<ver>-playtest-windows-x64.zip` | `<Name>-v<ver>-playtest-linux-x86_64.AppImage` |
+| `public` | recording on, display off | `<Name>-v<ver>-windows-x64.zip` | `<Name>-v<ver>-linux-x86_64.AppImage` |
+| `playtest` | recording on, display off | `<Name>-v<ver>-playtest-windows-x64.zip` | `<Name>-v<ver>-playtest-linux-x86_64.AppImage` |
 
 Each artifact has a `.sha256` file beside it. `RELEASE_MANIFEST.json` inside
 the package records the channel, version, title/framework/recomp-ui commits,
@@ -153,7 +153,9 @@ cmake_args = ["-DPSX_SDL_BACKEND=SDL3", "-DPSX_PGXP_VARIANT=OFF"]
 # regenerate = true                   # psxrecomp-game --config game.toml first
 # binary_identity = "{version}+{commit12}"   # bytes the executable must contain
 # selective_pgo = true                # default for supported native GNU/Ninja
-# pgo_train_seconds = 10               # one real boot, integer 1..300
+# pgo_train_frames = 600               # actual guest frames, integer 1..18000
+# pgo_train_headless = true            # software boot work, no SDL window/audio
+# Legacy pgo_train_seconds maps to seconds * 60 guest frames; it is not a deadline.
 
 [aot]
 mode = "cache"        # cache: ship the original-disc AOT cache
@@ -203,10 +205,13 @@ rejects missing or incompatible profiles. It keeps DEBUG and IPO off and global
 `PSX_PGO` empty. Failed training never silently becomes an unprofiled release.
 
 Training uses a hidden normal SDL presenter, dummy host audio and private
-memory cards, data/cache and temporary paths. On Windows it sends `WM_CLOSE`
-only to the owned SDL window; on POSIX the enabled SDL signal handler converts
-the owned process's `SIGTERM` to a quit event. Only a normal exit and all three
-valid profiles permit the use build. No owner saves or desktop input are used.
+memory cards, data/cache and temporary paths. It observes the existing BENCH
+marker after the requested actual guest-frame workload (600 frames by default).
+The runtime then takes its own normal shutdown path and flushes the profiles;
+the packager waits for that normal exit without a startup or shutdown deadline.
+It uses no desktop input, window messages or TCP transport. An early/nonzero
+exit or missing profiles is a real failure; an observer error retains the owned
+PID and never kills or requests quit from an otherwise healthy child.
 Run packaging under the appropriate shared capacity reservation when automated.
 
 Use a fresh, short `--work-dir` for each profile recipe; Windows GCC profile
