@@ -632,7 +632,7 @@ def train_release_pgo(ctx, generated):
         fail('PGO boot training needs the build-staged OpenBIOS')
     env = {key: value for key, value in ctx.tc.env.items()
            if not key.startswith(('PSX_', 'SDL_', 'GCOV_', 'LLVM_PROFILE_'))}
-    env.update(SDL_AUDIODRIVER='dummy', SDL_NO_SIGNAL_HANDLERS='0',
+    env.update(SDL_AUDIODRIVER='dummy', SDL_AUDIO_DRIVER='dummy', SDL_NO_SIGNAL_HANDLERS='0',
                PSX_RUNTIME_PERF_DIAG='1',
                PSX_BENCH_WINDOW='1:%d' % (ctx.config.pgo_train_frames + 1),
                PSX_BENCH_EXIT='1',
