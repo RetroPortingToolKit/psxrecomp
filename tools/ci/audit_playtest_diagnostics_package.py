@@ -6,6 +6,7 @@ read through the same checks, so a Linux payload is audited before it is
 wrapped into an AppImage (an AppImage has no ZIP to audit).
 """
 import argparse
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -79,6 +80,36 @@ def _open_package(path):
     return zipfile.ZipFile(path)
 
 
+def declared_overlay_files(archive, files, read):
+    """Use the payload gate's hash-bound disc-patch exception in ZIPs too."""
+    allowed = set()
+    for name in sorted(files):
+        if not name.lower().startswith("mods/") or not name.lower().endswith("/manifest.toml"):
+            continue
+        manifest = tomllib.loads(read(name).decode("utf-8-sig"))
+        for overlay in manifest.get("overlay", []):
+            relative = PurePosixPath(overlay.get("file", ""))
+            digest = overlay.get("sha256", "")
+            expected = overlay.get("expected_sha256", "")
+            if (relative.is_absolute() or not relative.parts or ".." in relative.parts or
+                    relative.parts[0] != "assets" or relative.suffix.lower() != ".bin" or
+                    overlay.get("target") not in ("disc_user", "disc_raw") or
+                    not all(isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value)
+                            for value in (digest, expected))):
+                continue
+            asset = (PurePosixPath(name).parent / relative).as_posix()
+            if asset not in files:
+                raise ValueError("declared overlay asset is missing: " + asset)
+            actual = hashlib.sha256()
+            with archive.open(files[asset]) as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    actual.update(chunk)
+            if actual.hexdigest() != digest.lower():
+                raise ValueError("declared overlay asset hash mismatch: " + asset)
+            allowed.add(asset)
+    return allowed
+
+
 def audit(path, game_id, diagnostics_id, public, replay_helper=True, allow_hd_textures=False):
     """Audit either release channel: recording defaults on, display off.
     Explicit player choices live outside release archives."""
@@ -137,6 +168,7 @@ def audit(path, game_id, diagnostics_id, public, replay_helper=True, allow_hd_te
             raise ValueError("no executable adjacent to replay-diagnostics.py" if replay_helper
                              else "no executable at the package root")
 
+        overlay_assets = declared_overlay_files(archive, files, read)
         runtime = []
         for name in sorted(files):
             lower = name.lower()
@@ -153,7 +185,8 @@ def audit(path, game_id, diagnostics_id, public, replay_helper=True, allow_hd_te
             if suffix in {".cue", ".iso", ".img", ".chd", ".mcd", ".mcr", ".rom", ".pst"}:
                 if name not in SDK_CARD_FIXTURES:
                     raise ValueError("disc, BIOS or save payload in package: " + name)
-            if suffix == ".bin" and lower not in {"bios/openbios.bin", "psxrecomp/bios/openbios.bin"}:
+            if (suffix == ".bin" and lower not in {"bios/openbios.bin", "psxrecomp/bios/openbios.bin"}
+                    and name not in overlay_assets):
                 raise ValueError("unexpected binary image in package: " + name)
             if re.match(r"scph.*\.(bin|rom)(?:\..*)?$", leaf):
                 raise ValueError("retail BIOS image in package: " + name)
@@ -182,6 +215,8 @@ def validate_diagnostics(manifest, name, game_id, diagnostics_id, staged):
         raise ValueError("diagnostics manifest has the wrong game target: " + name)
     features = {feature.get("id"): feature for feature in manifest.get("feature", [])}
     recording = "recording" if "recording" in features else "input-recording"
+    if diagnostics_id == "mmx4.diagnostics" and recording not in features and "inputs" in features:
+        recording = "inputs"  # Preserve X4's saved public control ID and plugin binding.
     provided = [(recording, diagnostics_id)]
     if "osd" in features:
         provided.append(("osd", diagnostics_id + ".osd"))
