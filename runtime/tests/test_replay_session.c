@@ -137,8 +137,8 @@ static void identity(ReplayIdentity *id)
 static uint16_t word_at(uint32_t i) { return (uint16_t)(0xFFFFu ^ (1u << (i / 10 % 16))); }
 
 /* Writes a replay whose END checkpoint matches the stub's RAM and cycle.
- * Digests: frame 0 and frame 60 with s_digest, frame 120 with `last`. */
-static void write_replay(int power_on, const uint32_t last[4])
+ * Digests: frame 0 with s_digest, frame 60 with `mid`, frame 120 with `last`. */
+static void write_replay_digests(int power_on, const uint32_t mid[4], const uint32_t last[4])
 {
     static ReplayWord words[FRAMES];
     static ReplayCheckpoint end;
@@ -159,7 +159,7 @@ static void write_replay(int power_on, const uint32_t last[4])
     replay_file_checkpoint(FRAMES, s_ram, s_cycle, &end);
     for (unsigned k = 0; k < 3; ++k) {
         digests[k][0] = 60u * k;
-        memcpy(&digests[k][1], k == 2 ? last : s_digest, 16);
+        memcpy(&digests[k][1], k == 2 ? last : k == 1 ? mid : s_digest, 16);
     }
     memset(anchor, 0xA5, sizeof anchor);
     memset(cards, 0x3C, sizeof cards);
@@ -184,6 +184,8 @@ static void write_replay(int power_on, const uint32_t last[4])
     CHECK(f && replay_file_write(f, &o) == NULL);
     if (f) fclose(f);
 }
+
+static void write_replay(int power_on, const uint32_t last[4]) { write_replay_digests(power_on, s_digest, last); }
 
 static void reset_host(void)
 {
@@ -320,6 +322,19 @@ int main(void)
     run(0xFFFFu, &ok);
     CHECK(replay_session_last_result() == REPLAY_RESULT_OUT_OF_SYNC);
     CHECK(verdict_has("\"result\": \"diverged\"") && verdict_has("\"divergence_parts\": \"core\""));
+    CHECK(verdict_has("\"first_failing_frame\": 120") && verdict_has("\"failing_parts\": \"core\""));
+
+    /* AV differs first, CORE later: the later CORE divergence still fails it,
+     * and the first divergence stays the AV one. */
+    reset_host();
+    write_replay_digests(0, av_only, core);
+    s_load_result = 1;
+    CHECK(replay_session_play_file(REPLAY) == 1);
+    run(0xFFFFu, &ok);
+    CHECK(replay_session_last_result() == REPLAY_RESULT_OUT_OF_SYNC);
+    CHECK(replay_session_first_divergence(&frame, &parts) && frame == 60 && parts == REPLAY_DIGEST_AV);
+    CHECK(verdict_has("\"result\": \"diverged\"") && verdict_has("\"first_divergence_frame\": 60"));
+    CHECK(verdict_has("\"first_failing_frame\": 120") && verdict_has("\"failing_parts\": \"core\""));
 
     /* RAM differs at the end. */
     reset_host();

@@ -504,6 +504,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/replay_file.c
     ${PSXRECOMP_ROOT}/runtime/src/replay_identity.c
     ${PSXRECOMP_ROOT}/runtime/src/replay_session.c
+    ${PSXRECOMP_ROOT}/runtime/src/replay_frontend.c
     ${PSXRECOMP_ROOT}/runtime/src/disc_identity.cpp
     ${PSXRECOMP_ROOT}/runtime/src/cue_sheet.cpp
     ${PSXRECOMP_ROOT}/runtime/src/disc_path.cpp
@@ -555,6 +556,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_image_filtering.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_enhanced_audio.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_rewind.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_replay_recording.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_internal_resolution.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_post_processing.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_packages.cpp
