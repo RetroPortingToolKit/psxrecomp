@@ -371,7 +371,7 @@ static uint32_t psx_restore_context_from_tcb(CPUState* cpu, uint32_t tcb)
     cpu->lo = cpu->read_word(save + 136u);
     {
         uint32_t saved_sr = cpu->read_word(save + 140u);
-        cpu->cop0[12] = (saved_sr & 0xFFFFFFC0u) | ((saved_sr >> 2) & 0x0Fu);
+        cpu->cop0[12] = (saved_sr & 0xFFFFFFF0u) | ((saved_sr >> 2) & 0x0Fu);
     }
     /* Restore the saved CAUSE, then re-derive IP2. On hardware the IP field is
      * live interrupt-line state and is never storage, so it cannot meaningfully
@@ -1195,7 +1195,7 @@ int psx_syscall(CPUState* cpu, uint32_t code) {
                     cpu->hi = cpu->read_word(save_area + 132);
                     cpu->lo = cpu->read_word(save_area + 136);
                     /* RFE pop on saved SR (clears bits [5:0], shifts [5:2]→[3:0]). */
-                    cpu->cop0[12] = (saved_sr & 0xFFFFFFC0u) | ((saved_sr >> 2) & 0x0Fu);
+                    cpu->cop0[12] = (saved_sr & 0xFFFFFFF0u) | ((saved_sr >> 2) & 0x0Fu);
                     cpu->pc = saved_epc;
                     if (psx_get_in_exception()) {
                         /* Fix B: saved_epc is the REAL guest EPC restored from the TCB

@@ -95,6 +95,8 @@ void rt_frame_end(void);
 /* Render-thread query while executing: how many complete frames are queued
  * after the frame whose record is being executed (0 = it is the newest). */
 int  rt_frames_ahead(void);
+/* Render owner: committed native records have priority over optional work. */
+int  rt_has_pending_records(void);
 /* Render-thread query: the consumer's running idle total (waiting for
  * records, or parked while the emulation thread holds the context). */
 uint64_t rt_render_idle_ns(void);

@@ -647,6 +647,11 @@ int  gl_renderer_render_thread_json(char *out, size_t cap);
 void gl_renderer_set_present_thread(int on, int slots);
 int  gl_renderer_present_thread_active(void);
 int  gl_renderer_present_thread_json(char *out, size_t cap);
+/* On the emulation thread just before recording a canonical 15-bit present.
+ * Timestamps are in the render-thread monotonic clock. Zero disarms extras. */
+void gl_renderer_set_display_rate_timing(uint64_t midpoint_ns, uint64_t native_ns,
+                                         uint64_t display_interval_ns);
+void gl_renderer_invalidate_display_rate(void);
 int  gl_renderer_fbo_peek_deferred(int x, int y, int w, int h, uint16_t *out);
 void gl_renderer_ring_capture(uint32_t frame, int wide, int base_x, int disp_y, int disp_h,
                               int cx, int cy, int cw, int ch);

@@ -23,6 +23,11 @@ typedef struct HostSample {
 
 /* Start sampling the calling thread (the emulation thread). Idempotent. */
 void host_sampler_start(void);
+/* Stop sampling for good. Windows: when it returns no suspension of the
+ * emulation thread is in progress or will start. host_sampler_start registers
+ * it with atexit, so exit() cannot terminate the sampler while it holds the
+ * exiting thread suspended. */
+void host_sampler_stop(void);
 int host_sampler_supported(void);
 /* Total samples recorded; the ring holds the newest HOST_SAMPLER_CAP. */
 uint64_t host_sampler_seq(void);

@@ -5,6 +5,7 @@
 #if !defined(PSX_HAS_RECOMP_NET)
 void psx_netplay_rb_bind(const PsxNetplayRbBindings *b) { (void)b; }
 void psx_netplay_rb_start(void) {}
+void psx_netplay_rb_restart_after_load(void) {}
 void psx_netplay_rb_shutdown(void) {}
 void psx_netplay_rb_cold_reset(void) {}
 void psx_netplay_rb_poll(struct CPUState *cpu, uint32_t resume_pc)
@@ -377,6 +378,20 @@ static uint32_t g_follow_nack_load;
 static uint32_t g_follow_nack_target;
 static int g_follow_nack_slot;
 static int g_follow_nack_sends;
+/* Two-seat, non-media NACK recovery keeps the original correction alive.
+ * A progress watermark is not a promise that a snapshot is still retained.
+ * The extra flag distinguishes a retained tick 0 from an absent offer. */
+/* 0x08 is the shared driver's PREFIX NACK; keep host extensions disjoint. */
+#define PSX_RB_SYNC_FLAG_RETAINED_LOAD 0x10u
+#define PSX_RB_SYNC_FLAG_NO_RETAINED_LOAD 0x20u
+static int g_joint_recovery;
+static uint32_t g_joint_mismatch;
+static uint32_t g_joint_target;
+static int g_joint_load_valid;
+static uint32_t g_joint_load;
+static int g_joint_reopen;
+static int g_joint_slot;
+static int g_joint_transfer;
 /* BASELINE that arrived before follow/begin (TURN race) — applied on episode open. */
 static int g_stash_bl_valid;
 static uint32_t g_stash_bl_epoch;
@@ -2027,6 +2042,11 @@ static int rb_media_kf_seal_local(uint32_t tick)
 {
     size_t sz = 0;
     const uint8_t *p;
+    if ((!g_snaps || !netplay_snap_ring_has(g_snaps, tick)) &&
+        g_pin_valid && g_pin_tick == tick && g_pin_data && g_pin_size) {
+        g_media_kf_ready = 1;
+        return 1;
+    }
     if (!g_snaps || !netplay_snap_ring_has(g_snaps, tick))
         return 0;
     p = netplay_snap_ring_peek(g_snaps, tick, &sz);
@@ -2057,6 +2077,10 @@ static void rb_media_kf_host_drive(void)
 
     load = rnet_rb_get_load_tick(g_rb);
     p = g_snaps ? netplay_snap_ring_peek(g_snaps, load, &sz) : NULL;
+    if ((!p || !sz) && g_pin_valid && g_pin_tick == load) {
+        p = g_pin_data;
+        sz = g_pin_size;
+    }
     if (!p || !sz) {
         static uint32_t s_miss_log;
         if (s_miss_log != load) {
@@ -2278,6 +2302,9 @@ static void realign_invalidate_evidence(uint32_t tick)
 
 static void schedule_live_realign(uint32_t tick, const char *why)
 {
+    /* A declined joint baseline never authorizes a one-seat restore. */
+    if (g_joint_recovery)
+        return;
     RNetSession *s = sess();
     int have_pin = g_pin_valid && g_pin_tick == tick && g_pin_data && g_pin_size;
     if (!have_pin && (!g_snaps || !netplay_snap_ring_has(g_snaps, tick))) {
@@ -2512,6 +2539,10 @@ static int pick_realign_tip(uint32_t *out_tick)
 /* After a failed episode: rewind Live to a tip both peers already agreed on. */
 static void abort_episode_realign(const char *why)
 {
+    if (g_joint_recovery) {
+        abort_episode(why);
+        return; /* Keep Live parked; a local ring walk cannot repair a fork. */
+    }
     RNetSession *s = sess();
     /* Capture LIVE sim BEFORE schedule_live_realign rewinds the clock.
      * Arming cooldown from the rewound tip let uncapped catch-up burn a
@@ -3168,6 +3199,25 @@ static void maybe_heartbeat_agreed_resolved(void)
     advertise_agreed_resolved(g_local_advertised_through);
 }
 
+/* A same-epoch, exact-tip COMMIT proves the peer compared our completed POST.
+ * Unlike RESOLVED, it cannot be a watermark from before this correction.
+ * Reuse that acknowledgment when the peer's own POST was lost or reordered. */
+static int joint_accept_peer_commit(void)
+{
+    uint32_t tip;
+    if (!g_joint_recovery || !g_rb || !rnet_rb_is_active(g_rb) ||
+        rnet_rb_get_phase(g_rb) != nRNetRbPhaseVerify ||
+        !g_episode_baseline_matched || !g_local_post_sent)
+        return 0;
+    tip = rnet_rb_get_target_tick(g_rb);
+    if (g_peer_commit_epoch != rnet_rb_get_epoch_id(g_rb) ||
+        g_peer_commit_tick != tip || g_post_target != tip ||
+        tip < g_joint_target || tip < g_joint_mismatch)
+        return 0;
+    ownership_on_post_match(tip);
+    return 1;
+}
+
 /* §42c / §91: tip-extend abandon on peer OP_COMMIT (never sticky RESOLVED).
  *
  * 2026-08-03 soak: guest ownership Live @T sent COMMIT while host TipHold
@@ -3191,6 +3241,8 @@ static int maybe_abandon_tip_extend(void)
 
     if (!g_rb || !rnet_rb_is_active(g_rb))
         return 0;
+    if (joint_accept_peer_commit())
+        return 1;
     phase = rnet_rb_get_phase(g_rb);
     tip_hold_path = (phase == nRNetRbPhaseTipHold) ? 1 : 0;
     if (phase != nRNetRbPhaseVerify && phase != nRNetRbPhaseTipHold &&
@@ -3352,12 +3404,15 @@ static void apply_peer_resolved(int from, uint32_t advert)
             g_past_frontier_sticky = 0;
     }
     rnet_rb_set_peer_convergence(g_rb, resolved);
-    /* Peer already POST-matched and tip-held this tip (or later). If we are
+    /* Joint recovery requires POST proof for this exact epoch, not a progress
+     * watermark from before the correction. Its COMMIT acknowledgment is
+     * handled separately by joint_accept_peer_commit().
+     * Peer already POST-matched and tip-held this tip (or later). If we are
      * still stuck in Verify waiting for their POST, trust RESOLVED as the
      * missing half of the handshake — otherwise a single lost POST leaves us
      * here until verify timeout while they advance Live on the same tip
      * (2026-08-01 soak). */
-    if (rnet_rb_is_active(g_rb) &&
+    if (!g_joint_recovery && rnet_rb_is_active(g_rb) &&
         rnet_rb_get_phase(g_rb) == nRNetRbPhaseVerify &&
         g_local_post_sent && g_post_target > 0u &&
         resolved >= g_post_target) {
@@ -3662,7 +3717,7 @@ static int choose_load_tick_inner(uint32_t mismatch, uint32_t *out_load)
     uint32_t hc_floor = 0;
     uint32_t hc_iv = 0;
     int have_shared = 0;
-    if (!out_load || !g_snaps || netplay_snap_ring_count(g_snaps) == 0)
+    if (!out_load || mismatch == 0u || !g_snaps || netplay_snap_ring_count(g_snaps) == 0)
         return 0;
     iv = snap_interval();
     if (iv < 1u)
@@ -3906,7 +3961,7 @@ static int choose_load_tick_inner(uint32_t mismatch, uint32_t *out_load)
             return 1;
         }
     }
-    cap = mismatch;
+    cap = mismatch - 1u;
     if (newest >= iv && cap > newest - iv)
         cap = newest - iv;
     if (iv > 1u)
@@ -3924,11 +3979,7 @@ static int choose_load_tick_inner(uint32_t mismatch, uint32_t *out_load)
         else
             cap--;
     }
-    /* Last resort (boot / no frontier yet): any snap ≤ mismatch. */
-    if (netplay_snap_ring_has(g_snaps, mismatch)) {
-        *out_load = mismatch;
-        return 1;
-    }
+    /* Last resort (boot / no frontier yet): any snap strictly before mismatch. */
     for (t = mismatch; t > 0; --t) {
         if (netplay_snap_ring_has(g_snaps, t - 1)) {
             *out_load = t - 1;
@@ -3969,6 +4020,16 @@ static int choose_load_fork_cap_heal_bypass(uint32_t mismatch, uint32_t *out_loa
 
 static int choose_load_tick(uint32_t mismatch, uint32_t *out_load)
 {
+    if (g_joint_recovery) {
+        if (!g_joint_reopen || !g_joint_load_valid ||
+            mismatch != g_joint_mismatch || g_joint_load >= mismatch ||
+            !g_snaps || (!netplay_snap_ring_has(g_snaps, g_joint_load) &&
+                         !(g_pin_valid && g_pin_tick == g_joint_load) &&
+                         !(g_joint_transfer && g_b.local_slot && *g_b.local_slot == 1)))
+            return 0;
+        *out_load = g_joint_load;
+        return 1;
+    }
     /* §55: after a baseline core mismatch at load L the fork provably predates
      * L — retrying the same snap can never heal (soak: 4 consecutive aborts at
      * 4176). Bisect: force the next load strictly below the failed one. */
@@ -4036,6 +4097,95 @@ static int choose_load_tick(uint32_t mismatch, uint32_t *out_load)
         return 0;
     }
     return 1;
+}
+
+static int joint_two_peer_session(void)
+{
+    uint32_t peers = psx_netplay_peer_seats();
+    return g_b.slot_count && *g_b.slot_count == 2 &&
+           g_b.local_slot && *g_b.local_slot >= 0 && *g_b.local_slot < 2 &&
+           peers && !(peers & (peers - 1u));
+}
+
+static int joint_recovery_enabled(void)
+{
+    return joint_two_peer_session() &&
+           !g_media_kf_episode && !g_post_fmv_heal_kf &&
+           !rb_in_fmv_lockstep_window();
+}
+
+/* Only offer a locally retained, verified prefix strictly before the first
+ * bad input. Baseline and POST digests still have to agree after both load.
+ * Tick zero is justified by the session's existing dig0 handshake. */
+static int joint_retained_load(uint32_t tick, uint32_t mismatch)
+{
+    if (tick >= mismatch || !g_snaps ||
+        (!netplay_snap_ring_has(g_snaps, tick) &&
+         !(g_pin_valid && g_pin_tick == tick)))
+        return 0;
+    return (tick == 0u && g_boot_dig0_synced) ||
+           (g_agreed_valid && tick >= g_agreed_span_lo && tick <= g_agreed_through) ||
+           (g_b.hc && netplay_hc_confirm_through(g_b.hc, tick));
+}
+
+static int joint_offer_below(uint32_t ceiling, uint32_t mismatch, uint32_t *offer)
+{
+    uint32_t oldest;
+    uint32_t cap;
+    if (!g_snaps || mismatch == 0u || !netplay_snap_ring_count(g_snaps))
+        return 0;
+    if (ceiling >= mismatch)
+        ceiling = mismatch - 1u;
+    cap = ceiling;
+    oldest = netplay_snap_ring_oldest_tick(g_snaps);
+    for (; ceiling >= oldest;) {
+        if (joint_retained_load(ceiling, mismatch)) {
+            *offer = ceiling;
+            return 1;
+        }
+        if (ceiling == oldest || ceiling == 0u)
+            break;
+        --ceiling;
+    }
+    if (g_pin_valid && g_pin_tick <= cap &&
+        joint_retained_load(g_pin_tick, mismatch)) {
+        *offer = g_pin_tick;
+        return 1;
+    }
+    return 0;
+}
+
+static void joint_recovery_hold(uint32_t mismatch, uint32_t target, int slot)
+{
+    if (target < mismatch)
+        target = mismatch; /* A previous SPAN cap cannot discard the bad input. */
+    if (!g_joint_recovery || mismatch < g_joint_mismatch)
+        g_joint_mismatch = mismatch;
+    if (!g_joint_recovery || target > g_joint_target)
+        g_joint_target = target;
+    g_joint_recovery = 1;
+    g_joint_slot = slot;
+}
+
+/* Clear the hold only after proof covering the complete original correction. */
+static void joint_recovery_post_match(uint32_t tip)
+{
+    if (g_joint_recovery && tip >= g_joint_target && tip >= g_joint_mismatch) {
+        g_joint_recovery = 0;
+        g_joint_load_valid = g_joint_reopen = 0;
+        g_joint_transfer = 0;
+    }
+}
+
+/* Existing keyframe authority remains slot zero. A recent host prefix can
+ * cover the original correction even when the rings have no usable overlap. */
+static int joint_host_transfer_load(uint32_t mismatch, uint32_t target, uint32_t *load)
+{
+    if (!g_b.local_slot || *g_b.local_slot != 0 || !rb_media_kf_enabled() ||
+        mismatch == 0u || target < mismatch ||
+        !joint_offer_below(mismatch - 1u, mismatch, load))
+        return 0;
+    return target >= *load && target - *load < RNET_RB_SEAL_MAX_SPAN;
 }
 
 /* Follower's confirmed frontier for the NACK wire hint: the deepest tick this
@@ -4112,12 +4262,34 @@ static void send_follow_nack(uint32_t epoch, uint32_t mismatch, uint32_t load,
 {
     RNetSession *s = sess();
     uint32_t frontier = follower_frontier_hint();
+    rnet_u8 flags = 0u;
+    if (joint_recovery_enabled()) {
+        joint_recovery_hold(mismatch, target, slot);
+        mismatch = g_joint_mismatch;
+        g_joint_load_valid = joint_offer_below(load, g_joint_mismatch, &g_joint_load);
+        frontier = g_joint_load_valid ? g_joint_load : 0u;
+        flags = g_joint_load_valid ? PSX_RB_SYNC_FLAG_RETAINED_LOAD
+                                   : PSX_RB_SYNC_FLAG_NO_RETAINED_LOAD;
+        if (g_b.local_slot && *g_b.local_slot == 0 && rb_media_kf_enabled()) {
+            if ((!g_joint_load_valid || g_joint_target < g_joint_load ||
+                 g_joint_target - g_joint_load >= RNET_RB_SEAL_MAX_SPAN) &&
+                joint_host_transfer_load(g_joint_mismatch, g_joint_target, &g_joint_load))
+                g_joint_load_valid = 1;
+            /* On NACK this advertises the host's existing keyframe source;
+             * the initiator requests it on BEGIN only when needed. */
+            flags = g_joint_load_valid ? PSX_RB_SYNC_FLAG_RETAINED_LOAD | RNET_RB_SYNC_FLAG_MEDIA_KF
+                                      : PSX_RB_SYNC_FLAG_NO_RETAINED_LOAD;
+            frontier = g_joint_load_valid ? g_joint_load : 0u;
+        }
+        if (g_joint_load_valid)
+            pin_baseline_from_ring(g_joint_load);
+    }
     (void)target; /* episode target is not useful to the initiator; send frontier */
     if (!s)
         return;
     (void)rnet_session_send_rb_sync(s, epoch, mismatch, load, frontier,
                                     (rnet_u8)(slot < 0 ? 0 : slot),
-                                    RNET_RB_SYNC_OP_NACK, 0u);
+                                    RNET_RB_SYNC_OP_NACK, flags);
     if (log_line) {
         fprintf(stderr,
                 "psxrecomp: rb follow NACK epoch=%u load=%u frontier=%u\n",
@@ -4273,7 +4445,8 @@ static void publish_sealed_sio(uint32_t tick)
         if (!rnet_rb_get_sealed_frame(g_rb, slot, tick, &row) || !row.is_valid)
             continue;
         g_b.apply_frame_slot(slot, tick, row.buttons, row.stick_x, row.stick_y,
-                             row.analog, row.rx, row.ry);
+                             row.analog, row.rx, row.ry,
+                             (uint8_t)rnet_rb_seat_row_authoritative(g_rb, slot, tick));
     }
 }
 
@@ -4372,6 +4545,10 @@ static void rb_post_publish(void)
  * early BASELINE must survive opening the episode it belongs to. */
 static void rb_reset_session_peer_state(void)
 {
+    g_joint_recovery = 0;
+    g_joint_mismatch = g_joint_target = g_joint_load = 0u;
+    g_joint_load_valid = g_joint_reopen = g_joint_slot = 0;
+    g_joint_transfer = 0;
     memset(g_stash_bl_seat, 0, sizeof(g_stash_bl_seat));
     memset(g_peer_progress_tip, 0, sizeof(g_peer_progress_tip));
     g_join_valid = 0;
@@ -4900,12 +5077,17 @@ static void arm_rereplay_after_load(uint32_t reload_tick)
 
     if (!g_rb || !s)
         return;
+    if (!g_episode_baseline_matched) {
+        abort_episode("rereplay without matched baseline");
+        return;
+    }
     resim_audit_cache_invalidate(); /* §67: snap load — fin cache stale */
     target = rnet_rb_get_target_tick(g_rb);
     first = reload_tick + 1u;
     /* Drop TipHold-Live invent FRAME_COMMITs; sealed resim rebuilds the span. */
     if (g_b.hc)
         netplay_hc_prime_after(g_b.hc, reload_tick);
+    psx_netplay_execution_anchor(reload_tick);
     g_tip_extend_prime_tick = reload_tick;
     g_episode_snap_applied = 1;
     g_pending_load_valid = 0;
@@ -5184,6 +5366,7 @@ static void maybe_enter_replay(void)
      * real VBlank period. */
     if (g_b.hc)
         netplay_hc_prime_after(g_b.hc, load);
+    psx_netplay_execution_anchor(load);
     rnet_rb_set_phase(g_rb, nRNetRbPhaseReplay);
     g_local_post_sent = 0;
     g_peer_post_ok = 0;
@@ -5493,6 +5676,9 @@ static void ownership_on_post_match(uint32_t tip)
     uint32_t frontier;
     uint32_t min_ahead;
 
+    /* The POST quorum or an exact episode COMMIT proves the peer matched our
+     * POST. Neither a progress advert nor a baseline load resolves bad input. */
+    joint_recovery_post_match(tip);
     /* Contiguous frontier from the tick after the verified tip. */
     frontier = psx_netplay_rb_confirmed_frontier(tip + 1u);
     /* §102: peer-ahead light tip — one Verify then Live (no SPAN hops). */
@@ -6439,19 +6625,22 @@ void psx_netplay_rb_bind(const PsxNetplayRbBindings *b)
     g_bound = 1;
 }
 
-void psx_netplay_rb_start(void)
+static void rb_shutdown(int clear_guest_resume);
+
+static void rb_start(int clear_guest_resume)
 {
     RNetRbConfig cfg;
     RNetRollbackVTable vt;
     RNetSession *s = sess();
     int delay;
 
-    psx_netplay_rb_shutdown(); /* also clears IRQ resume latches */
+    rb_shutdown(clear_guest_resume);
     if (!g_bound || !s)
         return;
     /* Rematch: belt-and-suspenders with interrupts_init (shutdown already
      * cleared; re-clear after recreate path in case bind raced). */
-    psx_irq_clear_resume_latches();
+    if (clear_guest_resume)
+        psx_irq_clear_resume_latches();
 
     /* §96: dirty-VRAM tracking only while RB netplay is live. */
     gpu_vram_dirty_set_tracking(1);
@@ -6566,6 +6755,22 @@ void psx_netplay_rb_start(void)
             (unsigned)snap_interval(), (unsigned)tip_dense_window());
 }
 
+void psx_netplay_rb_start(void)
+{
+    rb_start(1);
+}
+
+void psx_netplay_rb_restart_after_load(void)
+{
+    /* A manual load starts a new tick domain, not another recovery episode.
+     * The existing reset owner drops old snapshots, authoritative ceilings,
+     * peer episode bookkeeping and media deadlines together. CPU/IRQ resume
+     * latches belong to the restored state and must remain intact. */
+    rb_start(0);
+    fprintf(stderr, "psxrecomp: rb host timeline restarted after netplay load\n");
+    fflush(stderr);
+}
+
 void psx_netplay_rb_cold_reset(void)
 {
     /* Residue rb_shutdown historically left until the next rb_start — a
@@ -6602,6 +6807,7 @@ void psx_netplay_rb_cold_reset(void)
     g_stat_replay_ticks_total = 0;
     g_pending_save_valid = 0;
     g_pending_load_valid = 0;
+    g_auth_snap_through = 0;
     g_pending_resume_valid = 0;
     g_live_realign_pending = 0;
     g_was_in_fmv = 0;
@@ -6630,7 +6836,7 @@ void psx_netplay_rb_cold_reset(void)
     g_last_good_bb_pc = 0;
 }
 
-void psx_netplay_rb_shutdown(void)
+static void rb_shutdown(int clear_guest_resume)
 {
     if (g_rb) {
         rnet_rb_destroy(g_rb);
@@ -6642,7 +6848,8 @@ void psx_netplay_rb_shutdown(void)
     }
     /* BYE / soft-exit: drop resume latches before lobby rematch so dig0 cannot
      * see a prior-match game PC between shutdown and interrupts_init. */
-    psx_irq_clear_resume_latches();
+    if (clear_guest_resume)
+        psx_irq_clear_resume_latches();
     psx_netplay_rb_cold_reset();
     gpu_vram_dirty_set_tracking(0);
     boot_state_vram_mirror_reset();
@@ -6719,6 +6926,11 @@ void psx_netplay_rb_shutdown(void)
     g_abort_wire_realign_tick = 0u;
     g_abort_from_peer = 0;
     g_rb_rtt_ema_ms = 0;
+}
+
+void psx_netplay_rb_shutdown(void)
+{
+    rb_shutdown(1);
 }
 
 /* Dense tip snaps: settle + digest lockstep/+tip (§26) — first Cross/Start
@@ -7880,6 +8092,8 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
 
     if (!g_rb || !s)
         return 0;
+    if (psx_netplay_defer_recovery_for_transfer(mismatch_tick, slot))
+        return 0;
     /* §115: tip+1 platform fork already accepted — do not re-heal it. */
     if (g_platform_accepted_fork != 0u &&
         mismatch_tick == g_platform_accepted_fork) {
@@ -8026,7 +8240,7 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
     /* §101: never begin behind a peer tip we already know — that opens a
      * zombie-load episode the follower must NACK. Prefer peer_resolved (or
      * the newest mutual snap ≤ it) when choose_load landed lower. */
-    if (!g_ownership_chain && g_peer_resolved_through > load &&
+    if (!g_joint_recovery && !g_ownership_chain && g_peer_resolved_through > load &&
         mismatch_tick > 0u && g_peer_resolved_through < mismatch_tick &&
         g_snaps) {
         uint32_t want = g_peer_resolved_through;
@@ -8055,7 +8269,7 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
         }
     }
     /* §102: peer-ahead NACK reopen — pin load at the follower's tip. */
-    if (g_peer_ahead_force_load > 0u &&
+    if (!g_joint_recovery && g_peer_ahead_force_load > 0u &&
         g_peer_ahead_force_load < mismatch_tick &&
         (g_peer_nack_floor == 0u || g_peer_ahead_force_load > g_peer_nack_floor) &&
         (netplay_snap_ring_has(g_snaps, g_peer_ahead_force_load) ||
@@ -8069,7 +8283,7 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
         }
     }
     /* §51 Layer 3: chain continue must load exactly at the verified tip. */
-    if (g_ownership_chain && mismatch_tick > 0u) {
+    if (!g_joint_recovery && g_ownership_chain && mismatch_tick > 0u) {
         uint32_t tip = mismatch_tick - 1u;
         if (g_ownership_skip_snap ||
             (g_snaps && netplay_snap_ring_has(g_snaps, tip))) {
@@ -8155,6 +8369,14 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
     }
 
     target = rnet_rb_suggest_target(g_rb, mismatch_tick, sim);
+    if (g_joint_recovery) {
+        target = g_joint_target;
+        /* One existing sealed-row table must cover the ORIGINAL correction.
+         * Refuse an evicted/oversized history rather than cap before it. */
+        if (target < mismatch_tick || target < load ||
+            target - load >= RNET_RB_SEAL_MAX_SPAN)
+            return 0;
+    }
     if (target < load)
         target = load;
     /* §47 ownership chain: aim at contiguous frontier, still SPAN-chunked. */
@@ -8180,7 +8402,7 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
     }
     /* Chunk deep catch-up (post-abort agreed tip << live) so Replay never
      * walks the whole cooldown window in one episode. */
-    if (target > load + RB_MAX_RESIM_SPAN) {
+    if (!g_joint_recovery && target > load + RB_MAX_RESIM_SPAN) {
         fprintf(stderr,
                 "psxrecomp: rb begin SPAN CAP mismatch=%u load=%u "
                 "target %u→%u (max_span=%u)%s\n",
@@ -8289,7 +8511,9 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
         /* g_post_fmv_heal_kf may already be set when we CAP'd target=load. */
         if (g_post_fmv_heal_kf)
             post_heal = 1;
-        if (rb_want_heal_kf(mismatch_tick, load) || post_heal) {
+        if (g_joint_transfer)
+            post_heal = 0; /* Full original-input replay, never apply-only heal. */
+        if (rb_want_heal_kf(mismatch_tick, load) || post_heal || g_joint_transfer) {
             g_media_kf_episode = 1;
             g_media_kf_ready = 0;
             g_media_kf_host_armed = 0;
@@ -8318,6 +8542,8 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
                 ? RNET_RB_SYNC_FLAG_LIGHT_TIP : 0u);
         if (g_media_kf_episode)
             wire_flags = (rnet_u8)(wire_flags | RNET_RB_SYNC_FLAG_MEDIA_KF);
+        if (g_joint_recovery)
+            wire_flags |= PSX_RB_SYNC_FLAG_RETAINED_LOAD;
         (void)rnet_session_send_rb_sync(s, corr.epoch_id, corr.mismatch_tick, corr.load_tick,
                                         corr.target_tick, (rnet_u8)(slot < 0 ? 0 : slot),
                                         RNET_RB_SYNC_OP_BEGIN, wire_flags);
@@ -8431,6 +8657,10 @@ static void maybe_rexmit_begin(void)
     wire_flags = (rnet_u8)(
         (rnet_rb_get_corr_flags(g_rb) & RNET_RB_CORR_LIGHT_TIP)
             ? RNET_RB_SYNC_FLAG_LIGHT_TIP : 0u);
+    if (g_joint_recovery)
+        wire_flags |= PSX_RB_SYNC_FLAG_RETAINED_LOAD;
+    if (g_joint_transfer)
+        wire_flags |= RNET_RB_SYNC_FLAG_MEDIA_KF;
     slot = rnet_rb_get_corrected_slot(g_rb);
     (void)rnet_session_send_rb_sync(
         s, rnet_rb_get_epoch_id(g_rb), rnet_rb_get_mismatch_tick(g_rb),
@@ -8438,11 +8668,109 @@ static void maybe_rexmit_begin(void)
         (rnet_u8)(slot < 0 ? 0 : slot), RNET_RB_SYNC_OP_BEGIN, wire_flags);
 }
 
+/* A NACK offers retention, not agreement. Reopen the original correction on
+ * a common prefix through BEGIN/seals/baseline, never by realigning Live.
+ * A missing intersection or evicted input span stays visibly parked instead
+ * of declaring recovery on two different timelines. */
+static int joint_recovery_nack(uint32_t epoch, uint32_t mismatch,
+                               uint32_t offer, uint8_t flags)
+{
+    uint32_t load = 0u;
+    uint32_t original, target;
+    int slot, have = 0, transfer = 0;
+    if (!g_rb || !rnet_rb_is_active(g_rb) ||
+        epoch != rnet_rb_get_epoch_id(g_rb) || rnet_rb_is_from_peer_notify(g_rb) ||
+        (!g_joint_recovery && !joint_recovery_enabled()))
+        return 0;
+    if (g_joint_transfer) {
+        abort_episode("peer refused joint host keyframe");
+        g_joint_load_valid = g_joint_reopen = 0;
+        fprintf(stderr, "psxrecomp: rb joint recovery PARKED — peer refused host keyframe\n");
+        fflush(stderr);
+        return 1;
+    }
+    original = rnet_rb_get_mismatch_tick(g_rb);
+    if (mismatch < original)
+        original = mismatch;
+    target = rnet_rb_get_target_tick(g_rb);
+    slot = rnet_rb_get_corrected_slot(g_rb);
+    joint_recovery_hold(original, target, slot);
+    if (flags & PSX_RB_SYNC_FLAG_RETAINED_LOAD) {
+        if (joint_retained_load(offer, g_joint_mismatch)) {
+            load = offer;
+            have = 1;
+        } else if (offer > 0u) {
+            /* Counteroffer descends strictly; peers cannot ping-pong two
+             * different dense snapshots above the original bad input. */
+            have = joint_offer_below(offer - 1u, g_joint_mismatch, &load);
+        }
+        if (!joint_retained_load(offer, g_joint_mismatch) &&
+            (flags & RNET_RB_SYNC_FLAG_MEDIA_KF) &&
+            g_b.local_slot && *g_b.local_slot == 1 && rb_media_kf_enabled() &&
+            offer < g_joint_mismatch && g_joint_target >= offer &&
+            g_joint_target - offer < RNET_RB_SEAL_MAX_SPAN) {
+            load = offer;
+            have = transfer = 1; /* The other participant is the slot-zero host. */
+        }
+    }
+    if ((!have || g_joint_target < load ||
+         g_joint_target - load >= RNET_RB_SEAL_MAX_SPAN) &&
+        joint_host_transfer_load(g_joint_mismatch, g_joint_target, &load))
+        have = transfer = 1;
+    g_abort_from_peer = 1; /* NACK supersedes this epoch; no old ABORT race. */
+    abort_episode("joint retained-snapshot retry");
+    g_abort_from_peer = 0;
+    g_live_realign_pending = g_pending_load_valid = g_pending_resume_valid = 0;
+    g_joint_load = load;
+    g_joint_load_valid = have;
+    g_joint_reopen = have;
+    g_joint_transfer = transfer;
+    g_peer_ahead_force_load = 0u;
+    g_ownership_chain = g_ownership_skip_snap = 0;
+    clear_rewind_cooldown("joint retained-snapshot retry");
+    if (have && g_joint_target >= g_joint_mismatch &&
+        g_joint_target >= load && g_joint_target - load < RNET_RB_SEAL_MAX_SPAN) {
+        pin_baseline_from_ring(load);
+        if (psx_netplay_rb_begin_rewind(g_joint_mismatch, g_joint_slot)) {
+            g_joint_reopen = 0;
+            return 1;
+        }
+    }
+    g_joint_reopen = 0;
+    fprintf(stderr,
+            "psxrecomp: rb joint recovery PARKED mismatch=%u target=%u "
+            "offer=%u flags=%02x — no retained replayable prefix; reconnect required\n",
+            (unsigned)g_joint_mismatch, (unsigned)g_joint_target,
+            (unsigned)offer, (unsigned)flags);
+    fflush(stderr);
+    return 1;
+}
+
 static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uint32_t target,
                            int slot, uint8_t wire_flags)
 {
     RNetRbCorrection corr;
     uint32_t snap_n;
+    int joint = (wire_flags & PSX_RB_SYNC_FLAG_RETAINED_LOAD) != 0;
+    int transfer = joint && joint_two_peer_session() &&
+                   (wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) && rb_media_kf_enabled();
+    int transfer_guest = transfer && g_b.local_slot && *g_b.local_slot == 1;
+    /* A delayed duplicate of a completed BEGIN is not a new recovery. */
+    if (g_rb && !rnet_rb_is_active(g_rb) && epoch == g_last_commit_epoch &&
+        joint_two_peer_session())
+        return;
+    if (joint && (!(joint_recovery_enabled() ||
+                   transfer) ||
+                  (!transfer_guest &&
+                   !joint_retained_load(load, g_joint_recovery && g_joint_mismatch < mismatch
+                                                 ? g_joint_mismatch : mismatch)) ||
+                  (g_joint_recovery && load >= g_joint_mismatch) || load >= mismatch ||
+                  (g_joint_recovery && target < g_joint_target) || target < mismatch ||
+                  target < load || target - load >= RNET_RB_SEAL_MAX_SPAN)) {
+        follow_refuse_nack(epoch, mismatch, load, target, slot,
+                           "joint recovery needs a retained pre-mismatch snapshot");
+        return;
+    }
     /* Tip-extend SYNC: same epoch, higher target — absorb, don't re-begin.
      * §80: also absorb same-target REREPLAY (late-wire / tip-hold flush).
      * Must mirror initiator tip_extend: clear POST + rereplay from prior tip
@@ -8748,7 +9076,7 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
      * (soak: follow load=1808 after commit tip=1852; session-136 load=3184
      * vs agreed tip=3200 → silent REFUSED ×100 + seal timeout). load==agreed
      * is the ownership-chain skip-snap continue and stays legal. */
-    if (!rnet_rb_is_active(g_rb) && g_agreed_valid && load < g_agreed_through &&
+    if (!joint && !rnet_rb_is_active(g_rb) && g_agreed_valid && load < g_agreed_through &&
         !g_joining) {
         char detail[96];
         snprintf(detail, sizeof(detail),
@@ -8844,7 +9172,8 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
      * §97 MEDIA_KF: missing snap is OK — host transfers the keyframe. */
     if (!g_snaps || !netplay_snap_ring_has(g_snaps, load)) {
         int skip_ok = (g_ownership_skip_snap && g_agreed_valid &&
-                       load == g_agreed_through);
+                       load == g_agreed_through) ||
+                      (joint && g_pin_valid && g_pin_tick == load);
         int media_kf_ok = rb_media_kf_enabled() &&
                           ((wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) ||
                            rb_want_heal_kf(mismatch, load));
@@ -8933,7 +9262,7 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
          * §99 MEDIA_KF: invent-through-media leaves HC/agreed lagging the tip
          * while choose_load raises to a near-tip media snap — same trust as
          * missing-snap OK (host KF probe/transfer). Do not NACK. */
-        if (have_f && load > frontier) {
+        if (!joint && have_f && load > frontier) {
             int media_kf_ok = rb_media_kf_enabled() &&
                               ((wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) ||
                                rb_fmv_tick_unsafe_for_episode(load) ||
@@ -8980,6 +9309,13 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
     if ((epoch >> RB_EPOCH_SLOT_BITS) > g_epoch)
         g_epoch = epoch >> RB_EPOCH_SLOT_BITS;
     rnet_rb_begin_episode(g_rb, &corr);
+    if (joint) {
+        joint_recovery_hold(mismatch, target, slot);
+        g_joint_load = load;
+        g_joint_load_valid = 1;
+        g_joint_reopen = 0;
+        g_joint_transfer = transfer;
+    }
     psx_netplay_timesync_on_episode_boundary();
     clear_episode_wire_state();
     if (rb_media_kf_enabled() &&
@@ -9000,6 +9336,8 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
                 : 0;
         if (g_post_fmv_heal_kf)
             g_post_fmv_heal_fork_tick = mismatch;
+        if (joint)
+            g_post_fmv_heal_kf = 0;
     } else {
         g_post_fmv_heal_kf = 0;
     }
@@ -9142,6 +9480,10 @@ void psx_netplay_rb_pump(void)
 
     if (!g_rb || !s)
         return;
+    /* Leave incoming recovery messages queued while the collective operation
+     * owns the state channel; pump resumes them after its phase completes. */
+    if (psx_netplay_collective_transfer_active())
+        return;
 
     /* §97: host probe/transfer media keyframe while awaiting baseline. */
     rb_media_kf_host_drive();
@@ -9261,6 +9603,8 @@ void psx_netplay_rb_pump(void)
             continue;
         }
         if (op == RNET_RB_SYNC_OP_NACK) {
+            if (joint_recovery_nack(epoch, mismatch, target, wire_flags))
+                continue;
             /* MotK: op=NACK is follow-NACK (missing load snap / past frontier /
              * zombie load), not an echo. target field carries the follower's
              * frontier. */
@@ -9998,7 +10342,8 @@ int psx_netplay_rb_abort_resim_core_mismatch(uint32_t tick, uint32_t local_core,
 
 int psx_netplay_rb_load_pending(void)
 {
-    return g_pending_load_valid || g_pending_resume_valid || g_live_realign_pending;
+    return g_joint_recovery || g_pending_load_valid || g_pending_resume_valid ||
+           g_live_realign_pending;
 }
 
 uint32_t psx_netplay_rb_baseline_fork_cap(void)

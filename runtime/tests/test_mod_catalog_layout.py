@@ -43,7 +43,7 @@ MAIN_CPP = REPO / "runtime" / "src" / "main.cpp"
 FW_IDS = [
     "psx.enhancement.cd-speed",
     "psx.enhancement.fast-loading",
-    "psx.enhancement.pgxp",
+    "psx.enhancement.hd-textures",
     "psx.presentation.bezel",
 ]
 GAME_IDS = [
@@ -260,7 +260,7 @@ def main() -> int:
             [
                 "psx.enhancement.cd-speed",
                 "psx.enhancement.fast-loading",
-                "psx.enhancement.pgxp",
+                "psx.enhancement.hd-textures",
                 "psx.presentation.bezel",
                 "tombi2.enhancement.skip-fmvs",
                 "tombi2.enhancement.widescreen",
@@ -290,8 +290,7 @@ def main() -> int:
         # fast loading, so it declines both framework builtins. Excluded means
         # ABSENT from mods/bundled, and a typo must never read as success.
         print("[9] EXCLUDE_BUILTIN_MODS builtin selection")
-        builtins = sorted(FW_IDS + ["psx.enhancement.8mb-ram",
-                                    "psx.enhancement.internal-resolution"])
+        builtins = sorted(FW_IDS + ["psx.enhancement.8mb-ram"])
         r, sel = run_select(args.cmake, tmp, available=builtins)
         check(r.returncode == 0 and sel == builtins,
               "no exclusion stages every builtin")
@@ -301,7 +300,7 @@ def main() -> int:
             title=["wipeout3.enhancement.bezel"])
         check(r.returncode == 0, "a valid exclusion configures")
         check(sel == ["psx.enhancement.8mb-ram", "psx.enhancement.cd-speed",
-                      "psx.enhancement.internal-resolution", "psx.enhancement.pgxp"],
+                      "psx.enhancement.hd-textures"],
               f"excluded builtins are dropped, the rest kept in order (got {sel})")
         r, sel = run_select(
             args.cmake, tmp, available=builtins,
@@ -336,17 +335,10 @@ def main() -> int:
         check("OVERRIDES" in out, "explains the exclude/override contradiction")
         r, sel = run_select(
             args.cmake, tmp, available=builtins,
-            allowlist=["psx.enhancement.pgxp", "psx.presentation.bezel"],
+            allowlist=["psx.enhancement.hd-textures", "psx.presentation.bezel"],
             exclude=["psx.presentation.bezel"])
-        check(r.returncode == 0 and sel == ["psx.enhancement.pgxp",
-                                             "psx.enhancement.internal-resolution"],
-              f"legacy allowlists still include shared Internal Resolution (got {sel})")
-        for kwargs in ({"exclude": ["psx.enhancement.internal-resolution"]},
-                       {"title": ["psx.enhancement.internal-resolution"]}):
-            r, sel = run_select(args.cmake, tmp, available=builtins, **kwargs)
-            check(r.returncode != 0 and sel is None
-                  and "framework-owned" in r.stdout + r.stderr,
-                  "shared Internal Resolution cannot be excluded or silently overridden")
+        check(r.returncode == 0 and sel == ["psx.enhancement.hd-textures"],
+              f"an allowlist keeps only what it names (got {sel})")
         r, sel = run_select(
             args.cmake, tmp, available=[],
             exclude=["psx.presentation.bezel"])

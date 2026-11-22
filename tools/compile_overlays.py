@@ -166,7 +166,7 @@ def verify_recompiler_matches_tag(recompiler: str, tag_hash: int) -> None:
     import subprocess
     try:
         out = subprocess.run([recompiler, '--codegen-hash'],
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True)
     except Exception as e:
         raise SystemExit(f'FATAL: cannot execute {recompiler} for --codegen-hash '
                          f'staleness check: {e}')
@@ -219,7 +219,7 @@ def overlay_config_hash(recompiler: str, game_toml: str) -> int:
     try:
         out = subprocess.run(
             [recompiler, '--overlay-config-hash', os.path.abspath(game_toml)],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True)
     except Exception as e:
         raise SystemExit(
             f'FATAL: cannot execute {recompiler} for --overlay-config-hash: {e}')
@@ -6275,24 +6275,10 @@ def _compile_dll_tcc(c_path: str, out_dll: str, include_dirs, flavor: int,
     return True
 
 
-def _compile_dll_direct(c_path: str, out_dll: str, include_dirs: list[str],
-                        gcc: str = 'gcc', flavor: int = 0,
-                        compiler: str = 'gcc', tcc: str = 'tcc') -> bool:
-    import platform
-    # Absolute paths (interpreter flavor) for EVERY path the native compiler
-    # touches — see native_path's docstring for the two rules and the
-    # 2026-07-15 MSYS-python incident they encode.
-    c_path  = native_path(c_path)
-    out_dll = native_path(out_dll)
-    if compiler == 'tcc':
-        return _compile_dll_tcc(c_path, out_dll, include_dirs, flavor, tcc)
-    env, tc_dir = _toolchain_env(gcc)
-    includes = [f'-I{native_path(d)}' for d in include_dirs]
-    # On Windows, DLLs use PE relocations — -fPIC triggers GCC CRT init
-    # that conflicts with the host process. Use -shared without -fPIC.
-    pic_flag = [] if is_windows() else ['-fPIC']
-    cmd = [
-        gcc, '-shared', *pic_flag, *target_arch_flags('gcc'), '-O2',
+def gcc_overlay_flags(flavor):
+    # Windows DLLs use PE relocations and must not get -fPIC.
+    return [
+        *([] if is_windows() else ['-fPIC']), *target_arch_flags('gcc'), '-O2',
         '-DPSX_OVERLAY_DLL_BUILD',
         # Overlays mirror the runtime's no-debug-tools build: the emitter guards
         # debug_server_cyc_observe (and friends) behind PSX_NO_DEBUG_TOOLS, and the
@@ -6315,6 +6301,40 @@ def _compile_dll_direct(c_path: str, out_dll: str, include_dirs: list[str],
         # PGXP flavor bit (overlay_api.h PSX_OVERLAY_FLAVOR_PGXP): arm the
         # PGXP_*() hook macros the emitter writes into every overlay C.
         *(['-DPSX_PGXP=1'] if int(flavor) & 2 else []),
+    ]
+
+
+def _compile_dll_direct(c_path: str, out_dll: str, include_dirs: list[str],
+                        gcc: str = 'gcc', flavor: int = 0,
+                        compiler: str = 'gcc', tcc: str = 'tcc', object_cache=None) -> bool:
+    import platform
+    # Absolute paths (interpreter flavor) for EVERY path the native compiler
+    # touches — see native_path's docstring for the two rules and the
+    # 2026-07-15 MSYS-python incident they encode.
+    c_path  = native_path(c_path)
+    out_dll = native_path(out_dll)
+    if compiler == 'tcc':
+        return _compile_dll_tcc(c_path, out_dll, include_dirs, flavor, tcc)
+    env, tc_dir = _toolchain_env(gcc)
+    includes = [f'-I{native_path(d)}' for d in include_dirs]
+    # On Windows, DLLs use PE relocations — -fPIC triggers GCC CRT init
+    # that conflicts with the host process. Use -shared without -fPIC.
+    pic_flag = [] if is_windows() else ['-fPIC']
+    flags = gcc_overlay_flags(flavor)
+    if object_cache is not None:
+        from aot_compiler_cache import compile_overlay
+        cache, compiler_key = object_cache
+        try:
+            if compile_overlay(c_path, out_dll, gcc, env, flags, ['-shared'],
+                               includes, DISPATCH_PREAMBLE, cache, compiler_key):
+                return True
+            print('  overlay objects: unrecognized layout; compiling one translation unit')
+        except subprocess.CalledProcessError as exc:
+            message = (exc.stderr or exc.stdout or b'').decode(errors='replace')
+            print(f'  SPLIT OVERLAY COMPILE ERROR (exit {exc.returncode}):\n{message}')
+            return False
+    cmd = [
+        gcc, '-shared', *flags,
         c_path,
         '-o', out_dll,
         *includes,
@@ -6349,7 +6369,8 @@ def compile_dll(c_path: str, out_dll: str, include_dirs: list[str],
                 expected_existing_abi: int | None = None,
                 publication_result: dict | None = None,
                 candidate_cap: int | None = None,
-                manifest_provenance: str | None = None) -> bool:
+                manifest_provenance: str | None = None,
+                object_cache=None) -> bool:
     """Publish a shard only after all of its artifacts are complete.
 
     GCC and tcc write their output incrementally. If the process is interrupted
@@ -6395,7 +6416,7 @@ def compile_dll(c_path: str, out_dll: str, include_dirs: list[str],
     try:
         if not _compile_dll_direct(
                 c_path, staged, include_dirs, gcc=gcc, flavor=flavor,
-                compiler=compiler, tcc=tcc):
+                compiler=compiler, tcc=tcc, object_cache=object_cache):
             return False
         if not os.path.isfile(staged) or os.path.getsize(staged) == 0:
             print('  COMPILE ERROR: compiler reported success but emitted no DLL')
@@ -6492,7 +6513,7 @@ def _write_json_atomic(path: str, value: dict) -> None:
 
 
 @contextmanager
-def _exclusive_file_lock(lock_path: str, timeout: float | None = 120.0):
+def _exclusive_file_lock(lock_path: str, timeout: float | None = None):
     """Kernel-owned cross-process lock on one permanent byte-range file.
 
     The lock file is intentionally permanent.  OS byte-range/advisory locks are
@@ -6538,7 +6559,7 @@ def _exclusive_file_lock(lock_path: str, timeout: float | None = 120.0):
 
 
 @contextmanager
-def _shard_pair_lock(dll_path: str, timeout: float = 120.0):
+def _shard_pair_lock(dll_path: str, timeout: float | None = None):
     """Cross-process lock for one canonical DLL/ranges filename pair."""
     _dll, _ranges, lock_path, _journal = _shard_pair_paths(dll_path)
     with _exclusive_file_lock(lock_path, timeout):
@@ -7806,6 +7827,8 @@ def main():
                     help='overlay shard compiler: gcc (default; dev/production, '
                          'best-optimized) or tcc (bundled, toolchain-free user '
                          'fallback). tcc shards land in the tcc/ cache namespace.')
+    ap.add_argument('--release-object-cache', nargs=2, metavar=('DIR', 'TOOLCHAIN_KEY'),
+                    help='Reuse matching guest code objects across release recipes')
     ap.add_argument('--tcc',             default='tcc',
                     help='TinyCC binary (used when --compiler tcc)')
     ap.add_argument('--force',           action='store_true',
@@ -7871,6 +7894,11 @@ def main():
                          'call evidence (default: [game] exe resolved against '
                          'the game.toml directory, then --project-root)')
     args = ap.parse_args()
+    object_cache = None
+    if args.release_object_cache:
+        from pathlib import Path
+        cache, compiler_key = args.release_object_cache
+        object_cache = Path(cache), compiler_key
     print(f'root policy: no-split guard on, enrichment '
           f'{"on" if args.root_enrichment else "OFF (diagnostic)"}')
     target_os = args.target_os
@@ -8423,6 +8451,7 @@ def main():
                                   expected_existing_abi=overlay_abi_tag(
                                       args.runtime_include, args.flavor),
                                   publication_result=publication,
+                                  object_cache=object_cache,
                                   candidate_cap=overlay_candidate_cap(
                                       args.runtime_include))
             if success:

@@ -60,6 +60,9 @@ int  pt_running(void);
 
 /* Producer: the slot being composed. */
 int  pt_current(void);
+/* Optional work may submit only if it leaves another free slot for the
+ * next native present. Only the composing owner can consume that space. */
+int  pt_optional_room(void);
 /* Producer: queue the current slot with `ready`, then take the next free slot
  * (blocking while none is). *next_done receives that slot's done token (NULL
  * if none); *wait_ns the time spent blocked. Returns the new current slot, or

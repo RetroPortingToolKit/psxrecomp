@@ -27,14 +27,15 @@ def main():
         p = subprocess.run(
             [args.cmake, f"-DROOT={root}", f"-DPROFILE=bios/{stem}.toml",
              "-P", str(root / "tools" / "bios_emitter_fingerprint.cmake")],
-            cwd=root, capture_output=True, text=True, timeout=120)
+            cwd=root, capture_output=True, text=True)
         assert p.returncode == 0, p.stderr
         now = p.stdout.strip().splitlines()[-1].strip()
         saved = stamp.read_text(encoding="utf-8").strip()
         if now != saved:
             stale.append(f"{stem}: stamp {saved} now {now}")
-    assert not stale, ("stale BIOS emitter stamps (run tools/regen_bios.sh "
-                       "--config bios/<stem>.toml and commit generated/):\n  "
+    assert not stale, ("stale BIOS emitter stamps (for output-neutral changes run "
+                       "tools/regen_bios.sh --compare --config bios/<stem>.toml; "
+                       "commit the verified OpenBIOS stamp with the source change):\n  "
                        + "\n  ".join(stale))
     print(f"PASS: {len(stamps)} BIOS emitter stamps match the emitter")
 

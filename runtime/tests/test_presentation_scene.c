@@ -99,6 +99,16 @@ int main(void) {
     assert(!psx_presentation_phase(34000,1000,0,17500,&phase));
     assert(!psx_presentation_phase(1000,34000,0,500,&phase));
     assert(psx_presentation_phase(UINT64_MAX-100,UINT64_MAX,0,UINT64_MAX-50,&phase));
+    PsxPresentationSlot slot;
+    assert(!psx_presentation_extra_slot(1000000,17666667,16666667,1,&slot));
+    assert(psx_presentation_extra_slot(1000000,17666666,8333333,1,&slot));
+    close_to(slot.alpha, .75);
+    assert(slot.target_ns == 9333333 && slot.expires_ns < 17666667);
+    assert(psx_presentation_extra_slot(1000000,17666667,6944444,1,&slot));
+    assert(!psx_presentation_extra_slot(1000000,17666667,6944444,2,&slot));
+    assert(psx_presentation_extra_slot(1000000,17666667,4166667,2,&slot));
+    assert(!psx_presentation_extra_slot(1000000,17666667,1,0,&slot));
+    assert(!psx_presentation_extra_slot(17666667,1000000,8333333,1,&slot));
     close_to(phase,.5);
     PsxPresentationCamera c=camera(),sample_camera;
     PsxPresentationCamera empty_camera=c;empty_camera.pose.position[0]=20;

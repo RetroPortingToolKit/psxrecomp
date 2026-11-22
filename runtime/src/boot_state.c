@@ -126,20 +126,16 @@ static uint32_t boot_state_layout_cookie(void) {
 /* Set by a BS_SEC_CPUTIM load; psx_cycles_resync_after_restore consumes it. */
 int g_boot_state_cpu_timing_restored;
 
-/* ---- checkpoint resume sections (debug feature, off by default) ----
- * A load resets four pieces of state that live outside the other sections:
- * the interpreter's pending load (psx_cycles_resync_after_restore discards
- * it), the scheduler's switch-back TCB (never saved), the IRQ cooldown, SIO
- * progress and deferred thread switch (interrupts_resync_after_restore
- * resets them) and the memory-control registers (never saved). A replay
- * that resumes from a checkpoint needs all four to match the run that
- * never stopped. The sections are written only when the feature is on, so
- * player states, rewind and netplay are unchanged. */
+/* ---- execution pipeline and optional debug resume sections ----
+ * CPU_EXEC is required in every current snapshot: its pending load and old
+ * successor operand are guest state even outside debug/TAS checkpoints.
+ * Three additional sections retain debug checkpoint scheduler, IRQ timing
+ * and memory-control state; these remain gated by the existing TAS feature. */
 #define BS_CPU_EXEC_BYTES   36u
 #define BS_SCHED_BYTES      16u
 #define BS_IRQ_TIMING_BYTES 64u
 #define BS_MEMCTRL_BYTES    (PSX_MEMORY_CONTROL_WORDS * 4u)
-#define BS_RESUME_SECTIONS  4u
+#define BS_RESUME_SECTIONS  3u
 
 int boot_state_resume_sections_enabled(void) {
 #ifdef PSX_NO_DEBUG_TOOLS
@@ -158,11 +154,14 @@ static int resume_cpu_exec_parse(const uint8_t *p, uint32_t len, DirtyRamLoadDel
     pst_r_init(&r, p, len);
     for (unsigned i = 0; i < 9u; i++)
         if (!pst_r_u32(&r, &v[i])) return 0;
-    /* Words 0-4 are reserved and must be zero. */
-    if (v[0] | v[1] | v[2] | v[3] | v[4]) return 0;
-    /* rt, value, age (0 armed, 1 delay slot ran), armed. A retired load
-     * leaves age 1 with armed 0, so age does not need armed. */
+    /* The old operand and successor PC are guest pipeline state. The other
+     * three prefix words stay reserved; host cookie epochs are not saved. */
+    if (v[2] | v[3] | v[4]) return 0;
     if (v[5] > 31u || v[7] > 1u || v[8] > 1u) return 0;
+    if (v[8] && (v[5] == 0u || (v[1] & 3u))) return 0;
+    memset(d, 0, sizeof *d);
+    d->old = v[0];
+    d->next = v[1];
     d->rt = v[5];
     d->val = v[6];
     d->age = v[7];
@@ -403,8 +402,10 @@ static int bs_raw_capture_reserve(BsOut *o, const CPUState *cpu,
         if (total > SIZE_MAX - 16u - PSX_GCS_SNAPSHOT_BYTES) return 0;
         total += 16u + PSX_GCS_SNAPSHOT_BYTES;
     }
+    if (total > SIZE_MAX - 16u - BS_CPU_EXEC_BYTES) return 0;
+    total += 16u + BS_CPU_EXEC_BYTES;
     if (resume) {
-        const size_t bytes = 4u * 16u + BS_CPU_EXEC_BYTES + BS_SCHED_BYTES +
+        const size_t bytes = 3u * 16u + BS_SCHED_BYTES +
                              BS_IRQ_TIMING_BYTES + BS_MEMCTRL_BYTES;
         if (total > SIZE_MAX - bytes) return 0;
         total += bytes;
@@ -573,20 +574,28 @@ static int write_timer_section(BsOut* o) {
 
 /* ============================ SAVE ============================ */
 
-static int write_resume_sections(BsOut *o) {
+static int write_resume_sections(BsOut *o, int debug_resume) {
     {
         uint8_t b[BS_CPU_EXEC_BYTES];
         DirtyRamLoadDelay d;
         PstW w;
         dirty_ram_ld_delay_save(&d);
+        /* Retired pipeline scratch is not canonical guest state. */
+        /* Equal integer words need no architectural delay. PGXP may retain
+         * a local old/new lineage window, which must not change the digest. */
+        if (!d.armed || d.old == d.val) memset(&d, 0, sizeof d);
+        if (d.rt > 31u || d.age > 1u || (d.armed && (d.rt == 0u || (d.next & 3u))))
+            return 0;
         pst_w_init(&w, b, sizeof b);
-        for (unsigned i = 0; i < 5u; i++)
+        if (!pst_w_u32(&w, d.old) || !pst_w_u32(&w, d.next)) return 0;
+        for (unsigned i = 0; i < 3u; i++)
             if (!pst_w_u32(&w, 0u)) return 0;
         if (!pst_w_u32(&w, d.rt) || !pst_w_u32(&w, d.val) || !pst_w_u32(&w, d.age) ||
             !pst_w_u32(&w, d.armed ? 1u : 0u) || w.written != sizeof b ||
             !write_section(o, BS_SEC_CPU_EXEC, b, sizeof b))
             return 0;
     }
+    if (!debug_resume) return 1;
     {
         uint8_t b[BS_SCHED_BYTES];
         PstW w;
@@ -706,7 +715,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
     h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
     h.codegen_ver   = BOOT_STATE_IMPLEMENTATION_KEY;
-    h.section_count = 18 + (cpu ? 1u : 0u) + (psx_mod_memory_snapshot_bytes() ? 1u : 0u) +
+    h.section_count = 19 + (cpu ? 1u : 0u) + (psx_mod_memory_snapshot_bytes() ? 1u : 0u) +
                       (psx_guest_cycle_scale_config() != 1u ? 1u : 0u) +
                       (resume ? BS_RESUME_SECTIONS : 0u);
 
@@ -871,7 +880,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
         ok = pst_w_u32(&w, g[0]) && pst_w_u32(&w, g[1]) && pst_w_u32(&w, g[2]) &&
              write_section(o, BS_SEC_GCS, gb, sizeof gb);
     }
-    if (ok && resume) ok = write_resume_sections(o);
+    if (ok) ok = write_resume_sections(o, resume);
     if (ok && host_bytes) ok = write_section(o, BS_SEC_MOD_HOST, host_state, host_bytes);
     free(host_state);
     return ok;
@@ -1408,7 +1417,7 @@ static int boot_state_load_buffer_impl(const uint8_t* file, size_t file_len,
         (1u<<BS_SEC_CPU)|(1u<<BS_SEC_RAM)|(1u<<BS_SEC_SPAD)|(1u<<BS_SEC_IRQ)|
         (1u<<BS_SEC_TIMER)|(1u<<BS_SEC_CLOCK)|(1u<<BS_SEC_GPU)|(1u<<BS_SEC_VRAM)|
         (1u<<BS_SEC_SPU)|(1u<<BS_SEC_SPURAM)|(1u<<BS_SEC_CDROM)|(1u<<BS_SEC_DMA)|
-        (1u<<BS_SEC_SIO)|(1u<<BS_SEC_MDEC)|(1u<<BS_SEC_DIRTY)|
+        (1u<<BS_SEC_SIO)|(1u<<BS_SEC_MDEC)|(1u<<BS_SEC_DIRTY)|(1u<<BS_SEC_CPU_EXEC)|
         (psx_mod_memory_snapshot_bytes() ? (1u<<BS_SEC_MODMEM) : 0u) |
         (psx_mod_snapshot_layout_cookie() ? (1u<<BS_SEC_MOD_HOST) : 0u);
     uint32_t seen = 0;

@@ -4,6 +4,7 @@
 #define PSX_BLOCK_EDGE_H
 #include "interrupts.h"
 #include "psx_observation_view.h"
+#include "psx_load_delay.h"
 
 #if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
 #define PSX_BLOCK_INLINE static inline __attribute__((always_inline))

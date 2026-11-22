@@ -170,22 +170,22 @@ int main(void) {
     EXPECT("snapshot.current.small", 0x01, small);
     EXPECT("snapshot.current.large", 0x80, large);
 
-    /* The pad-mode section (0x44 lock + device) and the JogCon rollback
-     * fields each add four bytes for a two-seat build. Removing them restores
-     * the preceding formats; removing all twenty-four trailing bytes models a
-     * pre-rumble state. */
-    EXPECT("snapshot.pre-pad-mode.read", 1,
-           sio_snapshot_read(snapshot, snapshot_len - 4));
-    EXPECT("snapshot.pre-jogcon.read", 1,
-           sio_snapshot_read(snapshot, snapshot_len - 8));
-    EXPECT("snapshot.pre-jogcon.small", 0x01,
-           (sio_get_pad_rumble(0, &small, &large), small));
-    EXPECT("snapshot.pre-jogcon.large", 0x80, large);
-    EXPECT("snapshot.legacy.read", 1,
-           sio_snapshot_read(snapshot, snapshot_len - 24));
-    sio_get_pad_rumble(0, &small, &large);
-    EXPECT("snapshot.legacy.small", 0x00, small);
-    EXPECT("snapshot.legacy.large", 0x00, large);
+    /* Snapshots are build-specific. Truncating an older trailing section
+     * must reject the input without changing any live controller state. */
+    uint8_t *unchanged = (uint8_t *)malloc(snapshot_len);
+    if (!unchanged) return 2;
+    static const uint32_t cuts[] = { 1, 4, 8, 24 };
+    for (unsigned k = 0; k < sizeof(cuts) / sizeof(cuts[0]); ++k) {
+        EXPECT("snapshot.truncated.reject", 0,
+               sio_snapshot_read(snapshot, snapshot_len - cuts[k]));
+        sio_snapshot_write(unchanged);
+        EXPECT("snapshot.truncated.unchanged", 0,
+               memcmp(snapshot, unchanged, snapshot_len));
+        sio_get_pad_rumble(0, &small, &large);
+        EXPECT("snapshot.truncated.small", 0x01, small);
+        EXPECT("snapshot.truncated.large", 0x80, large);
+    }
+    free(unchanged);
     free(snapshot);
 
     poll_with_motors(0, 0x01, 0xFF);

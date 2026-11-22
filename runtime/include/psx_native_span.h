@@ -57,8 +57,8 @@ static inline const uint8_t *psx_native_span_ram(uint32_t addr, uint32_t width) 
         !PSX_DM_VALUE(g_ds_recording) && !PSX_DM_VALUE(g_ram_read_watch_active) && !PSX_DM_VALUE(g_dma_exec_depth)) {
         uint32_t phys = addr & 0x1FFFFFFFu;
         if (phys < 0x00800000u) {
-            phys &= PSX_DM_VALUE(g_psx_ram_mask);
-            if (phys <= PSX_DM_VALUE(g_psx_ram_mask) + 1u - width)
+            phys &= PSX_DM_RAM_MASK();
+            if (phys <= PSX_DM_RAM_MASK() + 1u - width)
                 return PSX_DM_VALUE(g_psx_ram) + phys;
         }
 #if (defined(PSX_DIRECT_GUEST_MEMORY) && PSX_DIRECT_GUEST_MEMORY) || defined(PSX_OVERLAY_DLL_BUILD)

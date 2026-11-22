@@ -527,6 +527,29 @@ static int  rth_record_mode(void);
 static int presentation_gpu_source(int x,int y,int w,int h,int repeated,int crop[4],
     GLuint *fbo,GLuint *texture,int *scale);
 static void presentation_gpu_capture_record(const void *payload);
+static uint64_t presentation_display_tick(void *user, uint64_t now);
+static void presentation_display_cancel(void);
+static void presentation_display_arm(int w, int h, int linear, int force_4_3,
+                                     const int crop[4]);
+
+typedef struct GeometryTiming {
+    uint64_t midpoint_ns, native_ns, interval_ns, epoch;
+} GeometryTiming;
+static GeometryTiming s_geometry_record_timing;
+static GeometryTiming s_geometry_replay_timing;
+static _Atomic uint64_t s_display_rate_epoch;
+static _Atomic uint64_t s_display_rate_armed;
+static _Atomic uint64_t s_display_rate_submitted;
+
+void gl_renderer_set_display_rate_timing(uint64_t midpoint, uint64_t native,
+                                         uint64_t interval) {
+    s_geometry_record_timing = (GeometryTiming){midpoint, native, interval,
+                                                atomic_load(&s_display_rate_epoch)};
+}
+
+void gl_renderer_invalidate_display_rate(void) {
+    atomic_fetch_add(&s_display_rate_epoch, 1);
+}
 /* GPU-owner replay uses the original queued native presentation boundary. */
 static uint64_t s_presentation_present_cycle=UINT64_MAX;
 /* Render-thread frame cost (dynamic resolution; defined with GL_RT_BACKEND). */
@@ -9518,11 +9541,13 @@ int gl_renderer_present_thread_json(char *out, size_t cap) {
     return snprintf(out, cap,
         "\"present_thread\":{\"active\":%d,\"slots\":%d,\"submits\":%llu,\"presents\":%llu,"
         "\"waits\":%llu,\"wait_ms\":%.3f,\"swap_ms_avg\":%.3f,\"swap_ms_max\":%.3f,"
-        "\"queued_high\":%d}",
+        "\"queued_high\":%d,\"display_rate_armed\":%llu,\"display_rate_submitted\":%llu}",
         s_pt_on, st.slots, (unsigned long long)st.submits, (unsigned long long)st.presents,
         (unsigned long long)st.waits, st.wait_ns / 1e6,
         st.presents ? (double)st.present_ns / (double)st.presents / 1e6 : 0.0,
-        st.present_max_ns / 1e6, st.queued_high);
+        st.present_max_ns / 1e6, st.queued_high,
+        (unsigned long long)atomic_load(&s_display_rate_armed),
+        (unsigned long long)atomic_load(&s_display_rate_submitted));
 }
 static void gl_swap_now(int generated);
 
@@ -10016,6 +10041,10 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
     s_last_present_path = geometry?GL_PRES_GEOMETRY:GL_PRES_VRAM;
     s_last_dx = disp_x; s_last_dy = disp_y; s_last_dw = w; s_last_dh = h;
     coh_record(GL_COH_PRESENT, disp_x, disp_y, disp_x + w - 1, disp_y + h - 1);
+    if (geometry && !postfx_active() && !psx_host_ui_capture_active() &&
+        !ov_needs_present() && !s_rth_ov.px[0] && !s_rth_ov.px[1] &&
+        !s_rth_ov.px[2] && !s_rth_ov.px[3])
+        presentation_display_arm(w, h, linear, force_4_3, geometry_crop);
 }
 
 /* Native-wide fast path: authoritatively copy the canonical 4:3 framebuffer
@@ -10933,6 +10962,7 @@ static int rth_record_mode(void) {
 /* Present records carry the host overlays the emulation thread rasterized. */
 typedef struct RthOvHdr {
     uint64_t latency_frame,guest_cycle;
+    GeometryTiming geometry_timing;
     int32_t needs_present, has, w[4], h[4];
     float   slide;
     int32_t args[8], nargs;
@@ -10945,6 +10975,8 @@ static int rth_record_present(uint16_t op, int n, const int32_t *v) {
     memset(&hd, 0, sizeof hd);
     hd.latency_frame=latency_ring_current_frame();
     hd.guest_cycle=psx_get_cycle_count();
+    hd.geometry_timing = s_geometry_record_timing;
+    s_geometry_record_timing = (GeometryTiming){0};
     hd.needs_present = host_osd_needs_present();
     for (int i = 0; i < 4; i++) {
         if (ov_image(i, &px[i], &w[i], &h[i]) && px[i] && w[i] > 0 && h[i] > 0) {
@@ -10997,6 +11029,7 @@ static void rth_replay_present(const RtCmd *c, const uint8_t *p) {
 
 /* Present a recorded present's payload (header, overlay copies). */
 static void rth_present_payload(uint16_t op, const uint8_t *p) {
+    presentation_display_cancel();
     RthOvHdr hd;
     memcpy(&hd, p, sizeof hd);
     const uint8_t *q = p + sizeof hd;
@@ -11015,11 +11048,13 @@ static void rth_present_payload(uint16_t op, const uint8_t *p) {
     latency_ring_replay_frame(hd.latency_frame);
     const uint64_t prior_cycle=s_presentation_present_cycle;
     s_presentation_present_cycle=hd.guest_cycle;
+    s_geometry_replay_timing = hd.geometry_timing;
     if (op == RTH_PRESENT_VRAM)
         gl_renderer_present_vram(a[0], a[1], a[2], a[3], a[4], a[5]);
     else
         (void)gl_renderer_present_wide_fbo(a[0], a[1], a[2], a[3]);
     s_presentation_present_cycle=prior_cycle;
+    s_geometry_replay_timing = (GeometryTiming){0};
     latency_ring_replay_frame(UINT64_MAX);
     s_rth_ov.valid = 0;
 }
@@ -11657,7 +11692,7 @@ int gl_renderer_render_thread_start(int max_frames) {
     cfg.exec = gl_rth_exec;
     cfg.ctx = gl_rth_ctx;
     cfg.user = NULL;
-    cfg.tick = NULL;
+    cfg.tick = presentation_display_tick;
 
     (void)pt_begin();   /* [video] present_thread; falls back to direct swaps */
     if (!rt_start(&cfg)) {

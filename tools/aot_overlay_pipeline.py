@@ -18,6 +18,7 @@ import sys
 import tempfile
 import zlib
 
+import aot_compiler_cache as compiler_cache
 import compile_overlays as compiler
 from aot_overlay_spike import extract_generic as extractor
 from packed_sector_table import extract_members as extract_sector_members
@@ -892,28 +893,82 @@ def release_project_root(game_toml):
     return FRAMEWORK
 
 
-def build(inventory, game_toml, recompiler, work, gcc, workers, project_root=None, cps=False, flavor=0):
+def require_release_codegen(runtime_build, recompiler):
+    """The whole-cache audit must target the namespace the built game reads."""
+    include = runtime_build / 'psxrecomp_codegen_include'
+    runtime_hash = compiler.codegen_hash(str(include))
+    require(runtime_hash, f'Built runtime codegen header is missing under {include}')
+    tool_hash = compiler.codegen_hash(str(FRAMEWORK / 'runtime/include'), str(recompiler))
+    require(tool_hash == runtime_hash,
+            f'Runtime reads codegen {runtime_hash:08x}, but the recompiler would publish '
+            f'{tool_hash:08x}. Build a matching psxrecomp-game before compiling overlays.')
+    compiler.verify_recompiler_matches_tag(str(recompiler), runtime_hash)
+
+
+def release_inputs(game_toml, recompiler, project_root, gcc, cps, flavor):
+    import tomllib
+    tools = FRAMEWORK / 'tools'
+    include = FRAMEWORK / 'runtime/include'
+    gcc_env, _ = compiler._toolchain_env(gcc)
+    toolchain = compiler_cache.toolchain_identity(
+        gcc, gcc_env, compiler.gcc_overlay_flags(flavor), include)
+    object_key = compiler_cache.identity(dict(
+        toolchain=toolchain, splitter=digest(tools / 'aot_compiler_cache.py'),
+        arch=compiler.cache_arch_abi()))
+    config = tomllib.loads(Path(game_toml).read_text(encoding='utf-8-sig'))
+    main = compiler.load_main_exe_image(config, str(game_toml), str(project_root))
+    bios = [FRAMEWORK / 'bios/SCPH1001.toml']
+    for root in {Path(game_toml).parent, Path(project_root)}:
+        bios += [root / 'bios/SCPH1001.toml', *sorted(root.glob('*/bios/SCPH1001.toml'))]
+    recipe_key = compiler_cache.identity(dict(
+        compiler=object_key, recompiler=digest(recompiler),
+        runtime_headers=tree_digest(include), config=digest(game_toml),
+        cache_tag=compiler.cache_tag(str(include), str(recompiler), str(game_toml), flavor),
+        tools={name: digest(tools / name) for name in
+               ('aot_overlay_pipeline.py', 'compile_overlays.py')},
+        bios_profiles={p.as_posix(): digest(p) for p in bios if p.is_file()},
+        main_exe=digest(main[2]) if main else None, cps=cps, flavor=flavor,
+        environment={key: value for key, value in os.environ.items() if key.startswith('PSX')}))
+    return object_key, recipe_key
+
+
+def build(inventory, game_toml, recompiler, work, gcc, workers, project_root=None,
+          cps=False, flavor=0, reuse_dir=None):
     """Independent recipe builds cannot nominate entries in sibling images."""
     cache = work / 'cache'
     cache.mkdir(parents=True)
+    project_root = project_root or game_toml.parent
+    if reuse_dir is not None:
+        object_key, recipe_key = release_inputs(game_toml, recompiler, project_root, gcc, cps, flavor)
+
     def compile_job(pair):
         index, job = pair
         target = work / 'jobs' / f'{index:03d}'
         target.mkdir(parents=True)
+        artifact = None
+        if reuse_dir is not None:
+            key = compiler_cache.identity([recipe_key, job['recipe_sha256']])
+            artifact = reuse_dir / 'recipes' / key[:2] / (key + '.zip')
+            if compiler_cache.restore_recipe(artifact, target / 'cache', key):
+                return index, job, target, 'Reused'
         command = [sys.executable, str(FRAMEWORK / 'tools/compile_overlays.py'),
                    '--captures', job['input'], '--game-toml', str(game_toml),
-                   '--project-root', str(project_root or game_toml.parent), '--recompiler', str(recompiler),
+                   '--project-root', str(project_root), '--recompiler', str(recompiler),
                    '--runtime-include', str(FRAMEWORK / 'runtime/include'),
                    '--out-dir', str(target / 'cache'), '--compiler', 'gcc', '--gcc', gcc,
                    '--flavor', str(flavor), '--jobs', '1'] + (['--cps'] if cps else [])
+        if reuse_dir is not None:
+            command += ['--release-object-cache', str(reuse_dir / 'objects'), object_key]
         with (target / 'compile.log').open('w') as log:
             subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
-        return index, job, target
+        if artifact is not None:
+            compiler_cache.save_recipe(artifact, target / 'cache', key)
+        return index, job, target, 'Compiled'
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(compile_job, item) for item in enumerate(inventory['jobs'])]
         for future in as_completed(futures):
             try:
-                index, job, target = future.result()
+                index, job, target, action = future.result()
             except Exception:
                 # Stop queued work immediately. Already-running compilers may
                 # finish, but no partial result reaches auditing or staging.
@@ -922,7 +977,7 @@ def build(inventory, game_toml, recompiler, work, gcc, workers, project_root=Non
                 print(f'AOT compilation failed; recipe logs are under {work / "jobs"}',
                       file=sys.stderr, flush=True)
                 raise
-            print(f"Compiled {index + 1}/{len(futures)}: {job['name']}", flush=True)
+            print(f"{action} {index + 1}/{len(futures)}: {job['name']}", flush=True)
             for library in (target / 'cache').rglob('*' + compiler.overlay_ext()):
                 destination = cache / library.relative_to(target / 'cache')
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1145,6 +1200,8 @@ def run():
     parser.add_argument('--recompiler', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--stage', type=Path)
+    parser.add_argument('--compiler-cache', type=Path,
+                        help='release: persistent recipe and object cache (default: under --work-dir)')
     parser.add_argument('--gcc', default='gcc')
     parser.add_argument('--workers', type=int, default=3)
     parser.add_argument('--out-dir', type=Path,
@@ -1175,6 +1232,8 @@ def run():
                 'Static AOT generation currently requires a flavor-0 runtime')
     import tomllib
     config, recompiler = args.game_toml.resolve(), args.recompiler.resolve()
+    if args.action == 'release' and args.runtime_build_dir:
+        require_release_codegen(args.runtime_build_dir.resolve(), recompiler)
     profile_path = args.profile.resolve()
     game_config = tomllib.loads(config.read_text(encoding='utf-8-sig'))
     profile = load_profile(profile_path, game_config)
@@ -1221,8 +1280,9 @@ def run():
         import tomllib
         require(tomllib.loads(runtime_config.read_text(encoding='utf-8-sig'))['game']['id'] == inventory['game_id'],
                 'Runtime config/game mismatch')
+        reuse_dir = (args.compiler_cache or args.work_dir / 'compiler-cache').resolve()
         cache = build(inventory, runtime_config, recompiler, work, args.gcc, args.workers,
-                      release_project_root(config), args.cps, flavor)
+                      release_project_root(config), args.cps, flavor, reuse_dir)
         receipt = audit(runtime_config, recompiler, cache, work / 'runtime-input-inventory.json', work / 'audit.json',
                         flavor=flavor)
         receipt['profile_sha256'] = inventory['profile_sha256']

@@ -3,6 +3,7 @@
 import importlib.util
 import ast
 import builtins
+import hashlib
 from pathlib import Path
 import runpy
 import subprocess
@@ -187,6 +188,60 @@ class ArchiveTests(unittest.TestCase):
         self.write()
         with self.assertRaisesRegex(ValueError, "no executable at the package root"):
             audit.audit(self.zip, GAME, DIAG, True, replay_helper=False)
+
+    def test_known_x4_inputs_control_keeps_its_public_id_and_guards(self):
+        del self.files[MANIFEST]
+        package_id = "mmx4.diagnostics"
+        name = "mods/bundled/mmx4.diagnostics/1.0.0/manifest.toml"
+        text = TEXT.replace(DIAG, package_id).replace('"recording"', '"inputs"')
+        for public in (False, True):
+            self.files[name] = text
+            self.write()
+            self.assertEqual(audit.audit(self.zip, GAME, package_id, public), 1)
+            for bad in (text.replace("default_enabled = true", "default_enabled = false", 1),
+                        text.replace('feature = "inputs"', 'feature = "wrong"'),
+                        text.replace('id = "inputs"', 'id = "inputs"\nhidden = true'),
+                        text.replace('id = "osd"\ndefault_enabled = false',
+                                     'id = "osd"\ndefault_enabled = true')):
+                self.files[name] = bad
+                self.write()
+                with self.assertRaises(ValueError):
+                    audit.audit(self.zip, GAME, package_id, public)
+        self.files[name] = text.replace(package_id, DIAG)
+        self.files[MANIFEST] = self.files.pop(name)
+        self.write()
+        with self.assertRaises(ValueError):
+            audit.audit(self.zip, GAME, DIAG, True)
+
+    def patch_asset(self):
+        name = "mods/bundled/fixture.patch/1.0.0/manifest.toml"
+        data = b"authored disc patch fixture"
+        text = ('id="fixture.patch"\n[[overlay]]\ntarget="disc_raw"\noffset=16\n'
+                'file="assets/silence.bin"\nsha256="%s"\nexpected_sha256="%s"\n'
+                % (hashlib.sha256(data).hexdigest(), "0" * 64))
+        self.files[name] = text
+        self.files["mods/bundled/fixture.patch/1.0.0/assets/silence.bin"] = data
+        return name, text
+
+    def test_only_declared_hash_bound_disc_patch_assets_are_allowed(self):
+        name, text = self.patch_asset()
+        self.assertEqual(self.check(), 1)
+        for invalid in (text.replace('target="disc_raw"', 'target="ram"'),
+                        text.replace('file="assets/silence.bin"', 'file="../silence.bin"'),
+                        text.replace('expected_sha256="' + "0" * 64 + '"', ''),
+                        text.replace('sha256="' + hashlib.sha256(b"authored disc patch fixture").hexdigest() + '"',
+                                     'sha256="' + "f" * 64 + '"')):
+            self.files[name] = invalid
+            with self.assertRaises(ValueError):
+                self.check()
+        self.files[name] = text
+        self.files["Game.bin"] = b"undeclared image"
+        with self.assertRaisesRegex(ValueError, "unexpected binary image"):
+            self.check()
+        del self.files["Game.bin"]
+        self.files["mods/bundled/fixture.patch/1.0.0/assets/silence.bin"] = b"tampered"
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            self.check()
 
     def test_staged_directory_is_audited_like_a_zip(self):
         stage = Path(self.tmp.name) / "stage"

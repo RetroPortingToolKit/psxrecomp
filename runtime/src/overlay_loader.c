@@ -5,6 +5,7 @@
 #include "overlay_backend.h"
 #include "crc32.h"
 #include "dirty_ram_interp.h"
+#include "psx_load_delay.h"
 #include "interp_report.h"
 #include "interrupts.h"
 #include "mod_plugins.h"
@@ -2658,6 +2659,9 @@ static void init_callbacks(void) {
     s_callbacks.gte_execute          = gte_execute;
     s_callbacks.direct_memory=psx_direct_memory_host_view();
     s_callbacks.observation_time=overlay_observation_view();
+    s_callbacks.ld_delay_stage=dirty_ram_ld_delay_stage;
+    s_callbacks.ld_delay_begin=dirty_ram_ld_delay_begin;
+    s_callbacks.ld_delay_end=dirty_ram_ld_delay_end;
     s_callbacks.bus_read_word=psx_read_word;
     s_callbacks.bus_read_half=psx_read_half;
     s_callbacks.bus_read_byte=psx_read_byte;
