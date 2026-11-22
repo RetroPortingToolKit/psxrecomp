@@ -569,6 +569,21 @@ class SelectiveReleasePgoTests(unittest.TestCase):
         process.wait.assert_called_once_with()
         self.assertTrue((directory / 'training.json').is_file())
 
+    def test_explicit_headless_training_uses_existing_no_window_backend(self):
+        self.training_files()
+        self.ctx.config.pgo_train_headless = True
+        process = self.training_process()
+        with mock.patch.object(ptr.subprocess, 'Popen', side_effect=self.frame_boot(process)) as launch, \
+                mock.patch.object(ptr.runtime_hot_pgo, 'verify_inputs'), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'profiles', return_value={'validated': True}):
+            result = ptr.train_release_pgo(self.ctx, {'commands': {}})
+        self.assertIn('--headless', launch.call_args.args[0])
+        self.assertNotIn('--hidden-window', launch.call_args.args[0])
+        self.assertEqual(result['presentation'], 'headless-software')
+        self.assertEqual(result['frame_completion'], {'first': 1, 'last': 601, 'frames': 600})
+        self.assertEqual(result['close']['exit_code'], 0)
+        self.assertEqual(launch.call_args.kwargs['env']['SDL_AUDIO_DRIVER'], 'dummy')
+
     def test_early_exit_is_not_training_even_with_exit_zero(self):
         directory = self.training_files()
         process = self.training_process()
