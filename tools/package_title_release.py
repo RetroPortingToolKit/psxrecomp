@@ -190,7 +190,8 @@ class Config:
         'product': {'name', 'display_name', 'exe_name', 'version_file', 'game_toml',
                     'player_game_toml', 'runtime_target', 'zip_folder', 'launcher_boxart'},
         'build': {'cmake_args', 'linux_cmake_args', 'windows_cmake_args', 'regenerate',
-                  'binary_identity', 'selective_pgo', 'pgo_train_seconds', 'pgo_train_frames'},
+                  'binary_identity', 'selective_pgo', 'pgo_train_seconds', 'pgo_train_frames',
+                  'pgo_train_headless'},
         'aot': {'mode', 'profile', 'cps'},
         'overlay_toolchain': {'ship'},
         'diagnostics': {'game_id', 'package_id', 'replay_helper', 'allow_hd_textures'},
@@ -243,6 +244,7 @@ class Config:
         self.pgo_train_frames = build.get('pgo_train_frames', self.pgo_train_seconds * 60)
         if type(self.pgo_train_frames) is not int or not 1 <= self.pgo_train_frames <= 18000:
             fail('%s: pgo_train_frames must be an integer from 1 to 18000' % self.path)
+        self.pgo_train_headless = self._bool(build, 'pgo_train_headless', False)
 
         aot = self._table(data, 'aot')
         self.aot_mode = self._str(aot, 'mode', 'none')
@@ -641,13 +643,15 @@ def train_release_pgo(ctx, generated):
                XDG_DATA_HOME=str(private / 'userdata'),
                XDG_CONFIG_HOME=str(private / 'userdata'))
     argv = [str(exe), '--game', str(ctx.config.game_toml), '--bios', str(bios),
-            '--memcard-dir', str(private / 'state'), '--no-launcher', '--hidden-window']
+            '--memcard-dir', str(private / 'state'), '--no-launcher',
+            '--headless' if ctx.config.pgo_train_headless else '--hidden-window']
     record = dict(status='training', purpose='Build-stage boot profiles only; no gameplay QA or performance qualification',
                   binary_sha256=sha256(exe), config_sha256=sha256(ctx.config.game_toml),
                   generate_receipt_sha256=sha256(directory / 'generate.json'),
-                  seconds=ctx.config.pgo_train_seconds, argv=argv, private=str(private))
-    log('Build-stage PGO boot profiles: %d guest frames, hidden and muted; no gameplay QA claim'
-        % ctx.config.pgo_train_frames)
+                  seconds=ctx.config.pgo_train_seconds, argv=argv, private=str(private),
+                  presentation='headless-software' if ctx.config.pgo_train_headless else 'hidden-window')
+    log('Build-stage PGO boot profiles: %d guest frames, %s, muted; no gameplay QA claim'
+        % (ctx.config.pgo_train_frames, record['presentation']))
     process = None
     try:
         with (private / 'stdout.log').open('wb') as out, (private / 'stderr.log').open('wb') as err:
