@@ -2459,6 +2459,7 @@ int main(int argc, char** argv) {
               "profile option renderer registration");
     write_text(root / "bundled/local.diagnostics/1.0.0/manifest.toml",
         "format_version = 5\nid = \"local.diagnostics\"\nversion = \"1.0.0\"\nname = \"Local diagnostics\"\n"
+        "[[target]]\ngame_id = \"SLUS-RUNTIME\"\n"
         "[[feature]]\nid = \"recording\"\nname = \"Recording\"\ndefault_enabled = true\n"
         "[[plugin]]\nfeature = \"recording\"\nid = \"local.diagnostics\"\nnetplay = \"host_only\"\n");
     check(psx_mod_register_netplay_profile(&profile), "trusted profile registration");

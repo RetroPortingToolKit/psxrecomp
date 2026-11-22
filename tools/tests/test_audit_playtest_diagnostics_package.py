@@ -189,29 +189,29 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no executable at the package root"):
             audit.audit(self.zip, GAME, DIAG, True, replay_helper=False)
 
-    def test_known_x4_inputs_control_keeps_its_public_id_and_guards(self):
-        del self.files[MANIFEST]
-        package_id = "mmx4.diagnostics"
-        name = "mods/bundled/mmx4.diagnostics/1.0.0/manifest.toml"
-        text = TEXT.replace(DIAG, package_id).replace('"recording"', '"inputs"')
-        for public in (False, True):
-            self.files[name] = text
-            self.write()
-            self.assertEqual(audit.audit(self.zip, GAME, package_id, public), 1)
-            for bad in (text.replace("default_enabled = true", "default_enabled = false", 1),
-                        text.replace('feature = "inputs"', 'feature = "wrong"'),
-                        text.replace('id = "inputs"', 'id = "inputs"\nhidden = true'),
-                        text.replace('id = "osd"\ndefault_enabled = false',
-                                     'id = "osd"\ndefault_enabled = true')):
-                self.files[name] = bad
+    def test_known_title_inputs_controls_keep_public_ids_and_guards(self):
+        for package_id in ("mmx4.diagnostics", "mmx5.diagnostics"):
+            del self.files[MANIFEST]
+            name = "mods/bundled/" + package_id + "/1.0.0/manifest.toml"
+            text = TEXT.replace(DIAG, package_id).replace('"recording"', '"inputs"')
+            for public in (False, True):
+                self.files[name] = text
                 self.write()
-                with self.assertRaises(ValueError):
-                    audit.audit(self.zip, GAME, package_id, public)
-        self.files[name] = text.replace(package_id, DIAG)
-        self.files[MANIFEST] = self.files.pop(name)
-        self.write()
-        with self.assertRaises(ValueError):
-            audit.audit(self.zip, GAME, DIAG, True)
+                self.assertEqual(audit.audit(self.zip, GAME, package_id, public), 1)
+                for bad in (text.replace("default_enabled = true", "default_enabled = false", 1),
+                            text.replace('feature = "inputs"', 'feature = "wrong"'),
+                            text.replace('id = "inputs"', 'id = "inputs"\nhidden = true'),
+                            text.replace('id = "osd"\ndefault_enabled = false',
+                                         'id = "osd"\ndefault_enabled = true')):
+                    self.files[name] = bad
+                    self.write()
+                    with self.assertRaises(ValueError):
+                        audit.audit(self.zip, GAME, package_id, public)
+            self.files[name] = text.replace(package_id, DIAG)
+            self.files[MANIFEST] = self.files.pop(name)
+            self.write()
+            with self.assertRaises(ValueError):
+                audit.audit(self.zip, GAME, DIAG, True)
 
     def patch_asset(self):
         name = "mods/bundled/fixture.patch/1.0.0/manifest.toml"

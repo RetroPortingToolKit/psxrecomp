@@ -1018,9 +1018,9 @@ def check_public_mod_packages(payload, package_ids):
 
 def diagnostics_features(data):
     features = {f.get('id'): f for f in data.get('feature', [])}
-    # X4's maintained recording control predates the shared feature spelling.
+    # Existing title recording controls predate the shared feature spelling.
     # Normalize only this known package; preserve its public ID and bindings.
-    if (data.get('id') == 'mmx4.diagnostics' and
+    if (data.get('id') in ('mmx4.diagnostics', 'mmx5.diagnostics') and
             'recording' not in features and 'inputs' in features):
         features['recording'] = features['inputs']
     return features
