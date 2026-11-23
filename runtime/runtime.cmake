@@ -405,6 +405,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/gpu_sw_renderer.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_vram_dirty.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_render.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu_render_record.c
     ${PSXRECOMP_ROOT}/runtime/src/render_thread.c
     ${PSXRECOMP_ROOT}/runtime/src/present_thread.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_gl_renderer.c
