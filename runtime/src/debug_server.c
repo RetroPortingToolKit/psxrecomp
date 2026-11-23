@@ -8013,6 +8013,7 @@ static const char *txn_end_reason_str(int reason) {
     case SIO_TXN_END_ABORT_SLOT:     return "abort_slot";
     case SIO_TXN_END_ABORT_BAD_CMD:  return "abort_bad_cmd";
     case SIO_TXN_END_ABORT_OTHER:    return "abort_other";
+    case SIO_TXN_END_CARD_REJECTED:  return "card_rejected";
     default:                         return "unknown";
     }
 }

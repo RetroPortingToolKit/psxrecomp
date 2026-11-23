@@ -2432,6 +2432,8 @@ static void sio_process_byte(uint8_t tx_byte) {
             switch (txn_pre_state) {
             case MC_READ_END:
             case MC_WRITE_END:
+                reason = sio_rx_data == 0x47 ? SIO_TXN_END_SUCCESS : SIO_TXN_END_CARD_REJECTED;
+                break;
             case MC_GETID_4:
                 reason = SIO_TXN_END_SUCCESS;
                 break;

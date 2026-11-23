@@ -351,12 +351,13 @@ void sio_get_freeze_diag(int *out_irq_pending, int *out_irq_countdown,
 
 typedef enum {
     SIO_TXN_END_OPEN          = 0, /* still in progress (only on the live txn) */
-    SIO_TXN_END_SUCCESS       = 1, /* mc_state reached IDLE via natural progression */
+    SIO_TXN_END_SUCCESS       = 1, /* read/write returned 0x47, or GET ID completed */
     SIO_TXN_END_ABORT_RESELECT= 2, /* 0x81 received while txn already non-IDLE */
     SIO_TXN_END_ABORT_RESET   = 3, /* CTRL.RESET written */
     SIO_TXN_END_ABORT_SLOT    = 4, /* slot mismatch reset (DEV_NONE non-0x81 path) */
     SIO_TXN_END_ABORT_BAD_CMD = 5, /* CMD byte not 0x52/0x57/0x53 */
     SIO_TXN_END_ABORT_OTHER   = 6, /* state machine fell through */
+    SIO_TXN_END_CARD_REJECTED = 7, /* read/write ended without the 0x47 success byte */
 } SioTxnEndReason;
 
 typedef struct {

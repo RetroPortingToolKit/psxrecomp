@@ -144,6 +144,15 @@ static void card_deselect(int slot) {
     sio_tick(2000);
 }
 
+static SioTxnEndReason last_card_txn_end_reason(void) {
+    const SioTxnEntry *entries;
+    int write_index;
+    if (sio_get_card_txns(&entries, &write_index, NULL) == 0) {
+        return SIO_TXN_END_OPEN;
+    }
+    return entries[(write_index + SIO_TXN_CAP - 1) % SIO_TXN_CAP].end_reason;
+}
+
 /* Drive a complete card READ for the given sector and capture every RX byte.
  * Returns count of RX bytes captured (137 for a successful read). */
 static int run_card_read(int slot, uint16_t sector, uint8_t out_rx[140]) {
@@ -305,9 +314,19 @@ static void test_card_read_sector_0(void) {
     EXPECT_EQ("read.idx[138]_checksum", expected_chk, rx[138]);
     /* idx 139: end byte */
     EXPECT_EQ("read.idx[139]_end",       0x47, rx[139]);
+    EXPECT_EQ("read.trace_reason", SIO_TXN_END_SUCCESS, last_card_txn_end_reason());
 
     EXPECT_EQ("read2.prefix",            0xFF, card_xchg(0x81, 0));
     EXPECT_EQ("read2.flag_still_set",    0x08, card_xchg(0x52, 0));
+}
+
+static void test_invalid_read_reports_failure(void) {
+    uint8_t rx[140];
+    sio_init();
+    memcard_init("test_dir");
+    EXPECT_EQ("invalid_read.count", 140, run_card_read(0, MEMCARD_SECTORS, rx));
+    EXPECT_EQ("invalid_read.end", 0xFF, rx[139]);
+    EXPECT_EQ("invalid_read.trace_reason", SIO_TXN_END_CARD_REJECTED, last_card_txn_end_reason());
 }
 
 static void test_flag_clears_on_write(void) {
@@ -323,6 +342,7 @@ static void test_flag_clears_on_write(void) {
     EXPECT_EQ("write.count", 138, n);
     EXPECT_EQ("write.idx[1]_initial_FLAG", 0x08, rx[1]);
     EXPECT_EQ("write.end", 0x47, rx[137]);
+    EXPECT_EQ("write.trace_reason", SIO_TXN_END_SUCCESS, last_card_txn_end_reason());
 
     EXPECT_EQ("post_write.prefix",       0xFF, card_xchg(0x81, 0));
     EXPECT_EQ("post_write.flag_clear",   0x00, card_xchg(0x52, 0));
@@ -350,6 +370,7 @@ static void test_rejected_save_reports_failure(void) {
     memset(data, 0x92, sizeof data);
     EXPECT_EQ("rejected.count", 138, run_card_write(0, 0, data, rx));
     EXPECT_EQ("rejected.end", 0x4E, rx[137]);
+    EXPECT_EQ("rejected.trace_reason", SIO_TXN_END_CARD_REJECTED, last_card_txn_end_reason());
     EXPECT_EQ("rejected.flush_result", -2, memcard_last_flush_result(0));
     f = fopen("test_dir/card1.mcd", "rb");
     EXPECT_EQ("rejected.after_read", 128, f ? fread(after, 1, 128, f) : 0);
@@ -603,6 +624,7 @@ int main(int argc, char **argv) {
             (g_checks - prev_checks) - (g_failures - prev_fails),
             g_checks - prev_checks);
 
+    test_invalid_read_reports_failure();
     test_rejected_save_reports_failure();
 
     prev_checks = g_checks; prev_fails = g_failures;
