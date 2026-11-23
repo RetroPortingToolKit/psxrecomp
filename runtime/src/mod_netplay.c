@@ -30,6 +30,14 @@ int psx_mod_register_netplay_profile(const PSXModNetplayProfile *profile) {
          !profile->loading_feature_id || !profile->loading_feature_id[0] ||
          !profile->loading_plugin_id || !profile->loading_plugin_id[0] ||
          profile->settings_package_id)) return 0;
+    if (!!profile->content_features != !!profile->content_feature_count ||
+        (profile->content_feature_count && !profile->settings_package_id)) return 0;
+    for (unsigned i = 0; i < profile->content_feature_count; ++i) {
+        const PSXModNetplayContentFeature *feature = &profile->content_features[i];
+        if (!feature->package_id || !feature->package_id[0] ||
+            !feature->feature_id || !feature->feature_id[0] ||
+            !strcmp(feature->package_id, profile->settings_package_id)) return 0;
+    }
     if (title_profile) return title_profile == profile;
     title_profile = profile;
     mask = profile->fixed_aspect_mask;
@@ -41,6 +49,16 @@ const PSXModNetplayProfile *psx_mod_netplay_profile(void) { return title_profile
 const char *psx_mod_netplay_version(const char *vanilla_version) {
     return title_profile ? title_profile->compatibility_id : vanilla_version;
 }
+int psx_mod_netplay_content_feature(const char *package_id, const char *feature_id) {
+    if (!title_profile || !package_id || !feature_id) return 0;
+    for (unsigned i = 0; i < title_profile->content_feature_count; ++i) {
+        const PSXModNetplayContentFeature *feature = &title_profile->content_features[i];
+        if (!strcmp(package_id, feature->package_id) && !strcmp(feature_id, feature->feature_id))
+            return 1;
+    }
+    return 0;
+}
+
 int psx_mod_netplay_rollback_supported(void) {
     return !title_profile || title_profile->rollback_supported != 0;
 }

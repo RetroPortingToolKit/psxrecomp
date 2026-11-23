@@ -38,6 +38,11 @@ typedef struct PSXModNetplayHostStartup {
  * absent/empty policy refuses frontend netplay. This callback grants no
  * qualification merely by seeing a CPU feature or matching image hash. */
 typedef int (*PSXModNetplayHostProfiles)(const PSXModNetplayHostStartup *,PSXHostProfileCatalog *out);
+typedef struct PSXModNetplayContentFeature {
+    const char *package_id;
+    const char *feature_id;
+} PSXModNetplayContentFeature;
+
 typedef struct PSXModNetplayProfile {
     const char *plugin_id;
     const char *compatibility_id;
@@ -62,10 +67,15 @@ typedef struct PSXModNetplayProfile {
     const char *loading_feature_id;
     const char *loading_plugin_id;
     PSXModNetplayHostProfiles host_profiles; /* Append-only startup catalog. */
+    /* Optional shared content beside the profile's fixed settings. The
+     * declaration and its strings must outlive the registered profile. */
+    const PSXModNetplayContentFeature *content_features;
+    unsigned content_feature_count;
 } PSXModNetplayProfile;
 
 int psx_mod_register_netplay_profile(const PSXModNetplayProfile *profile);
 const PSXModNetplayProfile *psx_mod_netplay_profile(void);
+int psx_mod_netplay_content_feature(const char *package_id, const char *feature_id);
 const char *psx_mod_netplay_version(const char *vanilla_version);
 int psx_mod_netplay_rollback_supported(void);
 int psx_mod_netplay_savestates_supported(void);
