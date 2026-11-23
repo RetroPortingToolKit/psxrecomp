@@ -286,6 +286,7 @@ static uint32_t record(uint32_t frames, int by_shutdown)
         CHECK(!replay_session_owns_p1());
     }
     if (by_shutdown) {
+        replay_session_checkpoint_at_boundary();
         replay_session_shutdown();
     } else {
         const uint8_t centre[4] = {0x80, 0x80, 0x80, 0x80};
@@ -525,6 +526,7 @@ int main(void)
         if (i == 10) s_watch('L', "gcc/x/c.dll");
         if (i == 25) { s_watch('I', "gcc/x/d.dll"); s_watch('I', "gcc/x/e.dll"); }
         if (i == 30) s_watch('R', NULL);   /* a rescan that indexed nothing */
+        if (i == 39) replay_session_checkpoint_at_boundary();
         replay_session_boundary(rec_word(i), sticks, &b, s);
     }
     replay_session_shutdown();
@@ -620,7 +622,7 @@ int main(void)
     CHECK(replay_session_record_power_on(REPLAY) == 1 && replay_session_state() == REPLAY_RECORDING);
     CHECK(record(40, 1) == 40);
     CHECK(s_cards_in == 0 && s_cards_out == 0);
-    CHECK(play_back(REPLAY, 39) && s_cards_in == 1 && s_cards_mask == 2u && s_card2_first == 0x77);
+    CHECK(play_back(REPLAY, 40) && s_cards_in == 1 && s_cards_mask == 2u && s_card2_first == 0x77);
 
     /* Refusals: the host cannot record; the anchor cannot be saved. */
     reset_host();
@@ -685,15 +687,16 @@ int main(void)
      * cached pre-restore checkpoint, never the newly restored RAM. */
     reset_host(); remove(REPLAY); s_at_power_on = 1;
     CHECK(replay_session_record_power_on(REPLAY));
-    for (uint32_t i = 0; i < 4; ++i) {
+    for (uint32_t i = 0; i < 74; ++i) {
         const uint8_t axes[4] = {(uint8_t)i, 0x80, 0x81, 0x82};
+        if (i == 70) s_watch('L', "gcc/x/after-checkpoint.dll");
         replay_session_boundary(rec_word(i), axes, &b, s);
     }
     s_ram[12345] ^= 1;
     replay_session_on_state_restore();
     CHECK(replay_session_state() == REPLAY_IDLE && strstr(s_osd, "restored"));
     s_ram[12345] ^= 1;
-    CHECK(play_back(REPLAY, 3));
+    CHECK(play_back(REPLAY, 60));
     /* Real frontend plus real session: cold On -> saved Off -> On starts a
      * fresh frame0/path/counter each time. Disc shutdown never auto-reboots. */
     reset_host(); remove(REPLAY); s_at_power_on = 1;

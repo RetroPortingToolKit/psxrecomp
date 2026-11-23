@@ -57,6 +57,9 @@ void replay_session_stop_record(void);
 /* Before ordinary sampling, cache the completed frame's END/digest. The
  * following boundary call observes sampled input for the next guest frame. */
 void replay_session_prepare_record_boundary(void);
+/* A host-requested stop at a guest frame boundary can keep its exact END.
+ * Other teardown paths keep the most recent complete checkpoint. */
+void replay_session_checkpoint_at_boundary(void);
 
 /* 1 while playback drives P1. Recording never owns or changes input. */
 int replay_session_owns_p1(void);

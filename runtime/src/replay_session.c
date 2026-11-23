@@ -710,11 +710,8 @@ static size_t s_rec_code_log_committed;
 static int s_rec_code_log_full;
 static uint8_t *s_anchor;
 static size_t s_anchor_size;
-/* RAM and cycle at the last recorded boundary: the END checkpoint, so a
- * recording cut short by process exit still ends where playback reaches. */
-static uint8_t *s_last_ram;
-static uint64_t s_last_cycle;
-static uint32_t s_last_frame;
+/* Most recent safe END checkpoint, with no staged copy of guest RAM. */
+static ReplayCheckpoint s_record_end;
 static uint32_t (*s_rec_digests)[5];
 static uint32_t s_rec_digest_count;
 static int s_rec_power_on;
@@ -727,7 +724,6 @@ static void free_recording(void)
 {
     free(s_words); s_words = NULL;
     free(s_anchor); s_anchor = NULL; s_anchor_size = 0;
-    free(s_last_ram); s_last_ram = NULL;
     free(s_rec_digests); s_rec_digests = NULL; s_rec_digest_count = 0;
     free(s_rec_cards); s_rec_cards = NULL; s_rec_cards_mask = 0;
     s_rec_power_on = 0;
@@ -737,8 +733,7 @@ static void free_recording(void)
     s_rec_code_log_len = s_rec_code_log_cap = s_rec_code_log_committed = 0;
     s_rec_code_log_full = 0;
     s_frames = s_rec_steps = 0;
-    s_last_frame = 0;
-    s_last_cycle = 0;
+    s_record_end.frame = 0;
     s_stop_requested = 0;
     s_record_prepared = 0;
 }
@@ -844,10 +839,9 @@ static int begin_recording(const char *path, int power_on)
     memset(&s_rec_id, 0, sizeof s_rec_id);
     if (!replay_host_identity(&s_rec_id, why, sizeof why)) return refuse_record(why);
     s_words = (ReplayWord *)malloc(REPLAY_FILE_MAX_FRAMES * sizeof *s_words);
-    s_last_ram = (uint8_t *)malloc(RAM_BYTES);
     s_rec_digests = (uint32_t (*)[5])malloc(REC_DIGEST_CAP * sizeof *s_rec_digests);
     s_rec_cards = (uint8_t *)calloc(2, REPLAY_FILE_CARD_BYTES);
-    if (!s_words || !s_last_ram || !s_rec_digests || !s_rec_cards) {
+    if (!s_words || !s_rec_digests || !s_rec_cards) {
         free_recording();
         return refuse_record("out of memory");
     }
@@ -884,24 +878,21 @@ void replay_session_stop_record(void)
     if (s_state == REPLAY_ARMING || s_state == REPLAY_RECORDING) s_stop_requested = 1;
 }
 
-/* Writes the recording that ends on boundary s_last_frame to the new file
+/* Writes the recording through its retained checkpoint to the new file
  * `path` and reads it back with the reader playback uses. Returns NULL, or
  * the reason; a file this call created is removed on failure. */
 static const char *write_recording(const char *path)
 {
     const char *error = NULL;
-    ReplayCheckpoint *end = (ReplayCheckpoint *)malloc(sizeof *end);
     FILE *f = NULL;
-    if (!end) return "out of memory";
-    replay_file_checkpoint(s_last_frame, s_last_ram, s_last_cycle, end);
     if (!create_exclusive(path, &f)) error = "the file already exists or cannot be created";
     if (!error) {
         ReplayFileOut o;
         memset(&o, 0, sizeof o);
         o.id = &s_rec_id;
         o.words = s_words;
-        o.frames = s_last_frame;
-        o.end = end;
+        o.frames = s_record_end.frame;
+        o.end = &s_record_end;
         o.anchor = s_anchor;
         o.anchor_length = (uint32_t)s_anchor_size;
         o.settings = s_rec_settings;
@@ -927,7 +918,7 @@ static const char *write_recording(const char *path)
         FILE *r = fopen(path, "rb");
         error = !info || !steps || !r ? "cannot reopen the replay" : replay_file_read(r, info, steps, REPLAY_FILE_MAX_STEPS);
         if (r) fclose(r);
-        if (!error && (info->frames != s_last_frame || info->anchor_length != s_anchor_size ||
+        if (!error && (info->frames != s_record_end.frame || info->anchor_length != s_anchor_size ||
                        info->digest_count != s_rec_digest_count || info->power_on != s_rec_power_on ||
                        info->cards_mask != s_rec_cards_mask || strcmp(info->code_set, s_rec_code_set) ||
                        info->code_log_length != s_rec_code_log_committed))
@@ -936,17 +927,16 @@ static const char *write_recording(const char *path)
         free(steps);
         if (error) remove(path);
     }
-    free(end);
     return error;
 }
 
-/* Writes the recording that ended on boundary s_last_frame. */
+/* Writes the recording through its last verified guest boundary. */
 static void finish_recording(void)
 {
     char msg[PATH_BYTES + 64];
     const char *error;
     s_state = REPLAY_IDLE;
-    if (!s_last_frame) {
+    if (!s_record_end.frame) {
         replay_host_osd("Replay not saved: nothing was recorded", 2000);
         free_recording();
         return;
@@ -957,17 +947,27 @@ static void finish_recording(void)
         fprintf(stderr, "replay: %s (%s)\n", msg, s_rec_path);
     } else {
         snprintf(msg, sizeof msg, "Replay saved");
-        fprintf(stdout, "replay_recorded: path=%s frames=%u\n", s_rec_path, (unsigned)s_last_frame);
+        fprintf(stdout, "replay_recorded: path=%s frames=%u\n", s_rec_path, (unsigned)s_record_end.frame);
         fflush(stdout);
     }
     replay_host_osd(msg, 2200);
     free_recording();
 }
 
+void replay_session_checkpoint_at_boundary(void)
+{
+    if (s_state != REPLAY_RECORDING || !s_frames || s_rec_code_log_full ||
+        s_record_end.frame == s_frames)
+        return;
+    replay_file_checkpoint(s_frames, replay_host_ram(), replay_host_cycle(),
+                           &s_record_end);
+    s_rec_code_log_committed = s_rec_code_log_len;
+}
+
 void replay_session_on_state_restore(void)
 {
     if (s_state != REPLAY_RECORDING) return;
-    fprintf(stderr, "replay_recording_stopped: a save state was restored; valid_frames=%u\n", (unsigned)s_last_frame);
+    fprintf(stderr, "replay_recording_stopped: a save state was restored; valid_frames=%u\n", (unsigned)s_record_end.frame);
     finish_recording();
     replay_host_osd("Replay recording stopped: a save state was restored", 3000);
 }
@@ -982,15 +982,16 @@ static int recording_input_supported(void)
     char message[320];
     if (replay_host_recording_input_contract(&profile, why, sizeof why) && profile == s_input_profile) return 1;
     if (!why[0]) snprintf(why, sizeof why, "the controller configuration changed");
-    fprintf(stderr, "replay_recording_stopped: %s; valid_frames=%u\n", why, (unsigned)s_last_frame);
+    replay_session_checkpoint_at_boundary();
+    fprintf(stderr, "replay_recording_stopped: %s; valid_frames=%u\n", why, (unsigned)s_record_end.frame);
     finish_recording();
     snprintf(message, sizeof message, "Replay recording stopped: %s", why);
     replay_host_osd(message, 3000);
     return 0;
 }
 
-/* Boundary s_frames: keep its RAM and cycle for the END checkpoint, take a
- * digest every REPLAY_DIGEST_INTERVAL frames, then record the word P1 gets. */
+/* At boundary s_frames, record the word P1 gets after checking that recording
+ * can continue. A stop at this boundary retains its exact checkpoint. */
 static void record_boundary(uint16_t b, const uint8_t sticks[4])
 {
     ReplayWord w;
@@ -1000,7 +1001,11 @@ static void record_boundary(uint16_t b, const uint8_t sticks[4])
     if (!s_record_prepared) replay_session_prepare_record_boundary();
     if (s_state != REPLAY_RECORDING) return;
     if (!recording_input_supported()) return;
-    if (s_stop_requested) { finish_recording(); return; }
+    if (s_stop_requested) {
+        replay_session_checkpoint_at_boundary();
+        finish_recording();
+        return;
+    }
     w.buttons = b;
     /* File order LY,LX,RY,RX; host order LX,LY,RX,RY. */
     w.axes_ly_lx_ry_rx[0] = sticks[1]; w.axes_ly_lx_ry_rx[1] = sticks[0];
@@ -1009,6 +1014,7 @@ static void record_boundary(uint16_t b, const uint8_t sticks[4])
                memcmp(s_words[s_frames - 1].axes_ly_lx_ry_rx, w.axes_ly_lx_ry_rx, 4);
     if (s_frames == REPLAY_FILE_MAX_FRAMES || (new_step && s_rec_steps == REPLAY_FILE_MAX_STEPS)) {
         replay_host_osd("Replay stopped: length limit reached", 2200);
+        replay_session_checkpoint_at_boundary();
         finish_recording();
         return;
     }
@@ -1055,10 +1061,8 @@ void replay_session_prepare_record_boundary(void)
         replay_host_osd("Replay recording stopped: native code log is full", 3000);
         return;
     }
-    s_last_frame = s_frames;
-    s_last_cycle = replay_host_cycle();
-    s_rec_code_log_committed = s_rec_code_log_len;
-    memcpy(s_last_ram, replay_host_ram(), RAM_BYTES);
+    if (s_frames == 1 || s_frames % REPLAY_DIGEST_INTERVAL == 0)
+        replay_session_checkpoint_at_boundary();
     if (s_frames % REPLAY_DIGEST_INTERVAL == 0 && s_rec_digest_count < REC_DIGEST_CAP) {
         uint32_t d[4];
         if (replay_host_state_digest(d)) {

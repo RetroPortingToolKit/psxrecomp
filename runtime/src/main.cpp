@@ -48,6 +48,7 @@
 #include "replay_frontend.h"
 #include "replay_input_scope.h"
 static bool s_replay_guest_restored;
+static bool s_replay_terminal_boundary;
 #include "netplay_state_digest.h"
 #include "psx_sha256.h"
 #include "psx_openxr.h"
@@ -1127,6 +1128,7 @@ extern "C" void psx_frontend_on_savestate_refused(int is_load, int slot,
 
 extern "C" void psx_frontend_on_savestate_loaded(void) {
     s_replay_guest_restored = true;
+    s_replay_terminal_boundary = false;
     replay_session_on_state_restore();
     ++s_fmv_timeline_epoch;
     psx_local_mouse_reset();
@@ -4431,6 +4433,8 @@ static const char* netplay_start_failure(int nrc, const PsxNetplayConfig& cfg) {
 }
 
 static void shutdown_runtime(void) {
+    if (s_replay_terminal_boundary)
+        replay_session_checkpoint_at_boundary();
     replay_frontend_shutdown();   /* puts the player's settings and cards back */
     psx_local_mouse_clear();
     /* (sljit removed 2026-07-15: overlay_compile_worker_stop joined the
@@ -10326,6 +10330,12 @@ static void replay_record_sampled_input(void) {
 
 static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     NetplayVblankEpilogue ep{};
+    /* The guest just finished the previous input frame. A clean quit during
+     * this host boundary can keep its exact terminal state until new input. */
+    struct ReplayTerminalBoundary {
+        ReplayTerminalBoundary() { s_replay_terminal_boundary = true; }
+        ~ReplayTerminalBoundary() { s_replay_terminal_boundary = false; }
+    } replay_terminal_boundary;
     /* Guest quantum for this vblank is complete. Drop top-level-resume armed
      * by any resume_at (savestate / selfcheck / RB) during that quantum — the
      * next tick has a live native chain under its dispatch again. */
@@ -10616,6 +10626,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         /* New frame: the low-latency re-sample later this frame reuses this
          * frame's mod controller source sample (callback runs once). */
         mod_controller_source_begin_frame();
+        s_replay_terminal_boundary = false;
         if (!psx_selfcheck_input_locked()) replay_frame_boundary(override);
         if (!psx_selfcheck_replay_input()) {
             if (g_headless)
@@ -22805,6 +22816,8 @@ session_reboot:
                           exe_dir_from_argv(argv[0]) / "settings.toml" };
     psx_disc_tray_set_host_hook([](void *ctx, int disc, const char *path) {
         auto &session = *static_cast<DiscMenuSession*>(ctx);
+        if (s_replay_terminal_boundary)
+            replay_session_checkpoint_at_boundary();
         replay_frontend_shutdown();   /* a replay names one disc */
         *session.selected = disc;
         *session.mounted = path;

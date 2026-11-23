@@ -14,8 +14,9 @@ The format records Player 1's buttons and DualShock sticks. A connected,
 neutral Player 2 pad is allowed. Player 2 activity, host controller mode/layout
 changes, special peripherals, or restoring a state/rewinding stop the recording
 with a message. The completed prefix remains playable; a recording with no
-completed frames produces no file. Netplay is unsupported. These restrictions
-do not disable ordinary player controls or prevent loading a state.
+completed frames produces no file. A load or stop between frames finishes at
+the last verified checkpoint, up to one second earlier. Ordinary controls and
+state loading continue to work. Netplay is unsupported.
 
 To play a file with the same game and disc:
 
