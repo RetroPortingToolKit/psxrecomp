@@ -483,13 +483,13 @@ if(BUILD_TESTING)
         target_link_options(tas_checkpoint_roundtrip_nodebug_test PRIVATE -flto -Wl,--gc-sections)
         target_link_libraries(tas_checkpoint_roundtrip_nodebug_test PRIVATE ZLIB::ZLIB)
         add_test(NAME tas_checkpoint_roundtrip_nodebug_test COMMAND tas_checkpoint_roundtrip_nodebug_test)
-        add_executable(replay_file_test tests/test_replay_file.c src/replay_file.c
+        add_executable(replay_file_test tests/test_replay_file.c src/replay_file.c src/replay_checkpoint.cpp
             src/replay_identity.c src/psx_sha256.c)
         target_include_directories(replay_file_test PRIVATE include)
         target_compile_options(replay_file_test PRIVATE -UNDEBUG)
         add_test(NAME replay_file_test COMMAND replay_file_test)
         add_executable(replay_session_test tests/test_replay_session.c src/replay_session.c src/replay_frontend.cpp
-            src/replay_file.c src/replay_identity.c src/psx_sha256.c)
+            src/replay_file.c src/replay_checkpoint.cpp src/replay_identity.c src/psx_sha256.c)
         target_include_directories(replay_session_test PRIVATE include)
         target_compile_definitions(replay_session_test PRIVATE REPLAY_FRONTEND_TEST=1)
         target_compile_options(replay_session_test PRIVATE -UNDEBUG)

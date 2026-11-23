@@ -90,6 +90,7 @@ static void test_round_trip(void)
     static const uint32_t digests[2][5] = {{0, 1, 2, 3, 4}, {60, 5, 6, 7, 8}};
     static const uint32_t thumb[4] = {0xff000000u, 0xffffffffu, 0xff102030u, 0xff405060u};
     unsigned char anchor[100], *buf = NULL;
+    uint8_t portable_ram_sha256[32];
     ReplayIdentity id;
     ReplayFileOut o;
     size_t size;
@@ -103,6 +104,8 @@ static void test_round_trip(void)
     words[200].axes_ly_lx_ry_rx[1] = 0xff;
     for (uint32_t i = 0; i < sizeof ram; ++i) ram[i] = (uint8_t)(i * 13);
     replay_file_checkpoint(FRAMES, ram, 123456789012ull, &end);
+    psx_sha256_compute(ram, sizeof ram, portable_ram_sha256);
+    CHECK(!memcmp(end.ram_sha256, portable_ram_sha256, sizeof portable_ram_sha256));
     for (unsigned i = 0; i < sizeof anchor; ++i) anchor[i] = (unsigned char)i;
 
     memset(&o, 0, sizeof o);

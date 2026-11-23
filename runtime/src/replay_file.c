@@ -1,11 +1,7 @@
 /* Player replay file reader and writer. See replay_file.h. */
 #include "replay_file.h"
-#include "psx_sha256.h"
 #include <stdlib.h>
 #include <string.h>
-
-#define RAM_BYTES (2u << 20)
-#define PAGE_BYTES 4096u
 
 uint32_t replay_file_le32(const unsigned char *p)
 {
@@ -36,20 +32,6 @@ static int lines_ok(const char *s, size_t n)
     for (size_t i = 0; i < n; ++i)
         if (s[i] != '\n' && ((unsigned char)s[i] < 0x20 || (unsigned char)s[i] > 0x7e)) return 0;
     return 1;
-}
-
-void replay_file_checkpoint(uint32_t frame, const uint8_t *ram, uint64_t cycle, ReplayCheckpoint *out)
-{
-    out->frame = frame;
-    out->cycle = cycle;
-    psx_sha256_compute(ram, RAM_BYTES, out->ram_sha256);
-    for (uint32_t p = 0; p < REPLAY_FILE_RAM_PAGES; ++p) {
-        uint64_t hash = UINT64_C(14695981039346656037);
-        const uint8_t *bytes = ram + p * PAGE_BYTES;
-        for (uint32_t i = 0; i < PAGE_BYTES; ++i)
-            hash = (hash ^ bytes[i]) * UINT64_C(1099511628211);
-        out->pages[p] = hash;
-    }
 }
 
 /* One identity text: printable ASCII, not empty, read once. */
