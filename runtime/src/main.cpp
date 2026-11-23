@@ -43,6 +43,14 @@
 #include "load_accel.h"
 #include "savestate.h"
 #include "tas_checkpoint.h"
+#include "replay_identity.h"
+#include "replay_session.h"
+#include "replay_frontend.h"
+#include "replay_input_scope.h"
+static bool s_replay_guest_restored;
+static bool s_replay_terminal_boundary;
+#include "netplay_state_digest.h"
+#include "psx_sha256.h"
 #include "psx_openxr.h"
 #include "atomic_file_write.h"
 #include "openxr_ready_state.h"
@@ -1119,6 +1127,9 @@ extern "C" void psx_frontend_on_savestate_refused(int is_load, int slot,
 }
 
 extern "C" void psx_frontend_on_savestate_loaded(void) {
+    s_replay_guest_restored = true;
+    s_replay_terminal_boundary = false;
+    replay_session_on_state_restore();
     ++s_fmv_timeline_epoch;
     psx_local_mouse_reset();
     mod_runtime_on_savestate_loaded();
@@ -4422,6 +4433,9 @@ static const char* netplay_start_failure(int nrc, const PsxNetplayConfig& cfg) {
 }
 
 static void shutdown_runtime(void) {
+    if (s_replay_terminal_boundary)
+        replay_session_checkpoint_at_boundary();
+    replay_frontend_shutdown();   /* puts the player's settings and cards back */
     psx_local_mouse_clear();
     /* (sljit removed 2026-07-15: overlay_compile_worker_stop joined the
      * off-thread JIT worker here; the worker no longer exists.) */
@@ -8087,11 +8101,24 @@ static PadExtHooks pad_ext_main_hooks(void) {
     return h;
 }
 
+/* While a replay plays, P1 is the replay's word; P2 stays plugged as it
+ * was, neutral (a replay holds P1 only). */
+static uint16_t g_replay_p1_buttons = 0xFFFFu;
+static uint8_t g_replay_p1_sticks[4] = {0x80, 0x80, 0x80, 0x80};
+static void apply_replay_p1_to_sio(void) {
+    sio_set_pad_state_slot(1, 0xFFFFu);
+    sio_set_pad_sticks(1, 0x80, 0x80, 0x80, 0x80);
+    sio_set_pad_state_slot(0, g_replay_p1_buttons);
+    sio_set_pad_sticks(0, g_replay_p1_sticks[0], g_replay_p1_sticks[1], g_replay_p1_sticks[2],
+                       g_replay_p1_sticks[3]);
+}
+
 /* TCP port-2 injection (set_input/press "port":2): a digital pad plugged
  * into port 2 for as long as a test drives it, so headless runs can reach and
  * play two-player modes. Applied after the normal sampling so it wins. */
 static void apply_input_override_port2(int override_word) {
     static int s_was_driven;
+    if (replay_session_owns_p1()) return;
     if (override_word < 0) {
 #ifndef PSX_NO_DEBUG_TOOLS
         restore_input_override_profile(1);
@@ -8143,6 +8170,7 @@ static void controller_port_swap_sync(void) {
 
 static void sample_pad_into_sio(int override) {
     controller_port_swap_sync();
+    if (replay_session_owns_p1()) { apply_replay_p1_to_sio(); return; }
     /* Selfcheck fighter mash owns P1 when enabled (headless-safe). */
     if (override < 0) {
         uint16_t mash = 0xFFFFu;
@@ -8201,6 +8229,7 @@ static void env_pad_hold_apply(void) {
             if (n) std::fprintf(stdout, "psxrecomp: PSX_HOLD_PADS %d port(s)\n", n);
         }
     }
+    if (replay_session_owns_p1()) return;
     for (int i = 0; i < n && i < 2; i++) {
         if (i == 1) sio_set_pad_connected(1, 1);
         sio_set_pad_state_slot(i, w[i]);
@@ -8208,6 +8237,7 @@ static void env_pad_hold_apply(void) {
 }
 
 static void sample_headless_pad_into_sio(int override) {
+    if (replay_session_owns_p1()) { apply_replay_p1_to_sio(); return; }
     if (override < 0) {
         uint16_t mash = 0xFFFFu;
         if (psx_selfcheck_mash_override(&mash))
@@ -9908,8 +9938,404 @@ static void audio_buffer_diagnostics_tick() {
         (unsigned long long)audio_bridge_inits);
 }
 
+/* ---- Player replays (replay_session.h): the host side of playback ----
+ *
+ * PSX_REPLAY_FILE=FILE (or --replay FILE) plays a replay from the first
+ * vblank: a power-on replay at that boundary, an anchored one after its
+ * save state loads. A launcher hands a replay over by setting
+ * PSX_REPLAY_FILE before the game starts, as it does PSX_LOAD_SLOT.
+ * PSX_REPLAY_VERDICT=FILE (--replay-verdict) writes the verdict JSON;
+ * PSX_REPLAY_EXIT_AT_END=1 exits when playback ends: 0 in sync, 3 out of
+ * sync, 4 failed, stopped or not played; PSX_REPLAY_FAST=1 (--replay-fast)
+ * plays at fast-forward.
+ *
+ * Recording: PSX_REPLAY_RECORD_BOOT=1, or the launcher's "Record replay"
+ * (RECOMP_LAUNCHER_HAS_RECORD_REPLAY), records from power-on into
+ * PSX_REPLAY_RECORD_FILE, or into <save root>/replays/<serial>-boot-<UTC
+ * time>.psxrpl. PSX_REPLAY_RECORD_FILE with PSX_REPLAY_RECORD_AT=N records
+ * from an anchor state saved at vblank N. PSX_REPLAY_RECORD_FRAMES=N stops
+ * after N frames; otherwise quitting the game ends and writes the replay.
+ * With PSX_REPLAY_EXIT_AT_END=1 a recording exits 0 when written, 5 when
+ * not. */
+static const char *g_replay_cli_path = nullptr;
+static const char *g_replay_cli_verdict = nullptr;
+static bool g_replay_cli_fast = false;
+static std::filesystem::path s_replay_bios_file;
+static std::string s_replay_exe_sha256, s_replay_saved_settings;
+static uint32_t s_replay_bios_crc32 = 0;
+static bool s_replay_bios_crc_ok = false, s_replay_product_hashed = false;
+static const CPUState *s_replay_cpu = nullptr;
+static std::string s_replay_serial;
+
+extern "C" void replay_host_osd(const char *text, int ms) {
+    std::fprintf(stdout, "replay_osd: %s\n", text);
+    std::fflush(stdout);
+    host_osd_push(text, ms);
+}
+
+extern "C" int replay_host_identity(ReplayIdentity *id, char *why, size_t cap) {
+    return replay_identity_current(id, psx_bios_hle_enabled(), psx_bios_hle_boot_skip_enabled(), why, cap);
+}
+
+static std::filesystem::path replay_exe_file(void) {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH * 4];
+    const DWORD n = GetModuleFileNameW(NULL, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])));
+    if (n > 0 && n < (DWORD)(sizeof(buf) / sizeof(buf[0]))) return std::filesystem::path(std::wstring(buf, buf + n));
+    return {};
+#else
+    std::error_code ec;
+    const auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
+    return ec ? std::filesystem::path() : p;
+#endif
+}
+
+/* SHA-256 of the exe and CRC-32 of the BIOS image, once per process. */
+static void replay_product_hash(void) {
+    if (s_replay_product_hashed) return;
+    s_replay_product_hashed = true;
+    std::vector<uint8_t> buf(1u << 20);
+    std::ifstream exe(replay_exe_file(), std::ios::binary);
+    if (exe) {
+        psx_sha256_ctx ctx;
+        uint8_t digest[32];
+        char hex[65];
+        psx_sha256_init(&ctx);
+        while (exe.read(reinterpret_cast<char *>(buf.data()), (std::streamsize)buf.size()) || exe.gcount() > 0)
+            psx_sha256_update(&ctx, buf.data(), (size_t)exe.gcount());
+        if (exe.eof()) {
+            psx_sha256_final(&ctx, digest);
+            for (int i = 0; i < 32; ++i) std::snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+            s_replay_exe_sha256 = hex;
+        }
+    }
+    std::ifstream bios(s_replay_bios_file, std::ios::binary);
+    if (!s_replay_bios_file.empty() && bios) {
+        uint32_t crc = 0xFFFFFFFFu;
+        while (bios.read(reinterpret_cast<char *>(buf.data()), (std::streamsize)buf.size()) || bios.gcount() > 0)
+            crc = crc32_update(crc, buf.data(), (size_t)bios.gcount());
+        s_replay_bios_crc32 = crc ^ 0xFFFFFFFFu;
+        s_replay_bios_crc_ok = bios.eof();
+    }
+}
+
+extern "C" void replay_host_product(char *out, size_t cap) {
+    std::string lines;
+    char line[96];
+    replay_product_hash();
+    if (!s_replay_exe_sha256.empty()) lines += "exe_sha256=" + s_replay_exe_sha256 + "\n";
+    std::snprintf(line, sizeof(line), "codegen=%08x\n", (unsigned)overlay_loader_codegen_hash());
+    lines += line;
+    if (s_replay_bios_crc_ok) {
+        std::snprintf(line, sizeof(line), "bios_crc32=%08x\n", (unsigned)s_replay_bios_crc32);
+        lines += line;
+    }
+    lines += std::string("renderer=") + (g_vk_active ? "vulkan" : g_gl_active ? "opengl" : "software") + "\n";
+    lines += std::string("platform=") + replay_platform_name() + "\n";
+    std::snprintf(out, cap, "%s", lines.c_str());
+}
+
+/* First cold-session vblank, before any state restore. */
+extern "C" int replay_host_at_power_on(void) {
+    static const bool load_slot = std::getenv("PSX_LOAD_SLOT") != nullptr;
+    return replay_frontend_frame() == 0 && !load_slot && !s_replay_guest_restored;
+}
+
+extern "C" int replay_host_load_anchor(const void *data, size_t size) {
+    return savestate_request_load_blob_quiet(data, size);
+}
+extern "C" int replay_host_take_load_result(void) {
+    if (savestate_take_load_completed()) return 1;
+    if (savestate_take_load_failed()) return -1;
+    return 0;
+}
+
+static std::string replay_mods_fingerprint(void) {
+    std::string out;
+    for (char c : PSXRecompV4::mod_runtime_fingerprint())
+        if (c >= 0x21 && c <= 0x7e && out.size() < 200) out.push_back(c);
+    return out.empty() ? std::string("none") : out;
+}
+
+/* The settings that change guest timing but are not in a save state; a
+ * power-on replay also needs the pad types and the post-BIOS CD speed. */
+static std::string replay_settings_capture(void) {
+    char text[1024];
+    std::snprintf(text, sizeof(text),
+                  "cd_speed=%d\ncd_instant_rate=%d\nturbo_loads=%d\nturbo_load_wall=%d\n"
+                  "p1_connected=%d\np1_config_capable=%d\nmods=%s\n"
+                  "cd_game_speed=%d\nauto_skip_fmv=%d\nidle_skip=%d\n"
+                  "p1_analog=%d\np2_connected=%d\np2_config_capable=%d\np2_analog=%d\n",
+                  cdrom_get_speed(), cdrom_get_instant_rate(), g_turbo_loads_enabled, g_turbo_load_wall_multiplier,
+                  sio_get_pad_connected(0), sio_get_pad_config_capable(0), replay_mods_fingerprint().c_str(),
+                  cdrom_get_game_speed(), g_auto_skip_fmv, psx_idle_skip_is_enabled(), sio_get_pad_analog(0),
+                  sio_get_pad_connected(1), sio_get_pad_config_capable(1), sio_get_pad_analog(1));
+    return text;
+}
+
+static void replay_settings_apply_text(const char *text, char *differs, size_t cap) {
+    if (differs && cap) differs[0] = 0;
+    for (const char *p = text ? text : ""; *p;) {
+        const char *end = std::strchr(p, '\n');
+        const std::string line = end ? std::string(p, (size_t)(end - p)) : std::string(p);
+        p = end ? end + 1 : p + line.size();
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
+        const int v = std::atoi(value.c_str());
+        bool ok = true;
+        if (key == "cd_speed") cdrom_set_speed(v);
+        else if (key == "cd_instant_rate") { if (v > 0) cdrom_set_instant_rate(v); }
+        else if (key == "turbo_loads") g_turbo_loads_enabled = v ? 1 : 0;
+        else if (key == "turbo_load_wall") g_turbo_load_wall_multiplier = v;
+        else if (key == "p1_connected" || key == "p2_connected") sio_set_pad_connected(key[1] - '1', v ? 1 : 0);
+        else if (key == "p1_config_capable" || key == "p2_config_capable")
+            sio_set_pad_config_capable(key[1] - '1', v ? 1 : 0);
+        else if (key == "p1_analog" || key == "p2_analog") {
+            /* A type change resets the pad's config latch: apply only a change. */
+            const int slot = key[1] - '1';
+            if (sio_get_pad_analog(slot) != v) sio_set_pad_type(slot, v, 0x80, 0x80, 0x80, 0x80);
+        }
+        else if (key == "mods") ok = value == replay_mods_fingerprint();
+        else if (key == "cd_game_speed") cdrom_set_game_speed(v);
+        else if (key == "auto_skip_fmv") g_auto_skip_fmv = v ? 1 : 0;
+        else if (key == "idle_skip") g_idle_skip_enabled = v ? 1 : 0;
+        else ok = false;
+        if (!ok && differs && cap) {
+            const size_t n = std::strlen(differs);
+            std::snprintf(differs + n, cap - n, "%s%s", n ? ", " : "", key == "mods" ? "enabled mods" : key.c_str());
+        }
+    }
+}
+
+extern "C" void replay_host_settings_apply(const char *settings, char *differs, size_t cap) {
+    s_replay_saved_settings = replay_settings_capture();
+    replay_settings_apply_text(settings, differs, cap);
+}
+extern "C" void replay_host_settings_restore(void) {
+    replay_settings_apply_text(s_replay_saved_settings.c_str(), nullptr, 0);
+}
+
+static_assert(MEMCARD_SIZE == REPLAY_FILE_CARD_BYTES, "replay card images are whole cards");
+extern "C" int replay_host_cards_install(const uint8_t *images, uint32_t mask) {
+    if (memcard_replay_begin(images, mask) != 0) return 0;
+    sio_cards_replaced();
+    return 1;
+}
+extern "C" void replay_host_cards_restore(void) {
+    sio_cards_replaced();
+    memcard_replay_end();
+}
+/* An overlay compile publishes its code at the first frame after it finishes
+ * on the host, so a recording and its playback would switch code at
+ * different frames. The compiler keeps running; a recording logs the frame
+ * each unit became runnable, and a playback runs it from that frame
+ * (replay_session.h, REPLAY_TAG_CODE_LOG). */
+static void (*s_replay_code_observer)(char op, const char *unit);
+
+static void replay_code_on_capture() {
+    s_replay_code_observer('C', nullptr);
+}
+
+extern "C" void replay_host_code_watch(void (*fn)(char op, const char *unit)) {
+    s_replay_code_observer = fn;
+    overlay_loader_set_code_observer(fn);
+    overlay_autocapture_watch(fn ? replay_code_on_capture : nullptr);
+}
+extern "C" void replay_host_code_admit(int on) {
+    if (on) overlay_loader_admit_begin();
+    else overlay_loader_admit_end();
+}
+extern "C" int replay_host_code_admit_unit(const char *unit) { return overlay_loader_admit(unit); }
+extern "C" void replay_host_code_capture_schedule(int paced) {
+    overlay_autocapture_replay_set(paced);
+}
+
+static bool replay_poll_compiler() {
+    overlay_autocapture_tick();
+    const CodeProvider *cp = code_provider_active();
+    if (cp->poll_main) cp->poll_main();
+    return (cp->busy && cp->busy()) || overlay_autocapture_replay_has_work();
+}
+
+extern "C" int replay_host_code_capture(void) {
+    /* The recording waits for preceding production to finish before a new
+     * capture. At the equivalent guest boundary a slower host can finish it. */
+    while (replay_poll_compiler()) SDL_Delay(5);
+    return overlay_autocapture_replay_capture();
+}
+
+/* A replay holds its guest boundary while real production can supply a unit.
+ * If no work can run at this boundary, the file needs an unavailable unit. */
+extern "C" int replay_host_code_unit(const char *unit, int load, int wait) {
+    const uint64_t t0 = SDL_GetTicks64();
+    bool waited = false;
+    while (!overlay_loader_unit_present(unit)) {
+        if (!wait) return 0;
+        waited = true;
+        if (!replay_poll_compiler()) {
+            if (!overlay_loader_unit_present(unit)) return 0;
+            break;
+        }
+        SDL_Delay(5);
+    }
+    if (waited)
+        std::fprintf(stdout, "replay_code_wait: unit=%s ms=%llu\n", unit,
+                     (unsigned long long)(SDL_GetTicks64() - t0));
+    return load ? overlay_loader_load_unit(unit) : 1;
+}
+extern "C" void replay_host_code_rescan(void) { overlay_loader_admit_rescan(); }
+/* Native inventory is diagnostic; compilation and publication keep their normal owner. */
+extern "C" char *replay_host_code_set(unsigned *count) { return overlay_loader_code_set_lines(count); }
+
+extern "C" const uint8_t *replay_host_ram(void) { return g_psx_ram; }
+extern "C" uint64_t replay_host_cycle(void) { return psx_cycle_count; }
+/* The rollback state digests, so a replay checks the same parts a rollback
+ * resimulation is verified against. */
+extern "C" int replay_host_state_digest(uint32_t out[4]) {
+    if (!s_replay_cpu) return 0;
+    out[0] = netplay_core_digest(s_replay_cpu);
+    out[1] = netplay_av_digest();
+    out[2] = netplay_aux_digest();
+    out[3] = netplay_baseline_ext_digest();
+    return 1;
+}
+
+extern "C" int replay_host_can_record(char *why, size_t cap) {
+    char slot0[600];
+    if (psx_netplay_active()) { std::snprintf(why, cap, "netplay is active"); return 0; }
+    if (sio_get_multitap() || g_offline_pad_count > 2) { std::snprintf(why, cap, "a multitap is attached"); return 0; }
+    if (psx_selfcheck_input_locked()) { std::snprintf(why, cap, "a self-check owns input"); return 0; }
+    if (!memcard_replay_supported()) {
+        std::snprintf(why, cap, "these memory cards cannot be stored in a replay"); return 0;
+    }
+    if (!savestate_slot_path(0, slot0, sizeof(slot0))) {
+        std::snprintf(why, cap, "save states are not available for this game"); return 0;
+    }
+    return 1;
+}
+extern "C" int replay_host_recording_input_contract(uint64_t *profile, char *why, size_t cap) {
+    if (psx_netplay_active()) { std::snprintf(why, cap, "netplay is active"); return 0; }
+    return replay_sio_input_contract(profile, why, cap);
+}
+extern "C" int replay_host_request_anchor(void) { return savestate_request_anchor(); }
+extern "C" int replay_host_take_anchor(uint8_t **data, size_t *size, uint8_t *cards, uint32_t *mask) {
+    return savestate_take_anchor(data, size, cards, mask);
+}
+extern "C" void replay_host_settings_capture(char *out, size_t cap) {
+    std::snprintf(out, cap, "%s", replay_settings_capture().c_str());
+}
+extern "C" int replay_host_cards_capture(uint8_t *images, uint32_t *mask) {
+    *mask = 0;
+    for (int card = 0; card < 2; ++card)
+        if (memcard_export_raw(card, images + (size_t)card * MEMCARD_SIZE) == 0)
+            *mask |= 1u << card;
+    return 1;
+}
+
+/* <save root>/replays/<serial>-boot-<UTC time>.psxrpl; empty when there is
+ * no save root. */
+static std::string replay_boot_path(void) {
+    const char *root = savestate_root_dir();
+    if (!root || !root[0]) return std::string();
+    std::filesystem::path dir = std::filesystem::path(root) / "replays";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    /* The disc serial, with anything but ASCII letters and digits made '_'. */
+    std::string serial = s_replay_serial.empty() ? std::string("game") : s_replay_serial;
+    for (char &c : serial) {
+        const bool keep = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        if (!keep) c = '_';
+    }
+    const std::time_t now = std::time(nullptr);
+    std::tm utc{};
+#ifdef _WIN32
+    gmtime_s(&utc, &now);
+#else
+    gmtime_r(&now, &utc);
+#endif
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%SZ", &utc);
+    for (int n = 0; n < 100; ++n) {
+        const std::string leaf = serial + "-boot-" + stamp + (n ? "-" + std::to_string(n) : std::string()) + ".psxrpl";
+        const std::filesystem::path path = dir / leaf;
+        if (!std::filesystem::exists(path, ec)) return path.string();
+    }
+    return std::string();
+}
+
+/* P1 as the host would deliver it this frame, for takeover. */
+static void replay_live_p1(int override, uint16_t *buttons, uint8_t sticks[4]) {
+    sticks[0] = sticks[1] = sticks[2] = sticks[3] = 0x80u;
+    *buttons = 0xFFFFu;
+    if (override >= 0) { *buttons = (uint16_t)override; return; }
+    if (g_headless && !host_pad_layer(nullptr, nullptr, nullptr, nullptr)) return;
+    PsxNetPad pad;
+    PadExtHooks hooks = pad_ext_main_hooks();
+    if (!pad_ext_resolve(&hooks, 0, &pad)) return;
+    *buttons = pad.buttons;
+    sticks[0] = pad.lx; sticks[1] = pad.ly; sticks[2] = pad.rx; sticks[3] = pad.ry;
+}
+
+static void replay_exit(int status, const char *origin) {
+    std::fflush(stdout);
+    psx_crash_trace_set_exit_origin(origin);
+    std::exit(status);
+}
+
+/* Once per guest vblank, before P1 is sampled: starts a requested replay
+ * and runs its boundary. While a replay plays, the sampler feeds its word. */
+extern "C" void replay_host_boot_path(char *out, size_t cap) {
+    std::snprintf(out, cap, "%s", replay_boot_path().c_str());
+}
+extern "C" int replay_host_fast_forward(void) { return g_manual_turbo_latched; }
+extern "C" void replay_host_set_fast_forward(int enabled) { g_manual_turbo_latched = enabled; }
+extern "C" void replay_host_exit(int status, const char *origin) { replay_exit(status, origin); }
+
+static void replay_frame_boundary(int override) {
+    if (!replay_frontend_configured()) {
+        ReplayFrontendConfig c{};
+        c.play_path = g_replay_cli_path ? g_replay_cli_path : std::getenv("PSX_REPLAY_FILE");
+        c.verdict_path = g_replay_cli_verdict ? g_replay_cli_verdict : std::getenv("PSX_REPLAY_VERDICT");
+        c.record_path = std::getenv("PSX_REPLAY_RECORD_FILE");
+        const char *boot = std::getenv("PSX_REPLAY_RECORD_BOOT");
+        c.record_boot = boot && std::strcmp(boot, "0") == 0
+            ? false : replay_recording_requested() || (boot && std::strcmp(boot, "1") == 0);
+        const char *exit = std::getenv("PSX_REPLAY_EXIT_AT_END");
+        c.exit_at_end = exit && std::strcmp(exit, "1") == 0;
+        const char *fast = std::getenv("PSX_REPLAY_FAST");
+        c.fast_play = g_replay_cli_fast || (fast && std::strcmp(fast, "1") == 0);
+        const char *at = std::getenv("PSX_REPLAY_RECORD_AT");
+        c.record_at = at ? std::atoll(at) : -1;
+        const char *frames = std::getenv("PSX_REPLAY_RECORD_FRAMES");
+        c.record_frames = frames ? std::atoll(frames) : 0;
+        replay_frontend_configure(&c);
+    }
+    uint16_t live, b;
+    uint8_t sticks[4], out[4];
+    live = 0xFFFFu; std::memset(sticks, 0x80, sizeof sticks);
+    if (replay_session_state() == REPLAY_LOADING || replay_session_state() == REPLAY_PLAYING)
+        replay_live_p1(override, &live, sticks);
+    if (replay_frontend_prepare(live, sticks, &b, out)) {
+        g_replay_p1_buttons = b;
+        std::memcpy(g_replay_p1_sticks, out, 4);
+    }
+}
+
+static void replay_record_sampled_input(void) {
+    uint8_t sticks[4];
+    sio_get_pad_sticks(0, sticks);
+    replay_frontend_observe(sio_get_pad_buttons_slot(0), sticks);
+}
+
 static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     NetplayVblankEpilogue ep{};
+    /* The guest just finished the previous input frame. A clean quit during
+     * this host boundary can keep its exact terminal state until new input. */
+    struct ReplayTerminalBoundary {
+        ReplayTerminalBoundary() { s_replay_terminal_boundary = true; }
+        ~ReplayTerminalBoundary() { s_replay_terminal_boundary = false; }
+    } replay_terminal_boundary;
     /* Guest quantum for this vblank is complete. Drop top-level-resume armed
      * by any resume_at (savestate / selfcheck / RB) during that quantum — the
      * next tick has a live native chain under its dispatch again. */
@@ -10200,6 +10626,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         /* New frame: the low-latency re-sample later this frame reuses this
          * frame's mod controller source sample (callback runs once). */
         mod_controller_source_begin_frame();
+        s_replay_terminal_boundary = false;
+        if (!psx_selfcheck_input_locked()) replay_frame_boundary(override);
         if (!psx_selfcheck_replay_input()) {
             if (g_headless)
                 sample_headless_pad_into_sio(override);
@@ -10208,6 +10636,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             apply_input_override_port2(override_p2);
             env_pad_hold_apply();
         }
+        if (!psx_selfcheck_input_locked()) replay_record_sampled_input();
         /* Offline vblank boundary: record/replay/compare (PSX_RB_SELFCHECK).
          * Defer opening a window while multitap arming is still pending —
          * the arm writes SIO once, host-latched, and would not replay. */
@@ -17771,6 +18200,9 @@ namespace {
         }
 #endif
         gi->has_skip_fmv = skip_fmv_offered_b ? 1 : 0;
+#if defined(RECOMP_LAUNCHER_HAS_RECORD_REPLAY)
+        gi->has_record_replay = 0; /* Persisted Playable Replays Mods control owns this choice. */
+#endif
         gi->has_turbo_loads = turbo_loads_offered_b ? 1 : 0;
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
         gi->has_render_pipeline = g_offer_render_pipeline ? 1 : 0;
@@ -19030,7 +19462,13 @@ int main(int argc, char** argv) {
      *   <positional>        deprecated alias for --bios
      * No --game-root flag: that remains config-driven. */
     for (int i = 1; i < argc; i++) {
-        if (std::strcmp(argv[i], "--bios") == 0 && i + 1 < argc) {
+        if (std::strcmp(argv[i], "--replay") == 0 && i + 1 < argc) {
+            g_replay_cli_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--replay-verdict") == 0 && i + 1 < argc) {
+            g_replay_cli_verdict = argv[++i];
+        } else if (std::strcmp(argv[i], "--replay-fast") == 0) {
+            g_replay_cli_fast = true;
+        } else if (std::strcmp(argv[i], "--bios") == 0 && i + 1 < argc) {
             bios_path = consume_path_arg(i);
             bios_from_cli = true;
             bios_explicit = true;
@@ -21871,6 +22309,9 @@ int main(int argc, char** argv) {
     DiscMenuSession disc_menu_session{};
 
 session_reboot:
+    /* A replay belongs to the session it started in. */
+    replay_frontend_reset();
+    s_replay_guest_restored = false;
     g_ovl_session_disc = resolved_disc.string();
     ovl_look_posted_reset();
     /* A new backend/session must not inherit the prior applied settings or
@@ -22375,6 +22816,9 @@ session_reboot:
                           exe_dir_from_argv(argv[0]) / "settings.toml" };
     psx_disc_tray_set_host_hook([](void *ctx, int disc, const char *path) {
         auto &session = *static_cast<DiscMenuSession*>(ctx);
+        if (s_replay_terminal_boundary)
+            replay_session_checkpoint_at_boundary();
+        replay_frontend_shutdown();   /* a replay names one disc */
         *session.selected = disc;
         *session.mounted = path;
         *session.resolved = path;
@@ -22439,6 +22883,13 @@ session_reboot:
         if (!ident.region.empty())
             std::fprintf(stdout, "psxrecomp: disc region %s (serial %s)\n",
                          ident.region.c_str(), ident.detected_serial.c_str());
+        /* The disc and BIOS a replay is played against. */
+        replay_identity_set_product(ident.detected_serial.c_str(), disc_path_str.c_str(),
+                                    bios_path_str.c_str());
+        s_replay_serial = ident.detected_serial;
+        s_replay_bios_file = bios_path_str;
+        s_replay_product_hashed = s_replay_bios_crc_ok = false;
+        s_replay_exe_sha256.clear();
     }
     gpu_set_power_on_video_mode(power_on_pal);
     sync_guest_cadence_to_video_standard();
@@ -23306,6 +23757,7 @@ session_reboot:
     /* Checkpoint resume (PSX_TAS_RESUME_STATE): a refused state ends the run. */
     if (const int tas_status = tas_checkpoint_start(&cpu)) return tas_status;
 #endif
+    s_replay_cpu = &cpu;
     /* Netplay: refresh RB bios/entry after savestate_configure (start() ran
      * earlier with zeros); guest also sandboxes .pst/.mcd under saves/netplay/. */
     psx_netplay_bind_guest_saves();

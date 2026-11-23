@@ -174,6 +174,9 @@ void sio_set_pad_sticks(int slot, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry
  * a device swap that applies anyway and clears the lock, config latch and
  * motor map (a different controller in the port). */
 void sio_request_pad_type(int slot, int type);
+/* Host mode/device requests for the two standalone pads. Guest 0x44 mode
+ * negotiation does not advance this host-only recording observer. */
+uint64_t sio_pad_host_type_generation(void);
 /* NeGcon analog buttons I, II and L for the next poll (0 released .. 0xFF
  * fully pressed). Host input like the sticks; ignored unless the slot reports
  * SIO_PAD_NEGCON. */
@@ -241,6 +244,7 @@ int      sio_peek_ack_visible_reads(void);
 /* Debug accessors: is a logical pad connected, and is it in analog mode. */
 int sio_get_pad_connected(int slot);
 int sio_get_pad_analog(int slot);
+int sio_get_pad_config_capable(int slot);
 void sio_get_pad_sticks(int slot, uint8_t out[4]);
 
 /* Native PS1 Mouse port. Device kind is a host preference, retained across
@@ -303,6 +307,9 @@ uint32_t sio_get_seq(void);
  * from the VBlank handler — doesn't preempt an in-flight card
  * transaction by issuing 0x01 on the SIO bus mid-read. */
 int sio_card_protocol_active(void);
+
+/* Card backing was replaced. In-flight transactions cannot use the new cards. */
+void sio_cards_replaced(void);
 
 /* Post-probe handoff ring: diagnostic device state only, no guest-RAM probes. */
 typedef struct {

@@ -8,6 +8,8 @@
 #include "mod_packages.h"
 #include "mod_plugins.h"
 #include "mod_immediate.h"
+#include "replay_frontend.h"
+#include "../src/mod_builtin_replay.c"
 #include "psx_sha256.h"
 #include "psx_lobby_client.h"
 #if defined(RECOMP_LAUNCHER)
@@ -789,6 +791,7 @@ int main(int argc, char** argv) {
 
     std::string error;
     PSXRecompV4::mod_clear_plugins_for_tests();
+    psx_register_builtin_replay_plugin();
     check(psx_mod_register_pcm_plugin("runtime.test-vblank", test_pcm) == 1,
           "active PCM plugin registers");
     check(psx_mod_register_pcm_plugin("runtime.test-disabled-entry", test_pcm) == 1,
@@ -1939,6 +1942,41 @@ int main(int argc, char** argv) {
               "prepared guest resolves identical verified bytes");
         std::ifstream saved(prepared_root / "state.toml");
         check(std::string(std::istreambuf_iterator<char>(saved), {}) == disabled, "prepared online launch preserves disabled offline choice");
+        PSXRecompV4::mod_runtime_end_netplay(); test_match_caps = {};
+    }
+    // The actual shipped replay package, real saved selections, registered
+    // plugin and plan-reset owner: default On, persisted Off, then On again.
+    {
+        const auto replay_root = root / "playable-replays";
+        const auto manifest = replay_root / "packages/psx.integration.playable-replays/1.0.0/manifest.toml";
+        fs::create_directories(manifest.parent_path());
+        fs::copy_file(fs::path(__FILE__).parent_path().parent_path().parent_path() /
+                      "mods/builtin/packages/psx.integration.playable-replays/1.0.0/manifest.toml",
+                      manifest, fs::copy_options::overwrite_existing);
+        std::string on_fp, on_local_fp;
+        for (int enabled : {1, 0, 0, 1}) {
+            PSXRecompV4::mod_runtime_end_netplay(); test_match_caps = {};
+            if (!on_fp.empty())
+                write_text(replay_root / "state.toml", std::string("format_version = 2\n[[feature]]\n") +
+                    "package_id = \"psx.integration.playable-replays\"\nid = \"playable-replays\"\nenabled = " +
+                    (enabled ? "true\n" : "false\n"));
+            const bool committed = PSXRecompV4::mod_runtime_initialize(replay_root, "READER", 0, {}, &error) &&
+                  PSXRecompV4::mod_runtime_commit(iso_path, &error);
+            check(committed, ("saved replay choice initializes and commits: " + error).c_str());
+            mod_runtime_activate_plugins();
+            check(replay_recording_requested() == enabled, "real replay activation/reset preserves saved On/Off");
+            check(PSXRecompV4::mod_runtime_feature_host_only("psx.integration.playable-replays", "playable-replays"),
+                  "local replay choice is host-only");
+            const std::string fp = PSXRecompV4::mod_runtime_plan_fingerprint_portable();
+            if (on_fp.empty()) on_fp = fp;
+            check(fp == on_fp, "recording choice does not change simulation identity");
+            if (on_local_fp.empty()) on_local_fp = PSXRecompV4::mod_runtime_fingerprint();
+            check(PSXRecompV4::mod_runtime_fingerprint() == on_local_fp,
+                  "recording choice does not change the active canonical mod fingerprint");
+            check(PSXRecompV4::mod_runtime_commit_netplay_view(iso_path, &error), "online plan accepts local replay choice");
+            mod_runtime_activate_plugins();
+            check(replay_recording_requested() == enabled, "online plan preserves local replay choice");
+        }
         PSXRecompV4::mod_runtime_end_netplay(); test_match_caps = {};
     }
     // Host-only features ([[plugin]] netplay = "host_only": the CRT Filter,

@@ -170,6 +170,7 @@ static int run_card_read(int slot, uint16_t sector, uint8_t out_rx[140]) {
     return n;
 }
 
+static void (*write_midpoint)(void);
 static int run_card_write(int slot, uint16_t sector, const uint8_t data[128],
                           uint8_t out_rx[140]) {
     int n = 0;
@@ -185,6 +186,11 @@ static int run_card_write(int slot, uint16_t sector, const uint8_t data[128],
     out_rx[n++] = card_xchg(msb,  slot);   /* idx 4: address MSB */
     out_rx[n++] = card_xchg(lsb,  slot);   /* idx 5: address LSB */
     for (int i = 0; i < 128; i++) {
+        if (i == 64 && write_midpoint) {
+            void (*hook)(void) = write_midpoint;
+            write_midpoint = NULL;
+            hook();
+        }
         out_rx[n++] = card_xchg(data[i], slot);
     }
     out_rx[n++] = card_xchg(chk,  slot);
@@ -502,6 +508,73 @@ static void test_local_pad_report_delivery(void) {
     card_deselect(1);
 }
 
+/* The real SIO write/flush path remains persistent normally, but explicit
+ * replay playback must never write through to the player's bound card. */
+static void finish_replay_mid_write(void) {
+    sio_cards_replaced();
+    memcard_replay_end();
+}
+static void test_replay_card_write_isolation(void) {
+    static uint8_t images[2 * MEMCARD_SIZE];
+    uint8_t data[128], rx[140], disk[128], virtual_data[128];
+    const int sector = 63;
+    sio_init();
+    memcard_set_extension_codec(NULL, NULL);
+    memcard_init("test_dir");
+    memset(data, 0x41, sizeof data);
+    EXPECT_EQ("ordinary.write", 138, run_card_write(0, sector, data, rx));
+    EXPECT_EQ("ordinary.ack", 0x47, rx[137]);
+    memcard_flush_all();
+    EXPECT_EQ("replay.capture0", 0, memcard_export_raw(0, images));
+    EXPECT_EQ("replay.capture1", 0, memcard_export_raw(1, images + MEMCARD_SIZE));
+    EXPECT_EQ("replay.begin", 0, memcard_replay_begin(images, 3));
+    memset(data, 0x52, sizeof data);
+    EXPECT_EQ("replay.write", 138, run_card_write(0, sector, data, rx));
+    EXPECT_EQ("replay.ack", 0x47, rx[137]);
+    memcard_flush_all();
+    EXPECT_EQ("replay.virtual.read", 0, memcard_read_sector(0, sector, virtual_data));
+    EXPECT_EQ("replay.virtual.changed", 0x52, virtual_data[0]);
+    FILE* f = fopen("test_dir/card1.mcd", "rb");
+    EXPECT_EQ("replay.disk.seek", 0, f ? fseek(f, sector * 128, SEEK_SET) : -1);
+    EXPECT_EQ("replay.disk.read", 128, f ? fread(disk, 1, 128, f) : 0);
+    if (f) fclose(f);
+    EXPECT_EQ("replay.disk.unchanged", 0x41, disk[0]);
+    memcard_replay_end();
+    EXPECT_EQ("replay.restored.read", 0, memcard_read_sector(0, sector, virtual_data));
+    EXPECT_EQ("replay.restored.bytes", 0x41, virtual_data[0]);
+    memset(data, 0x63, sizeof data);
+    EXPECT_EQ("restored.write", 138, run_card_write(0, sector, data, rx));
+    EXPECT_EQ("restored.ack", 0x47, rx[137]);
+    memcard_flush_all();
+    f = fopen("test_dir/card1.mcd", "rb");
+    EXPECT_EQ("restored.disk.seek", 0, f ? fseek(f, sector * 128, SEEK_SET) : -1);
+    EXPECT_EQ("restored.disk.read", 128, f ? fread(disk, 1, 128, f) : 0);
+    if (f) fclose(f);
+    EXPECT_EQ("restored.native.persisted", 0x63, disk[0]);
+    EXPECT_EQ("handoff.capture0", 0, memcard_export_raw(0, images));
+    EXPECT_EQ("handoff.capture1", 0, memcard_export_raw(1, images + MEMCARD_SIZE));
+    EXPECT_EQ("handoff.begin", 0, memcard_replay_begin(images, 3));
+    memset(data, 0x74, sizeof data);
+    write_midpoint = finish_replay_mid_write;
+    EXPECT_EQ("handoff.write", 138, run_card_write(0, sector, data, rx));
+    EXPECT_EQ("handoff.replaced-card", 0x4E, rx[137]);
+    f = fopen("test_dir/card1.mcd", "rb");
+    EXPECT_EQ("handoff.disk.seek", 0, f ? fseek(f, sector * 128, SEEK_SET) : -1);
+    EXPECT_EQ("handoff.disk.read", 128, f ? fread(disk, 1, 128, f) : 0);
+    if (f) fclose(f);
+    EXPECT_EQ("handoff.disk.unchanged", 0x63, disk[0]);
+    EXPECT_EQ("handoff.restored.read", 0, memcard_read_sector(0, sector, virtual_data));
+    EXPECT_EQ("handoff.restored.bytes", 0x63, virtual_data[0]);
+    memset(data, 0x85, sizeof data);
+    EXPECT_EQ("handoff.next.write", 138, run_card_write(0, sector, data, rx));
+    EXPECT_EQ("handoff.next.ack", 0x47, rx[137]);
+    f = fopen("test_dir/card1.mcd", "rb");
+    EXPECT_EQ("handoff.next.disk.seek", 0, f ? fseek(f, sector * 128, SEEK_SET) : -1);
+    EXPECT_EQ("handoff.next.disk.read", 128, f ? fread(disk, 1, 128, f) : 0);
+    if (f) fclose(f);
+    EXPECT_EQ("handoff.next.native.persisted", 0x85, disk[0]);
+}
+
 int main(int argc, char **argv) {
     fprintf(stderr, "=== sio card protocol tests ===\n");
     test_local_pad_report_delivery();
@@ -562,6 +635,7 @@ int main(int argc, char **argv) {
             (g_checks - prev_checks) - (g_failures - prev_fails),
             g_checks - prev_checks);
 
+    test_replay_card_write_isolation();
     fprintf(stderr, "=== TOTAL: %d checks, %d failures ===\n",
             g_checks, g_failures);
     return g_failures > 0 ? 1 : 0;

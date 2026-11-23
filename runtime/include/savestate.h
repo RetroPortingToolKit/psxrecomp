@@ -152,6 +152,14 @@ int savestate_request_load_protocol(int slot);
 /* Netplay LOAD transfer: stage an in-memory .pst (no disk write). Copied
  * internally; applied by savestate_poll like a normal slot load. */
 int savestate_request_load_blob_protocol(const void* data, size_t size);
+/* The same, for a replay anchor: no load toast and no input guard. */
+int savestate_request_load_blob_quiet(const void* data, size_t size);
+/* Replay anchor: save the machine to memory at the next safe boundary and
+ * reload it quietly. take: 1 = *data (malloc'd; the caller frees it) holds
+ * the state and the reload is done, -1 = failed, 0 = pending. */
+int savestate_request_anchor(void);
+/* Card bytes/mask are captured at the same safe boundary as the anchor. */
+int savestate_take_anchor(uint8_t** data, size_t* size, uint8_t* cards, uint32_t* mask);
 
 /* 1 while a staged save/load has not yet been consumed by savestate_poll. */
 int savestate_pending(void);
