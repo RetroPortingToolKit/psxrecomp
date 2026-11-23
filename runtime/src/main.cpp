@@ -17075,10 +17075,21 @@ namespace {
         } else if (std::strcmp(op, "settle") == 0) {
             char why[256] = {};
             PsxLobbyMatchCaps caps{};
-            if (psx_lobby_replay_room(req.c_str(), why, sizeof(why)) != 0 ||
-                ae_np_settle_start_caps(settings, &caps, why, sizeof(why)) != 0) {
+            const bool room_ready = psx_lobby_replay_room(req.c_str(), why, sizeof(why)) == 0;
+            if (room_ready && g_netplay_content_negotiation) {
+                // A standalone query has not received the launcher's disc callback.
+                const std::string d = disc[0] ? std::string(disc) : initial_disc;
+                if (!d.empty()) {
+                    RecompLauncherCDiscVerify dv{};
+                    ae_disc_verify(d.c_str(), &dv);
+                }
+            }
+            const bool settled = room_ready &&
+                ae_np_settle_start_caps(settings, &caps, why, sizeof(why)) == 0;
+            if (!settled || !g_lnch_mod_plan_error.empty()) {
                 ans += ",\"error\":";
-                ae_np_json_escaped(ans, why[0] ? why : "the match cannot be settled");
+                const char* detail = why[0] ? why : g_lnch_mod_plan_error.c_str();
+                ae_np_json_escaped(ans, detail[0] ? detail : "the match cannot be settled");
             } else if (psx_lobby_start_message(&caps, msg, sizeof(msg)) == 0) {
                 ans += ",\"start\":";
                 ans += msg;
