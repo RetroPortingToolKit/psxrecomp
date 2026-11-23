@@ -503,7 +503,10 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/replay_file.c
     ${PSXRECOMP_ROOT}/runtime/src/replay_identity.c
     ${PSXRECOMP_ROOT}/runtime/src/replay_session.c
-    ${PSXRECOMP_ROOT}/runtime/src/replay_frontend.c
+    ${PSXRECOMP_ROOT}/runtime/src/replay_frontend.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/replay_recording_policy.c
+    ${PSXRECOMP_ROOT}/runtime/src/replay_input_scope.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_replay.c
     ${PSXRECOMP_ROOT}/runtime/src/disc_identity.cpp
     ${PSXRECOMP_ROOT}/runtime/src/cue_sheet.cpp
     ${PSXRECOMP_ROOT}/runtime/src/disc_path.cpp
@@ -550,7 +553,6 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_ram.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_hd_textures.c
     ${PSXRECOMP_ROOT}/runtime/src/host_enhancements.c
-    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_replay_recording.c
     ${PSXRECOMP_ROOT}/runtime/src/legacy_player_settings.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_packages.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_media.cpp

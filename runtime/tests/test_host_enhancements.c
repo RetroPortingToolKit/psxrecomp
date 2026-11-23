@@ -240,16 +240,7 @@ static void test_player(void) {
     psx_host_enh_player_clear();
     psx_host_enh_reset();
     psx_host_enh_requests(&req);
-    CHECK(!req.crt && !req.image && !req.audio && !req.rewind && !req.replay_recording);
-
-    /* Record Replays is a mod's request for one session, not a setting. */
-    psx_host_enh_request_replay_recording();
-    psx_host_enh_requests(&req);
-    CHECK(req.replay_recording);
-    psx_host_enh_reset();
-    psx_host_enh_requests(&req);
-    CHECK(!req.replay_recording);
-    CHECK(!psx_host_enh_player_set("video.replay_recording", "true"));
+    CHECK(!req.crt && !req.image && !req.audio && !req.rewind);
 
     /* Unknown ids are not this record's (the caller applies them). */
     CHECK(!psx_host_enh_player_set("video.renderer", "opengl"));

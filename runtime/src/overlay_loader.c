@@ -3143,14 +3143,16 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
 
 static int dll_already_loaded(const char *path);
 static int load_one_dll(const char *dll_path, OverlayLibraryHandle prepared);
-
+static int unit_admitted(const char *path);
+static void code_observe(char op, const char *path);
 static int load_bios_resident_shards(void) {
     int bundles = 0, functions = 0;
     for (int i = 0; i < s_cache_idx_count; i++) {
         CacheEntry *e = &s_cache_idx[i];
         if (!e->resident || e->func_count <= 0 ||
             e->indexed_func_count != e->func_count ||
-            e->capacity_suppressed || dll_already_loaded(e->path))
+            e->capacity_suppressed || dll_already_loaded(e->path) ||
+            !unit_admitted(e->path))
             continue;
         int loaded = load_one_dll(e->path, NULL);
         if (loaded > 0) { bundles++; functions += loaded; }
@@ -3363,10 +3365,18 @@ void overlay_loader_resync_validation_after_restore(void)
  * dll_already_loaded() makes the re-walk idempotent. */
 unsigned overlay_loader_codegen_hash(void) { return (unsigned)PSX_OVERLAY_CODEGEN_HASH; }
 
+static int rescan_held(void);
 void overlay_loader_rescan(void) {
-    if (!s_active || !overlay_loads_allowed()) return;
+    if (!s_active || !overlay_loads_allowed() || rescan_held()) return;
     const uint64_t span_t0 = host_span_begin();
+    const int indexed_before = s_cache_idx_count;
     scan_cache_dir();
+    for (int i = indexed_before; i < s_cache_idx_count; i++)
+        code_observe('I', s_cache_idx[i].path);
+    /* A rescan also lets the guest call indexed units that a stale lazy
+     * check (lazy_man_matches, the miss cache) kept out until now, so a
+     * replay records each one, whether or not it indexed a unit. */
+    code_observe('R', NULL);
     load_bios_resident_shards();
     s_nchecked = 0;
     lazy_miss_invalidate_loader();
@@ -3556,6 +3566,165 @@ static int load_one_dll_prepared(const char *dll_path,
     return load_one_dll(dll_path, prepared);
 }
 
+/* ---- Native units as a replay names them (overlay_loader.h) ----------- */
+
+/* The unit's path under <cache_dir>/<game_id>/ with '/' separators: tier,
+ * ABI, codegen tag, segment and immutable name, the same on every host.
+ * Taken after the last "<game_id>" folder of the path, so a canonical path
+ * (another spelling of the root, '\\' separators) names the same unit as
+ * the indexed one. */
+static void unit_line(const char *path, char *out, size_t cap) {
+    const size_t gl = strlen(s_game_id);
+    const char *rest = path;
+    size_t n = 0;
+    for (const char *p = path; gl && *p; ++p)
+        if ((*p == '/' || *p == '\\') && cache_path_has_root(p + 1, s_game_id))
+            rest = p + 2 + gl;
+    for (; *rest && n + 1 < cap; ++rest) out[n++] = *rest == '\\' ? '/' : *rest;
+    out[n] = 0;
+}
+
+static int unit_line_equal(const char *a, const char *b) {
+#ifdef _WIN32
+    for (; *a && *b; ++a, ++b)
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+    return !*a && !*b;
+#else
+    return !strcmp(a, b);
+#endif
+}
+
+static OverlayCodeObserver s_code_observer;
+static int s_admit_on;
+static char **s_admit;
+static int s_admit_n, s_admit_cap;
+
+static void code_observe(char op, const char *path) {
+    char line[768];
+    if (!s_code_observer) return;
+    if (path) unit_line(path, line, sizeof(line));
+    s_code_observer(op, path ? line : NULL);
+}
+
+void overlay_loader_set_code_observer(OverlayCodeObserver fn) { s_code_observer = fn; }
+
+static int line_admitted(const char *line) {
+    for (int i = 0; i < s_admit_n; i++)
+        if (unit_line_equal(s_admit[i], line)) return 1;
+    return 0;
+}
+
+static int unit_admitted(const char *path) {
+    char line[768];
+    if (!s_admit_on) return 1;
+    unit_line(path, line, sizeof(line));
+    return line_admitted(line);
+}
+
+void overlay_loader_admit_begin(void) {
+    overlay_loader_admit_end();
+    s_admit_on = 1;
+}
+
+int overlay_loader_admit(const char *line) {
+    char *copy;
+    if (!s_admit_on || !line || !line[0]) return 0;
+    if (line_admitted(line)) return 1;
+    if (s_admit_n == s_admit_cap) {
+        const int cap = s_admit_cap ? s_admit_cap * 2 : 256;
+        char **grown = (char **)realloc(s_admit, (size_t)cap * sizeof(*grown));
+        if (!grown) return 0;
+        s_admit = grown;
+        s_admit_cap = cap;
+    }
+    if (!(copy = (char *)malloc(strlen(line) + 1))) return 0;
+    strcpy(copy, line);
+    s_admit[s_admit_n++] = copy;
+    return 1;
+}
+
+void overlay_loader_admit_end(void) {
+    for (int i = 0; i < s_admit_n; i++) free(s_admit[i]);
+    free(s_admit);
+    s_admit = NULL;
+    s_admit_n = s_admit_cap = 0;
+    s_admit_on = 0;
+}
+
+/* While a playback admits units, a rescan runs only at a frame its
+ * recording logged one (overlay_loader_admit_rescan): the compiler's own
+ * rescans come at host-timed frames. */
+static int s_rescan_admitted;
+static int rescan_held(void) { return s_admit_on && !s_rescan_admitted; }
+
+void overlay_loader_admit_rescan(void) {
+    s_rescan_admitted = 1;
+    overlay_loader_rescan();
+    s_rescan_admitted = 0;
+}
+
+static int line_loaded(const char *line) {
+    char have[768];
+    for (int i = 0; i < s_nloaded_paths; i++) {
+        unit_line(s_loaded_paths[i], have, sizeof(have));
+        if (unit_line_equal(have, line)) return 1;
+    }
+    return 0;
+}
+
+static int overlay_loader_commit_published_impl(OverlayPreparedImage *image,
+                                                int replay);
+
+int overlay_loader_unit_present(const char *line) {
+    char path[1400];
+    FILE *f;
+    if (!s_active || !line || !line[0] || strstr(line, "..")) return 0;
+    if (line_loaded(line)) return 1;
+    snprintf(path, sizeof(path), "%s/%s/%s", s_cache_dir, s_game_id, line);
+    if (!(f = fopen(path, "rb"))) return 0;
+    fclose(f);
+    return 1;
+}
+
+int overlay_loader_load_unit(const char *line) {
+    char path[1400];
+    if (!overlay_loader_unit_present(line)) return 0;
+    if (line_loaded(line)) return 1;
+    if (!overlay_loads_allowed()) return -1;
+    snprintf(path, sizeof(path), "%s/%s/%s", s_cache_dir, s_game_id, line);
+    OverlayPreparedImage *image = overlay_loader_prepare_published(path);
+    return overlay_loader_commit_published_impl(image, 1) > 0 ? 1 : -1;
+}
+
+char *overlay_loader_code_set_lines(unsigned *count) {
+    size_t cap = 1, used = 0;
+    unsigned n = 0;
+    char *out, line[768], have[768];
+    if (count) *count = 0;
+    if (!s_active) return NULL;
+    for (int i = 0; i < s_cache_idx_count; i++) cap += strlen(s_cache_idx[i].path) + 1;
+    for (int i = 0; i < s_nloaded_paths; i++) cap += strlen(s_loaded_paths[i]) + 1;
+    if (!(out = (char *)malloc(cap))) return NULL;
+    out[0] = 0;
+    /* The indexed units, then units loaded with no index entry yet (a
+     * published compile before the next rescan). */
+    for (int i = 0; i < s_cache_idx_count + s_nloaded_paths; i++) {
+        const int loaded_only = i >= s_cache_idx_count;
+        const char *p = loaded_only ? s_loaded_paths[i - s_cache_idx_count] : s_cache_idx[i].path;
+        int seen = 0;
+        unit_line(p, line, sizeof(line));
+        for (int k = 0; loaded_only && k < s_cache_idx_count && !seen; k++) {
+            unit_line(s_cache_idx[k].path, have, sizeof(have));
+            seen = unit_line_equal(have, line);
+        }
+        if (seen) continue;
+        used += (size_t)snprintf(out + used, cap - used, "%s\n", line);
+        n++;
+    }
+    if (count) *count = n;
+    return out;
+}
+
 static int published_root_canonical(void) {
     if (s_cache_root_canon_ok) return 1;
     if (!overlay_path_canonicalize(s_cache_dir, s_cache_root_canon,
@@ -3648,15 +3817,15 @@ OverlayPreparedImage *overlay_loader_prepare_published(const char *dll_path) {
     return image;
 }
 
-static int overlay_loader_commit_published_impl(OverlayPreparedImage *image);
 int overlay_loader_commit_published(OverlayPreparedImage *image) {
     const uint64_t span_t0 = host_span_begin();
-    int loaded = overlay_loader_commit_published_impl(image);
+    int loaded = overlay_loader_commit_published_impl(image, 0);
     host_span_end(HSPAN_PUBLISH_COMMIT, span_t0, (uint32_t)loaded);
     return loaded;
 }
 
-static int overlay_loader_commit_published_impl(OverlayPreparedImage *image) {
+static int overlay_loader_commit_published_impl(OverlayPreparedImage *image,
+                                                int replay) {
     if (!image) return 0;
     if (!overlay_loads_allowed()) {
         overlay_loader_discard_prepared(image);
@@ -3669,10 +3838,18 @@ static int overlay_loader_commit_published_impl(OverlayPreparedImage *image) {
     /* image->path is already canonical (prepare stored the handle-derived
      * form); re-validating is an idempotent freshness check. */
     if (published_path_valid(image->path, canon, sizeof(canon)) &&
-        !dll_already_loaded(canon))
+        !dll_already_loaded(canon)) {
+        if (s_admit_on && (!replay || !unit_admitted(canon))) {
+            /* During playback the log alone can publish a compiled unit. */
+            overlay_library_close(handle);
+            free(image);
+            return OVERLAY_COMMIT_HELD;
+        }
         loaded = load_one_dll_prepared(canon, handle);
-    else
+        if (loaded > 0) code_observe('L', canon);
+    } else {
         overlay_library_close(handle);
+    }
     free(image);
     return loaded;
 }
@@ -3779,12 +3956,18 @@ static void overlay_image_warm_seed_boot_text(void) {
     overlay_image_warm_queue(indices, count);
 }
 
+static int unit_admitted(const char *path);
+
 static int lazy_is_loadable(int li, uint32_t region_start, uint32_t seg,
                             uint32_t phys, int require_region_start) {
     if (li < 0 || li >= s_lazy_man_n) return 0;
     LazyMan *lm = &s_lazy_man[li];
     int ci = lm->cache_idx;
     if (ci < 0 || ci >= s_cache_idx_count) return 0;
+    /* A replay chooses only among the units its recording could run: a
+     * newer unit this cache has and the recording did not would otherwise
+     * win the choice, fail admission, and delay the admitted one. */
+    if (!unit_admitted(s_cache_idx[ci].path)) return 0;
     /* A manifest's entries are in its directory's segment (checked when the
      * index is built), so lazy_man_contains()'s segment test selects the
      * shards of `seg`. */
@@ -3814,6 +3997,9 @@ static int lazy_load_selected(int li) {
         s_cache_idx[ci].capacity_suppressed ||
         cache_entry_already_loaded(ci) ||
         s_cache_idx[ci].func_count <= 0) return 0;
+    /* A replay loads it only from the frame its recording could (and does
+     * not mark it failed: it becomes loadable then). */
+    if (!unit_admitted(s_cache_idx[ci].path)) return 0;
     /* If proactive warming has not reached this fragment yet, prefer the
      * historical synchronous path over running a potentially hot function in
      * the interpreter. The worker drops its speculative reference safely. */

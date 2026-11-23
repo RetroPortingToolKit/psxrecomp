@@ -158,7 +158,8 @@ int savestate_request_load_blob_quiet(const void* data, size_t size);
  * reload it quietly. take: 1 = *data (malloc'd; the caller frees it) holds
  * the state and the reload is done, -1 = failed, 0 = pending. */
 int savestate_request_anchor(void);
-int savestate_take_anchor(uint8_t** data, size_t* size);
+/* Card bytes/mask are captured at the same safe boundary as the anchor. */
+int savestate_take_anchor(uint8_t** data, size_t* size, uint8_t* cards, uint32_t* mask);
 
 /* 1 while a staged save/load has not yet been consumed by savestate_poll. */
 int savestate_pending(void);

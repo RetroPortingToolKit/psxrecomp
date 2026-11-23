@@ -54,14 +54,19 @@ int replay_session_record_to(const char *path);
 int replay_session_record_power_on(const char *path);
 /* Ends a recording at the next boundary, which writes the file. */
 void replay_session_stop_record(void);
+/* Before ordinary sampling, cache the completed frame's END/digest. The
+ * following boundary call observes sampled input for the next guest frame. */
+void replay_session_prepare_record_boundary(void);
 
-/* 1 while a replay drives P1 or a recording delivers it. */
+/* 1 while playback drives P1. Recording never owns or changes input. */
 int replay_session_owns_p1(void);
 
 /* Once per guest vblank, at the frame boundary, with the live P1 state the
  * host would deliver (sticks LX,LY,RX,RY). Returns 1 when the host must
  * deliver *out_buttons and out_sticks to P1 for the next frame instead. Live
- * input takes over once the pad has been neutral after the start. */
+ * input takes over once the pad has been neutral after the start. During
+ * recording call after ordinary input sampling: this observes that input and
+ * always returns 0, leaving all controllers under their ordinary owner. */
 int replay_session_boundary(uint16_t live_buttons, const uint8_t live_sticks[4],
                             uint16_t *out_buttons, uint8_t out_sticks[4]);
 
@@ -82,12 +87,20 @@ unsigned replay_session_digests_checked(void);
 /* When set, every playback writes this JSON file when it ends: schema
  * "psxrecomp-replay-verdict/1", result (in_sync, diverged,
  * stopped_by_input, failed, incomplete), frames, first divergence, the
- * recorded and player builds and exe SHA-256s, power_on. NULL clears. */
+ * union of all observed divergence parts (divergence_parts_seen), the
+ * recorded and player builds and exe SHA-256s, power_on, and the recorded
+ * and player compiled-code sets (unit count and digest) with code_set_match
+ * (true, false, or null when the file or the host names none), the code log
+ * events (null without a log) and the units it starts with that this cache
+ * lacks (code_units_missing_at_start). NULL clears. */
 void replay_session_set_verdict_path(const char *path);
 
 /* Process exit, a disc change or a session restart: write a recording, or
  * end a playback and put the player's settings and cards back. */
 void replay_session_shutdown(void);
+/* A successful manual state load/rewind breaks a linear input history.
+ * Preserve the last valid prefix; anchor/playback loads are unaffected. */
+void replay_session_on_state_restore(void);
 
 /* ---- Host hooks (main.cpp; stubs in the unit test) ---- */
 void replay_host_osd(const char *text, int ms);
@@ -112,14 +125,40 @@ void replay_host_settings_restore(void);
  * the inserted ones are read). Its writes stay in memory. 0 on failure. */
 int replay_host_cards_install(const uint8_t *images, uint32_t mask);
 void replay_host_cards_restore(void);
+/* The native code units the host can run, one identity per line with '\n'
+ * after each, in any order (overlay_loader_code_set_lines); *count is the
+ * number of lines. malloc'd; NULL when the host has no code set to name.
+ * Initial inventory only; ordinary background compilation continues. */
+char *replay_host_code_set(unsigned *count);
+/* Native code while a replay runs (REPLAY_TAG_CODE_LOG): the frame a unit
+ * starts to run natively changes the guest's timing, so a playback runs
+ * each unit from the frame its recording did. The overlay compiler keeps
+ * running in both. A recording is told each unit that becomes runnable
+ * (op 'L' loaded, 'I' indexed) through `fn`; NULL stops it. */
+void replay_host_code_watch(void (*fn)(char op, const char *unit));
+/* Playback: 1 begins (no unit runs natively until admitted), 0 ends. */
+void replay_host_code_admit(int on);
+int replay_host_code_admit_unit(const char *unit);   /* 0 out of memory */
+/* Reproduce the recorded capture boundary using the local game and compiler. */
+void replay_host_code_capture_schedule(int paced);
+int replay_host_code_capture(void);
+/* The unit's file: waited for while the local compiler may write it (wait),
+ * and loaded now (load). 1 ready, 0 unavailable, -1 it does not load. */
+int replay_host_code_unit(const char *unit, int load, int wait);
+/* A cache rescan: the admitted units in the cache become callable. */
+void replay_host_code_rescan(void);
 /* 0 with the reason when this session cannot record: netplay, a
  * multitap, a port without a pad, memory cards the format cannot hold. */
 int replay_host_can_record(char *why, size_t cap);
+/* Actual guest-visible input/device scope of this single-player format.
+ * Return 0 with a reason for unsupported input. profile names static host
+ * device configuration, not guest-driven DualShock negotiation or OS devices. */
+int replay_host_recording_input_contract(uint64_t *profile, char *why, size_t cap);
 /* Save an anchor state at the next safe boundary and reload it quietly. */
 int replay_host_request_anchor(void);
 /* 1 = *data (malloc'd; the caller frees it) holds the anchor, -1 = failed,
  * 0 = pending. */
-int replay_host_take_anchor(uint8_t **data, size_t *size);
+int replay_host_take_anchor(uint8_t **data, size_t *size, uint8_t *cards, uint32_t *mask);
 /* The settings lines replay_host_settings_apply takes. */
 void replay_host_settings_capture(char *out, size_t cap);
 /* The cards the guest boots with (2 x REPLAY_FILE_CARD_BYTES, slot order);

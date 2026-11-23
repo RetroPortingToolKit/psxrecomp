@@ -70,6 +70,13 @@ int overlay_capture_count(void);
  * when [runtime] overlay_autocompile_cmd is configured. */
 void overlay_autocapture_set_enabled(int on);
 void overlay_autocapture_tick(void);
+/* Replays record when the emulation thread accepted a coherent snapshot.
+ * During playback, the recorded boundaries replace periodic capture starts.
+ * Worker completion and compiler submission still use the ordinary tick. */
+void overlay_autocapture_watch(void (*observer)(void));
+void overlay_autocapture_replay_set(int paced);
+int overlay_autocapture_replay_capture(void);
+int overlay_autocapture_replay_has_work(void);
 /* Join any in-flight atomic writer before the final shutdown snapshot. */
 void overlay_autocapture_shutdown(void);
 void overlay_autocapture_get_status(int *enabled, uint32_t *triggers,

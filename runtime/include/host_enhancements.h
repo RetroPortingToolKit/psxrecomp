@@ -16,11 +16,6 @@
  *   Enhanced audio       [audio] spu_hq
  *   Rewind               [video] rewind, rewind_depth, rewind_interval
  *
- * One built-in mod also requests here: Record Replays
- * (psx.feature.replay-recording, mod_builtin_replay_recording.c), a power-on
- * replay of each session (replay_session.h), enabled by default; the player's
- * choice is kept in mods/state.toml.
- *
  * These are player settings, not mods. The title's game.toml [video] /
  * [audio] keys stay its BASELINE: each saved setting replaces its part, and a
  * setting the player never saved keeps the baseline value, except Internal
@@ -84,7 +79,6 @@ typedef struct PsxHostEnhRequests {
     int rewind;                 /* Rewind on */
     int rewind_depth;           /* 50 / 100 / 150 / 200 */
     int rewind_interval;        /* 1 / 4 / 8 / 12 / 15 */
-    int replay_recording;       /* Record Replays mod enabled */
     int resolution;             /* Internal resolution applies (always, from
                                  * the player's settings) */
     int resolution_value;       /* PSX_IR_UNSET (Game default) or a PSX_IR_*
@@ -209,10 +203,6 @@ void psx_host_enh_reset(void);
  * not one of these settings. Neither touches the running session. */
 void psx_host_enh_player_clear(void);
 int  psx_host_enh_player_set(const char* id, const char* value);
-
-/* Activation of the Record Replays mod: this session records. Cleared by
- * psx_host_enh_reset() (it is not a player setting). */
-void psx_host_enh_request_replay_recording(void);
 
 /* A copy of this session's requests. */
 void psx_host_enh_requests(PsxHostEnhRequests* out);

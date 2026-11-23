@@ -7,6 +7,7 @@
  * restores the full machine then unwinds to the scheduler and re-dispatches. */
 
 #include "savestate.h"
+#include "memcard.h"
 #include "mod_netplay.h"
 #include "mod_snapshot.h"
 #include "boot_state.h"
@@ -86,6 +87,8 @@ static int      s_load_blob_quiet = 0; /* replay anchors: no toast or input guar
 static int      s_anchor_pending, s_anchor_wait_load, s_anchor_result;
 static uint8_t* s_anchor_blob;
 static size_t   s_anchor_len;
+static uint8_t  s_anchor_cards[2u * MEMCARD_SIZE];
+static uint32_t s_anchor_cards_mask;
 static size_t   s_load_blob_len = 0;
 #if defined(PSX_HAS_RECOMP_NET)
 static uint32_t s_load_trace_generation;
@@ -1015,13 +1018,15 @@ int savestate_request_anchor(void) {
     return 1;
 }
 
-int savestate_take_anchor(uint8_t** data, size_t* size) {
+int savestate_take_anchor(uint8_t** data, size_t* size, uint8_t* cards, uint32_t* mask) {
     const int result = s_anchor_result;
     if (!result) return 0;
     s_anchor_result = 0;
     if (result > 0) {
         *data = s_anchor_blob;
         *size = s_anchor_len;
+        memcpy(cards, s_anchor_cards, sizeof s_anchor_cards);
+        *mask = s_anchor_cards_mask;
         s_anchor_blob = NULL;
         s_anchor_len = 0;
     }
@@ -1192,7 +1197,15 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
             s_save_pending = s_save_defer_slot = -1;
             s_anchor_pending = 0;
             g_psx_savestate_pending = s_load_pending >= 0;
-            if (!boot_state_save_buffer(&snap, s_bios_checksum, s_entry_pc, &blob, &length) ||
+            /* Native cards remain ordinary while recording. Copy their bytes
+             * at this exact guest boundary so later playback can isolate them. */
+            s_anchor_cards_mask = 0;
+            memset(s_anchor_cards, 0, sizeof s_anchor_cards);
+            for (int card = 0; card < 2; ++card)
+                if (memcard_export_raw(card, s_anchor_cards + (size_t)card * MEMCARD_SIZE) == 0)
+                    s_anchor_cards_mask |= 1u << card;
+            if (!memcard_replay_supported() ||
+                !boot_state_save_buffer(&snap, s_bios_checksum, s_entry_pc, &blob, &length) ||
                 !savestate_request_load_blob_quiet(blob, length)) {
                 free(blob);
                 s_anchor_result = -1;

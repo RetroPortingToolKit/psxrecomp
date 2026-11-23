@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
         "psx.feature.rewind",
     };
     bool saw_debug_server = false;
-    bool saw_replay_recording = false;
+    bool saw_replays = false;
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
         if (!entry.is_regular_file() || entry.path().filename() != "manifest.toml")
             continue;
@@ -56,6 +56,12 @@ int main(int argc, char** argv) {
               entry.path().string() + ": version does not match its directory");
         check(package.id == version_dir.parent_path().filename().string(),
               entry.path().string() + ": id does not match its directory");
+        if (package.id == "psx.integration.playable-replays") {
+            saw_replays = true;
+            check(package.features.size() == 1 && package.features[0].default_enabled &&
+                  !package.features[0].hidden && package.features[0].host_only,
+                  "playable replays are visible, default On, and local to the player");
+        }
         if (package.id == "psx.integration.debug-server") {
             saw_debug_server = true;
             check(package.features.size() == 1 &&
@@ -67,20 +73,6 @@ int main(int argc, char** argv) {
                   "TCP server feature activates the registered plugin");
             check(package.targets.size() == 1 && package.targets[0].game_id == "*",
                   "TCP server package applies to every game");
-        }
-        if (package.id == "psx.feature.replay-recording") {
-            saw_replay_recording = true;
-            check(package.features.size() == 1 && package.features[0].id == "replay-recording" &&
-                      package.features[0].default_enabled && !package.features[0].hidden &&
-                      package.features[0].host_only,
-                  "Record Replays is visible, host-only and enabled by default");
-            check(package.plugins.size() == 1 && package.plugins[0].id == "psx.replay-recording" &&
-                      package.plugins[0].netplay_host_only,
-                  "Record Replays activates its host_only plugin");
-            check(package.targets.size() == 1 && package.targets[0].game_id == "*",
-                  "Record Replays applies to every game");
-            check(package.save_compatibility == "shared" && package.options.empty(),
-                  "Record Replays has no options and never isolates save states");
         }
         if (package.id == "psx.enhancement.8mb-ram") {
             saw_8mb = true;
@@ -101,8 +93,8 @@ int main(int argc, char** argv) {
     }
     check(parsed > 0, "no builtin manifests found under " + root.string());
     check(saw_8mb, "psx.enhancement.8mb-ram builtin package missing");
-    check(saw_replay_recording, "psx.feature.replay-recording builtin package missing");
     check(saw_debug_server, "psx.integration.debug-server builtin package missing");
+    check(saw_replays, "psx.integration.playable-replays builtin package missing");
     if (failures == 0)
         std::cout << "PASS builtin mod manifests (" << parsed << " packages)\n";
     return failures ? 1 : 0;

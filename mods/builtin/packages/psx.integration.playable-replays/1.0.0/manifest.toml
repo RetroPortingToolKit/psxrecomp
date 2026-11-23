@@ -1,0 +1,23 @@
+format_version = 11
+id = "psx.integration.playable-replays"
+version = "1.0.0"
+name = "Playable Replays"
+author = "psxrecomp"
+description = "Save single-player gameplay as playable .psxrpl files. Separate from Input Recording support-session diagnostics."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "*"
+
+[[feature]]
+id = "playable-replays"
+name = "Playable Replays (Single Player)"
+description = "Enabled by default. Saves a playable .psxrpl file in saves/replays when you quit normally. Applies on the next launch. Recording stops with a message if Player 2 becomes active or the controller configuration changes; normal controls and native saves are unaffected. Netplay and special peripherals are not supported. Input Recording, when available, separately collects support-session diagnostics."
+group = "Diagnostics"
+default_enabled = true
+
+[[plugin]]
+feature = "playable-replays"
+id = "psx.playable-replays"
+netplay = "host_only"

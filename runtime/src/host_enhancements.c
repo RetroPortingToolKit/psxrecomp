@@ -23,10 +23,6 @@ void psx_host_enh_reset(void) {
     s_req = s_player;
 }
 
-void psx_host_enh_request_replay_recording(void) {
-    s_req.replay_recording = 1;
-}
-
 void psx_host_enh_requests(PsxHostEnhRequests* out) {
     if (out) *out = s_req;
 }

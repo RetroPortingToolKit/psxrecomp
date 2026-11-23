@@ -4,6 +4,7 @@
  * replies the DualShock protocol documents (psx-spx, "Controllers and Memory
  * Cards", config mode commands). */
 #include "../src/sio.c"
+#include "../src/replay_input_scope.c"
 #include <stdio.h>
 #include <stdlib.h>
 uint32_t i_stat, i_mask, g_debug_current_func_addr, g_debug_last_store_pc;
@@ -86,14 +87,44 @@ int main(void) {
     for (size_t c = 0; c < sizeof cases / sizeof cases[0]; ++c) {
         const Case *k = &cases[c];
         power_on(k->analog);
+        const uint64_t host_generation = sio_pad_host_type_generation();
         enter_config(k->analog);
         const uint8_t tx[9] = { 0x01, k->cmd, 0x00, k->data, 0, 0, 0, 0, 0 };
         uint8_t rx[9];
         txn(tx, rx, 9);
+        CHECK(sio_pad_host_type_generation() == host_generation, "guest config must not change host input generation");
         CHECK(rx[1] == 0xF3 && rx[2] == 0x5A, "%s: header %02X %02X != F3 5A", k->name, rx[1], rx[2]);
         for (int j = 0; j < 6; ++j)
             CHECK(rx[3 + j] == k->want[j], "%s byte %d: rx %02X != %02X", k->name, 3 + j, rx[3 + j], k->want[j]);
     }
+    /* The replay scope observes actual SIO input, not connected OS devices. */
+    power_on(0);
+    const uint64_t guest_before = sio_pad_host_type_generation();
+    enter_config(0);
+    { const uint8_t tx[9] = {1, 0x44, 0, 1, 0, 0, 0, 0, 0}; uint8_t rx[9]; txn(tx, rx, 9); }
+    CHECK(sio_get_pad_analog(0) == SIO_PAD_DUALSHOCK && sio_pad_host_type_generation() == guest_before,
+          "actual guest 0x44 negotiation must remain replayable without host profile invalidation");
+    power_on(0);
+    sio_set_pad_connected(1, 1); sio_set_port_device(1, SIO_DEVICE_PAD);
+    sio_set_pad_type(1, SIO_PAD_DIGITAL, 1, 2, 3, 4);
+    sio_set_pad_state_slot(1, 0xFFFFu);
+    uint64_t initial, profile; char why[256];
+    CHECK(replay_sio_input_contract(&initial, why, sizeof why), "neutral digital P2 remains representable despite irrelevant axes");
+    sio_set_pad_state_slot(1, 0xBFFFu);
+    CHECK(!replay_sio_input_contract(&profile, why, sizeof why), "real P2 button must stop single-player recording");
+    sio_set_pad_state_slot(1, 0xFFFFu);
+    sio_set_pad_type(1, SIO_PAD_DUALSHOCK, 1, 2, 3, 4);
+    CHECK(!replay_sio_input_contract(&profile, why, sizeof why), "guest-visible P2 axes must stop recording");
+    sio_set_pad_sticks(1, 128, 128, 128, 128);
+    CHECK(replay_sio_input_contract(&profile, why, sizeof why) && profile != initial, "host device mode change changes the recording profile");
+    initial = profile;
+    sio_request_pad_type(0, SIO_PAD_DUALSHOCK);
+    CHECK(replay_sio_input_contract(&profile, why, sizeof why) && profile != initial, "host mode request invalidates static replay settings");
+    initial = profile;
+    sio_request_pad_type(0, SIO_PAD_DUALSHOCK);
+    CHECK(replay_sio_input_contract(&profile, why, sizeof why) && profile == initial, "repeated identical pending request is not another change");
+    sio_set_port_device(1, SIO_DEVICE_MOUSE);
+    CHECK(!replay_sio_input_contract(&profile, why, sizeof why), "unrepresented peripheral must refuse recording");
     if (failures) {
         fprintf(stderr, "%d failure(s)\n", failures);
         return 1;
