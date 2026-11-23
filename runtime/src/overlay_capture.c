@@ -1159,6 +1159,8 @@ static uint64_t s_autocap_provider_retry_frame = 0;
 static unsigned s_autocap_provider_attempts = 0;
 static uint64_t s_autocap_last_check_ms = 0; /* host twin of last_check      */
 static uint64_t s_autocap_next_ok_ms    = 0; /* host twin of next_ok         */
+static void (*s_autocap_observer)(void);
+static int s_autocap_replay_paced;
 
 static uint64_t autocap_now_ms(void) { return (uint64_t)SDL_GetTicks64(); }
 
@@ -1520,7 +1522,33 @@ static int autocap_write_start(void)
         autocap_write_job_free(job);
         return 0;
     }
+    /* The queued job owns this coherent evidence epoch. Start the next one
+     * immediately, so later manifests contain newly seen PCs and pages. */
+    memset(g_dirty_ram_exec_pc_bitmap, 0, sizeof(g_dirty_ram_exec_pc_bitmap));
+    dirty_ram_dispatch_evidence_clear(0u, DIRTY_RAM_EXEC_BITMAP_WORDS);
+    memset(g_dirty_ram_exec_page_bitmap, 0, sizeof(g_dirty_ram_exec_page_bitmap));
     return 1;
+}
+
+void overlay_autocapture_watch(void (*observer)(void)) {
+    s_autocap_observer = observer;
+}
+
+void overlay_autocapture_replay_set(int paced) {
+    s_autocap_replay_paced = paced;
+}
+
+int overlay_autocapture_replay_capture(void) {
+    return s_autocap_enabled && s_active && !s_autocap_write_job &&
+           !s_autocap_provider_sig_pending && autocap_write_start();
+}
+
+int overlay_autocapture_replay_has_work(void) {
+    extern uint64_t s_frame_count;
+    return SDL_AtomicGet(&s_autocap_write_state) != 0 ||
+           (s_autocap_write_job && s_frame_count >= s_autocap_write_job->retry_frame) ||
+           (s_autocap_provider_sig_pending &&
+            s_frame_count >= s_autocap_provider_retry_frame);
 }
 
 static int preserve_write_thread_main(void *opaque)
@@ -1696,7 +1724,7 @@ void overlay_autocapture_tick(void)
         return;
     }
 
-    if (!s_autocap_enabled || !s_active) {
+    if (!s_autocap_enabled || !s_active || s_autocap_replay_paced) {
         s_autocap_gate_hit = AUTOCAP_GATE_DISABLED;
         return;
     }
@@ -1737,17 +1765,7 @@ void overlay_autocapture_tick(void)
     s_autocap_last_fire = s_frame_count;
     s_autocap_next_ok = s_frame_count + AUTOCAP_COOLDOWN_FRAMES;
     s_autocap_next_ok_ms = now_ms + AUTOCAP_COOLDOWN_MS;
-    if (autocap_write_start()) {
-        /* The queued job now owns this coherent evidence epoch. Start the next
-         * one immediately so later periodic manifests contain only newly seen
-         * PCs/pages instead of rewriting the entire session-wide union. Failed
-         * jobs remain queued and retry; normal shutdown drains them. */
-        memset(g_dirty_ram_exec_pc_bitmap, 0,
-               sizeof(g_dirty_ram_exec_pc_bitmap));
-        dirty_ram_dispatch_evidence_clear(0u, DIRTY_RAM_EXEC_BITMAP_WORDS);
-        memset(g_dirty_ram_exec_page_bitmap, 0,
-               sizeof(g_dirty_ram_exec_page_bitmap));
-    }
+    if (autocap_write_start() && s_autocap_observer) s_autocap_observer();
 }
 
 void overlay_capture_wait_pending(void)

@@ -1609,7 +1609,8 @@ void autocompile_poll_main(void) {
     if (!s_out_lock_init) return;
     PublishItem *published = publish_ready_pop();
     if (published) {
-        if (overlay_loader_commit_published(published->image) <= 0)
+        const int committed = overlay_loader_commit_published(published->image);
+        if (committed <= 0 && committed != OVERLAY_COMMIT_HELD)
             publish_note_load_failure();
         published->image = NULL; /* commit consumed it on every path */
         free(published);

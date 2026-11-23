@@ -7162,6 +7162,24 @@ def _runtime_valid_shard_pair_locked(dll: str, ranges: str,
         {entry for entry, _crc, _ranges in funcs}))
 
 
+def load_captures(path: str, attempts: int = 50, delay: float = 0.1):
+    """The capture manifest, read while the runtime may be replacing it.
+
+    The runtime writes the manifest to a temporary file and moves it over
+    the old one (MoveFileEx on Windows). A read that meets the move fails
+    with PermissionError; a live compile run that gave up there compiled
+    nothing, and a replay waiting for its unit stopped. Retry for about
+    5 s, then raise."""
+    for attempt in range(attempts):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except PermissionError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(delay)
+
+
 def announce_published_shard(dll: str) -> None:
     """Tell a live runtime that `dll` (with its .ranges) is committed and loadable.
 
@@ -8010,8 +8028,7 @@ def main():
         print(f'Cache dir: {cache_dir}  '
               f'(codegen ver {cg}, emitter {ch:08x}, config {gh:08x})')
 
-    with open(args.captures) as f:
-        captures = json.load(f)
+    captures = load_captures(args.captures)
     # Cross-image call evidence comes from every capture in the file (and the
     # main EXE), including captures --only-region leaves out.
     cross_image_calls = CrossImageCalls(

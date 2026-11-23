@@ -23,4 +23,21 @@ function(psxrecomp_build_revision output source_dir)
         endif()
     endif()
     set(${output} "${_revision}" PARENT_SCOPE)
+
+    if(ARGC GREATER 2)
+        set(_commit "")
+        # A source export inside a game may be in the game's Git working tree.
+        # Only stamp a commit from the supplied repository root. A linked
+        # worktree or submodule has a .git file at that root.
+        if(PSX_BUILD_GIT AND EXISTS "${source_dir}/.git")
+            execute_process(
+                COMMAND "${PSX_BUILD_GIT}" -C "${source_dir}" rev-parse --verify HEAD
+                OUTPUT_VARIABLE _commit OUTPUT_STRIP_TRAILING_WHITESPACE
+                RESULT_VARIABLE _result ERROR_QUIET)
+            if(NOT "${_result}" STREQUAL "0")
+                set(_commit "")
+            endif()
+        endif()
+        set(${ARGV2} "${_commit}" PARENT_SCOPE)
+    endif()
 endfunction()

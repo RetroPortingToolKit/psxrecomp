@@ -505,6 +505,10 @@ static int mc_data_idx = 0;
 static uint8_t mc_checksum = 0;
 static uint8_t mc_flag = 0x08; /* 0x08=new data, 0x00=normal */
 
+/* Valid commands fit in seven bits. Keep the replacement flag with the
+ * serialized command so a restored, partial write stays invalidated. */
+enum { MC_CMD_MASK = 0x7F, MC_CARD_REPLACED = 0x80 };
+
 typedef enum {
     DEV_NONE,
     DEV_PAD,
@@ -580,6 +584,14 @@ int sio_card_protocol_active(void) {
     if (mc_slots[0].state != MC_IDLE) return 1;
     if (mc_slots[1].state != MC_IDLE) return 1;
     return 0;
+}
+
+void sio_cards_replaced(void) {
+    if (mc_state != MC_IDLE)
+        mc_cmd |= MC_CARD_REPLACED;
+    for (int slot = 0; slot < 2; ++slot)
+        if (mc_slots[slot].state != MC_IDLE)
+            mc_slots[slot].cmd |= MC_CARD_REPLACED;
 }
 
 #if SIO_MODEL_CYCLE_PACED
@@ -1276,6 +1288,8 @@ static void pad_commit_type(int slot, uint8_t type) {
  * no handshake is in flight. Per-frame input must NOT use this for the type —
  * use sio_set_pad_sticks + sio_request_pad_type so the type change is applied
  * coherently (see pad_type_req[] above). */
+static uint64_t pad_host_type_generation;
+
 void sio_set_pad_type(int slot, int type,
                       uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
@@ -1287,6 +1301,8 @@ void sio_set_pad_type(int slot, int type,
         type = SIO_PAD_DIGITAL;
     if (type == SIO_PAD_JOGCON)
         pad_supports_config[slot] = 1;
+    if (slot < 2 && (pad_analog[slot] != type || pad_type_req[slot] != -1))
+        ++pad_host_type_generation;
     pad_commit_type(slot, (uint8_t)type);
     pad_type_req[slot] = -1;   /* explicit set supersedes any pending request */
     pad_stick[slot][0] = lx; pad_stick[slot][1] = ly;
@@ -1355,6 +1371,7 @@ int sio_toggle_pad_mode(int slot) {
     /* -2 is a queued button press, distinct from a requested absolute mode.
      * Two presses before the bus becomes idle cancel each other. */
     pad_type_req[slot] = pad_type_req[slot] == -2 ? -1 : -2;
+    if (slot < 2) ++pad_host_type_generation;
     return 1;
 }
 
@@ -1372,8 +1389,12 @@ void sio_request_pad_type(int slot, int type) {
      * setup transaction, leaving the game with a half-initialized device. */
     if (type == SIO_PAD_JOGCON) pad_supports_config[slot] = 1;
     int want = type;
+    if (slot < 2 && pad_analog[slot] != want && pad_type_req[slot] != want)
+        ++pad_host_type_generation;
     pad_type_req[slot] = (pad_analog[slot] == want) ? -1 : (int8_t)want;
 }
+
+uint64_t sio_pad_host_type_generation(void) { return pad_host_type_generation; }
 
 uint16_t sio_get_pad_buttons(void) {
     return pad_buttons[0];
@@ -1392,6 +1413,10 @@ uint16_t sio_get_pad_buttons_slot(int slot) {
 int sio_get_pad_connected(int slot) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS) return 0;
     return (pad_connected & (1u << slot)) ? 1 : 0;
+}
+
+int sio_get_pad_config_capable(int slot) {
+    return (slot >= 0 && slot < PSX_MAX_PLAYERS) ? pad_supports_config[slot] : 0;
 }
 
 int sio_get_pad_analog(int slot) {
@@ -2039,6 +2064,7 @@ static void mc_process_byte(uint8_t tx_byte) {
     case MC_IDLE:
         mc_slot = selected_slot;
         if (memcard_is_present(mc_slot)) {
+            mc_cmd &= MC_CMD_MASK;
             mc_state = MC_CMD;
             sio_rx_data = 0xFF;
             sio_stat |= SIO_STAT_ACK;
@@ -2049,7 +2075,7 @@ static void mc_process_byte(uint8_t tx_byte) {
         break;
 
     case MC_CMD:
-        mc_cmd = tx_byte;
+        mc_cmd = (tx_byte & MC_CMD_MASK) | (mc_cmd & MC_CARD_REPLACED);
         sio_mc_cmd_count++;
         if (tx_byte == 0x52 || tx_byte == 0x57 || tx_byte == 0x53) {
             if (tx_byte == 0x52) sio_mc_read_count++;
@@ -2072,7 +2098,7 @@ static void mc_process_byte(uint8_t tx_byte) {
         break;
 
     case MC_ID2:
-        if (mc_cmd == 0x53) {
+        if ((mc_cmd & MC_CMD_MASK) == 0x53) {
             mc_state = MC_GETID_1;
             sio_rx_data = 0x5D;
             sio_stat |= SIO_STAT_ACK;
@@ -2117,8 +2143,8 @@ static void mc_process_byte(uint8_t tx_byte) {
         mc_sector_lsb = tx_byte;
         mc_sector = ((uint16_t)mc_sector_msb << 8) | mc_sector_lsb;
 
-        if (mc_cmd == 0x52) {
-            if (mc_sector < MEMCARD_SECTORS) {
+        if ((mc_cmd & MC_CMD_MASK) == 0x52) {
+            if (mc_sector < MEMCARD_SECTORS && !(mc_cmd & MC_CARD_REPLACED)) {
                 memcard_read_sector(mc_slot, mc_sector, mc_data);
             } else {
                 memset(mc_data, 0xFF, 128);
@@ -2193,9 +2219,9 @@ static void mc_process_byte(uint8_t tx_byte) {
                                              uint8_t checksum,
                                              uint8_t data_idx,
                                              const uint8_t *data128);
-        card_read_summary_record(mc_slot, mc_cmd, mc_sector,
+        card_read_summary_record(mc_slot, mc_cmd & MC_CMD_MASK, mc_sector,
                                  mc_checksum, mc_data_idx, mc_data);
-        if (mc_sector < MEMCARD_SECTORS) {
+        if (mc_sector < MEMCARD_SECTORS && !(mc_cmd & MC_CARD_REPLACED)) {
             sio_rx_data = 0x47; /* 'G' = Good */
         } else {
             sio_rx_data = 0xFF;
@@ -2229,7 +2255,7 @@ static void mc_process_byte(uint8_t tx_byte) {
         sio_rx_data = 0x00;
         sio_stat |= SIO_STAT_ACK;
 
-        if (tx_byte == expected && mc_sector < MEMCARD_SECTORS) {
+        if (tx_byte == expected && mc_sector < MEMCARD_SECTORS && !(mc_cmd & MC_CARD_REPLACED)) {
             if (memcard_write_sector(mc_slot, mc_sector, mc_data) == 0) {
                 memcard_flush(mc_slot);
                 mc_checksum = memcard_last_flush_result(mc_slot) == 0
@@ -2240,7 +2266,7 @@ static void mc_process_byte(uint8_t tx_byte) {
         } else if (mc_sector >= MEMCARD_SECTORS) {
             mc_checksum = 0xFF; /* Bad sector */
         } else {
-            mc_checksum = 0x4E; /* 'N' = bad checksum */
+            mc_checksum = 0x4E; /* 'N' = bad checksum or replaced card */
         }
         break;
     }
@@ -2397,7 +2423,7 @@ static void sio_process_byte(uint8_t tx_byte) {
                                || mc_state == MC_WRITE_DATA
                                || mc_state >= MC_WRITE_ACK1)
                               ? mc_sector : 0xFFFF;
-        txn_record_byte(tx_byte, sio_rx_data, mc_cmd, sector_now,
+        txn_record_byte(tx_byte, sio_rx_data, mc_cmd & MC_CMD_MASK, sector_now,
                         got_ack, sio_trace_seq);
 
         /* Natural close: mc_state went IDLE this byte from non-IDLE. */

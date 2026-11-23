@@ -41,6 +41,7 @@ int main(int argc, char** argv) {
         "psx.feature.rewind",
     };
     bool saw_debug_server = false;
+    bool saw_replays = false;
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
         if (!entry.is_regular_file() || entry.path().filename() != "manifest.toml")
             continue;
@@ -55,6 +56,12 @@ int main(int argc, char** argv) {
               entry.path().string() + ": version does not match its directory");
         check(package.id == version_dir.parent_path().filename().string(),
               entry.path().string() + ": id does not match its directory");
+        if (package.id == "psx.integration.playable-replays") {
+            saw_replays = true;
+            check(package.features.size() == 1 && package.features[0].default_enabled &&
+                  !package.features[0].hidden && package.features[0].host_only,
+                  "playable replays are visible, default On, and local to the player");
+        }
         if (package.id == "psx.integration.debug-server") {
             saw_debug_server = true;
             check(package.features.size() == 1 &&
@@ -87,6 +94,7 @@ int main(int argc, char** argv) {
     check(parsed > 0, "no builtin manifests found under " + root.string());
     check(saw_8mb, "psx.enhancement.8mb-ram builtin package missing");
     check(saw_debug_server, "psx.integration.debug-server builtin package missing");
+    check(saw_replays, "psx.integration.playable-replays builtin package missing");
     if (failures == 0)
         std::cout << "PASS builtin mod manifests (" << parsed << " packages)\n";
     return failures ? 1 : 0;

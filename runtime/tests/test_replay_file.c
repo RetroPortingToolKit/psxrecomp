@@ -90,6 +90,7 @@ static void test_round_trip(void)
     static const uint32_t digests[2][5] = {{0, 1, 2, 3, 4}, {60, 5, 6, 7, 8}};
     static const uint32_t thumb[4] = {0xff000000u, 0xffffffffu, 0xff102030u, 0xff405060u};
     unsigned char anchor[100], *buf = NULL;
+    uint8_t portable_ram_sha256[32];
     ReplayIdentity id;
     ReplayFileOut o;
     size_t size;
@@ -103,6 +104,8 @@ static void test_round_trip(void)
     words[200].axes_ly_lx_ry_rx[1] = 0xff;
     for (uint32_t i = 0; i < sizeof ram; ++i) ram[i] = (uint8_t)(i * 13);
     replay_file_checkpoint(FRAMES, ram, 123456789012ull, &end);
+    psx_sha256_compute(ram, sizeof ram, portable_ram_sha256);
+    CHECK(!memcmp(end.ram_sha256, portable_ram_sha256, sizeof portable_ram_sha256));
     for (unsigned i = 0; i < sizeof anchor; ++i) anchor[i] = (unsigned char)i;
 
     memset(&o, 0, sizeof o);
@@ -120,6 +123,7 @@ static void test_round_trip(void)
     o.thumb_h = 2;
     o.name = "First stage";
     o.product = "exe_sha256=ab\nbios_crc32=1234abcd\n";
+    o.code_set = "count=2\ndigest=00ff\nunit=gcc/a.dll\nunit=gcc/b.dll\n";
     size = write_buffer(&o, &buf);
     CHECK(size > 0);
     error = read_buffer(buf, size);
@@ -135,6 +139,7 @@ static void test_round_trip(void)
         CHECK(!memcmp(buf + s_info.anchor_offset, anchor, 99));
         CHECK(!strcmp(s_info.settings, o.settings));
         CHECK(!strcmp(s_info.product, o.product));
+        CHECK(!strcmp(s_info.code_set, o.code_set));
         CHECK(!strcmp(s_info.name, "First stage"));
         CHECK(s_info.digest_count == 2 && replay_file_le32(buf + s_info.digest_offset + 20) == 60);
         CHECK(s_info.thumb_w == 2 && s_info.thumb_h == 2 &&
@@ -180,7 +185,22 @@ static void test_round_trip(void)
     free(buf);
     buf = NULL;
 
+    /* The code set is optional to old readers: skippable, and outside the
+     * identity and marker tags an unknown-tag reader refuses. */
+    CHECK((REPLAY_TAG_CODE_SET & REPLAY_TAG_SKIPPABLE) != 0);
+    CHECK((REPLAY_TAG_CODE_SET & 0x7fffff00u) != 0x100u);
     /* The writer refuses what the reader would refuse. */
+    o.code_set = "count=1\n\001";
+    CHECK(replay_file_write(stdout, &o) != NULL);
+    {
+        static char big[REPLAY_FILE_CODE_SET_MAX + 2];
+        memset(big, 'a', sizeof big - 1);
+        o.code_set = big;
+        CHECK(replay_file_write(stdout, &o) != NULL);
+    }
+    /* A file written without it, as every older recorder wrote, reads with
+     * an empty code set. */
+    o.code_set = NULL;
     o.power_on = 1;
     CHECK(replay_file_write(stdout, &o) != NULL);              /* anchor and power-on */
     o.anchor = NULL;
@@ -203,7 +223,25 @@ static void test_round_trip(void)
         CHECK(s_info.power_on && !s_info.has_anchor && s_info.cards_mask == 2u);
         CHECK(!memcmp(buf + s_info.cards_offset, cards, REPLAY_FILE_CARD_BYTES));
         CHECK(s_info.digest_count == 0 && !s_info.name[0]);
+        CHECK(!s_info.code_set[0]);
     }
+    free(buf);
+    buf = NULL;
+    /* An anchor is only the execution snapshot: recorded native-card images
+     * travel separately and must also be available to isolated playback. */
+    o.power_on = 0;
+    o.anchor = anchor;
+    o.anchor_length = sizeof anchor;
+    size = write_buffer(&o, &buf);
+    CHECK(size > 0 && read_buffer(buf, size) == NULL);
+    CHECK(s_info.has_anchor && !s_info.power_on && s_info.cards_mask == 2u && s_info.cards_offset > 0);
+    if (s_info.cards_offset > 0 && (uint64_t)s_info.cards_offset + REPLAY_FILE_CARD_BYTES <= size)
+        CHECK(!memcmp(buf + s_info.cards_offset, cards, REPLAY_FILE_CARD_BYTES));
+    free(buf); buf = NULL;
+    o.cards_mask = 0;
+    size = write_buffer(&o, &buf);
+    CHECK(size > 0 && read_buffer(buf, size) == NULL);
+    CHECK(s_info.has_anchor && s_info.cards_mask == 0 && s_info.cards_offset > 0);
     free(buf);
     remove("replay_file_test.psxrpl");
 }

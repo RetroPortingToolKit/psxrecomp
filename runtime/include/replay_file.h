@@ -71,15 +71,33 @@ extern "C" {
  *            start
  *   NAME     UTF-8 text, no control bytes
  *   PRODUCT  ASCII "key=value" lines naming the product that recorded it:
- *            exe_sha256, codegen, bios_crc32, renderer, platform */
+ *            exe_sha256, codegen, bios_crc32, renderer, platform
+ *   CODE_SET ASCII "key=value" lines naming the native overlay code the
+ *            recording ran with at its starting boundary:
+ *            count=<units>, digest=<SHA-256 hex over the sorted unit lines,
+ *            each followed by a newline>, then one "unit=<path>" line per
+ *            unit when they all fit. A file without it plays as before.
+ *   CODE_LOG ASCII lines "<frame> <op> <unit>", in frame order, <unit> as
+ *            in CODE_SET: when each native overlay unit became runnable.
+ *            op S: at the start (frame 0); L: loaded when its compile was
+ *            published, before the boundary of <frame>; I: indexed by a
+ *            cache rescan then, loaded when the guest first calls it;
+ *            R (unit "-"): the host rescanned its cache then.
+ *            A (unit "-", frame 0 after the S events) enables the recorded
+ *            capture schedule. C (unit "-") saves the game's local evidence
+ *            for the compiler. Playback uses the same guest boundaries. */
 #define REPLAY_TAG_THUMB       0x80000304u
 #define REPLAY_TAG_NAME        0x80000305u
 #define REPLAY_TAG_PRODUCT     0x80000308u
+#define REPLAY_TAG_CODE_SET    0x80000309u
+#define REPLAY_TAG_CODE_LOG    0x8000030Au
 
 #define REPLAY_FILE_DIGEST_BYTES 20u
 #define REPLAY_FILE_SETTINGS_MAX 4096u
 #define REPLAY_FILE_NAME_MAX 96u
 #define REPLAY_FILE_PRODUCT_MAX 1024u
+#define REPLAY_FILE_CODE_SET_MAX 4096u
+#define REPLAY_FILE_CODE_LOG_MAX (4u << 20)
 #define REPLAY_FILE_THUMB_MAX (4u + 4u * 256u * 256u)
 #define REPLAY_FILE_CARD_BYTES (128u * 1024u)
 
@@ -144,8 +162,11 @@ typedef struct {
     char name[REPLAY_FILE_NAME_MAX + 1];
     int power_on;
     uint32_t cards_mask;
-    long cards_offset;              /* the first inserted card's image */
+    long cards_offset;              /* first inserted image; 0 when entry absent */
     char product[REPLAY_FILE_PRODUCT_MAX + 1];
+    char code_set[REPLAY_FILE_CODE_SET_MAX + 1];   /* "" when absent */
+    long code_log_offset;           /* CODE_LOG text; length 0 when absent */
+    uint32_t code_log_length;
 } ReplayFileInfo;
 
 /* What replay_file_write writes. NULL or zero members are left out; exactly
@@ -158,7 +179,7 @@ typedef struct {
     const void *anchor;
     uint32_t anchor_length;
     int power_on;
-    const uint8_t *cards;           /* the inserted cards' images, slot order */
+    const uint8_t *cards;           /* inserted images, slot order; non-NULL also emits an empty-card entry */
     uint32_t cards_mask;
     const char *settings;
     const uint32_t (*digests)[5];   /* frame, core, av, aux, ext */
@@ -167,6 +188,8 @@ typedef struct {
     uint16_t thumb_w, thumb_h;
     const char *name;
     const char *product;
+    const char *code_set;
+    const char *code_log;           /* CODE_LOG text, up to REPLAY_FILE_CODE_LOG_MAX */
 } ReplayFileOut;
 
 /* Reads a whole replay from the current position (the magic). Up to

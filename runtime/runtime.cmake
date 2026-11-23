@@ -501,8 +501,14 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_sha256.c
     ${PSXRECOMP_ROOT}/runtime/src/source_stateio_identity.c
     ${PSXRECOMP_ROOT}/runtime/src/tas_checkpoint.c
+    ${PSXRECOMP_ROOT}/runtime/src/replay_checkpoint.cpp
     ${PSXRECOMP_ROOT}/runtime/src/replay_file.c
     ${PSXRECOMP_ROOT}/runtime/src/replay_identity.c
+    ${PSXRECOMP_ROOT}/runtime/src/replay_session.c
+    ${PSXRECOMP_ROOT}/runtime/src/replay_frontend.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/replay_recording_policy.c
+    ${PSXRECOMP_ROOT}/runtime/src/replay_input_scope.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_replay.c
     ${PSXRECOMP_ROOT}/runtime/src/disc_identity.cpp
     ${PSXRECOMP_ROOT}/runtime/src/cue_sheet.cpp
     ${PSXRECOMP_ROOT}/runtime/src/disc_path.cpp
@@ -2129,7 +2135,7 @@ function(psxrecomp_add_runtime_target target)
     # can be correlated to an exact build (issue #1 user reports had no version).
     # Computed at configure time from the psxrecomp repo (this file's dir); empty
     # on failure (no git / not a repo) -> crash_trace.c falls back to "unknown".
-    psxrecomp_build_revision(PSX_GIT_REV "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+    psxrecomp_build_revision(PSX_GIT_REV "${PSXRECOMP_ROOT}" PSX_GIT_COMMIT)
 
     # Release pin for lobby matching (create/join/list). Override via
     # GAME_VERSION arg or -DPSX_GAME_VERSION=...; default "dev".
@@ -2192,6 +2198,10 @@ function(psxrecomp_add_runtime_target target)
     set_source_files_properties(
         "${PSXRECOMP_ROOT}/runtime/src/crash_trace.c"
         PROPERTIES COMPILE_DEFINITIONS "PSX_BUILD_REV=\"${PSX_GIT_REV}\""
+    )
+    set_source_files_properties(
+        "${PSXRECOMP_ROOT}/runtime/src/replay_identity.c"
+        PROPERTIES COMPILE_DEFINITIONS "PSX_FRAMEWORK_COMMIT=\"${PSX_GIT_COMMIT}\""
     )
 
     # Stamp the lobby pin next to the exe (and, on multi-config, in the build

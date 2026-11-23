@@ -254,13 +254,13 @@ if(BUILD_TESTING)
     add_test(NAME mod_netplay_options_policy_test COMMAND mod_netplay_test --options)
     add_test(NAME mod_netplay_loading_policy_test COMMAND mod_netplay_test --loading)
     add_executable(savestate_title_policy_test tests/test_savestate_title_policy.c
-        src/mod_netplay.c src/psx_sha256.c)
+        src/mod_netplay.c src/psx_sha256.c src/memcard.c)
     target_include_directories(savestate_title_policy_test PRIVATE include)
     add_test(NAME savestate_title_policy_test COMMAND savestate_title_policy_test)
     # A state of another disc of the set: its slot shows it, and a load mounts
     # that disc first with no lid event, or is refused with disc 1 still in.
     add_executable(savestate_disc_scope_test tests/test_savestate_disc_scope.c
-        src/mod_netplay.c src/psx_sha256.c)
+        src/mod_netplay.c src/psx_sha256.c src/memcard.c)
     target_include_directories(savestate_disc_scope_test PRIVATE include)
     add_test(NAME savestate_disc_scope_test
              COMMAND savestate_disc_scope_test ${CMAKE_CURRENT_BINARY_DIR})
@@ -483,11 +483,17 @@ if(BUILD_TESTING)
         target_link_options(tas_checkpoint_roundtrip_nodebug_test PRIVATE -flto -Wl,--gc-sections)
         target_link_libraries(tas_checkpoint_roundtrip_nodebug_test PRIVATE ZLIB::ZLIB)
         add_test(NAME tas_checkpoint_roundtrip_nodebug_test COMMAND tas_checkpoint_roundtrip_nodebug_test)
-        add_executable(replay_file_test tests/test_replay_file.c src/replay_file.c
+        add_executable(replay_file_test tests/test_replay_file.c src/replay_file.c src/replay_checkpoint.cpp
             src/replay_identity.c src/psx_sha256.c)
         target_include_directories(replay_file_test PRIVATE include)
         target_compile_options(replay_file_test PRIVATE -UNDEBUG)
         add_test(NAME replay_file_test COMMAND replay_file_test)
+        add_executable(replay_session_test tests/test_replay_session.c src/replay_session.c src/replay_frontend.cpp
+            src/replay_file.c src/replay_checkpoint.cpp src/replay_identity.c src/psx_sha256.c)
+        target_include_directories(replay_session_test PRIVATE include)
+        target_compile_definitions(replay_session_test PRIVATE REPLAY_FRONTEND_TEST=1)
+        target_compile_options(replay_session_test PRIVATE -UNDEBUG)
+        add_test(NAME replay_session_test COMMAND replay_session_test)
         add_executable(boot_state_native_capture_test tests/test_capture_writer.c src/mod_snapshot.c)
         target_include_directories(boot_state_native_capture_test PRIVATE include src)
         target_compile_definitions(boot_state_native_capture_test PRIVATE PSX_COSIM=1 PSX_NATIVE_CAPTURE_JOBS=1)
@@ -2011,6 +2017,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     # trailing delay-slot guard word (bead beads-eio.3.190).
     add_executable(overlay_capture_guard_word_test
         tests/test_overlay_capture_guard_word.cpp
+        src/host_span_ring.c
         src/overlay_capture.c)
     target_include_directories(overlay_capture_guard_word_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
@@ -2257,6 +2264,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_test(NAME netplay_content_gate_test COMMAND netplay_content_gate_test)
 
     add_executable(mod_runtime_test
+        src/replay_recording_policy.c
         src/mod_immediate.c
         src/host_overlay.c
         tests/test_mod_runtime.cpp
@@ -2552,6 +2560,9 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_executable(cdrom_getlocl_no_header_test tests/test_cdrom_getlocl_no_header.c)
     target_include_directories(cdrom_getlocl_no_header_test PRIVATE include src)
     add_test(NAME cdrom_getlocl_no_header_test COMMAND cdrom_getlocl_no_header_test)
+    add_executable(cdrom_test_scex_counters_test tests/test_cdrom_test_scex_counters.c)
+    target_include_directories(cdrom_test_scex_counters_test PRIVATE include src)
+    add_test(NAME cdrom_test_scex_counters_test COMMAND cdrom_test_scex_counters_test)
     add_executable(cdrom_subq_position_test tests/test_cdrom_subq_position.c)
     target_include_directories(cdrom_subq_position_test PRIVATE include src)
     add_test(NAME cdrom_subq_position_test COMMAND cdrom_subq_position_test)
@@ -3286,6 +3297,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
                  SKIP_RETURN_CODE 77
                  ENVIRONMENT "RECOMP_UI_ROOT=${RECOMP_UI_ROOT}")
         add_test(NAME compile_overlays_publish_marker_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_compile_overlays_publish_marker.py)
+        add_test(NAME compile_overlays_captures_retry_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_compile_overlays_captures_retry.py)
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME launch_disc_path_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launch_disc_path.py --compiler ${CMAKE_CXX_COMPILER})
             add_test(NAME persisted_settings_paths_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_persisted_settings_paths.py --compiler ${CMAKE_CXX_COMPILER})
