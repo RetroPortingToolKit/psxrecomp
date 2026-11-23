@@ -6,8 +6,8 @@
 uint64_t psx_cycle_count, s_frame_count;
 uint32_t i_stat, g_debug_current_func_addr, g_debug_last_store_pc;
 uint32_t debug_guest_ra(void) { return 0; }
-static int reads, failures, irq_raises;
-void psx_irq_raise(uint32_t a, uint32_t b) { (void)b; i_stat |= 1u << a; irq_raises++; }
+static int failures;
+void psx_irq_raise(uint32_t a, uint32_t b) { (void)b; i_stat |= 1u << a; }
 void event_ring_record(uint16_t a, uint8_t b) { (void)a; (void)b; }
 void event_ring_record_aux(uint16_t a, uint8_t b, uint32_t c) { (void)a; (void)b; (void)c; }
 void audio_trace_event(uint16_t a, uint32_t b, uint32_t c) { (void)a; (void)b; (void)c; }
@@ -22,15 +22,10 @@ uint32_t psx_netplay_sim_tick(void) { return 0; }
 void *iso_open(const char *p) { (void)p; return (void *)1; }
 void iso_close(void *p) { (void)p; }
 int iso_read_sector(void *p, uint32_t lba, uint8_t *b, int n) {
-    (void)p; memset(b, (int)(lba & 255u), (size_t)n); reads++; return 1;
+    (void)p; memset(b, (int)(lba & 255u), (size_t)n); return 1;
 }
-/* Raw sectors are served only when raw_mode_byte >= 0: the header's mode byte
- * (offset 15) takes that value, so a test can author any mode, including 0xFF. */
-static int raw_mode_byte = -1;
 int iso_read_raw_sector(void *p, uint32_t lba, uint8_t *b, int n) {
-    (void)p; (void)lba;
-    if (raw_mode_byte < 0) return 0;
-    memset(b, 0, (size_t)n); b[15] = (uint8_t)raw_mode_byte; return 1;
+    (void)p; (void)lba; (void)b; (void)n; return 0;
 }
 int iso_read_subq(void *p, uint32_t lba, uint8_t *b, int n, int *v) {
     (void)p; (void)lba; (void)b; (void)n; *v=0; return 0;
@@ -52,34 +47,42 @@ int iso_read_cdda_subq(void *h,uint32_t lba,uint8_t *p,int n,int *valid) {return
 void savestate_set_disc_scope(int disc) {(void)disc;}
 
 #define CHECK(c, m) do { if (!(c)) { fprintf(stderr,"FAIL: %s\n",m); failures++; } } while(0)
-static void ack(void) {
-    cdrom_write(0x1f801800,1); cdrom_write(0x1f801803,0x1f);
-    cdrom_write(0x1f801800,0);
+static void expect_ack_response(const uint8_t *expected, size_t count,
+                                const char *test) {
+    cdrom_write(0x1f801800, 1);
+    CHECK((cdrom_read(0x1f801803) & 0x1f) == 3, test);
+    for (size_t i = 0; i < count; ++i) {
+        CHECK(cdrom_read(0x1f801800) & 0x20, test);
+        CHECK(cdrom_read(0x1f801801) == expected[i], test);
+    }
+    CHECK(!(cdrom_read(0x1f801800) & 0x20), test);
+    cdrom_write(0x1f801803, 0x1f);
+    CHECK((cdrom_read(0x1f801803) & 0x1f) == 0, test);
+    cdrom_write(0x1f801800, 0);
 }
-/* Send Test with one parameter and return the IRQ type it raised. */
-static int test_cmd(uint8_t sub) {
-    cdrom_write(0x1f801800,0); cdrom_write(0x1f801802,sub);
-    cdrom_write(0x1f801801,0x19); return irq_flag;
+static void test_cmd(uint8_t sub) {
+    cdrom_write(0x1f801802, sub);
+    cdrom_write(0x1f801801, 0x19);
 }
-static uint8_t byte_at(int i) { return response_fifo[(response_read+i)&15]; }
 
 int main(void) {
+    const uint8_t status[] = {0x02}; /* synthetic disc, motor spinning */
+    const uint8_t counts[] = {0x00, 0x00};
+    const uint8_t version[] = {0x94, 0x09, 0x19, 0xc0};
     cdrom_init("synthetic");
-    stat_reg |= 0x80; /* playing: a nonzero status byte */
 
-    CHECK(test_cmd(0x05)==CDIRQ_ACK,"19h,05h answers INT3");
-    CHECK(response_count==2,"19h,05h answers two bytes");
-    CHECK(byte_at(0)==0x00 && byte_at(1)==0x00,"19h,05h counts are zero, not the status");
-    ack();
+    cdrom_write(0x1f801801, 0x01);
+    expect_ack_response(status, sizeof(status), "GetStat returns motor status");
 
-    CHECK(test_cmd(0x04)==CDIRQ_ACK,"19h,04h answers INT3");
-    CHECK(response_count==1 && byte_at(0)==stat_reg,"19h,04h answers the status");
-    ack();
+    test_cmd(0x05);
+    expect_ack_response(counts, sizeof(counts), "19h,05h returns two zero counters");
 
-    CHECK(test_cmd(0x20)==CDIRQ_ACK && response_count==4,"19h,20h still answers four version bytes");
-    ack();
+    test_cmd(0x04);
+    expect_ack_response(status, sizeof(status), "19h,04h returns drive status");
 
-    (void)reads; (void)irq_raises;
+    test_cmd(0x20);
+    expect_ack_response(version, sizeof(version), "19h,20h returns the firmware version");
+
     if (failures) return 1;
     puts("PASS: cdrom test scex counters");
     return 0;
