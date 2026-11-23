@@ -166,6 +166,26 @@ def recording(seed):
     return bytes(out.data)
 
 
+def check_closing_snapshot(replay, directory):
+    opening = state(random.Random(0), 1)
+    prefix = b"PSXGRR1\0" + struct.pack("<II", 1, len(opening)) + opening
+    empty = prefix + struct.pack("<BI", OPS["END"], 0)
+    complete = prefix + struct.pack("<BI", OPS["END"], len(opening)) + opening
+    cases = (
+        ("complete", complete, [], 0),
+        ("missing", empty, [], 1),
+        ("synthetic", empty, ["--compare-only"], 0),
+        ("trailing", complete + b"extra", [], 1),
+    )
+    for label, data, options, expected in cases:
+        path = directory / f"closing-{label}.grr"
+        path.write_bytes(data)
+        result = subprocess.run([replay, *options, str(path)], capture_output=True, text=True)
+        if result.returncode != expected:
+            print(result.stdout + result.stderr, file=sys.stderr, end="")
+            raise RuntimeError(f"{path.name}: expected exit {expected}, got {result.returncode}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--replay", required=True, help="gr_replay executable")
@@ -174,6 +194,7 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
+    check_closing_snapshot(args.replay, args.out)
     paths = []
     for index in range(args.count):
         path = args.out / f"random-{args.seed + index:04}.grr"

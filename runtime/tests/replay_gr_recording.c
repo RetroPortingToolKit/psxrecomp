@@ -326,11 +326,12 @@ static int run(const char *name, const uint8_t *data, size_t size, int second,
         const uint32_t closing_size = (uint32_t)i32(&r);
         pass->final_size = sw_state_size();
         pass->final_state = malloc(pass->final_size);
-        /* Generated recordings carry no closing snapshot (size 0). */
-        if (r.bad || (closing_size && closing_size != pass->final_size) ||
-            (size_t)(r.end - r.p) < closing_size ||
+        /* Only --compare-only accepts generated recordings without an END state. */
+        if (r.bad || (!g_compare_only && !closing_size) ||
+            (closing_size && closing_size != pass->final_size) ||
+            (size_t)(r.end - r.p) != closing_size ||
             !pass->final_state || !sw_state_save(pass->final_state, pass->final_size)) {
-            fprintf(stderr, "%s: closing snapshot is missing or a different size\n", name);
+            fprintf(stderr, "%s: invalid closing snapshot or trailing data\n", name);
             ok = 0;
         } else if (!second && closing_size &&
                    memcmp(pass->final_state, r.p, closing_size) != 0) {
