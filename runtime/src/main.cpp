@@ -1796,6 +1796,10 @@ extern "C" int psx_mod_set_fixed_display_aspect(
     g_video_aspect_num = (int)numerator;
     g_video_aspect_den = (int)denominator;
     g_ws_adaptive_view = false;
+    // A title can select a fixed view after adaptive Fit has already updated
+    // the live drawable. Both renderers must finish using the new aspect.
+    gl_renderer_set_display_aspect(g_video_aspect_num, g_video_aspect_den);
+    vk_renderer_set_display_aspect(g_video_aspect_num, g_video_aspect_den);
     std::fprintf(stdout, "psxrecomp: mod selected fixed display aspect %u:%u\n",
                  (unsigned)numerator, (unsigned)denominator);
     return 1;
@@ -2401,8 +2405,6 @@ extern "C" int psx_ws_get_native_wide(void) { return g_ws_native_wide; }
 extern "C" int psx_debug_display_aspect(int num, int den, int adaptive) {
     if (adaptive) return psx_mod_set_adaptive_display_aspect(num, den);
     if (!psx_mod_set_fixed_display_aspect(num, den)) return 0;
-    gl_renderer_set_display_aspect(num, den);
-    vk_renderer_set_display_aspect(num, den);
     if (sdl_renderer) {
         g_logical_w = 480 * num * g_video_scale / den;
         SDL_RenderSetLogicalSize(sdl_renderer, g_logical_w, 480 * g_video_scale);
