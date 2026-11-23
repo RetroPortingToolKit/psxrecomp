@@ -1,4 +1,4 @@
-"""Execute the production trace-query handler against a wrapped fixture ring.
+"""Execute the production write-trace serializers against a wrapped fixture ring.
 
 Compile only the handler and its real JSON helpers, replacing the transport
 with stdout. This needs a C compiler, but no game image, SDL or live server.
@@ -61,7 +61,8 @@ class WriteTraceQuery(unittest.TestCase):
         source = (Path(__file__).parents[1] / "src/debug_server.c").read_text(encoding="utf-8")
 
         def function(name):
-            match = re.search(r"static [^;{}]+\b" + name + r"\([^;{}]*\)\s*\{", source)
+            match = re.search(r"^(?:static )?[\w *]+\b" + name + r"\([^;{}]*\)\s*\{",
+                              source, re.MULTILINE)
             if not match:
                 raise AssertionError(f"production function missing: {name}")
             return source[match.start():matching_brace(source, match.end() - 1) + 1]
@@ -88,7 +89,7 @@ static void debug_server_send_line(const char *line) { puts(line); }
 static void send_err(int id, const char *error) { (void)id; (void)error; abort(); }
 """
         for name in ("json_get_str", "json_get_int", "hex_to_u32", "wtrace_fill_entry",
-                     "handle_wtrace_dump"):
+                     "handle_wtrace_dump", "debug_server_freeze_dump_wtrace_json"):
             harness += function(name) + "\n"
         # seq 7 is a DMA entry with an unknown (0) initiator PC.
         harness += """int main(int argc, char **argv) {
@@ -107,6 +108,12 @@ static void send_err(int id, const char *error) { (void)id; (void)error; abort()
         WriteTraceEntry *e=&ring[seq%WRITE_TRACE_CAP];
         e->seq=seq; e->pc=pcs[seq-2]; e->addr=0x1000+(seq-2)*4;
         e->frame=10+(seq-2)/2; e->width=4; e->dma_ch=seq==5?2:(seq==7?3:-1);
+        e->s0=0x80123400u+seq; e->s1=0xA0000100u+seq; e->s2=0x12340000u+seq;
+        e->s3=0xDEADBE00u+seq; e->s4=0xF0000010u+seq; e->s5=0x81000F00u+seq;
+    }
+    if (argc > 2 && !strcmp(argv[1], "freeze")) {
+        debug_server_freeze_dump_wtrace_json(stdout, (uint32_t)strtoul(argv[2], 0, 10));
+        return 0;
     }
     handle_wtrace_dump(7,argc>1?argv[1]:"{}");
     return 0;
@@ -177,6 +184,21 @@ static void send_err(int id, const char *error) { (void)id; (void)error; abort()
         self.assertEqual(reply["pc_hi"], "0x8000100C")
         self.assertEqual(reply["entries"][0]["dma_ch"], 2)
         self.assertEqual(reply["entries"][0]["seq"], 5)
+
+    def test_freeze_dump_matches_tcp_tail(self):
+        def freeze(count):
+            return json.loads(subprocess.check_output([str(self.exe), "freeze", str(count)]))
+
+        self.assertEqual(freeze(0), [])
+        tail = freeze(6)
+        self.assertEqual([entry["seq"] for entry in tail], list(range(4, 10)))
+        self.assertEqual(tail, self.query()["entries"][-6:])
+        dma = tail[1]
+        self.assertEqual(dma["dma_ch"], 2)
+        self.assertEqual(tail[0]["dma_ch"], -1)
+        self.assertEqual([dma[f"s{i}"] for i in range(6)],
+                         ["0x80123405", "0xA0000105", "0x12340005",
+                          "0xDEADBE05", "0xF0000015", "0x81000F05"])
 
 
 if __name__ == "__main__":
