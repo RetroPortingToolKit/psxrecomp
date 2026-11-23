@@ -2700,6 +2700,10 @@ int main() {
         write_text(exe / "s3.txt", std::string(254, 'a') + "\xc3\xa4");
         check(mod_feature_status_text(exe, "s3.txt").size() == 254,
               "status_truncates_on_utf8_boundary");
+        const auto localized = fs::u8path("stat\xc3\xbcs.txt");
+        write_text(exe / localized, std::string(4096, 'a') + "\nsecond line\n");
+        check(mod_feature_status_text(exe, "stat\xc3\xbcs.txt") == std::string(255, 'a'),
+              "status_reads_a_capped_prefix_from_a_utf8_path");
     }
 
     fs::remove_all(root, ec);

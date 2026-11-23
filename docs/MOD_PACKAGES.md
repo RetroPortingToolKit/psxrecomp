@@ -322,7 +322,8 @@ id = "hd-textures"
 status_file = "hd-auto/status.txt"
 ```
 
-The path is relative to the exe folder; absolute paths and `..` are rejected.
+Choose a regular file inside the executable's folder and supply its relative
+path. Absolute paths and `..` are rejected.
 The launcher shows the file's first line (without `\r`, at most 255 bytes) as
 the feature's status while the feature is enabled and has no validation error;
 a missing file shows nothing. The plugin or tool that owns the file rewrites it

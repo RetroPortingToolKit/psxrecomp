@@ -33,12 +33,13 @@ constexpr uint32_t kMinFormatVersion = 1;
 constexpr uint32_t kMaxFormatVersion = 14;
 
 /* A mod may only point the launcher at a file inside the game folder. */
-static bool status_file_path_ok(const std::string& text) {
-    const std::filesystem::path path(text);
-    if (text.empty() || path.is_absolute() || path.has_root_name()) return false;
+static fs::path relative_status_file(const std::string& text) {
+    if (text.empty() || text.find('\0') != std::string::npos) return {};
+    const auto path = fs::u8path(text);
+    if (path.has_root_path()) return {};
     for (const auto& part : path)
-        if (part == "..") return false;
-    return true;
+        if (part == "..") return {};
+    return path;
 }
 constexpr uint64_t kMaxArchiveBytes = 256ull * 1024ull * 1024ull;
 constexpr uint32_t kMaxArchiveFiles = 4096;
@@ -899,6 +900,18 @@ std::string effective_option_value(const ModPackage& package,
     return option ? option->default_value : std::string();
 }
 
+/* Resolve the actual file or directory and check that it stays in its root. */
+static fs::path canonical_contained_path(const fs::path& root, const fs::path& candidate) {
+    std::error_code ec;
+    const auto real = fs::canonical(candidate, ec);
+    if (ec) return {};
+    const auto base = fs::canonical(root, ec);
+    if (ec) return {};
+    const auto rel = real.lexically_relative(base);
+    if (rel.empty() || rel.is_absolute() || *rel.begin() == "..") return {};
+    return real;
+}
+
 /* A resource's package-relative default, only when it exists with the
  * resource's kind (folder or file) and its real path (symlinks resolved)
  * stays inside the package: the manifest check is text-only, and a symlink
@@ -910,13 +923,7 @@ static fs::path package_default_path(const ModPackage& package, const ModResourc
     const bool folder = resource.format == "directory" || resource.format == "folder";
     if (folder ? !fs::is_directory(candidate, ec) : !fs::is_regular_file(candidate, ec))
         return {};
-    const fs::path real = fs::canonical(candidate, ec);
-    if (ec) return {};
-    const fs::path base = fs::canonical(package.root, ec);
-    if (ec) return {};
-    const auto rel = real.lexically_relative(base);
-    if (rel.empty() || rel.is_absolute() || *rel.begin() == "..") return {};
-    return candidate;
+    return canonical_contained_path(package.root, candidate).empty() ? fs::path{} : candidate;
 }
 
 fs::path effective_resource_path(const ModPackage& package,
@@ -1939,7 +1946,7 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                         throw std::runtime_error(
                             "feature status_file requires format_version 14");
                     feature.status_file = toml::find<std::string>(v, "status_file");
-                    if (!status_file_path_ok(feature.status_file))
+                    if (relative_status_file(feature.status_file).empty())
                         throw std::runtime_error(
                             "feature status_file must be a relative path inside the game folder");
                 }
@@ -4558,14 +4565,29 @@ constexpr size_t kStatusTextMax = 255;
 
 std::string mod_feature_status_text(const std::filesystem::path& exe_dir,
                                     const std::string& status_file) {
-    std::ifstream in(exe_dir / std::filesystem::path(status_file), std::ios::binary);
-    std::string line;
-    if (!in || !std::getline(in, line)) return {};
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.size() <= kStatusTextMax) return line;
-    size_t cut = kStatusTextMax;
-    while (cut > 0 && ((unsigned char)line[cut] & 0xC0) == 0x80) --cut;  // no split UTF-8
-    return line.substr(0, cut);
+    const auto relative = relative_status_file(status_file);
+    if (relative.empty()) return {};
+    const auto file = canonical_contained_path(exe_dir, exe_dir / relative);
+    std::error_code ec;
+    if (file.empty() || !fs::is_regular_file(file, ec)) return {};
+
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return {};
+    // One extra byte distinguishes a complete 255-byte line from a truncated
+    // UTF-8 character. Never scan the rest of a producer's file.
+    std::array<char, kStatusTextMax + 1> bytes;
+    in.read(bytes.data(), bytes.size());
+    if (in.bad()) return {};
+    const auto end = std::find(bytes.begin(), bytes.begin() + in.gcount(), '\n');
+    size_t size = static_cast<size_t>(end - bytes.begin());
+    if (size > kStatusTextMax) {
+        size = kStatusTextMax;
+        while (size > 0 && (static_cast<unsigned char>(bytes[size]) & 0xC0) == 0x80)
+            --size;
+    } else if (size > 0 && bytes[size - 1] == '\r') {
+        --size;
+    }
+    return {bytes.data(), size};
 }
 
 } // namespace PSXRecompV4
