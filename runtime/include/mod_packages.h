@@ -590,6 +590,7 @@ public:
      * and what save_state() persists. */
     bool feature_implicitly_enabled(const std::string& package_id,
                                     const std::string& feature_id) const;
+    std::vector<ModResolution::ImplicitFeature> implicit_features() const;
     /* An option value as a resolved plan sees it (plan.selections), for
      * plugins running under that plan. */
     std::string feature_option_value(const ModResolution& plan,

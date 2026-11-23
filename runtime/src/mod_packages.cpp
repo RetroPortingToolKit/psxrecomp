@@ -3750,11 +3750,16 @@ std::map<std::string, ModSelection> ModPackageManager::effective_selections(
     return effective;
 }
 
+std::vector<ModResolution::ImplicitFeature> ModPackageManager::implicit_features() const {
+    std::vector<ModResolution::ImplicitFeature> implicit;
+    effective_selections(&implicit, nullptr, nullptr);
+    return implicit;
+}
+
 bool ModPackageManager::feature_implicitly_enabled(
     const std::string& package_id, const std::string& feature_id) const {
     if (feature_enabled(package_id, feature_id)) return false;
-    std::vector<ModResolution::ImplicitFeature> implicit;
-    effective_selections(&implicit, nullptr, nullptr);
+    const auto implicit = implicit_features();
     return std::any_of(implicit.begin(), implicit.end(),
                        [&](const ModResolution::ImplicitFeature& item) {
                            return item.package_id == package_id &&
