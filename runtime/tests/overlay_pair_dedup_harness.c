@@ -2,6 +2,12 @@
 #include "overlay_loader.h"
 #undef PSX_OVERLAY_DLL_BUILD
 
+#include "host_span_ring.h"
+#include "mod_plugins.h"
+#include "mod_immediate.h"
+#include "psx_direct_memory.h"
+#include "psx_load_delay.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +28,48 @@ _Static_assert(PSX_OVERLAY_TEST_CANDIDATE_CAP == 4,
 
 static uint8_t s_ram[RAM_SIZE];
 static uint8_t s_scratch[1024];
+
+uint64_t psx_hr_bus_callbacks[2][3];
+
+const PSXDirectMemoryView *psx_direct_memory_host_view(void) { return NULL; }
+uint32_t psx_read_word(uint32_t addr) {
+    uint32_t value;
+    memcpy(&value, &s_ram[addr & (RAM_SIZE - 4u)], sizeof(value));
+    return value;
+}
+uint16_t psx_read_half(uint32_t addr) {
+    uint16_t value;
+    memcpy(&value, &s_ram[addr & (RAM_SIZE - 2u)], sizeof(value));
+    return value;
+}
+uint8_t psx_read_byte(uint32_t addr) { return s_ram[addr & (RAM_SIZE - 1u)]; }
+void psx_write_word(uint32_t addr, uint32_t value) {
+    memcpy(&s_ram[addr & (RAM_SIZE - 4u)], &value, sizeof(value));
+}
+void psx_write_half(uint32_t addr, uint16_t value) {
+    memcpy(&s_ram[addr & (RAM_SIZE - 2u)], &value, sizeof(value));
+}
+void psx_write_byte(uint32_t addr, uint8_t value) { s_ram[addr & (RAM_SIZE - 1u)] = value; }
+
+/* The segment fixture reloads $ra with an independent stack adjustment in
+ * the load delay slot. The delayed value is ready by the time jr reads it. */
+void dirty_ram_ld_delay_stage(CPUState *cpu, uint32_t rt, uint32_t value, uint32_t successor) {
+    (void)successor;
+    if (rt != 0) cpu->gpr[rt] = value;
+}
+uint64_t dirty_ram_ld_delay_begin(CPUState *cpu, uint32_t pc, uint32_t instruction) {
+    (void)cpu; (void)pc; (void)instruction; return 0;
+}
+void dirty_ram_ld_delay_end(CPUState *cpu, uint64_t cookie, uint32_t instruction) {
+    (void)cpu; (void)cookie; (void)instruction;
+}
+void psx_kernel_bless_note_range(uint32_t address, uint32_t size) {
+    (void)address; (void)size;
+}
+uint64_t host_span_begin(void) { return 0; }
+void host_span_end(HostSpanKind kind, uint64_t stamp, uint32_t arg) {
+    (void)kind; (void)stamp; (void)arg;
+}
 
 /* Live RAM geometry (psx_memory.h): retail 2 MiB. */
 uint32_t g_psx_ram_size = RAM_SIZE;
@@ -200,6 +248,14 @@ int psx_mod_function_entry(CPUState *cpu, uint32_t address) {
 void psx_mod_instruction(CPUState *cpu, uint32_t address, uint32_t instruction) {
     (void)cpu; (void)address; (void)instruction;
 }
+uint32_t psx_mod_memory_address(const CPUState *cpu, uint32_t pc, uint32_t instruction, uint32_t address) {
+    (void)cpu; (void)pc; (void)instruction; return address;
+}
+uint32_t psx_mod_immediate_select(uint32_t group) { (void)group; return 0; }
+int psx_mod_try_function_replacement(CPUState *cpu, uint32_t address) {
+    (void)cpu; (void)address; return 0;
+}
+int psx_mod_function_entry_has_hook(uint32_t address) { (void)address; return 0; }
 int psx_netplay_is_resimulating(void) { return 0; }
 int psx_game_text_native_ok(uint32_t address) { (void)address; return 1; }
 uint32_t psx_ws_angle_widen(uint32_t vanilla) { return vanilla; }
@@ -510,15 +566,10 @@ static unsigned s_store_n;
  * g_debug_last_store_pc onto *g_psx_last_store_pc_p, so point that at a
  * real word before the loader hands its address to the shards. */
 static uint32_t s_host_store_pc;
-static uint32_t ram_read_word(uint32_t addr) {
-    uint32_t v;
-    memcpy(&v, &s_ram[(addr & (RAM_SIZE - 1u)) & ~3u], 4);
-    return v;
-}
 static void ram_write_word(uint32_t addr, uint32_t value) {
     if (s_store_n < sizeof(s_store_log) / sizeof(s_store_log[0]))
         s_store_log[s_store_n++] = s_host_store_pc;
-    memcpy(&s_ram[(addr & (RAM_SIZE - 1u)) & ~3u], &value, 4);
+    psx_write_word(addr, value);
 }
 
 static int segment_run(const char *image_path, const char *phys_text) {
@@ -535,7 +586,7 @@ static int segment_run(const char *image_path, const char *phys_text) {
     for (unsigned si = 0; si < 3; si++) {
         CPUState cpu;
         memset(&cpu, 0, sizeof(cpu));
-        cpu.read_word = ram_read_word;
+        cpu.read_word = psx_read_word;
         cpu.write_word = ram_write_word;
         cpu.gpr[29] = 0x001FF000u;
         cpu.gpr[31] = ra_sentinel;
