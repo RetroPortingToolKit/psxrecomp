@@ -746,9 +746,10 @@ def configure_and_build(ctx):
         # The framework running this script is the framework that gets built.
         'PSXRECOMP_ROOT': FRAMEWORK.as_posix(),
         'PSX_RUNTIME_IPO': 'OFF', 'PSX_PGO': '',
-        'CMAKE_EXPORT_COMPILE_COMMANDS': 'ON', 'CMAKE_PROJECT_INCLUDE': '',
+        'CMAKE_EXPORT_COMPILE_COMMANDS': 'ON',
     }
-    args = ['-D%s=%s' % kv for kv in owned.items()] + native_toolchain_args(ctx.tc)
+    args = (['-D%s=%s' % kv for kv in owned.items()] +
+            ['-UCMAKE_PROJECT_INCLUDE'] + native_toolchain_args(ctx.tc))
     args += ctx.config.cmake_args + ctx.config.platform_cmake_args[ctx.platform]
     if ctx.platform == 'linux':
         # The interpreter running this script; WSL otherwise finds the Windows
@@ -760,6 +761,8 @@ def configure_and_build(ctx):
     run([ctx.tc.cmake, '-S', ctx.root, '-B', ctx.runtime_build, '-G', ctx.tc.generator] + args,
         'runtime configure', env=ctx.tc.env)
     cache = cmake_cache(ctx.runtime_build)
+    if 'CMAKE_PROJECT_INCLUDE' in cache:
+        fail('baseline CMAKE_PROJECT_INCLUDE must be unset (the title CMake overrode it?)')
     expected = dict(owned, PSX_PUBLIC_RELEASE='ON' if ctx.channel == 'public' else 'OFF')
     for arg in ctx.config.cmake_args + ctx.config.platform_cmake_args[ctx.platform]:
         match = re.match(r'^-D([A-Za-z0-9_]+)(?::[A-Z]+)?=(.*)$', arg)
