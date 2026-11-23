@@ -42,8 +42,23 @@ void gpu_depth24_upload_span_reset(void){}
 /* Netplay unsplit view and forward-pass opt-in: off in these fixtures. */
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
 int render_pass_netplay_enabled(void){return 0;}
-void frame_interpolation_schedule_reset(FrameInterpolationSchedule *p){memset(p,0,sizeof(*p));}
-void frame_flip_tracker_reset(FrameFlipTracker *p){memset(p,0,sizeof(*p));p->period=1;}
+/* The hidden standalone fixture has no frontend overlays or cadence owner. */
+int psx_present_vsync_owns_cadence(void){return 0;}
+int host_osd_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}
+int host_osd_volume_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
+int psx_rewind_overlay_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
+int psx_host_menu_overlay_image(const uint32_t **p,int *w,int *h){return host_osd_image(p,w,h);}
+int host_osd_needs_present(void){return 0;}
+void host_osd_present_done(void){}
+float psx_rewind_slide(void){return 0;}
+int present_shot_take(char *out,int n){(void)out;(void)n;return 0;}
+void present_shot_done(int ok){(void)ok;}
+void latency_ring_mark(LatencyStage stage){(void)stage;}
+void psx_video_telemetry_compose(int r,int s,int sw,int sh,int dw,int dh,int vw,int vh){
+ (void)r;(void)s;(void)sw;(void)sh;(void)dw;(void)dh;(void)vw;(void)vh;
+}
+void psx_video_telemetry_present(int result){(void)result;}
+void psx_ws_dbg_gate_frame_snapshot(void){}
 static int checks,failures;
 static void check(int ok,const char *label){checks++;if(!ok){fprintf(stderr,"FAIL %s\n",label);failures++;}}
 static void verify(const char *label){
@@ -259,6 +274,81 @@ static void check_wide_green(uint32_t pixel,const char *label) {
  const uint32_t expected=gl_renderer_accurate_blending()?0xff00f800u:0xff00ff00u;
  if(pixel!=expected)fprintf(stderr,"%s: got %08x expected %08x\n",label,pixel,expected);
  check(pixel==expected,label);
+}
+static void verify_local_pair_aspects(void) {
+ const int S=s_hr_scale;
+ const size_t wide_words=(size_t)426*512*S*S;
+ uint32_t *wide_before=malloc(wide_words*sizeof *wide_before);
+ uint32_t *wide_after=malloc(wide_words*sizeof *wide_after);
+ uint16_t *native_before=malloc(320*240*sizeof *native_before);
+ uint16_t *native_after=malloc(320*240*sizeof *native_after);
+ check(wide_before && wide_after && native_before && native_after,"local pair snapshot allocations");
+ if(!wide_before || !wide_after || !native_before || !native_after)goto cleanup;
+ SDL_SetWindowSize(s_win,1280,360);
+ glb_set_draw_area(0,0,319,239);glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+ glb_wide_configure(426,53);glb_wide_set_target(0);glb_wide_set_view(1,0,0,0);
+ glb_fill_rect(0,0,320,240,0x0421);glb_wide_clear(0,0,512,0x0421);
+ int ow=0,oh=0;
+ check(glb_wide_dump_full(wide_before,wide_words,&ow,&oh,0)>0,"local pair baseline sidecar");
+ check(gl_renderer_fbo_peek(0,0,320,240,native_before),"local pair baseline native raster");
+ const int32_t views[2][3]={{0}};
+ const uint64_t cycle_before=psx_cycle_count;
+ for(int layout=0;layout<3;++layout){
+  const int wide=layout==2;
+  gl_renderer_local_pair_set_presentation(wide?GL_LOCAL_PAIR_WIDE:GL_LOCAL_PAIR_NATIVE);
+  gl_renderer_set_display_aspect(layout?16:4,layout?9:3);
+  gl_renderer_stereo_stage_reset();
+  for(uint32_t eye=0;eye<2;++eye){
+   check(gl_renderer_local_pair_begin(0,0,320,240,eye!=0),"local own-view transaction begins");
+   glb_draw_flat_rect(-106,0,532,240,eye?0x7c00:0x001f);
+   glb_draw_flat_rect(20,16,8,60,0x03e0);
+   check(gl_renderer_stereo_end(eye,1),"local own-view transaction captures and restores");
+  }
+  check(gl_renderer_stereo_publish(81+layout,psx_cycle_count,views),"complete local pair publishes");
+  check(gl_renderer_fbo_peek(0,0,320,240,native_after) &&
+        !memcmp(native_before,native_after,320*240*sizeof *native_before),"local pair restores native raster");
+  check(glb_wide_dump_full(wide_after,wide_words,&ow,&oh,0)>0 &&
+        !memcmp(wide_before,wide_after,wide_words*sizeof *wide_before),"local pair restores sidecar");
+  GLRenderStereoDiag diag;
+  gl_renderer_stereo_diag(&diag);
+  check(diag.width==(wide?426:320)*S && diag.height==240*S,
+        wide?"16:9 panes retain their expanded raster":
+        layout?"ordinary paired menus keep their stock raster at 16:9":"4:3 panes retain their stock raster");
+  if(wide){
+   check(gl_renderer_present_wide_fbo(0,0,240,0),"native wide presentation accepts local pair");
+   StereoPair *pair=&s_stereo_pair[s_stereo_current];
+   for(int eye=0;eye<2;++eye){
+    uint8_t margin[4],hud[4];
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,pair->fbo[eye]);
+    glReadPixels(4*S,100*S,1,1,GL_RGBA,GL_UNSIGNED_BYTE,margin);
+    glReadPixels(77*S,40*S,1,1,GL_RGBA,GL_UNSIGNED_BYTE,hud);
+    check(margin[eye?2:0]>200 && margin[eye?0:2]==0,"wide pane has its own margin pixels");
+    check(hud[0]==0 && hud[1]>200 && hud[2]==0,"wide pane has its original HUD pixels");
+   }
+   p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,0);
+  }else{
+   gl_renderer_present_vram(0,0,320,240,0,0);
+  }
+  GlPresEvent e;
+  check(s_last_present_path==GL_PRES_STEREO &&
+        gl_renderer_pres_get(gl_renderer_pres_total()-1,&e) &&
+        e.lx==(wide?0:160) && e.lw==(wide?1280:960) && e.ly==0 && e.lh==360,
+        wide?"32:9 local pair fills the combined drawable":"8:3 local pair keeps its letterbox");
+ }
+ psx_cycle_count+=(uint64_t)(RENDER_PASS_STEREO_MAX_AGE_VBLANKS+1u)*g_psx_vblank_cycles;
+ GlPresEvent fallback;
+ check(gl_renderer_present_wide_fbo(0,0,240,0) && s_last_present_path==GL_PRES_WIDE &&
+       gl_renderer_pres_get(gl_renderer_pres_total()-1,&fallback) &&
+       fallback.lx==160 && fallback.lw==960,
+       "stale local pair returns to the ordinary wide presentation");
+ psx_cycle_count=cycle_before;
+ check(glGetError()==GL_NO_ERROR,"local pair aspects GL error");
+ gl_renderer_stereo_reset();gl_renderer_set_display_aspect(4,3);
+ glb_wide_set_view(0,0,0,0);glb_wide_disable_target();glb_wide_configure(0,0);
+ glb_set_draw_area(0,0,1023,511);
+ SDL_SetWindowSize(s_win,128,128);
+cleanup:
+ free(wide_before);free(wide_after);free(native_before);free(native_after);
 }
 static void verify_oversize_wide_geometry(int scale) {
  /* Captured hallway triangles exceed the PS1 height limit. Proven geometry
@@ -607,6 +697,7 @@ int main(int argc,char **argv){
  verify_bank_batching();
  verify_tier_batching();
  verify_stereo_transactions();
+ verify_local_pair_aspects();
  verify_oversize_wide_geometry(scale);
  verify_camera_plane_clip(scale);
  /* World and UI use different origins in an anchored wide frame. Keep the

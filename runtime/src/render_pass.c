@@ -489,7 +489,10 @@ void psx_mod_frame_trace_note(const char *tag) {
     psx_frame_trace_flag(PSX_FRAME_TRACE_SCENE_TRANSITION);
 }
 int psx_mod_set_local_pair_presentation(int enabled) {
-    return gl_renderer_local_pair_set_presentation(enabled);
+    return gl_renderer_local_pair_set_presentation(enabled ? GL_LOCAL_PAIR_NATIVE : GL_LOCAL_PAIR_OFF);
+}
+int psx_mod_set_local_pair_wide_presentation(void) {
+    return gl_renderer_local_pair_set_presentation(GL_LOCAL_PAIR_WIDE);
 }
 int psx_mod_render_view_offset(int32_t x, int32_t y, int32_t z) {
     int32_t xyz[3] = {x, y, z};

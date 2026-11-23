@@ -698,6 +698,7 @@ static int      s_pass_active = 0;
  * its draws reach only the presenter surface, never the authoritative CPU
  * VRAM, and end(keep) keeps the rect's presented colour. */
 static int      s_pass_local = 0;
+static int      s_pass_kind = 0;
 static uint64_t s_local_commits = 0;
 /* Textures/framebuffers made for passes (pass_make_color_fbo, pass image
  * slots), and the count when the current pass began: a pass that allocated
@@ -8325,12 +8326,15 @@ typedef struct StereoPair {
     GLuint tex[2], fbo[2];
     int tw[2], th[2];
     int x, y, w, h;
+    int image_w;
     uint32_t mask;
     uint64_t id, cycle;
     int32_t view[2][3];
 } StereoPair;
 static StereoPair s_stereo_pair[2];
 static int s_stereo_current, s_stereo_valid, s_stereo_mode;
+static int s_local_pair_wide;
+static uint64_t s_queued_present_cycle = UINT64_MAX;
 static GLuint s_local_shared_tex;
 static int s_local_shared_w, s_local_shared_h;
 static uint64_t s_stereo_presents;
@@ -9011,6 +9015,7 @@ backed_up:
     s_pj_cpu.n = 0;
     s_pass_active = 1;
     s_pass_local = local;
+    s_pass_kind = kind;
     return 1;
 }
 
@@ -9051,6 +9056,7 @@ static void transaction_restore_ex(int keep_color) {
     s_last_dw = s_pb_last_dw; s_last_dh = s_pb_last_dh;
     s_pass_active = 0;
     s_pass_local = 0;
+    s_pass_kind = 0;
     s_pb_valid = !keep_color;
     if (keep_color) {
         /* The rect now differs from the backup and from the last present. */
@@ -9205,21 +9211,25 @@ static void stereo_invalidate(void) {
 }
 void gl_renderer_stereo_reset(void) {
     GL_RT_SYNC("stereo_reset");
-    stereo_invalidate(); s_stereo_mode = 0; s_stereo_dump_left = 0;
+    stereo_invalidate(); s_stereo_mode = 0; s_local_pair_wide = 0; s_stereo_dump_left = 0;
     s_stereo_capture_count = 0;
     s_stereo_presents = 0;
 }
 int gl_renderer_stereo_set_presentation(uint32_t mode) {
     GL_RT_SYNC("stereo_set_presentation");
     if (mode > 1u) return 0;
+    if (s_local_pair_wide) stereo_invalidate();
+    s_local_pair_wide = 0;
     s_stereo_mode = (int)mode;
     return 1;
 }
-int gl_renderer_local_pair_set_presentation(int enabled) {
+int gl_renderer_local_pair_set_presentation(int layout) {
     GL_RT_SYNC("local_pair_set_presentation");
-    int mode = enabled ? 2 : 0;
-    if (s_stereo_mode != mode) stereo_invalidate();
+    const int mode = layout == GL_LOCAL_PAIR_OFF ? 0 : 2;
+    const int wide = layout == GL_LOCAL_PAIR_WIDE;
+    if (s_stereo_mode != mode || s_local_pair_wide != wide) stereo_invalidate();
     s_stereo_mode = mode;
+    s_local_pair_wide = wide;
     return 1;
 }
 static void stereo_resources_release(void) {
@@ -9237,16 +9247,24 @@ int gl_renderer_stereo_end(uint32_t eye, int keep) {
     GL_RT_SYNC("stereo_end");
     StereoPair *p = &s_stereo_pair[1 - s_stereo_current];
     PassGen g;
-    int ok = 0, tw = s_pass_w * s_hr_scale, th = s_pass_h * s_hr_scale;
+    int ok = 0;
     if (!s_pass_active) return 0;
     flush_flat_batch(); flush_tex_batch(); flush_cpu_upload();
-    if (keep && eye < 2u && (double)tw * th * 16.0 <= 256.0 * 1024.0 * 1024.0 &&
+    /* Reuse the native-wide capture of the journaled own-view band. */
+    const int wide = s_pass_kind == 3 && s_local_pair_wide && 3 * s_aspect_num > 4 * s_aspect_den &&
+                     g_wide_w > s_pass_w && s_pb_wide_src &&
+                     s_pb_wide_src == pass_wide_fbo_for(s_pass_x);
+    const int image_w = wide ? g_wide_w : s_pass_w;
+    const int tw = image_w * s_hr_scale, th = s_pass_h * s_hr_scale;
+    if (keep && eye < 2u && (!eye || p->image_w == image_w) &&
+        (double)tw * th * 16.0 <= 256.0 * 1024.0 * 1024.0 &&
         pass_make_color_fbo(&p->tex[eye], NULL, &p->fbo[eye],
                             &p->tw[eye], &p->th[eye], tw, th,
                             GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE)) {
+        p->image_w = image_w;
         memset(&g, 0, sizeof g);
         g.x = s_pass_x; g.y = s_pass_y; g.w = s_pass_w; g.h = s_pass_h;
-        g.source_path = GL_PRES_VRAM;
+        g.source_path = wide ? GL_PRES_WIDE : GL_PRES_VRAM;
         (void)pass_gl_errors(); /* distinguish this copy from preceding errors */
         pass_capture_into(p->tex[eye], &g);
         ok = pass_gl_errors() == 0;
@@ -9608,14 +9626,16 @@ static void local_pair_present_shared(int *lx, int *ly, int *lw, int *lh) {
 static int stereo_present(int w, int h) {
     StereoPair *p = &s_stereo_pair[s_stereo_current];
     int ww, wh, lx, ly, lw, lh;
+    const int image_w = p->image_w ? p->image_w : w;
     /* A pair is shown only while the plugin keeps submitting; menus, FMV at the
      * same size and state loads stop publishing, and the last pair must not
      * stick on screen. Stale pairs fall back to the flat present below. */
-    if (s_stereo_valid &&
-        !render_pass_stereo_pair_fresh(p->cycle, psx_cycle_count, g_psx_vblank_cycles))
+    const uint64_t display_cycle = s_stereo_mode == 2 && image_w > w &&
+        s_queued_present_cycle != UINT64_MAX ? s_queued_present_cycle : psx_cycle_count;
+    if (s_stereo_valid && !render_pass_stereo_pair_fresh(p->cycle, display_cycle, g_psx_vblank_cycles))
         return 0;
     if (!s_stereo_mode || !s_stereo_valid || s_pass_active ||
-        p->w != w || p->h != h || p->tw[0] != w * s_hr_scale ||
+        p->w != w || p->h != h || p->tw[0] != image_w * s_hr_scale ||
         (s_stereo_mode == 2 ? gl_renderer_local_pair_unavailable() :
                              gl_renderer_stereo_unavailable()) != PSX_MOD_RENDER_PASS_READY) return 0;
     SDL_GL_GetDrawableSize(s_win, &ww, &wh);
@@ -9627,9 +9647,11 @@ static int stereo_present(int w, int h) {
     const int solo_eye = (mirror == 3) ? 1 : 0;
     if (solo)
         letterbox_rect_aspect(ww, wh, p->tw[solo_eye], p->th[solo_eye], &lx, &ly, &lw, &lh);
-    else
-        letterbox_rect_aspect(ww, wh, s_stereo_mode == 2 ? 8 : s_aspect_num * 2,
-                              s_stereo_mode == 2 ? 3 : s_aspect_den, &lx, &ly, &lw, &lh);
+    else {
+        const int native_pair = s_stereo_mode == 2 && image_w <= w;
+        letterbox_rect_aspect(ww, wh, native_pair ? 8 : s_aspect_num * 2,
+                              native_pair ? 3 : s_aspect_den, &lx, &ly, &lw, &lh);
+    }
     p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST); glViewport(0, 0, ww, wh);
     glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
@@ -10906,6 +10928,13 @@ static int present_wide_fbo_impl(int disp_x, int disp_y, int disp_h, int linear)
         gl_rth_acquire("present_oversize");
     }
     if (!s_ctx || !s_raster_ok || g_wide_w <= 0) return 0;
+    /* A fresh, genuinely expanded pair owns the output ahead of the flat sidecar. */
+    const StereoPair *pair = &s_stereo_pair[s_stereo_current];
+    if (s_stereo_mode == 2 && pair->image_w > pair->w) {
+        GpuDisplayInfo display;
+        gpu_get_display_info(&display);
+        if (stereo_present(display.width ? display.width : 320, disp_h)) return 1;
+    }
     GLuint fbo = 0, tex = 0;
     int wide_as = 0;
     for (int i = 0; i < WIDE_MAX_SURF; i++)
@@ -11746,6 +11775,7 @@ static int rth_record_mode(void) {
 
 /* Present records carry the host overlays the emulation thread rasterized. */
 typedef struct RthOvHdr {
+    uint64_t guest_cycle;
     int32_t needs_present, has, w[4], h[4];
     float   slide;
     int32_t args[8], nargs;
@@ -11756,6 +11786,7 @@ static int rth_record_present(uint16_t op, int n, const int32_t *v) {
     int w[4] = { 0 }, h[4] = { 0 };
     RthOvHdr hd;
     memset(&hd, 0, sizeof hd);
+    hd.guest_cycle = psx_cycle_count;
     hd.needs_present = host_osd_needs_present();
     for (int i = 0; i < 4; i++) {
         if (ov_image(i, &px[i], &w[i], &h[i]) && px[i] && w[i] > 0 && h[i] > 0) {
@@ -11824,10 +11855,13 @@ static void rth_present_payload(uint16_t op, const uint8_t *p) {
             q += (size_t)hd.w[i] * hd.h[i] * 4u;
         }
     const int32_t *a = hd.args;
+    const uint64_t prior_cycle = s_queued_present_cycle;
+    s_queued_present_cycle = hd.guest_cycle;
     if (op == RTH_PRESENT_VRAM)
         gl_renderer_present_vram(a[0], a[1], a[2], a[3], a[4], a[5]);
     else
         (void)gl_renderer_present_wide_fbo(a[0], a[1], a[2], a[3]);
+    s_queued_present_cycle = prior_cycle;
     s_rth_ov.valid = 0;
 }
 
