@@ -15958,12 +15958,16 @@ void debug_server_freeze_dump_wtrace_json(FILE *f, uint32_t max_count)
             "\"a0\":\"0x%08X\",\"a1\":\"0x%08X\","
             "\"a2\":\"0x%08X\",\"a3\":\"0x%08X\","
             "\"t0\":\"0x%08X\",\"t1\":\"0x%08X\","
-            "\"frame\":%u,\"w\":%u}",
+            "\"s0\":\"0x%08X\",\"s1\":\"0x%08X\","
+            "\"s2\":\"0x%08X\",\"s3\":\"0x%08X\","
+            "\"s4\":\"0x%08X\",\"s5\":\"0x%08X\","
+            "\"frame\":%u,\"w\":%u,\"dma_ch\":%d}",
             i ? "," : "",
             (unsigned long long)e->seq, e->addr, e->old_val, e->new_val,
             e->ra, e->func_addr, e->pc, e->cpu_pc, e->sp,
             e->v0, e->v1, e->a0, e->a1, e->a2, e->a3, e->t0, e->t1,
-            e->frame, (unsigned)e->width);
+            e->s0, e->s1, e->s2, e->s3, e->s4, e->s5,
+            e->frame, (unsigned)e->width, (int)e->dma_ch);
     }
     fputc(']', f);
 }
