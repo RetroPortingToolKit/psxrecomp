@@ -1261,14 +1261,21 @@ def package_linux(ctx):
     desktop = meta / linux['desktop_file'].name
     desktop.write_text(render_template(linux['desktop_file'], tokens), encoding='utf-8', newline='\n')
     icon = meta / (desktop.stem + '.png')
+    icon_source = linux['icon']
+    square_png = False
+    if icon_source.suffix.lower() == '.png':
+        with icon_source.open('rb') as source:
+            header = source.read(24)
+        square_png = (len(header) == 24 and header.startswith(b'\x89PNG\r\n\x1a\n')
+                      and header[16:20] == header[20:24])
     convert = shutil.which('magick') or shutil.which('convert')
-    if linux['icon'].suffix.lower() == '.png':
-        copy(linux['icon'], icon)
+    if square_png:
+        copy(icon_source, icon)
     elif convert:
-        run([convert, linux['icon'], '-resize', '240x240', '-background', 'transparent',
+        run([convert, icon_source, '-resize', '240x240', '-background', 'transparent',
              '-gravity', 'center', '-extent', '256x256', icon], 'icon conversion')
     else:
-        fail('ImageMagick is required to convert %s to the AppImage PNG icon' % linux['icon'])
+        fail('ImageMagick is required to convert %s to the AppImage PNG icon' % icon_source)
     artifact = ctx.out_dir / artifact_name(ctx.config, ctx.version, ctx.channel, 'linux')
     for stale in (artifact, Path(str(artifact) + '.sha256')):
         if stale.exists() or stale.is_symlink():
