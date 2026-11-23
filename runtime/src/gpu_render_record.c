@@ -4,6 +4,7 @@
 #include "gpu_render_record.h"
 #include "gpu_render.h"
 #include "gpu_sw_renderer.h"
+#include "psx_file_create_new.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -209,7 +210,7 @@ uint64_t gr_record_count(int code) {
 
 int gr_record_start(const char *path) {
     if (g_file || !gr_backend_is_software()) return 0;
-    g_file = fopen(path, "wb");
+    g_file = psx_file_create_new(path, 1);
     if (!g_file) return 0;
     setvbuf(g_file, NULL, _IOFBF, 1 << 20);
     g_failed = 0;

@@ -7004,7 +7004,7 @@ static void handle_gr_record_start(int id, const char *json)
     }
     path[sizeof(path) - 1] = '\0';
     if (!gr_record_start(path)) {
-        send_err(id, "software backend without wide compositor required, or file not writable");
+        send_err(id, "capture requires software rendering without wide surfaces and a new writable path");
         return;
     }
     send_ok(id);

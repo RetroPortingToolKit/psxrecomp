@@ -467,8 +467,8 @@ bits masked off) and page with `{"skip":N}` to read all of it.
 
 `{"cmd":"gr_record_start","path":P}` records every call into the software
 renderer backend to `P`, between complete renderer snapshots (draw settings,
-native VRAM and the high-resolution mirror). It fails unless the software
-backend is active and the wide compositor is off. `{"cmd":"gr_record_stop"}`
+native VRAM and the high-resolution mirror). It requires the software backend,
+the wide compositor off and a new writable destination. `{"cmd":"gr_record_stop"}`
 writes the closing snapshot and replies `ops`: calls per op, indexed as in
 [`runtime/include/gpu_render_record.h`](../runtime/include/gpu_render_record.h).
 

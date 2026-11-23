@@ -61,7 +61,7 @@ enum {
 
 /* Starts recording the software backend to path. Returns 0 when another
  * backend is active, the wide compositor is configured, a recording is
- * already open or the file cannot be written. */
+ * already open or a new file cannot be created at path. */
 int gr_record_start(const char *path);
 /* Writes the closing snapshot and closes the file. Returns 0 if nothing was
  * recording or a write failed. */
