@@ -2654,6 +2654,58 @@ int main() {
         check(!manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error),"preparer may not emit an inactive output");
     }
 
+    {
+        /* [[feature]] status_file (format 14): the launcher shows the first
+         * line of a file beside the exe as the feature's status. */
+        const fs::path folder = root / "status-file";
+        const auto manifest_with = [](int format, const std::string& path) {
+            return "format_version = " + std::to_string(format) +
+                   "\nid = \"st.mod\"\nversion = \"1.0.0\"\nname = \"St\"\n"
+                   "resolver = \"declarative\"\n[[target]]\ngame_id = \"*\"\n"
+                   "[[feature]]\nid = \"st\"\nname = \"St\"\nstatus_file = \"" + path + "\"\n";
+        };
+        /* The first scan migrates packages/ into the installed catalog, so
+         * every case gets a folder of its own. */
+        int case_no = 0;
+        const auto scan_case = [&](int format, const std::string& path,
+                                   ModPackageManager& m) {
+            const fs::path dir = folder / std::to_string(case_no++);
+            write_text(dir / "packages/st.mod/1.0.0/manifest.toml", manifest_with(format, path));
+            m = ModPackageManager(dir);
+            std::string scan_error;
+            return m.scan(&scan_error) && m.scan_errors().empty();
+        };
+        const auto scans_clean = [&](int format, const std::string& path) {
+            ModPackageManager m(folder);
+            return scan_case(format, path, m);
+        };
+        ModPackageManager parsed(folder);
+        scan_case(14, "hd-auto/status.txt", parsed);
+        check(!parsed.packages().empty() &&
+                  parsed.packages().at("st.mod").at("1.0.0").features[0].status_file ==
+                      "hd-auto/status.txt",
+              "status_file_parsed");
+        check(!scans_clean(13, "hd-auto/status.txt"), "status_file_needs_format_14");
+        check(!scans_clean(14, "../x.txt"), "status_file_rejects_parent_paths (..)");
+        check(!scans_clean(14, "/etc/passwd"), "status_file_rejects_parent_paths (absolute)");
+
+        const fs::path exe = root / "status-exe";
+        write_text(exe / "s1.txt", "HD pack active (Lanczos)\nzweite\n");
+        check(mod_feature_status_text(exe, "s1.txt") == "HD pack active (Lanczos)",
+              "status_reads_first_line");
+        write_text(exe / "s2.txt", "abc\r\n");
+        check(mod_feature_status_text(exe, "s2.txt") == "abc", "status_strips_crlf");
+        check(mod_feature_status_text(exe, "missing.txt").empty(),
+              "status_missing_file_is_empty");
+        write_text(exe / "s3.txt", std::string(254, 'a') + "\xc3\xa4");
+        check(mod_feature_status_text(exe, "s3.txt").size() == 254,
+              "status_truncates_on_utf8_boundary");
+        const auto localized = fs::u8path("stat\xc3\xbcs.txt");
+        write_text(exe / localized, std::string(4096, 'a') + "\nsecond line\n");
+        check(mod_feature_status_text(exe, "stat\xc3\xbcs.txt") == std::string(255, 'a'),
+              "status_reads_a_capped_prefix_from_a_utf8_path");
+    }
+
     fs::remove_all(root, ec);
     if (failures) {
         std::cerr << failures << " mod package test(s) failed\n";

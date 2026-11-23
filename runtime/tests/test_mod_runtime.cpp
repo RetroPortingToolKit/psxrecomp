@@ -2884,6 +2884,76 @@ id = "override.test"
 
 #ifdef RECOMP_LAUNCHER
     {
+        const auto install = root / "feature-progress";
+        const auto mods = install / "mods";
+        const auto status_file = install / "hd-pack" / "status.txt";
+        write_text(mods / "bundled/progress/1.0.0/manifest.toml", R"toml(
+format_version = 14
+id = "progress"
+version = "1.0.0"
+name = "Progress"
+[[target]]
+game_id = "SLUS-RUNTIME"
+[[feature]]
+id = "build"
+name = "Build texture pack"
+default_enabled = true
+status_file = "hd-pack/status.txt"
+[[feature]]
+id = "alternate"
+name = "Alternate texture setup"
+[[patch]]
+feature = "build"
+target = "main_exe"
+address = 2147495936
+expected = "01"
+replace = "02"
+[[patch]]
+feature = "alternate"
+target = "main_exe"
+address = 2147495936
+expected = "01"
+replace = "03"
+)toml");
+        write_text(status_file, "HD pack: 41% built\n");
+        check(PSXRecompV4::mod_runtime_initialize(mods, "SLUS-RUNTIME", 0, {}, &error),
+              "initialize launcher with a feature status file beside the mods folder");
+        const auto* provider = PSXRecompV4::mod_runtime_launcher_provider();
+        const auto read_feature = [&]() {
+            RecompLauncherCModFeature feature{};
+            check(provider->feature_get(provider->ctx, 0, &feature) &&
+                      std::string(feature.id) == "build", "find the producer's launcher feature");
+            return feature;
+        };
+        check(std::string(read_feature().status) == "HD pack: 41% built",
+              "an enabled feature displays its current producer status");
+        const auto updated_status = status_file.parent_path() / "status.tmp";
+        write_text(updated_status, "HD pack ready\nnext line\n");
+        fs::rename(updated_status, status_file);
+        check(std::string(read_feature().status) == "HD pack ready",
+              "the next provider read sees a rewritten status file");
+        fs::remove(status_file);
+        check(read_feature().status[0] == '\0', "a removed status file clears the shown line");
+        write_text(status_file, "HD pack ready\n");
+        check(provider->feature_enable(provider->ctx, "progress", "build", 0),
+              "disable the feature through the launcher");
+        const auto disabled = read_feature();
+        check(!disabled.enabled && disabled.status[0] == '\0',
+              "an off feature hides the retained producer status");
+        check(provider->feature_enable(provider->ctx, "progress", "build", 1),
+              "enable the feature through the launcher");
+        check(provider->feature_enable(provider->ctx, "progress", "alternate", 1),
+              "enable the alternate texture setup");
+        check(!PSXRecompV4::mod_runtime_commit({}, &error), "overlapping feature patches fail validation");
+        const auto invalid = read_feature();
+        check(invalid.enabled && invalid.has_error && invalid.status[0] != '\0' &&
+                  std::string(invalid.status).find("collides") != std::string::npos,
+              "feature validation takes precedence over the producer status");
+    }
+#endif
+
+#ifdef RECOMP_LAUNCHER
+    {
         const auto folder=root/"conditional-picker";
         write_text(folder/"bundled/picker/1.0.0/manifest.toml",
             "format_version = 10\nid = \"picker\"\nversion = \"1.0.0\"\nname = \"Picker\"\n"

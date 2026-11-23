@@ -1311,6 +1311,12 @@ int provider_feature_get(void*, int index, RecompLauncherCModFeature* out) {
         copy_text(out->status, sizeof(out->status), diagnostic.message);
         break;
     }
+    /* A switched-off feature's status file may be stale ("active"), so only
+     * an enabled feature without a validation error shows it. */
+    if (!out->has_error && out->enabled && !feature->status_file.empty())
+        copy_text(out->status, sizeof(out->status),
+                  mod_feature_status_text(state().manager.root().parent_path(),
+                                          feature->status_file));
     return 1;
 }
 

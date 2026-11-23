@@ -313,6 +313,22 @@ declare ...`), and the launcher's mod provider reports it as forcing vsync off
 for the rest of that process (an in-session or rematch launcher), but a fresh
 launch cannot know before its first session.
 
+A feature can show a status line on the Mods page (format 14), for example the
+progress of a build a plugin runs in the background:
+
+```toml
+[[feature]]
+id = "hd-textures"
+status_file = "hd-auto/status.txt"
+```
+
+Choose a regular file inside the executable's folder and supply its relative
+path. Absolute paths and `..` are rejected.
+The launcher shows the file's first line (without `\r`, at most 255 bytes) as
+the feature's status while the feature is enabled and has no validation error;
+a missing file shows nothing. The plugin or tool that owns the file rewrites it
+whenever the state changes.
+
 ## Bounded integer patches
 
 Package format 2 can encode a bounded integer option directly into a guarded
