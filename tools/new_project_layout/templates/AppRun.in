@@ -49,6 +49,9 @@ for tree in assets bios licenses docs; do
     fi
 done
 if [ -d "$payload/mods" ]; then
+    # Only the release owns the bundled catalog. Removed packages must not
+    # survive an update, while player-installed packages and choices do.
+    rm -rf -- "$data_dir/mods/bundled"
     cp -a "$payload/mods/." "$data_dir/mods/"
     chmod -R u+rwX "$data_dir/mods"
 fi
