@@ -43,6 +43,7 @@ static uint32_t s_code_ev_n, s_code_ev_next;
 static int s_code_admitting, s_code_log_events = -1;
 static int s_code_paced, s_code_rebuild;
 static unsigned s_code_missing;
+static char s_code_missing_unit[768];
 
 static void code_play_end(void)
 {
@@ -120,9 +121,9 @@ static const char *code_log_parse(char *text, uint32_t frames)
     return NULL;
 }
 
-/* Units available before the first logged capture cannot be rebuilt from
- * this file. Check these before loading the guest or swapping its cards. */
-static const char *check_code_dependencies(void)
+/* An anchor does not include capture history from before its state. Check
+ * the dependencies before loading the guest or swapping its cards. */
+static const char *check_code_dependencies(int power_on)
 {
     int can_rebuild = 0;
     for (uint32_t i = 0; i < s_code_ev_n; ++i) {
@@ -130,12 +131,19 @@ static const char *check_code_dependencies(void)
         if (ev->op == 'C') can_rebuild = 1;
         if (ev->op != 'S' && ev->op != 'L' && ev->op != 'I') continue;
         if (replay_host_code_unit(ev->unit, 0, 0) > 0) continue;
-        if (!can_rebuild) ++s_code_missing;
-        s_code_rebuild = 1;
+        if (power_on && can_rebuild) {
+            s_code_rebuild = 1;
+            continue;
+        }
+        if (!s_code_missing)
+            snprintf(s_code_missing_unit, sizeof s_code_missing_unit, "%s", ev->unit);
+        ++s_code_missing;
         fprintf(stderr, "replay: native code unit %s (frame %u) is missing from the cache\n",
                 ev->unit, (unsigned)ev->frame);
     }
-    return s_code_missing ? "a native unit from before the first capture is missing from the cache" : NULL;
+    if (!s_code_missing) return NULL;
+    return power_on ? "a native unit from before the first capture is missing from the cache"
+                    : "this anchored replay needs its recorded native units in the cache";
 }
 
 /* Units that became runnable before this boundary in the recording become
@@ -161,6 +169,7 @@ static int code_apply(uint32_t frame, const char **why)
         if (!replay_host_code_admit_unit(ev->unit)) { *why = "out of memory"; return 0; }
         r = replay_host_code_unit(ev->unit, ev->op == 'L', 1);
         if (r <= 0) {
+            snprintf(s_code_missing_unit, sizeof s_code_missing_unit, "%s", ev->unit);
             fprintf(stderr, "replay: native code unit %s (frame %u) %s\n", ev->unit, (unsigned)ev->frame,
                     r ? "does not load" : "is unavailable after local compilation");
             *why = r ? "Replay stopped: a native code unit does not load"
@@ -323,6 +332,8 @@ static void write_verdict(ReplayResult result, const char *reason)
     if (s_code_log_events < 0) fputs(",\n  \"code_log_events\": null", f);
     else fprintf(f, ",\n  \"code_log_events\": %d", s_code_log_events);
     fprintf(f, ",\n  \"code_units_missing_at_start\": %u", s_code_missing);
+    fputs(",\n  \"native_unit_unavailable\": ", f);
+    if (s_code_missing_unit[0]) json_string(f, s_code_missing_unit); else fputs("null", f);
     fputs(",\n  \"replay\": ", f); json_string(f, s_play_path);
     fputs(",\n  \"reason\": ", f); json_string(f, reason ? reason : "");
     fputs("\n}\n", f);
@@ -431,6 +442,7 @@ int replay_session_play_file(const char *path)
     s_code_match = -1;
     s_code_log_events = -1;
     s_code_missing = 0;
+    s_code_missing_unit[0] = 0;
     code_play_end();
     if (!path || !(f = fopen(path, "rb"))) return refuse_play("cannot open the file");
     info = (ReplayFileInfo *)malloc(sizeof *info);
@@ -487,7 +499,11 @@ int replay_session_play_file(const char *path)
         match = replay_identity_check(&info->id, info->product, &player, product, why, sizeof why);
         if (match == REPLAY_IDENTITY_REFUSE) error = why;
     }
-    if (!error && s_code_paced) error = check_code_dependencies();
+    if (!error && s_code_paced) {
+        s_code_log_events = (int)s_code_ev_n;
+        s_play_frames = info->frames;
+        error = check_code_dependencies(s_power_on);
+    }
     if (error) {
         char e[256];
         snprintf(e, sizeof e, "%s", error);

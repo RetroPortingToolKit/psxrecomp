@@ -36,6 +36,7 @@ Incomplete prerelease anchors without recorded card images are refused safely.
 The verdict checks guest-state digests and the final RAM/cycle checkpoint.
 Rendering-only differences are reported separately. Recordings remember when
 the game requested background compilation and when native code became
-available. Playback asks the local compiler to reproduce the capture schedule
-when it needs additional native units. A replay that needed native units
-before its first recorded capture requires those units in the player's cache.
+available. Power-on playback can ask the local compiler to reproduce the
+capture schedule. Units available before the first recorded capture must
+already be in the player's cache. Anchored playback requires the recorded
+native units in the cache because its save state omits earlier compiler history.

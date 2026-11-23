@@ -602,6 +602,23 @@ int main(void)
     CHECK(!s_cards_in && !s_settings_in && !s_admitting && !s_capture_paced);
     CHECK(verdict_has("before the first capture") && verdict_has("\"code_units_missing_at_start\": 1"));
     s_missing_unit = NULL;
+    /* An anchored recording can depend on an earlier capture even when its
+     * publication comes after a capture event in the file. Refuse first. */
+    reset_host(); remove(REPLAY);
+    s_anchor_take = 1;
+    CHECK(replay_session_record_to(REPLAY));
+    for (uint32_t i = 0; i < 3; ++i)
+        replay_session_boundary(rec_word(i), centre, &b, s);
+    s_watch('C', NULL);
+    s_watch('L', "gcc/x/from-before-anchor.dll");
+    replay_session_checkpoint_at_boundary();
+    replay_session_shutdown();
+    s_missing_unit = "gcc/x/from-before-anchor.dll";
+    CHECK(replay_session_play_file(REPLAY) == 0);
+    CHECK(s_loads == 0 && s_cards_in == 0 && s_settings_in == 0);
+    CHECK(verdict_has("anchored replay needs its recorded native units") &&
+          verdict_has("\"native_unit_unavailable\": \"gcc/x/from-before-anchor.dll\""));
+    s_missing_unit = NULL;
     /* A file without a code log plays with no admission. */
     reset_host();
     write_replay(0, s_digest);
