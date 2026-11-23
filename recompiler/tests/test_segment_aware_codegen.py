@@ -36,6 +36,8 @@ import subprocess
 import sys
 import tempfile
 
+from test_zero_run_compaction import canonical_source
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 RUNTIME = os.path.join(ROOT, "runtime")
@@ -189,6 +191,7 @@ DISPATCH_HARNESS_HEAD = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include "psx_memory.h"
+#include "psx_static_calls.h"
 typedef struct { uint32_t pc; } CPUState;
 static void dummy(CPUState* cpu) { (void)cpu; }
 static int dirty_ram_text_native_ok_ranges_from(const uint32_t* r, uint32_t n, uint32_t a) {
@@ -257,7 +260,7 @@ def parse_functions(out_dir, pattern):
         if not re.match(pattern, name):
             continue
         with open(os.path.join(out_dir, name)) as f:
-            text = f.read()
+            text = canonical_source(f.read())
         for m in re.finditer(r"^(?:static )?void (func_[0-9A-F]{8})\(CPUState\* cpu\)\s*\{(.*?)^\}",
                              text, re.M | re.S):
             bodies[m.group(1)] = m.group(2)
@@ -267,7 +270,7 @@ def parse_functions(out_dir, pattern):
 PC_SITES = {
     "link-segment": r"cpu->gpr\[31\] = 0x([0-9A-F]{8})u;\s*/\* (?:jal|jalr|branch-and-link) ",
     "fetch-tag-segment": r"psx_icache_fetch\(cpu, 0x([0-9A-F]{8})u\)",
-    "irq-resume-segment": r"psx_check_interrupts_at\(cpu, 0x([0-9A-F]{8})u\)",
+    "irq-resume-segment": r"PSX_BLOCK_EDGE\(cpu, 0x([0-9A-F]{8})u\)",
     "resume-pc-segment": r"cpu->pc = 0x([0-9A-F]{8})u;|case 0x([0-9A-F]{8})u: goto",
     # Not a debug-only breadcrumb: memory.c's RAM 0x0-0xF store filters compare
     # it with exact PCs in every build, and the interpreter stamps the full PC.

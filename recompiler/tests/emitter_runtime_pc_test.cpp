@@ -311,7 +311,7 @@ const Site kSites[] = {
     {"cps-jal-note", R"(/\* CPS jal -> 0x([0-9A-F]{8}) \*/)", true},
     {"delay-slot-link", R"(= 0x([0-9A-F]{8});  cpu->pc = _jt_)", true},
     {"fetch-tag", R"(psx_icache_fetch\(cpu, 0x([0-9A-F]{8})u\))", true},
-    {"irq-resume", R"(psx_check_interrupts_at\(cpu, 0x([0-9A-F]{8})u\))", true},
+    {"irq-resume", R"(PSX_BLOCK_EDGE\(cpu, 0x([0-9A-F]{8})u\))", true},
     {"exit-pc", R"(cpu->pc = 0x([0-9A-F]{8})u;)", true},
     {"continuation-key", R"(case 0x([0-9A-F]{8})u:)", true},
     {"store-pc", R"(g_debug_last_store_pc = 0x([0-9A-F]{8})u;)", true},
@@ -327,7 +327,7 @@ const Site kSites[] = {
     {"func-name", R"(func_([0-9A-F]{8}))", false},
     {"block-label", R"(block_([0-9A-F]{8}))", false},
     {"call-entry-hook", R"(debug_server_log_call_entry\(0x([0-9A-F]{8})u\))", false},
-    {"cyc-observe", R"(debug_server_cyc_observe\(0x([0-9A-F]{8})u\))", false},
+    {"cyc-observe", R"(PSX_DEBUG_BLOCK_OBSERVE\(0x([0-9A-F]{8})u\))", false},
     {"bad-entry-owner", R"(psx_native_bad_entry\(cpu, 0x([0-9A-F]{8})u)", false},
 };
 

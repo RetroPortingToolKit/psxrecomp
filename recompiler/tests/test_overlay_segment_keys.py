@@ -400,7 +400,7 @@ def check_compile(recompiler, compiler, data, labels, tmp):
               f"{sub}: manifest names its segment and full-VA entries")
         with open(os.path.join(d, f"{crc:08X}_patched.c"), encoding="latin-1") as f:
             c_text = f.read()
-        bodies = functions(c_text)
+        bodies = functions(LEDGER.canonical_source(c_text))
         check(set(bodies) == {f"func_{seg | labels['ov_run']:08X}",
                               f"func_{seg | labels['ov_getpc']:08X}"},
               f"{sub}: functions are named by their VA in the segment")
@@ -478,15 +478,16 @@ def check_demands(recompiler, compiler, data, labels, tmp):
         cap["dispatch_entry_pcs"] = cap["seeds"] = []
         out = os.path.join(tmp, "bare-" + name)
         os.makedirs(out)
-        code, log = run_compile(recompiler, compiler, [cap], out,
-                                ("--force-interior", f"0x{after:08X}"))
+        code, _log = run_compile(recompiler, compiler, [cap], out,
+                                 ("--force-interior", f"0x{after:08X}"))
         d = leaf_dir(out, recompiler)
-        outs[name] = (code, "built OK : 1" in log, sorted(os.listdir(d)),
+        check(code == 0 and after in manifest_entries(d),
+              f"{name}: the forced interior has an exact dispatch entry")
+        outs[name] = (sorted(os.listdir(d)),
                       {n: open(os.path.join(d, n), "rb").read()
                        for n in os.listdir(d)
                        if n.endswith((".ranges", "_patched.c"))})
-    check(outs["v2"][0] == 0 and outs["v2"][1] and outs["v2"][2] and
-          outs["v3"] == outs["v2"],
+    check(outs["v3"] == outs["v2"],
           "a dispatch-less v3 record compiles byte-identically to its v2 reading")
     # A KUSEG-only record: --force-interior (a KSEG0 PC) still builds its
     # KSEG0 fragment next to the KUSEG shard.
@@ -640,7 +641,10 @@ def check_loader(recompiler, compiler, data, labels, cache, tmp):
         tags = [int(t, 16) for t in r.get("fetch", "").split(",") if t]
         check(tags and all(t & co.SEGMENT_MASK == seg for t in tags),
               f"{seg:08X}: every fetch tag is in the segment")
-        want = LEDGER.beetle_cycles([seg | pc for pc in executed_sequence(labels)])
+        executed = [seg | pc for pc in executed_sequence(labels)]
+        if seg == KSEG1:
+            check(tags == executed, "KSEG1 has one actual fetch per executed instruction in order")
+        want = LEDGER.beetle_cycles(executed)
         got = icache.cycles([tags])[0] if tags else -1
         check(got == want, f"{seg:08X}: fetch cycles {got} == Beetle's {want}")
     k0 = runs.get(KSEG0, {})

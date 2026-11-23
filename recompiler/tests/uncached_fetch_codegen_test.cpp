@@ -23,7 +23,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -85,11 +87,34 @@ std::string generate_at(uint32_t segment) {
 std::vector<uint32_t> fetch_tags(const std::string& code) {
     static const std::string needle = "psx_icache_fetch(cpu, 0x";
     std::vector<uint32_t> tags;
-    for (size_t pos = code.find(needle); pos != std::string::npos;
-         pos = code.find(needle, pos + 1)) {
-        tags.push_back(static_cast<uint32_t>(
-            std::strtoul(code.c_str() + pos + needle.size(), nullptr, 16)));
+    // Select the faithful reference arms of the optional precision guards.
+    // Preserve every fetch within that configuration, including duplicates.
+    std::istringstream lines(code);
+    std::vector<bool> skipped;
+    size_t skip_count = 0;
+    for (std::string line; std::getline(lines, line);) {
+        const size_t start = line.find_first_not_of(" \t");
+        if (start == std::string::npos) continue;
+        const std::string_view text(line.data() + start, line.size() - start);
+        if (text.starts_with("#if")) {
+            const bool precision = text.find("PSX_PGXP_OPERATIONS") != std::string_view::npos ||
+                                   text.find("PSX_PGXP_DEMAND_REGIONS") != std::string_view::npos;
+            skipped.push_back(precision);
+            skip_count += precision;
+        } else if (text.starts_with("#else") && !skipped.empty() && skipped.back()) {
+            skipped.back() = false;
+            --skip_count;
+        } else if (text.starts_with("#endif") && !skipped.empty()) {
+            skip_count -= skipped.back();
+            skipped.pop_back();
+        } else if (skip_count == 0) {
+            const size_t pos = line.find(needle);
+            if (pos != std::string::npos)
+                tags.push_back(static_cast<uint32_t>(
+                    std::strtoul(line.c_str() + pos + needle.size(), nullptr, 16)));
+        }
     }
+    check(skipped.empty(), "generated preprocessor guards are balanced");
     return tags;
 }
 
