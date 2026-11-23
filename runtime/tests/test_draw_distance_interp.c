@@ -37,6 +37,11 @@
 #endif
 
 /* ---- link stubs for code reachable from exec_one_fetched ------------------ */
+int psx_pgxp_load_delay_prepare(uint32_t reg) { (void)reg; return 0; }
+void psx_pgxp_load_delay_arm(uint32_t reg) { (void)reg; }
+void psx_pgxp_load_delay_begin(uint32_t reg) { (void)reg; }
+void psx_pgxp_load_delay_end(uint32_t reg, int keep) { (void)reg; (void)keep; }
+
 uint64_t s_frame_count;
 uint32_t g_debug_current_func_addr;
 uint32_t g_debug_last_store_pc;
