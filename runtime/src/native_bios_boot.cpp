@@ -96,6 +96,9 @@ bool psx_prepare_native_bios_boot(CPUState &cpu, const std::string &disc,
     psx_host_write_word(0x88, 0x03400008u);  // jr k0
     psx_host_write_word(0x8c, 0);
     psx_host_write_word(PSX_NATIVE_EXCEPTION_JUMP_PTR, 0);
+    psx_host_write_word(PSX_NATIVE_SIO_AUTO_ACK, 0);
+    for (uint32_t timer = 0; timer < 4; ++timer)
+        psx_host_write_word(PSX_NATIVE_TIMER_AUTO_ACK + timer * 4, 1);
     psx_host_write_word(0x100, handlers);
     psx_host_write_word(0x104, kHandlerCount * kHandlerBytes);
     psx_host_write_word(0x108, process);

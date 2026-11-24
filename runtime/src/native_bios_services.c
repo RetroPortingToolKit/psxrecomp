@@ -174,5 +174,22 @@ int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
         psx_cpu_charge(24);
         return PSX_NATIVE_BIOS_RETURN;
     }
+    uint32_t ack = 0;
+    uint32_t value = 0;
+    if (vector == 0xb0 && fn == 0x5b) {
+        ack = PSX_NATIVE_SIO_AUTO_ACK;
+        value = cpu->gpr[4];
+    } else if (vector == 0xc0 && fn == 0x0a) {
+        uint32_t timer = cpu->gpr[4];
+        if (timer >= 4) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        ack = PSX_NATIVE_TIMER_AUTO_ACK + timer * 4u;
+        value = cpu->gpr[5];
+    }
+    if (ack) {
+        cpu->gpr[2] = cpu->read_word(ack);
+        cpu->write_word(ack, value);
+        psx_cpu_charge(24);
+        return PSX_NATIVE_BIOS_RETURN;
+    }
     return vector == 0xa0 ? service_a0(cpu, fn) : service_thread(cpu, vector, fn);
 }

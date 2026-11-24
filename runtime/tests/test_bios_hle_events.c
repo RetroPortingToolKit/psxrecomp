@@ -5,6 +5,7 @@
 #include "psx_cycles.h"
 #include "psx_memory.h"
 
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,13 +28,17 @@ enum {
     MODE_MARK = 0x2000,
 };
 
-static uint32_t ram[0x4000 / sizeof(uint32_t)];
+static uint32_t ram[0x10000 / sizeof(uint32_t)];
 static uint32_t calls[4];
 static size_t call_count;
 PsxBiosImageInfo psx_bios_image;
 uint32_t g_psx_ram_size = sizeof ram;
 uint32_t g_psx_ram_mask = sizeof ram - 1;
 static unsigned cache_resets;
+static int irq_active;
+static uint32_t test_istat, test_imask;
+static jmp_buf irq_escape;
+static CPUState irq_cpu;
 void psx_icache_reset(void) { ++cache_resets; }
 uint64_t psx_cycle_count;
 uint64_t psx_next_service_cycle = UINT64_MAX;
@@ -46,14 +51,19 @@ int g_exec_phase, g_event_step_conservative, g_ls_replay_active, psx_in_device_s
 } while (0)
 
 int fntrace_is_game_started(void) { return 1; }
-int psx_get_in_exception(void) { return 0; }
-void psx_restore_state_escape(void) { CHECK(0); }
+int psx_get_in_exception(void) { return irq_active; }
+void psx_restore_state_escape(void) { CHECK(irq_active); longjmp(irq_escape, 2); }
 void psx_scheduler_resume_at(uint32_t pc) { (void)pc; CHECK(0); }
-uint32_t psx_sched_current_tcb(CPUState *cpu) { (void)cpu; CHECK(0); return 0; }
+uint32_t psx_sched_current_tcb(CPUState *cpu) { CHECK(irq_active && cpu == &irq_cpu); return 0x1000; }
 void psx_sched_save_context(CPUState *cpu, uint32_t tcb, uint32_t pc) {
-    (void)cpu; (void)tcb; (void)pc; CHECK(0);
+    CHECK(irq_active && cpu == &irq_cpu && tcb == 0x1000 && pc == CALLER_RESUME);
+    CHECK(cpu->cop0[12] == 0x40000401u);
 }
-int psx_syscall(CPUState *cpu, uint32_t code) { (void)cpu; (void)code; CHECK(0); return 0; }
+int psx_syscall(CPUState *cpu, uint32_t code) {
+    CHECK(irq_active && cpu == &irq_cpu && code == 0 &&
+          cpu->gpr[4] == 3 && cpu->gpr[5] == 0x1000);
+    longjmp(irq_escape, 1);
+}
 
 uint64_t psx_get_cycle_count(void) { return psx_cycle_count; }
 void psx_devices_service_to_now(void) { CHECK(0); }
@@ -61,6 +71,8 @@ void psx_advance_cycles_slow(uint32_t cycles) { (void)cycles; CHECK(0); }
 
 static uint32_t read_word(uint32_t address)
 {
+    if (address == 0x1f801070u) return test_istat;
+    if (address == 0x1f801074u) return test_imask;
     address &= 0x1fffffff;
     CHECK(!(address & 3) && address < sizeof ram);
     return ram[address / 4];
@@ -68,6 +80,7 @@ static uint32_t read_word(uint32_t address)
 
 static void write_word(uint32_t address, uint32_t value)
 {
+    if (address == 0x1f801070u) { test_istat &= value; return; }
     if (address == 0xfffe0130u) { CHECK(value == 0x0001e988u); return; }
     address &= 0x1fffffff;
     CHECK(!(address & 3) && address < sizeof ram);
@@ -210,9 +223,64 @@ static void check_native_calls(void)
     CHECK(read_word(PSX_NATIVE_EXCEPTION_JUMP_PTR) == 0x1900);
     native_call(&cpu, 0xb0, 0x18, 0, 0, 0);
     CHECK(read_word(PSX_NATIVE_EXCEPTION_JUMP_PTR) == 0);
+    CHECK(native_call(&cpu, 0xb0, 0x5b, 1, 0, 0) == 0);
+    CHECK(native_call(&cpu, 0xb0, 0x5b, 0, 0, 0) == 1);
+    write_word(PSX_NATIVE_TIMER_AUTO_ACK + 3 * 4, 1);
+    CHECK(native_call(&cpu, 0xc0, 0x0a, 3, 0, 0) == 1);
+    CHECK(native_call(&cpu, 0xc0, 0x0a, 3, 1, 0) == 0);
+    CHECK(read_word(PSX_NATIVE_TIMER_AUTO_ACK + 3 * 4) == 1);
     native_call(&cpu, 0xa0, 0x44, 0, 0, 0);
     CHECK(cache_resets == 1);
     CHECK(!g_psx_bios_hle_hook(&cpu, 0x80010000u & 0x1fffffffu));
+}
+
+static void check_native_root_counter_irq(void)
+{
+    memset(ram, 0, sizeof ram);
+    memset(&irq_cpu, 0, sizeof irq_cpu);
+    irq_cpu.read_word = read_word;
+    irq_cpu.write_word = write_word;
+    irq_cpu.read_byte = read_byte;
+    irq_cpu.write_byte = write_byte;
+    irq_cpu.cop0[12] = 0x40000404u;
+    irq_cpu.cop0[14] = CALLER_RESUME;
+    psx_bios_hle_configure_native();
+
+    write_word(0x120, EVENT_BASE);
+    write_word(0x124, 2 * EVENT_SIZE);
+    add_event(0, 2, MODE_MARK, 0);
+    write_word(EVENT_BASE, 0xf2000003u);
+    add_event(1, 2, MODE_MARK, 0);
+    write_word(EVENT_BASE + EVENT_SIZE, 0xf2000001u);
+    write_word(PSX_NATIVE_TIMER_AUTO_ACK + 3 * 4, 1);
+    test_istat = test_imask = (1u << 0) | (1u << 5);
+
+    irq_active = 1;
+    int escaped = setjmp(irq_escape);
+    if (!escaped) {
+        g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_ENTRY);
+        CHECK(0);
+    }
+    CHECK(escaped == 1 && test_istat == (1u << 5));
+    CHECK(read_word(EVENT_BASE + 4) == READY &&
+          read_word(EVENT_BASE + EVENT_SIZE + 4) == ENABLED);
+
+    write_word(EVENT_BASE + 4, ENABLED);
+    write_word(PSX_NATIVE_TIMER_AUTO_ACK + 3 * 4, 0);
+    irq_cpu.cop0[12] = 0x40000404u;
+    test_istat = test_imask = 1;
+    irq_cpu.gpr[29] = 0x801fe000;
+    native_call(&irq_cpu, 0xa0, 0x13, 0x1900, 0, 0);
+    native_call(&irq_cpu, 0xb0, 0x19, 0x1900, 0, 0);
+    escaped = setjmp(irq_escape);
+    if (!escaped) {
+        g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_ENTRY);
+        CHECK(0);
+    }
+    CHECK(escaped == 2 && test_istat == 1);
+    CHECK(read_word(EVENT_BASE + 4) == READY && irq_cpu.pc == CALLER_RESUME &&
+          irq_cpu.gpr[2] == 1 && irq_cpu.gpr[29] == 0x801fe000);
+    irq_active = 0;
 }
 
 int main(void)
@@ -229,6 +297,7 @@ int main(void)
     psx_bios_image.image_sha256 = NULL;
     check_delivery(RETAIL_RESUME);
     check_native_calls();
+    check_native_root_counter_irq();
     puts("bios_hle_events_test: OK");
     return 0;
 }

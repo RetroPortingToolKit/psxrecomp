@@ -360,6 +360,32 @@ static void native_exception_entry(CPUState *cpu)
             }
         }
     }
+    cpu->gpr[29] = PSX_NATIVE_EXCEPTION_STACK;
+    cpu->gpr[30] = PSX_NATIVE_EXCEPTION_STACK;
+    cpu->gpr[28] = 0;
+
+    /* Boot's root-counter handlers run in priority 1, reverse insertion
+     * order: VBlank, timer 2, timer 1, timer 0. Deliver the real event before
+     * acknowledging and returning, and leave disabled auto-ack to later
+     * handlers (including the game's registered exception continuation). */
+    const uint32_t timer_bits[] = {1u << IRQ_TIMER0, 1u << IRQ_TIMER1,
+                                  1u << IRQ_TIMER2, 1u << IRQ_VBLANK};
+    const uint32_t events = cpu->read_word(KADDR_EVCB_BASE);
+    const uint32_t count = cpu->read_word(KADDR_EVCB_SIZE) / EVCB_STRIDE;
+    for (int timer = 3; timer >= 0; --timer) {
+        const uint32_t bit = timer_bits[timer];
+        if (!(cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & bit))
+            continue;
+        cpu->gpr[4] = 0xf2000000u + (uint32_t)timer;
+        cpu->gpr[5] = 2;
+        cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
+        hle_deliver_event(cpu, events, count, PSX_NATIVE_IRQ_CALLBACK_LINK);
+        if (cpu->read_word(PSX_NATIVE_TIMER_AUTO_ACK + (uint32_t)timer * 4u)) {
+            cpu->write_word(0x1f801070u, ~bit);
+            native_exception_return(cpu);
+            exit(1); /* exception escape must not return */
+        }
+    }
     const uint32_t jump = cpu->read_word(PSX_NATIVE_EXCEPTION_JUMP_PTR);
     if (!jump || !psx_ram_resolve(jump, 48, NULL)) {
         fprintf(stderr, "native IRQ provider gap: no usable custom exception hook "
