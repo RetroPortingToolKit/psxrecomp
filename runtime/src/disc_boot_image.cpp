@@ -5,6 +5,8 @@
 #include "psx_memory.h"
 
 #include <cctype>
+#include <charconv>
+#include <string_view>
 #include <cstdlib>
 #include <cstring>
 
@@ -54,11 +56,53 @@ std::optional<PsxDiscBootHeader> decode_boot_header(const uint8_t *bytes, size_t
 /* The path after `cdrom:` in SYSTEM.CNF's BOOT line, as the disc reader takes
  * it: no leading separator, no `;1`, `/` between a directory and the file.
  * `BOOT = cdrom:\MARL\SLUS_010.73;1` gives `MARL/SLUS_010.73`. */
-std::string boot_path_from_system_cnf(PS1::ISOReader &iso) {
+std::string read_system_cnf(PS1::ISOReader &iso) {
     uint8_t cnf[2048] = {0};
-    size_t n = iso.ReadFile("SYSTEM.CNF", cnf, sizeof(cnf) - 1);
-    if (n == 0) return std::string();
-    std::string text((const char *)cnf, n);
+    const size_t n = iso.ReadFile("SYSTEM.CNF", cnf, sizeof(cnf) - 1);
+    return std::string(reinterpret_cast<const char *>(cnf), n);
+}
+
+std::string_view trim(std::string_view text) {
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())))
+        text.remove_prefix(1);
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())))
+        text.remove_suffix(1);
+    return text;
+}
+
+std::optional<PsxDiscSystemConfig> parse_system_config(std::string_view text) {
+    PsxDiscSystemConfig config;
+    bool seen_threads = false, seen_events = false, seen_stack = false;
+    while (!text.empty()) {
+        const size_t end = text.find_first_of("\r\n\0", 0, 3);
+        const auto line = text.substr(0, end);
+        if (end == std::string_view::npos) text = {};
+        else text.remove_prefix(end + 1);
+
+        const size_t equal = line.find('=');
+        if (equal == std::string_view::npos) continue;
+        std::string key(trim(line.substr(0, equal)));
+        for (char &c : key) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        uint32_t *field = nullptr;
+        bool *seen = nullptr;
+        if (key == "TCB") { field = &config.threads; seen = &seen_threads; }
+        else if (key == "EVENT") { field = &config.events; seen = &seen_events; }
+        else if (key == "STACK") { field = &config.stack; seen = &seen_stack; }
+        if (!field || *seen) continue;
+
+        auto value = trim(line.substr(equal + 1));
+        value = value.substr(0, value.find_first_of("; \t"));
+        if (value.substr(0, 2) == "0x" || value.substr(0, 2) == "0X")
+            value.remove_prefix(2);
+        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), *field, 16);
+        if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+            return std::nullopt;
+        *seen = true;
+    }
+    return config;
+}
+
+std::string boot_path_from_system_cnf(const std::string &text) {
     std::string lower = text;
     for (char &c : lower) c = (char)std::tolower((unsigned char)c);
     const size_t key = lower.find("cdrom:");
@@ -97,8 +141,10 @@ uint8_t *psx_read_disc_boot_image(const std::string &exe_path,
                                   const std::string &disc_path,
                                   uint32_t *out_len,
                                   std::string *out_name,
-                                  std::optional<PsxDiscBootHeader> *out_header) {
+                                  std::optional<PsxDiscBootHeader> *out_header,
+                                  std::optional<PsxDiscSystemConfig> *out_config) {
     if (out_header) out_header->reset();
+    if (out_config) out_config->reset();
     if (disc_path.empty()) return nullptr;
     PS1::ISOReader iso;
     if (!iso.Open(disc_path)) return nullptr;
@@ -122,11 +168,18 @@ uint8_t *psx_read_disc_boot_image(const std::string &exe_path,
         boot_name = candidate;
         return true;
     };
+    std::string cnf;
+    if (out_config) {
+        cnf = read_system_cnf(iso);
+        *out_config = parse_system_config(cnf);
+    }
     if (exe_path.empty() ||
         (!select(last_component(exe_path)) && !select(last_two_components(exe_path)))) {
-        const std::string boot = boot_path_from_system_cnf(iso);
+        if (!out_config) cnf = read_system_cnf(iso);
+        const std::string boot = boot_path_from_system_cnf(cnf);
         if (!select(boot) && boot.find('/') != std::string::npos)
             select(last_component(boot));
+        if (out_config && boot.empty()) select("PSX.EXE");
     }
     if (boot_name.empty() || ent.size <= kExeHeaderSize) return nullptr;
 

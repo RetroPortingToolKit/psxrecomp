@@ -26,11 +26,14 @@ enum {
     MODE_MARK = 0x2000,
 };
 
-static uint32_t ram[0x3000 / sizeof(uint32_t)];
+static uint32_t ram[0x4000 / sizeof(uint32_t)];
 static uint32_t calls[4];
 static size_t call_count;
 PsxBiosImageInfo psx_bios_image;
 uint32_t g_psx_ram_size = sizeof ram;
+uint32_t g_psx_ram_mask = sizeof ram - 1;
+static unsigned cache_resets;
+void psx_icache_reset(void) { ++cache_resets; }
 uint64_t psx_cycle_count;
 uint64_t psx_next_service_cycle = UINT64_MAX;
 uint32_t g_psx_cyc_batch, g_psx_cyc_batch_limit;
@@ -56,9 +59,21 @@ static uint32_t read_word(uint32_t address)
 
 static void write_word(uint32_t address, uint32_t value)
 {
+    if (address == 0xfffe0130u) { CHECK(value == 0x0001e988u); return; }
     address &= 0x1fffffff;
     CHECK(!(address & 3) && address < sizeof ram);
     ram[address / 4] = value;
+}
+
+static uint8_t read_byte(uint32_t address)
+{
+    return (uint8_t)(read_word(address & ~3u) >> ((address & 3u) * 8));
+}
+static void write_byte(uint32_t address, uint8_t value)
+{
+    const unsigned shift = (address & 3u) * 8;
+    uint32_t word = read_word(address & ~3u);
+    write_word(address & ~3u, (word & ~(0xffu << shift)) | ((uint32_t)value << shift));
 }
 
 static int deliver(CPUState *cpu, uint32_t spec, uint32_t caller_resume)
@@ -122,6 +137,58 @@ static void check_delivery(uint32_t firmware_return)
     CHECK(read_word(EVENT_BASE + EVENT_SIZE + 0x04) == READY);
 }
 
+static uint32_t native_call(CPUState *cpu, uint32_t vector, uint32_t fn,
+                            uint32_t a0, uint32_t a1, uint32_t a2)
+{
+    cpu->gpr[9] = fn;
+    cpu->gpr[4] = a0;
+    cpu->gpr[5] = a1;
+    cpu->gpr[6] = a2;
+    cpu->gpr[31] = CALLER_RESUME;
+    CHECK(g_psx_bios_hle_hook(cpu, vector));
+    return cpu->gpr[2];
+}
+
+static void check_native_calls(void)
+{
+    memset(ram, 0, sizeof ram);
+    psx_bios_hle_configure_native();
+    CHECK(strcmp(psx_bios_hle_backend_name(), "HLE (native kernel)") == 0);
+    CPUState cpu = {0};
+    cpu.read_word = read_word;
+    cpu.write_word = write_word;
+    cpu.read_byte = read_byte;
+    cpu.write_byte = write_byte;
+
+    write_word(0x110, 0x1000);
+    write_word(0x114, 2 * 0xc0);
+    write_word(0x1000, 0x4000);
+    write_word(0x10c0, 0x1000);
+    CHECK(native_call(&cpu, 0xc0, 0x05, 0, 0, 0) == 1);
+    CHECK(native_call(&cpu, 0xb0, 0x0e, 0x80012340, 0x801f0000, 0x80040000) == 0xff000001);
+    CHECK(read_word(0x10c0) == 0x4000 && read_word(0x10c4) == 0x1000);
+    CHECK(read_word(0x10c0 + 8 + 28 * 4) == 0x80040000);
+    CHECK(read_word(0x10c0 + 8 + 29 * 4) == 0x801f0000);
+    CHECK(read_word(0x10c0 + 8 + 30 * 4) == 0x801f0000);
+    CHECK(read_word(0x10c0 + 8 + 32 * 4) == 0x80012340);
+    CHECK(native_call(&cpu, 0xb0, 0x0e, 0, 0, 0) == UINT32_MAX);
+    CHECK(native_call(&cpu, 0xb0, 0x0f, 0xff000001, 0, 0) == 1);
+    CHECK(native_call(&cpu, 0xc0, 0x05, 0, 0, 0) == 1);
+
+    CHECK(native_call(&cpu, 0xa0, 0x2b, 0x1801, 0x51, 9) == 0x1801);
+    CHECK(read_byte(0x1800) == 0 && read_byte(0x180a) == 0);
+    for (unsigned i = 1; i <= 9; ++i) CHECK(read_byte(0x1800 + i) == 0x51);
+    CHECK(native_call(&cpu, 0xa0, 0x1b, 0x1801, 0, 0) == 9);
+    CHECK(native_call(&cpu, 0xa0, 0x2a, 0x1821, 0x1801, 9) == 0x1821);
+    CHECK(native_call(&cpu, 0xa0, 0x29, 0x1821, 0x1801, 9) == 0);
+    for (unsigned i = 0; i < 8; ++i) write_byte(0x1840 + i, (uint8_t)i);
+    CHECK(native_call(&cpu, 0xa0, 0x2c, 0x1842, 0x1840, 6) == 0x1842);
+    for (unsigned i = 0; i < 6; ++i) CHECK(read_byte(0x1842 + i) == i);
+    native_call(&cpu, 0xa0, 0x44, 0, 0, 0);
+    CHECK(cache_resets == 1);
+    CHECK(!g_psx_bios_hle_hook(&cpu, 0x80010000u & 0x1fffffffu));
+}
+
 int main(void)
 {
     psx_bios_image.image_id = "OPENBIOS";
@@ -135,6 +202,7 @@ int main(void)
     psx_bios_image.image_id = "SCPH-1001";
     psx_bios_image.image_sha256 = NULL;
     check_delivery(RETAIL_RESUME);
+    check_native_calls();
     puts("bios_hle_events_test: OK");
     return 0;
 }

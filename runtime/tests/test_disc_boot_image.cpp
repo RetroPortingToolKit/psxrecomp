@@ -3,6 +3,9 @@
 // Wild Arms (EXE/) keep it there; a root-only lookup left the text image guard
 // without its reference image.
 #include "disc_boot_image.h"
+#include "native_bios_boot.h"
+#include "cpu_state.h"
+#include "psx_memory.h"
 #include "iso_reader.h"
 
 #include <cstdint>
@@ -15,6 +18,29 @@
 #include <vector>
 
 namespace fs = std::filesystem;
+
+uint32_t g_psx_ram_size = PSX_MAIN_RAM_RETAIL_BYTES;
+uint32_t g_psx_ram_mask = PSX_MAIN_RAM_RETAIL_BYTES - 1;
+static std::vector<uint8_t> guest_ram(PSX_MAIN_RAM_RETAIL_BYTES, 0x5a);
+static size_t guest_writes;
+
+extern "C" void psx_host_write_byte(uint32_t address, uint8_t value) {
+    guest_ram.at(psx_ram_canonical_offset(address)) = value;
+    ++guest_writes;
+}
+
+extern "C" void psx_host_write_word(uint32_t address, uint32_t value) {
+    for (unsigned i = 0; i < 4; ++i)
+        psx_host_write_byte(address + i, static_cast<uint8_t>(value >> (i * 8)));
+}
+
+static uint32_t ram_word(uint32_t address) {
+    const uint32_t base = psx_ram_canonical_offset(address);
+    uint32_t word = 0;
+    for (unsigned i = 0; i < 4; ++i)
+        word |= uint32_t(guest_ram.at(base + i)) << (i * 8);
+    return word;
+}
 
 static int failures;
 
@@ -212,6 +238,48 @@ int main(int argc, char **argv) {
         check(read_header(bad_launch) && !header, invalid.message);
         word(invalid.field, invalid.restore);
     }
+
+    const fs::path native = root / "native.iso";
+    write_iso(native, {{"", "SYSTEM.CNF", text(
+        "BOOT=cdrom:GAME.EXE;1\r\n"
+        "tcb = 5\r\nEVENT=0x12 ; eighteen events\r\n"
+        "STACK = 801FEF80\r\nTCB=FF\r\n")},
+        {"", "GAME.EXE", launch_image}});
+    CPUState launch_cpu{};
+    std::string boot_error;
+    check(psx_prepare_native_bios_boot(launch_cpu, native.string(), boot_error),
+          "native boot prepares the original executable and kernel tables");
+    check(launch_cpu.pc == 0xa0010020 && launch_cpu.gpr[28] == 0x80011004 &&
+          launch_cpu.gpr[29] == 0x801fef80 && launch_cpu.gpr[30] == 0x801fef80 &&
+          launch_cpu.gpr[4] == 1 && launch_cpu.gpr[5] == 0 &&
+          launch_cpu.gpr[31] == PSX_NATIVE_BOOT_RETURN,
+          "native entry registers follow header and SYSTEM.CNF");
+    const uint32_t threads = ram_word(0x110);
+    const uint32_t events = ram_word(0x120);
+    check(ram_word(0x104) == 4 * 8 && ram_word(0x10c) == 4 &&
+          ram_word(0x114) == 5 * 0xc0 && ram_word(0x124) == 18 * 0x1c &&
+          ram_word(ram_word(0x108)) == threads &&
+          ram_word(threads) == 0x4000 && ram_word(threads + 0xc0) == 0x1000 &&
+          ram_word(events + 4) == 0,
+          "native tables expose correct counts, active thread, and free event slots");
+    check(std::memcmp(guest_ram.data() + 0x10000, launch_image.data() + 2048, 4096) == 0 &&
+          guest_ram[0x11000] == 0x5a && ram_word(0x12000) == 0 &&
+          ram_word(0x123fc) == 0 && guest_ram[0x12400] == 0x5a,
+          "native boot writes exactly the declared text and BSS spans");
+    const fs::path invalid_native = root / "invalid-native.iso";
+    write_iso(invalid_native, {{"", "SYSTEM.CNF", text("BOOT=cdrom:GAME.EXE;1\nSTACK=80000004")},
+                              {"", "GAME.EXE", launch_image}});
+    const size_t writes_before = guest_writes;
+    check(!psx_prepare_native_bios_boot(launch_cpu, invalid_native.string(), boot_error) &&
+          guest_writes == writes_before && launch_cpu.pc == 0xa0010020,
+          "invalid native stack is rejected before any guest mutation");
+
+    const fs::path default_boot = root / "default-boot.iso";
+    write_iso(default_boot, {{"", "PSX.EXE", launch_image}});
+    check(psx_prepare_native_bios_boot(launch_cpu, default_boot.string(), boot_error) &&
+          launch_cpu.gpr[29] == 0x801fff00 && ram_word(0x114) == 4 * 0xc0 &&
+          ram_word(0x124) == 16 * 0x1c,
+          "default boot executable and kernel configuration work without SYSTEM.CNF");
 
     // --- the BOOT line's other spellings ------------------------------------
     const auto nauts_exe = exe(3);

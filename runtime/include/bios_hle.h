@@ -81,6 +81,8 @@ int psx_bios_hle_event_abi_supported(void);
  * setting flag; the known builtin is quiet only away from its actual anchors. */
 int psx_bios_hle_dispatch_quiet(uint32_t address);
 void psx_bios_hle_configure(int call_hle, int boot_skip);
+/* Native startup uses native services only; no firmware-call fallback. */
+void psx_bios_hle_configure_native(void);
 
 int         psx_bios_hle_enabled(void);
 int         psx_bios_hle_boot_skip_enabled(void);

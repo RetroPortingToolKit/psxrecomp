@@ -34,6 +34,7 @@
 #include "boot_state.h"
 #include "source_stateio_identity.h"
 #include "bios_hle.h"
+#include "native_bios_boot.h"
 #include "bios_hle_plan.h"
 #include "psx_bios_known_images.h"
 #include "psx_bios_backend.h"
@@ -23604,6 +23605,17 @@ session_reboot:
      * REPLACES the old fast_boot snapshot restore, and fast_boot=true now
      * aliases the boot-skip alone. Env overrides: PSX_BIOS_HLE /
      * PSX_BIOS_HLE_KEEP_INTRO ('0' = off, anything else = on). */
+#if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
+    {
+        std::string boot_error;
+        if (!psx_prepare_native_bios_boot(cpu, resolved_disc.string(), boot_error)) {
+            std::fprintf(stderr, "psxrecomp: native kernel startup: %s\n", boot_error.c_str());
+            return 1;
+        }
+        psx_bios_hle_configure_native();
+        std::fprintf(stdout, "psxrecomp: native kernel boot entry=0x%08x\n", cpu.pc);
+    }
+#else
     {
         /* How this session boots. Offline it is the player's choice (the
          * game's game.toml, then settings.toml, then the launcher). The peers
@@ -23678,6 +23690,7 @@ session_reboot:
     /* R3000A reset state. */
     cpu.pc = 0xBFC00000u;
     cpu.cop0[12] = 0x00400000u; /* SR: BEV=1 (boot exception vectors) */
+#endif
 
     /* Host hotkeys: config.ini [KeyMap] next to the exe (VolumeUp/Down).
      * Prefer exe-dir file; if missing, fall back to cwd config.ini so a

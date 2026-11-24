@@ -39,6 +39,8 @@
 #include "psx_cycles.h"
 
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* fntrace.c — game-entry handoff latch (drives the boot turbo window). */
@@ -50,6 +52,7 @@ int (*g_psx_bios_hle_hook)(struct CPUState* cpu, uint32_t phys) = NULL;
 
 /* ── mode state ──────────────────────────────────────────────────────────── */
 
+static int s_native_kernel_on = 0;
 static int s_call_hle_on     = 0;   /* service kernel calls in HLE */
 static int s_boot_skip_on    = 0;   /* one-shot shell intercept */
 static int s_shell_skipped   = 0;   /* boot skip already fired */
@@ -278,7 +281,7 @@ static int hle_service_b0(CPUState* cpu, uint32_t fn)
 
     switch (fn) {
     case 0x07u: {
-        uint32_t return_address = psx_bios_image.deliver_event_ret;
+        uint32_t return_address = s_native_kernel_on ? cpu->gpr[31] : psx_bios_image.deliver_event_ret;
         if (!return_address) return_address = cpu->gpr[31];
         if (!return_address) return 0;
         hle_deliver_event(cpu, base, n, return_address);
@@ -318,6 +321,30 @@ int psx_bios_hle_boot_turbo_active(void)
 
 static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
 {
+#if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
+    if (s_native_kernel_on) {
+        if (phys == 0xA0u || phys == 0xB0u || phys == 0xC0u) {
+            uint32_t fn = cpu->gpr[9];
+            extern int psx_native_bios_service(CPUState*, uint32_t, uint32_t);
+            int handled = phys == 0xB0u && hle_service_b0(cpu, fn);
+            if (!handled) handled = psx_native_bios_service(cpu, phys, fn);
+            if (handled) {
+                hle_record(phys, fn, cpu, cpu->gpr[2], PSX_HLE_ROUTE_HLE);
+                return 1;
+            }
+            fprintf(stderr, "native BIOS service unavailable: %02x:%02x ra=%08x\n",
+                    phys, fn, cpu->gpr[31]);
+            exit(1);
+        }
+        if (phys == 0x180u || phys == 0x190u ||
+            (phys >= 0x1fc00000u && phys < 0x1fc80000u)) {
+            fprintf(stderr, "native BIOS entry unavailable: %08x ra=%08x\n",
+                    phys, cpu->gpr[31]);
+            exit(1);
+        }
+        return 0;  /* Normal game dispatch and runtime overlays remain active. */
+    }
+#endif
     if (phys == 0xB0u) {
         uint32_t fn = cpu->gpr[9]; /* $t1 — the PSY-Q thunk's function number */
         int handled = s_call_hle_on ? hle_service_b0(cpu, fn) : 0;
@@ -342,12 +369,17 @@ int psx_bios_hle_dispatch_quiet(uint32_t address) {
     const uint32_t phys = address & 0x1FFFFFFFu;
     if (!g_psx_bios_hle_hook) return 1;
     if (g_psx_bios_hle_hook != bios_hle_dispatch) return 0;
+    if (s_native_kernel_on)
+        return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
+               phys != 0x180u && phys != 0x190u &&
+               (phys < 0x1fc00000u || phys >= 0x1fc80000u);
     return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
         (!psx_bios_image.shell_entry_phys || phys != psx_bios_image.shell_entry_phys);
 }
 
 void psx_bios_hle_configure(int call_hle, int boot_skip)
 {
+    s_native_kernel_on = 0;
     s_call_hle_on = call_hle && psx_bios_hle_event_abi_supported();
     /* Clamp to what THIS image can actually do, so the state the banner and
      * `hle_dump` report can never claim a skip that bios_hle_dispatch below is
@@ -362,10 +394,19 @@ void psx_bios_hle_configure(int call_hle, int boot_skip)
         (s_call_hle_on || s_boot_skip_on) ? &bios_hle_dispatch : NULL;
 }
 
+void psx_bios_hle_configure_native(void)
+{
+    s_native_kernel_on = 1;
+    s_call_hle_on = 1;
+    s_boot_skip_on = 0;
+    g_psx_bios_hle_hook = bios_hle_dispatch;
+}
+
 int psx_bios_hle_enabled(void)           { return s_call_hle_on; }
 int psx_bios_hle_boot_skip_enabled(void) { return s_boot_skip_on; }
 
 const char* psx_bios_hle_backend_name(void)
 {
+    if (s_native_kernel_on) return "HLE (native kernel)";
     return s_call_hle_on ? "HLE (LLE fallback)" : "LLE (recompiled BIOS)";
 }
