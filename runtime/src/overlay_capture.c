@@ -1154,6 +1154,7 @@ int overlay_capture_count(void)
 #define AUTOCAP_COOLDOWN_MS     5000ull
 #define AUTOCAP_BACKOFF_MAX     64u    /* futile-retry ceiling: 64*5s ≈ 5min */
 #define AUTOCAP_WRITE_RETRY_MAX_FRAMES 60u /* cap failed-I/O retry at ~1 s */
+#define AUTOCAP_REPLAY_WRITE_ATTEMPTS 3u
 
 static int      s_autocap_enabled    = 0;
 static uint64_t s_autocap_last_check = 0;
@@ -1206,6 +1207,7 @@ typedef struct {
     uint64_t manifest_sig;
     uint64_t sequence;
     uint64_t retry_frame;
+    uint64_t retry_ms;
     unsigned attempts;
 } AutocapWriteJob;
 static SDL_Thread *s_autocap_write_thread;
@@ -1423,6 +1425,14 @@ static uint64_t autocap_write_retry_delay(unsigned attempts)
          ? frames : AUTOCAP_WRITE_RETRY_MAX_FRAMES;
 }
 
+static void autocap_write_retry(AutocapWriteJob *job, uint64_t frame)
+{
+    job->attempts++;
+    const uint64_t delay = autocap_write_retry_delay(job->attempts);
+    job->retry_frame = frame + delay;
+    job->retry_ms = autocap_now_ms() + delay * 1000u / 60u;
+}
+
 /* A durable contribution and a successfully started compiler request are two
  * separate commits. Retain the former's signature until request() accepts it;
  * otherwise a transient CreateProcess/pipe/thread failure would mark identical
@@ -1556,6 +1566,8 @@ void overlay_autocapture_watch(void (*observer)(void)) {
 }
 
 void overlay_autocapture_replay_set(int paced) {
+    if (paced && !s_autocap_replay_paced && s_autocap_write_job)
+        s_autocap_write_job->attempts = 0;
     s_autocap_replay_paced = paced;
     SDL_AtomicSet(&s_latest_autocap_only,
                   s_autocap_observer || paced == OVERLAY_REPLAY_PACED_AUTOCAPTURE);
@@ -1569,7 +1581,10 @@ int overlay_autocapture_replay_capture(void) {
 int overlay_autocapture_replay_has_work(void) {
     extern uint64_t s_frame_count;
     return SDL_AtomicGet(&s_autocap_write_state) != 0 ||
-           (s_autocap_write_job && s_frame_count >= s_autocap_write_job->retry_frame) ||
+           (s_autocap_write_job &&
+            (s_autocap_replay_paced
+                 ? s_autocap_write_job->attempts < AUTOCAP_REPLAY_WRITE_ATTEMPTS
+                 : s_frame_count >= s_autocap_write_job->retry_frame)) ||
            (s_autocap_provider_sig_pending &&
             (s_autocap_replay_paced ||
              s_frame_count >= s_autocap_provider_retry_frame));
@@ -1710,9 +1725,7 @@ void overlay_autocapture_tick(void)
             /* The queued snapshot owns the cleared evidence epoch. Keep that
              * immutable job alive and retry it; never merge it back into or
              * clear the newer live epoch that has accumulated meanwhile. */
-            job->attempts++;
-            job->retry_frame = s_frame_count +
-                autocap_write_retry_delay(job->attempts);
+            autocap_write_retry(job, s_frame_count);
             return;
         }
         s_autocap_write_job = NULL;
@@ -1732,12 +1745,18 @@ void overlay_autocapture_tick(void)
     if (s_autocap_write_job) {
         s_autocap_gate_hit = AUTOCAP_GATE_WRITE_RETRY;
         AutocapWriteJob *job = s_autocap_write_job;
+        // A replay can hold this guest frame while the writer recovers.
+        // Stop after repeated I/O failures so a read-only output directory
+        // can report a replay error. The job remains available to ordinary
+        // capture after the replay ends.
+        const int retry_due = s_autocap_replay_paced
+            ? job->attempts < AUTOCAP_REPLAY_WRITE_ATTEMPTS &&
+                autocap_now_ms() >= job->retry_ms
+            : s_frame_count >= job->retry_frame;
         if (SDL_AtomicGet(&s_autocap_write_state) == 0 &&
-            s_frame_count >= job->retry_frame &&
+            retry_due &&
             !autocap_write_launch(job)) {
-            job->attempts++;
-            job->retry_frame = s_frame_count +
-                autocap_write_retry_delay(job->attempts);
+            autocap_write_retry(job, s_frame_count);
         }
         return;
     }

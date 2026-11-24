@@ -18,7 +18,6 @@
 
 #include "psx_sdl.h"
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -26,6 +25,7 @@
 #include <string>
 
 extern "C" int overlay_capture_test_provider_pending(void);
+extern "C" unsigned overlay_capture_test_write_attempts(void);
 
 extern "C" {
 uint32_t g_dirty_ram_exec_pc_bitmap[DIRTY_RAM_EXEC_BITMAP_WORDS]{};
@@ -110,7 +110,6 @@ int main() {
             static_cast<unsigned long long>(SDL_GetPerformanceCounter())));
     std::error_code ignored;
     std::filesystem::remove_all(root, ignored);
-    std::filesystem::create_directories(root);
 
     overlay_capture_set_path((root / "overlay_captures.json").string().c_str());
     overlay_capture_set_enabled(1);
@@ -124,12 +123,20 @@ int main() {
     if (!overlay_autocapture_replay_capture())
         return fail("the replay capture did not start", root);
 
-    /* The worker commits the capture, a tick asks the provider, which refuses. */
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
-    while (g_requests == 0) {
+    // The first write fails because the output directory is temporarily absent.
+    while (!overlay_capture_test_write_attempts()) {
+        if (!overlay_autocapture_replay_has_work())
+            return fail("the initial capture stopped before the writer completed", root);
         overlay_autocapture_tick();
-        if (std::chrono::steady_clock::now() >= deadline)
-            return fail("the capture was never offered to the provider", root);
+        SDL_Delay(5);
+    }
+    std::filesystem::create_directories(root);
+
+    /* The writer retries while the guest is held. The provider then refuses. */
+    while (g_requests == 0) {
+        if (!overlay_autocapture_replay_has_work())
+            return fail("the transient write failure stopped playback at the held frame", root);
+        overlay_autocapture_tick();
         SDL_Delay(5);
     }
     if (!overlay_capture_test_provider_pending())
@@ -146,11 +153,35 @@ int main() {
     if (overlay_capture_test_provider_pending() || overlay_autocapture_replay_has_work())
         return fail("the accepted request still shows as pending", root);
 
+    overlay_capture_wait_pending();
+    const auto unavailable = root / "unavailable" / "overlay_captures.json";
+    overlay_capture_set_path(unavailable.string().c_str());
+    set_exec(0x10000u);
+    if (!overlay_autocapture_replay_capture())
+        return fail("the permanent write failure scenario could not start", root);
+    while (overlay_autocapture_replay_has_work()) {
+        overlay_autocapture_tick();
+        SDL_Delay(5);
+    }
+    if (overlay_capture_test_write_attempts() < 2 || g_requests != 2)
+        return fail("the failed capture did not retry before reporting unavailable work", root);
+
+    // A new playback can retry the retained snapshot once the directory returns.
+    overlay_autocapture_replay_set(0);
+    std::filesystem::create_directories(unavailable.parent_path());
+    overlay_autocapture_replay_set(1);
+    while (!std::filesystem::exists(unavailable)) {
+        if (!overlay_autocapture_replay_has_work())
+            return fail("the next playback did not retry after the directory recovered", root);
+        overlay_autocapture_tick();
+        SDL_Delay(5);
+    }
+
     overlay_autocapture_replay_set(0);
     overlay_capture_wait_pending();
     std::filesystem::remove_all(root, ignored);
     SDL_Quit();
-    std::puts("PASS: at a held playback boundary a refused compiler request is retried "
-              "and counts as work left");
+    std::puts("PASS: a held playback retries transient writer and compiler failures "
+              "and returns an error for a persistently unavailable writer");
     return 0;
 }
