@@ -24,6 +24,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 RUNTIME_CMAKE = REPO / "runtime" / "runtime.cmake"
+PARTITION_CMAKE = REPO / "runtime" / "psx_partition_game_runtime_args.cmake"
 
 
 def extract_function(text: str, name: str) -> str:
@@ -44,10 +45,7 @@ function(psxrecomp_add_runtime_target target)
     set_property(GLOBAL PROPERTY RT_TARGET "${target}")
     set_property(GLOBAL PROPERTY RT_ARGS "${ARGN}")
 endfunction()
-function(psx_split_exclude_builtin_mods ids tail)
-    set(${ids} "${ARGN}" PARENT_SCOPE)
-    set(${tail} "" PARENT_SCOPE)
-endfunction()
+include("@PARTITION@")
 function(target_compile_definitions)
 endfunction()
 function(target_include_directories)
@@ -71,7 +69,8 @@ def run_case(cmake: str, body: str, call: str, game_c: bool):
             (tmp / "generated" / "GAME_full.c").write_text("/* stub */\n")
         (tmp / "VERSION").write_text("1.2.3\n")
         driver = tmp / "driver.cmake"
-        driver.write_text(STUBS.replace("@SRC@", tmp.as_posix()) + body +
+        driver.write_text(STUBS.replace("@SRC@", tmp.as_posix())
+                          .replace("@PARTITION@", PARTITION_CMAKE.as_posix()) + body +
                           "\n" + call + "\n" + REPORT)
         r = subprocess.run([cmake, "-P", str(driver)], capture_output=True,
                            text=True)

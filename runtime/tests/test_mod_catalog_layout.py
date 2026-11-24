@@ -105,6 +105,7 @@ def run_guard(
 
 
 SELECT = REPO / "runtime" / "psx_mod_catalog_select.cmake"
+PARTITION = REPO / "runtime" / "psx_partition_game_runtime_args.cmake"
 
 
 def run_select(
@@ -346,16 +347,22 @@ def main() -> int:
               "an exclusion with no builtin catalog at all FAILS configure")
 
         # psxrecomp_add_game_runtime forwards keywords it does not parse, so
-        # its EXCLUDE_BUILTIN_MODS list can swallow one written after it.
+        # its lists (EXCLUDE_BUILTIN_MODS among them) can swallow one written
+        # after them; the argument partition keeps it in the forwarded list.
         split = tmp / "split_driver.cmake"
         split.write_text(
-            f'include("{SELECT.as_posix()}")\n'
-            "psx_split_exclude_builtin_mods(_ids _tail psx.enhancement.fast-loading "
+            "cmake_minimum_required(VERSION 3.20)\n"
+            f'include("{PARTITION.as_posix()}")\n'
+            'psx_partition_game_runtime_args(_ids _tail "" "" EXCLUDE_BUILTIN_MODS '
+            "EXCLUDE_BUILTIN_MODS psx.enhancement.fast-loading "
             "psx.presentation.bezel GAME_OVERLAY_STATIC_C generated/x.c APP_ICON a.ico)\n"
+            'list(POP_FRONT _ids)\n'
             'list(JOIN _ids "," _i)\nlist(JOIN _tail "," _t)\n'
             'message(STATUS "IDS=[${_i}] TAIL=[${_t}]")\n', encoding="utf-8")
         r = subprocess.run([args.cmake, "-P", str(split)], capture_output=True, text=True)
         out = r.stdout + r.stderr
+        if r.returncode or "TAIL=[GAME_OVERLAY_STATIC_C,generated/x.c,APP_ICON,a.ico]" not in out:
+            print(out)
         check(r.returncode == 0
               and "IDS=[psx.enhancement.fast-loading,psx.presentation.bezel]" in out
               and "TAIL=[GAME_OVERLAY_STATIC_C,generated/x.c,APP_ICON,a.ico]" in out,
@@ -425,8 +432,8 @@ def main() -> int:
     check(
         text.count("EXCLUDE_BUILTIN_MODS)") >= 2
         and "${PSXRT_EXCLUDE_BUILTIN_MODS}" in text
-        and "psx_split_exclude_builtin_mods(_psxg_exclude_ids" in text
-        and "EXCLUDE_BUILTIN_MODS ${_psxg_exclude_ids}" in text,
+        and "psx_partition_game_runtime_args(_psxg_wrapper_args _psxg_forwarded_args" in text
+        and "EXCLUDE_BUILTIN_MODS ${PSXG_EXCLUDE_BUILTIN_MODS}" in text,
         "both psxrecomp_add_runtime_target and psxrecomp_add_game_runtime "
         "parse EXCLUDE_BUILTIN_MODS as a multi-value arg and pass it on",
     )

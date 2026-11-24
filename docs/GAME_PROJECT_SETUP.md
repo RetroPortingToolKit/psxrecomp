@@ -268,6 +268,10 @@ is zero-init.
 - `NETPLAY_LOBBY_URL "ws://host:port"` — compile-time default lobby URL
 (`PSX_NET_LOBBY_DEFAULT_URL`; env `PSX_NET_LOBBY_URL` still wins at runtime)
 - `ENABLE_SETUP_WIZARD` — force `PSX_SETUP_WIZARD=ON` for that target
+- `EXTRAS_SOURCES <files>...`: the title's own sources (plugins,
+  `func_override_add` constructors), compiled into the runtime once wherever
+  the keyword sits in the call. Unlike `CODEGEN_SETUP_SOURCES`, they are built
+  with or without recomp-ui (`PSX_RECOMP_UI`).
 - `PGXP` — build the title's one runtime as the PGXP hook flavor
   (`-DPSX_PGXP=1`, overlay cache flavor `_f2`, no `_pgxp` suffix). The generated
   C already carries the hook sites, so `generated/` does not change. PGXP stays
