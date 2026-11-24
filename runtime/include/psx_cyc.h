@@ -285,7 +285,13 @@ static inline uint32_t psx_cyc_load_word(CPUState* cpu, uint32_t addr,
                                           uint32_t rt, uint32_t reg_mask) {
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (addr < 0xC0000000u && g_ls_mode == 0 && !g_ds_recording && phys < 0x00800000u) {
+    /* One mask: phys bits 23..28 clear is the 8 MiB main-RAM window (for
+     * addr < 0xC0000000), bits 0..1 clear is word alignment. A misaligned
+     * address (no address-error check was emitted for it) takes the slow
+     * path, which reads each byte where its own address decodes (memory.c
+     * access_is_split) instead of past the RAM. */
+    if (addr < 0xC0000000u && g_ls_mode == 0 && !g_ds_recording &&
+        !(addr & 0x1F800003u)) {
         if (g_psx_load_delay < 0) (void)psx_load_delay_enabled();
         if (g_psx_load_delay) {
             psx_cyc_base(cpu);
@@ -316,7 +322,9 @@ static inline uint16_t psx_cyc_load_half(CPUState* cpu, uint32_t addr,
                                           uint32_t rt, uint32_t reg_mask) {
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (addr < 0xC0000000u && g_ls_mode == 0 && !g_ds_recording && phys < 0x00800000u) {
+    /* The main-RAM window and halfword alignment, as the word load. */
+    if (addr < 0xC0000000u && g_ls_mode == 0 && !g_ds_recording &&
+        !(addr & 0x1F800001u)) {
         if (g_psx_load_delay < 0) (void)psx_load_delay_enabled();
         if (g_psx_load_delay) {
             psx_cyc_base(cpu);

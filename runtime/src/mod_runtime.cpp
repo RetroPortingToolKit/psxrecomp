@@ -3779,17 +3779,29 @@ extern "C" int psx_mod_reload_hd_texture_pack(void) {
 /* Host-output observation reads: side-effect-free peeks of RAM, scratchpad
  * and BIOS ROM (psx_peek_word); MMIO and anything else reads 0, because a bus
  * read of a device register can change the device (SIO data pops the RX FIFO,
- * SIO_STAT ages the ACK). */
+ * SIO_STAT ages the ACK). A misaligned halfword or word takes each byte at
+ * its own address, as psx_read_* does outside this scope (memory.c
+ * access_is_split). */
 extern "C" int psx_mod_host_output_scope(void);
-static uint32_t ho_peek_word(uint32_t address) {
+static uint32_t ho_peek_aligned_word(uint32_t address) {
     uint32_t v = 0;
     return psx_peek_word(address & ~3u, &v) ? v : 0u;
 }
 static uint8_t ho_peek_byte(uint32_t address) {
-    return (uint8_t)(ho_peek_word(address) >> ((address & 3u) * 8u));
+    return (uint8_t)(ho_peek_aligned_word(address) >> ((address & 3u) * 8u));
+}
+static uint32_t ho_peek_bytes(uint32_t address, uint32_t width) {
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < width; i++)
+        v |= (uint32_t)ho_peek_byte(address + i) << (8u * i);
+    return v;
+}
+static uint32_t ho_peek_word(uint32_t address) {
+    return (address & 3u) ? ho_peek_bytes(address, 4u) : ho_peek_aligned_word(address);
 }
 static uint16_t ho_peek_half(uint32_t address) {
-    return (uint16_t)(ho_peek_word(address) >> ((address & 2u) * 8u));
+    if (address & 1u) return (uint16_t)ho_peek_bytes(address, 2u);
+    return (uint16_t)(ho_peek_aligned_word(address) >> ((address & 2u) * 8u));
 }
 static void ho_drop_word(uint32_t, uint32_t) {}
 static void ho_drop_half(uint32_t, uint16_t) {}

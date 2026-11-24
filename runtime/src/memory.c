@@ -1908,6 +1908,31 @@ static int s_ls_op_active = 0;
 extern int g_ls_suppress_record;
 extern int g_dma_exec_depth;
 extern int psx_get_in_exception(void);
+
+/* Host callers (mods, debug and HLE helpers) can make a halfword or word
+ * access at an address the CPU cannot: a misaligned CPU load or store raises
+ * an address error (PSX-SPX cpuspecifications, "Load/Store Alignment"), so the
+ * bus never sees one. Such an access is performed as byte accesses at
+ * consecutive addresses, each decoded on its own. Inside a region that reads
+ * and writes the same bytes as before; at the end of the scratchpad, the BIOS
+ * ROM or the live RAM the remaining bytes go to whatever the physical map
+ * holds next (the next RAM mirror, the mod GPU-DMA aperture, open bus) rather
+ * than past the end of a host array. An access that starts in the I/O window
+ * stays one device access: a register access has side effects (FIFO pops,
+ * acknowledges) that a split would repeat. Aligned accesses never cross a
+ * region end, so they are not split. */
+static inline int access_is_split(uint32_t addr, uint32_t width) {
+    const uint32_t phys = addr & 0x1FFFFFFFu;
+    return (addr & (width - 1u)) && (phys < 0x1F801000u || phys > 0x1F803FFFu);
+}
+static uint8_t psx_read_byte_raw(uint32_t addr);
+static uint32_t read_split(uint32_t addr, uint32_t width) {
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < width; i++)
+        v |= (uint32_t)psx_read_byte_raw(addr + i) << (8u * i);
+    return v;
+}
+
 static uint32_t psx_read_word_raw(uint32_t addr);
 /* data-shard capture feed (data_shards.c): record guest reads/writes while a
  * capture window is armed. Same exclusions as the lockstep hooks: never in
@@ -1957,6 +1982,13 @@ static uint32_t psx_read_word_raw(uint32_t addr) {
      * the SIO/memctrl I/O block byte-by-byte and then hit the unmapped-MMIO
      * fatal (frame 9705). Ignore writes, read as 0, count for telemetry. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_reads++; return 0; }
+    if (access_is_split(addr, 4u)) {
+        const uint32_t v = read_split(addr, 4u);
+        /* A split word read stays one watched read, as below. */
+        if (g_ram_read_watch_active && psx_phys_addr(addr) < RAM_SIZE)
+            debug_server_trace_ram_read_watch(psx_phys_addr(addr), v);
+        return v;
+    }
 
     uint32_t phys = psx_phys_addr(addr);
 
@@ -2230,9 +2262,24 @@ uint64_t render_pass_mod_arenas_hash(void) {
     return h;
 }
 
+/* The byte split of a misaligned host store (access_is_split): each byte is
+ * stored where its own address decodes, without counting another store. */
+static void store_byte(uint32_t addr, uint8_t val);
+static void write_split(uint32_t addr, uint32_t val, uint32_t width) {
+    for (uint32_t i = 0; i < width; i++)
+        store_byte(addr + i, (uint8_t)(val >> (8u * i)));
+}
+
 static void render_pass_store(uint32_t addr, uint32_t val, uint32_t width) {
     RenderPassStoreTarget t;
     int cls;
+    /* The same split as outside a pass, taken after the same isolation and
+     * KSEG2 decisions as psx_write_*_raw. */
+    if (addr < 0xC0000000u && !cpu_store_isolated() && access_is_split(addr, width)) {
+        for (uint32_t i = 0; i < width; i++)
+            render_pass_store(addr + i, (uint8_t)(val >> (8u * i)), 1u);
+        return;
+    }
     if (render_pass_mod_store(addr, val, width)) return;
     t.ram = ram;
     t.ram_size = psx_ram_live_bytes();   /* live geometry, as psx_ram_map_write */
@@ -2278,6 +2325,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     if (addr == 0xFFFE0130u) { cache_ctrl = val; return; }
     /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_writes++; return; }
+    if (access_is_split(addr, 4u)) { write_split(addr, val, 4u); return; }
 
     uint32_t phys = psx_phys_addr_store(addr);
 
@@ -2422,6 +2470,7 @@ uint16_t psx_read_half(uint32_t addr) {
 static uint16_t psx_read_half_raw(uint32_t addr) {
         /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_reads++; return 0; }
+    if (access_is_split(addr, 2u)) return (uint16_t)read_split(addr, 2u);
     uint32_t phys = psx_phys_addr(addr);
 
     if (phys < RAM_SIZE) {
@@ -2479,6 +2528,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
 
         /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_writes++; return; }
+    if (access_is_split(addr, 2u)) { write_split(addr, val, 2u); return; }
     uint32_t phys = psx_phys_addr_store(addr);
 
     if (phys < RAM_SIZE) {
@@ -2856,7 +2906,10 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     g_guest_store_count++;
     if (g_psx_track_last_store) g_guest_last_store_addr = 0xFFFFFFFFu;
     if (cpu_store_isolated()) { isc_store(addr, val, 1); return; }
+    store_byte(addr, val);
+}
 
+static void store_byte(uint32_t addr, uint8_t val) {
         /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_writes++; return; }
     uint32_t phys = psx_phys_addr_store(addr);

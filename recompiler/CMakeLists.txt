@@ -1678,6 +1678,18 @@ if(BUILD_TESTING AND Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID STREQUAL 
             --cc ${CMAKE_C_COMPILER})
 endif()
 
+# Misaligned halfword/word reads and stores at the end of the scratchpad, the
+# BIOS ROM and the live RAM (retail and 8 MB maps, render passes, the inline
+# load fast path) split into bytes instead of indexing past a host array: the
+# production memory.c in a fixture, built with AddressSanitizer where available.
+if(BUILD_TESTING AND Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+   AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    add_test(NAME memory_unaligned_access
+        COMMAND ${Python3_EXECUTABLE} -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_memory_unaligned_access.py"
+            --cc ${CMAKE_C_COMPILER})
+endif()
+
 # GTE deadline ownership includes pending CPU charges from both host sinks.
 if(BUILD_TESTING AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
     foreach(_mode IN ITEMS O0 O2)
