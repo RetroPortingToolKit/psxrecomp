@@ -1,4 +1,5 @@
 #include "bios_hle.h"
+#include "native_bios_services.h"
 #include "cpu_state.h"
 #include "psx_bios_image.h"
 #include "psx_cycles.h"
@@ -46,6 +47,8 @@ int g_exec_phase, g_event_step_conservative, g_ls_replay_active, psx_in_device_s
 
 int fntrace_is_game_started(void) { return 1; }
 int psx_get_in_exception(void) { return 0; }
+void psx_restore_state_escape(void) { CHECK(0); }
+void psx_scheduler_resume_at(uint32_t pc) { (void)pc; CHECK(0); }
 uint64_t psx_get_cycle_count(void) { return psx_cycle_count; }
 void psx_devices_service_to_now(void) { CHECK(0); }
 void psx_advance_cycles_slow(uint32_t cycles) { (void)cycles; CHECK(0); }
@@ -184,6 +187,19 @@ static void check_native_calls(void)
     for (unsigned i = 0; i < 8; ++i) write_byte(0x1840 + i, (uint8_t)i);
     CHECK(native_call(&cpu, 0xa0, 0x2c, 0x1842, 0x1840, 6) == 0x1842);
     for (unsigned i = 0; i < 6; ++i) CHECK(read_byte(0x1842 + i) == i);
+    for (unsigned i = 16; i <= 23; ++i) cpu.gpr[i] = 0x9000 + i;
+    cpu.gpr[28] = 0x80040000;
+    cpu.gpr[29] = 0x801fe000;
+    cpu.gpr[30] = 0x801fdff0;
+    CHECK(native_call(&cpu, 0xa0, 0x13, 0x1900, 0, 0) == 0);
+    CHECK(read_word(0x1900) == CALLER_RESUME && read_word(0x192c) == 0x80040000);
+    memset(cpu.gpr, 0, sizeof cpu.gpr);
+    cpu.gpr[4] = 0x1900;
+    cpu.gpr[5] = 5;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x14) == PSX_NATIVE_BIOS_TRANSFER);
+    CHECK(cpu.pc == CALLER_RESUME && cpu.gpr[2] == 5 &&
+          cpu.gpr[29] == 0x801fe000 && cpu.gpr[30] == 0x801fdff0);
+    for (unsigned i = 16; i <= 23; ++i) CHECK(cpu.gpr[i] == 0x9000 + i);
     native_call(&cpu, 0xa0, 0x44, 0, 0, 0);
     CHECK(cache_resets == 1);
     CHECK(!g_psx_bios_hle_hook(&cpu, 0x80010000u & 0x1fffffffu));

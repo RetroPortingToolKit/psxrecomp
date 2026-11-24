@@ -1,4 +1,5 @@
 #include "cpu_state.h"
+#include "native_bios_services.h"
 #include "psx_cycles.h"
 #include "psx_icache.h"
 #include "psx_memory.h"
@@ -55,6 +56,20 @@ static int service_a0(CPUState *cpu, uint32_t fn) {
     case 0x0e: case 0x0f:  /* abs, labs */
         result = (a0 & 0x80000000u) ? 0u - a0 : a0;
         break;
+    case 0x13: case 0x14: {  /* setjmp / longjmp, SDK JmpBuf register order */
+        const unsigned registers[] = {31, 29, 30, 16, 17, 18, 19, 20, 21, 22, 23, 28};
+        for (unsigned i = 0; i < sizeof(registers) / sizeof(registers[0]); ++i) {
+            if (fn == 0x13) cpu->write_word(a0 + i * 4, cpu->gpr[registers[i]]);
+            else cpu->gpr[registers[i]] = cpu->read_word(a0 + i * 4);
+        }
+        cpu->gpr[2] = fn == 0x13 ? 0 : a1;
+        psx_cpu_charge(36);
+        if (fn == 0x14) {
+            cpu->pc = cpu->gpr[31];
+            return PSX_NATIVE_BIOS_TRANSFER;
+        }
+        return PSX_NATIVE_BIOS_RETURN;
+    }
     case 0x1b:  /* strlen */
         result = 0;
         while (cpu->read_byte(a0 + result)) ++result;

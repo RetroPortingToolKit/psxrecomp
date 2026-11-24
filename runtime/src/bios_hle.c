@@ -33,6 +33,9 @@
  */
 
 #include "bios_hle.h"
+#include "native_bios_services.h"
+#include "interrupts.h"
+#include "psx_scheduler.h"
 #include "psx_memory.h"
 
 #include "cpu_state.h"
@@ -325,11 +328,14 @@ static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
     if (s_native_kernel_on) {
         if (phys == 0xA0u || phys == 0xB0u || phys == 0xC0u) {
             uint32_t fn = cpu->gpr[9];
-            extern int psx_native_bios_service(CPUState*, uint32_t, uint32_t);
             int handled = phys == 0xB0u && hle_service_b0(cpu, fn);
             if (!handled) handled = psx_native_bios_service(cpu, phys, fn);
             if (handled) {
                 hle_record(phys, fn, cpu, cpu->gpr[2], PSX_HLE_ROUTE_HLE);
+                if (handled == PSX_NATIVE_BIOS_TRANSFER) {
+                    if (psx_get_in_exception()) psx_restore_state_escape();
+                    else psx_scheduler_resume_at(cpu->pc);
+                }
                 return 1;
             }
             fprintf(stderr, "native BIOS service unavailable: %02x:%02x ra=%08x\n",
