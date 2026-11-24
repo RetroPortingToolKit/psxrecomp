@@ -1089,11 +1089,21 @@ overrides it for one run and the `dithering` TCP command switches it live.
 
 ```toml
 [video]
-texture_filtering = "nearest"   # nearest (default) | bilinear | xbr
+texture_filtering = "nearest"   # nearest (default) | bilinear | stable | xbr
 ```
 
 `nearest` is the PS1's point sampling. `bilinear` blends the four nearest
-texels (opacity-gated, so cutout edges keep their colour). `xbr` (OpenGL
+texels (opacity-gated, so cutout edges keep their colour). On OpenGL,
+`stable` filters only polygons proven to be 3D world geometry, whose vertices
+trace back to GTE projections through the provenance that
+`geometry_correction` and `perspective_texturing` use (`ENHANCEMENTS.md` G1).
+Sprites, HUD and any polygon with no recorded provenance keep nearest, so
+their cutout pixels stay sharp. Each proven pixel averages up to 4x4
+opacity-gated bilinear taps spread over its texture footprint, so a surface
+drawn smaller than its texels (distant world geometry) is averaged rather
+than point-sampled. The software and Vulkan renderers have no stable path and
+treat `stable` as ordinary bilinear, UI included (details in
+`STABLE_TEXTURE_FILTERING.md`). `xbr` (OpenGL
 only) is edge-directed magnification after Hyllian's xBR (MIT; see
 `THIRD_PARTY_ATTRIBUTION.md`): for the texel
 corner nearest each sample it compares weighted colour distances over a 5x5
@@ -1104,10 +1114,10 @@ texels; diagonals and curves lose their staircase. It acts only where a
 texel spans two or more output pixels (high internal scale or a magnified
 texture), so a 1:1 draw is exactly nearest; cutouts and STP stay the centre
 texel's. It costs up to 13 texel fetches per pixel. JINC2 is not offered.
-`PSX_TEXTURE_FILTER=0..3` overrides it for one run (2 is the mod-only "stable
-world" minification filter) and the `texture_filter` TCP command switches it
-live. This key is the title's baseline; a player chooses nearest, bilinear or
-xBR with the Image filtering / Texture filtering setting.
+`PSX_TEXTURE_FILTER=0..3` overrides it for one run (0 nearest, 1 bilinear,
+2 stable, 3 xbr) and the `texture_filter` TCP command switches it
+live. This key is the title's baseline; a player chooses nearest, bilinear,
+Stable 3D or xBR with the Image filtering / Texture filtering setting.
 
 The runtime clamps N per backend:
 

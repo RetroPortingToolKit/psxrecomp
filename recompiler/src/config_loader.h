@@ -525,9 +525,10 @@ struct RuntimeConfig {
     // a line preset), 1.0..4.0, kept in thousandths (internal_resolution.h).
     int                   video_supersample_milli = 1000;
 
-    // texture_filtering: "nearest" (default, native PSX look) | "bilinear"
-    // | "xbr" (3: edge-directed magnification, OpenGL only)
-    // (smooths textures and 2D backgrounds). Stored as 0/1.
+    // texture_filtering: "nearest" (0, default, native PSX look) | "bilinear"
+    // (1, smooths textures and 2D backgrounds) | "stable" (2, filters proven 3D
+    // polygons on OpenGL, UI nearest) | "xbr" (3, edge-directed magnification,
+    // OpenGL only). Stored as PSX_TEXTURE_FILTER_* (video_texture_filter.h).
     int                   video_texture_filter = 0;
 
     // fmv_filter: how the 24-bit FMV present reconstructs its low-res source

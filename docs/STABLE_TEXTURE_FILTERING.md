@@ -1,8 +1,12 @@
 # Stable world texture filtering
 
-Trusted title plugins can call `psx_mod_set_texture_filter(2)` to enable stable
-minification on OpenGL. Modes 0 and 1 select nearest and bilinear. A mod-session
-reset restores the player's Display setting; the override is not saved there.
+Stable minification on OpenGL is texture filter mode 2. A title selects it as
+its baseline with `[video] texture_filtering = "stable"` (see
+`config_schema.md`), a player with the Stable 3D choice of the Texture
+filtering setting, and a single run with `PSX_TEXTURE_FILTER=2`. Trusted title
+plugins can also call `psx_mod_set_texture_filter(2)`. Modes 0 and 1 select
+nearest and bilinear. A mod-session reset restores the player's Display
+setting; the override is not saved there.
 
 The stable shader uses screen-space UV derivatives and at most sixteen
 bilinear samples over a footprint bounded to eight texels per axis. It decodes
