@@ -2005,6 +2005,22 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_link_libraries(overlay_capture_queue_bound_test PRIVATE ${PSX_SDL_LIBRARIES})
     add_test(NAME overlay_capture_queue_bound_test COMMAND overlay_capture_queue_bound_test)
 
+    # While a replay records or plays, the DMA snapshots do not replace the
+    # capture file the compiler reads (PS1B-698: MDK compiled other bytes on
+    # playback than in the recording, and the playback stopped).
+    add_executable(overlay_capture_replay_latest_test
+        tests/test_overlay_capture_replay_latest.cpp
+        src/overlay_capture.c
+        src/host_span_ring.c
+        src/psx_ram_geometry.c)
+    target_include_directories(overlay_capture_replay_latest_test PRIVATE
+        include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(overlay_capture_replay_latest_test PRIVATE
+        SDL_MAIN_HANDLED PSX_OVERLAY_CAPTURE_TEST=1
+        $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(overlay_capture_replay_latest_test PRIVATE ${PSX_SDL_LIBRARIES})
+    add_test(NAME overlay_capture_replay_latest_test COMMAND overlay_capture_replay_latest_test)
+
     # The durable capture history (overlay_capture_history = true) keeps one
     # whole record per snapshot, with unique sequence numbers in line order,
     # while the emulation thread, the queue's writer and the periodic

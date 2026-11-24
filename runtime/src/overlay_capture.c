@@ -64,6 +64,17 @@ static int      s_enabled  = 0;   /* config gate; off unless overlay cache enabl
 static SDL_mutex *s_commit_mutex;
 static SDL_atomic_t s_snapshot_seq;
 static uint64_t s_latest_commit_seq;
+/* Nonzero while a replay records or plays. The compiler reads the latest file
+ * (--captures), and a compile is requested only after an autocapture commit.
+ * The outgoing-overlay snapshots that DMA makes are committed by a writer
+ * thread and can replace that file before the compiler opens it, so the
+ * compiled bytes depended on host timing: an MDK (SLES-00599) recording
+ * compiled 000F7000_4F69E5B0 and its playback, the same guest bytes, compiled
+ * 000F7000_570A0CE6 from a later DMA snapshot (PS1B-698). While this is set,
+ * those snapshots go to the history only and the compiler reads the
+ * autocapture it was requested for. Written on the emulation thread, read by
+ * the writer. */
+static SDL_atomic_t s_latest_autocap_only;
 
 static int      s_history_enabled = 0;
 static char     s_history_addendum[600];
@@ -909,7 +920,8 @@ static uint64_t capture_commit_temp(const char *temp_path, const char *reason,
     /* Snapshots may be formatted concurrently, so only the newest snapshot is
      * allowed to replace the compatibility/latest path. Immutable history is
      * authoritative for additivity and is never discarded by this ordering. */
-    if (sequence >= s_latest_commit_seq) {
+    if (sequence >= s_latest_commit_seq &&
+        !(SDL_AtomicGet(&s_latest_autocap_only) && !strncmp(reason, "preserve", 8))) {
         base_ok = atomic_replace_file(temp_path, s_capture_path);
         if (base_ok) s_latest_commit_seq = sequence;
         else {
@@ -1532,10 +1544,12 @@ static int autocap_write_start(void)
 
 void overlay_autocapture_watch(void (*observer)(void)) {
     s_autocap_observer = observer;
+    SDL_AtomicSet(&s_latest_autocap_only, observer || s_autocap_replay_paced);
 }
 
 void overlay_autocapture_replay_set(int paced) {
     s_autocap_replay_paced = paced;
+    SDL_AtomicSet(&s_latest_autocap_only, s_autocap_observer || paced);
 }
 
 int overlay_autocapture_replay_capture(void) {
