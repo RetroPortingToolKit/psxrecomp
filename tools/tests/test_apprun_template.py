@@ -164,6 +164,29 @@ class AppRunTemplate(unittest.TestCase):
                 self.assertTrue(os.path.isabs(config["game"]["disc"]), config["game"]["disc"])
                 self.assertTrue(Path(config["game"]["disc"]).samefile(self.tmp / "game.cue"))
 
+    def test_quoted_toml_keys(self):
+        disc = self.tmp / "game.cue"
+        disc.touch()
+        for quote in ('"', "'"):
+            game = f'[{quote}game{quote}]\nname = "Fixture"\n'
+            single = game + f'{quote}disc{quote} = "disc/old.cue"\n'
+            multiple = game + f'{quote}discs{quote} = ["disc/1.cue", "disc/2.cue"]\n'
+            for shell in _shells():
+                with self.subTest(quote=quote, shell=shell):
+                    data = self.tmp / ("data-" + Path(shell).name)
+                    staged = data / "game.toml"
+                    (self.payload / "game.toml").write_text(single, encoding="utf-8")
+                    result = self.run_app(shell, data, DISC=str(disc))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    config = tomllib.loads(staged.read_text(encoding="utf-8"))
+                    self.assertEqual(config["game"]["disc"], str(disc))
+
+                    (self.payload / "game.toml").write_text(multiple, encoding="utf-8")
+                    result = self.run_app(shell, data, DISC=str(disc))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("lists discs", result.stderr)
+                    self.assertEqual(staged.read_text(encoding="utf-8"), multiple)
+
     def test_disc_with_no_game_table_is_reported(self):
         release = '[recompiler]\nstrict = true\n'
         (self.payload / "game.toml").write_text(release, encoding="utf-8")
