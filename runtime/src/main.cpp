@@ -10398,11 +10398,15 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     debug_server_history_frame();
     /* TCP input commands are available in lean builds too. Consume each
      * port once per guest frame so acknowledged presses reach the pads. */
-    int override = debug_server_get_input_override();
-    int override_p2 = debug_server_get_input_override_port2();
-    {   /* --input-script: scripted pads replace every live source. */
-        int cap_p1 = 0xFFFF, cap_p2 = 0xFFFF;
-        if (psx_capture_input(&cap_p1, &cap_p2)) { override = cap_p1; override_p2 = cap_p2; }
+    const bool capture_input_only = psx_capture_requested();
+    int override = 0xFFFF;
+    int override_p2 = 0xFFFF;
+    if (capture_input_only) {
+        psx_capture_input(&override, &override_p2);
+        if (override_p2 < 0) override_p2 = 0xFFFF;
+    } else {
+        override = debug_server_get_input_override();
+        override_p2 = debug_server_get_input_override_port2();
     }
     s_digital_pad_injected_frame = override >= 0;
     /* Always-on wall-time stamp for this guest frame (host_span_ring.h). */
@@ -10417,7 +10421,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 #endif
     host_frame_stamp((uint32_t)s_frame_count, (uint32_t)g_dirty_ram_insns_run, stamp_static_checks);
 
-    psx_local_mouse_begin(sdl_window, !mouse_seat_configured() && local_mouse_live(override));
+    psx_local_mouse_begin(sdl_window, !capture_input_only &&
+                         !mouse_seat_configured() && local_mouse_live(override));
     {
         /* Outside every debug guard on purpose: production must be measurable. */
         extern uint64_t s_frame_count;
@@ -10574,7 +10579,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     /* Direct-shortcut claims are settled before any shortcut poll or pad
      * sample this frame (no-op unless a title allowed a direct shortcut). */
     direct_shortcut_claim_update();
-    if (!g_headless) {
+    if (!g_headless && !capture_input_only) {
         /* Pump SDL events to prevent window freeze. */
         psx_local_mouse_begin(sdl_window, !mouse_seat_configured() && local_mouse_live(override));
         if (!drain_host_events()) return ep;
@@ -10594,7 +10599,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             rewind_host_pause_loop();
         if (psx_host_pause_depth() > 0)
             host_pause_loop();
-    } else if (host_pad_layer(nullptr, nullptr, nullptr, nullptr)) {
+    } else if (g_headless && host_pad_layer(nullptr, nullptr, nullptr, nullptr)) {
         /* Headless with the debug host layer: the host shortcuts that need no
          * window (Rewind capture/open, fast-forward latch) poll as they would
          * windowed, so scripted runs can drive them. */
@@ -22310,6 +22315,7 @@ int main(int argc, char** argv) {
         g_render_thread = 0;
         g_present_thread = 0;
         g_present_thread_pref = 0;
+        g_low_latency_input = 0;
         g_video_vsync = 0;
         host_volume_set(100);
     }
@@ -23122,7 +23128,9 @@ session_reboot:
 #ifdef SDL_HINT_WINDOWS_DPI_SCALING
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "0");
 #endif
-        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
+        const Uint32 flags = psx_capture_requested() ? SDL_INIT_VIDEO
+            : SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER;
+        if (SDL_Init(flags) != 0) {
             std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
             return refuse_start("video_init", "Game window could not be opened",
                 std::string("The video system could not be started, so the game "
@@ -23144,7 +23152,8 @@ session_reboot:
             g_players[s].deadzone = controller_deadzone;
     }
     controller_deadzone = g_players[0].deadzone;
-    refresh_player_devices();  /* open SDL handles to match the player config */
+    if (!psx_capture_requested())
+        refresh_player_devices();  /* open SDL handles to match the player config */
 #ifndef PSX_SDL_NO_AUDIO
     audio_trace_init();
     /* Unattended capture opens no host audio device; the SPU mix is tapped. */
