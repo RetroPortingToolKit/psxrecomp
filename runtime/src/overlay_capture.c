@@ -1429,7 +1429,12 @@ static uint64_t autocap_write_retry_delay(unsigned attempts)
 static int autocap_provider_request_try(const CodeProvider *cp, uint64_t frame)
 {
     if (!s_autocap_provider_sig_pending) return 0;
-    if (frame < s_autocap_provider_retry_frame) return 1;
+    /* A playback holds the guest at a recorded boundary until the compiler
+     * has made the unit, so frames stop advancing there. A retry counted in
+     * frames never came, and the playback stopped with the unit unmade. While
+     * a playback paces the captures, retry at every poll; the provider's own
+     * backoff, counted in milliseconds, still limits how often it starts. */
+    if (frame < s_autocap_provider_retry_frame && !s_autocap_replay_paced) return 1;
     /* busy remains true through AC_DONE until the emulation thread has
      * committed every prepared DLL and completed the additive final rescan. */
     if (cp->busy && cp->busy()) return 1;
@@ -1562,7 +1567,8 @@ int overlay_autocapture_replay_has_work(void) {
     return SDL_AtomicGet(&s_autocap_write_state) != 0 ||
            (s_autocap_write_job && s_frame_count >= s_autocap_write_job->retry_frame) ||
            (s_autocap_provider_sig_pending &&
-            s_frame_count >= s_autocap_provider_retry_frame);
+            (s_autocap_replay_paced ||
+             s_frame_count >= s_autocap_provider_retry_frame));
 }
 
 static int preserve_write_thread_main(void *opaque)

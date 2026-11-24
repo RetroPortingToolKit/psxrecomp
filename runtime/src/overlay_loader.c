@@ -3866,8 +3866,8 @@ static int overlay_loader_commit_published_impl(OverlayPreparedImage *image,
     char canon[768];
     /* image->path is already canonical (prepare stored the handle-derived
      * form); re-validating is an idempotent freshness check. */
-    if (published_path_valid(image->path, canon, sizeof(canon)) &&
-        !dll_already_loaded(canon)) {
+    const int valid = published_path_valid(image->path, canon, sizeof(canon));
+    if (valid && !dll_already_loaded(canon)) {
         if (s_admit_on && (!replay || !unit_admitted(canon))) {
             /* During playback the log alone can publish a compiled unit. */
             overlay_library_close(handle);
@@ -3877,6 +3877,11 @@ static int overlay_loader_commit_published_impl(OverlayPreparedImage *image,
         loaded = load_one_dll_prepared(canon, handle);
         if (loaded > 0) code_observe('L', canon);
     } else {
+        /* During playback the log's L event loads a unit from the cache as
+         * soon as the compiler has written it, often before this published
+         * copy is committed. That is not a failed load: counted as one, it
+         * failed the compiler run and started its retry backoff. */
+        if (valid && s_admit_on) loaded = OVERLAY_COMMIT_HELD;
         overlay_library_close(handle);
     }
     free(image);
