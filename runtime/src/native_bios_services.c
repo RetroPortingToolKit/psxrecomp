@@ -169,5 +169,10 @@ static int service_thread(CPUState *cpu, uint32_t vector, uint32_t fn) {
 }
 
 int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
+    if (vector == 0xb0 && (fn == 0x18 || fn == 0x19)) {
+        cpu->write_word(PSX_NATIVE_EXCEPTION_JUMP_PTR, fn == 0x19 ? cpu->gpr[4] : 0);
+        psx_cpu_charge(24);
+        return PSX_NATIVE_BIOS_RETURN;
+    }
     return vector == 0xa0 ? service_a0(cpu, fn) : service_thread(cpu, vector, fn);
 }

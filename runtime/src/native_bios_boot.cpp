@@ -1,4 +1,5 @@
 #include "native_bios_boot.h"
+#include "native_bios_services.h"
 
 #include "cpu_state.h"
 #include "disc_boot_image.h"
@@ -94,6 +95,7 @@ bool psx_prepare_native_bios_boot(CPUState &cpu, const std::string &disc,
     psx_host_write_word(0x84, 0x275a0190u);  // addiu k0, k0, 0x190
     psx_host_write_word(0x88, 0x03400008u);  // jr k0
     psx_host_write_word(0x8c, 0);
+    psx_host_write_word(PSX_NATIVE_EXCEPTION_JUMP_PTR, 0);
     psx_host_write_word(0x100, handlers);
     psx_host_write_word(0x104, kHandlerCount * kHandlerBytes);
     psx_host_write_word(0x108, process);

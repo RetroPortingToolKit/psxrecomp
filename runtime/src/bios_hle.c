@@ -322,10 +322,73 @@ int psx_bios_hle_boot_turbo_active(void)
 
 /* ── the hook ────────────────────────────────────────────────────────────── */
 
+#if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
+static void native_exception_return(CPUState *cpu)
+{
+    /* SYS03's same-thread return restores the actual saved TCB and uses the
+     * existing synchronous exception escape. It must not return to a guest
+     * caller's ordinary C continuation. */
+    cpu->gpr[4] = 3;
+    cpu->gpr[5] = psx_sched_current_tcb(cpu);
+    (void)psx_syscall(cpu, 0);
+}
+
+static void native_exception_entry(CPUState *cpu)
+{
+    const uint32_t tcb = psx_sched_current_tcb(cpu);
+    if (!tcb || !psx_get_in_exception()) {
+        fprintf(stderr, "native exception entry without an active TCB\n");
+        exit(1);
+    }
+
+    /* IRQ delivery has already pushed SR. The shared scheduler context
+     * writer pushes it when persisting a context, so temporarily unpush the
+     * low bits to record the actual exception-state SR just once. */
+    uint32_t sr = cpu->cop0[12];
+    cpu->cop0[12] = (sr & ~0x3fu) | ((sr >> 2) & 0xfu);
+    psx_sched_save_context(cpu, tcb, cpu->cop0[14]);
+    cpu->cop0[12] = sr;
+
+    /* Installed priority chains cannot be ignored. The native boot currently
+     * starts them empty; surface the missing provider if a route installs one. */
+    uint32_t handlers = cpu->read_word(0x100u);
+    if (handlers) {
+        for (uint32_t priority = 0; priority < 4; ++priority) {
+            if (cpu->read_word(handlers + priority * 8u)) {
+                fprintf(stderr, "native IRQ provider gap: priority chain %u\n", priority);
+                exit(1);
+            }
+        }
+    }
+    const uint32_t jump = cpu->read_word(PSX_NATIVE_EXCEPTION_JUMP_PTR);
+    if (!jump || !psx_ram_resolve(jump, 48, NULL)) {
+        fprintf(stderr, "native IRQ provider gap: no usable custom exception hook "
+                "(I_STAT=%04x I_MASK=%04x)\n",
+                cpu->read_word(0x1f801070u), cpu->read_word(0x1f801074u));
+        exit(1);
+    }
+    cpu->gpr[4] = jump;
+    cpu->gpr[5] = 1;
+    if (psx_native_bios_service(cpu, 0xa0, 0x14) != PSX_NATIVE_BIOS_TRANSFER) {
+        fprintf(stderr, "native exception hook failed to restore its jump buffer\n");
+        exit(1);
+    }
+    psx_restore_state_escape();
+}
+#endif
+
 static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
 {
 #if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
     if (s_native_kernel_on) {
+        if (phys == PSX_NATIVE_EXCEPTION_ENTRY) {
+            native_exception_entry(cpu);
+            exit(1); /* exception escape must not return */
+        }
+        if (phys == 0xB0u && cpu->gpr[9] == 0x17u && psx_get_in_exception()) {
+            native_exception_return(cpu);
+            exit(1);
+        }
         if (phys == 0xA0u || phys == 0xB0u || phys == 0xC0u) {
             uint32_t fn = cpu->gpr[9];
             int handled = phys == 0xB0u && hle_service_b0(cpu, fn);
@@ -342,7 +405,7 @@ static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
                     phys, fn, cpu->gpr[31]);
             exit(1);
         }
-        if (phys == 0x180u || phys == 0x190u ||
+        if (phys == 0x180u ||
             (phys >= 0x1fc00000u && phys < 0x1fc80000u)) {
             fprintf(stderr, "native BIOS entry unavailable: %08x ra=%08x\n",
                     phys, cpu->gpr[31]);
@@ -377,7 +440,7 @@ int psx_bios_hle_dispatch_quiet(uint32_t address) {
     if (g_psx_bios_hle_hook != bios_hle_dispatch) return 0;
     if (s_native_kernel_on)
         return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
-               phys != 0x180u && phys != 0x190u &&
+               phys != 0x180u && phys != PSX_NATIVE_EXCEPTION_ENTRY &&
                (phys < 0x1fc00000u || phys >= 0x1fc80000u);
     return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
         (!psx_bios_image.shell_entry_phys || phys != psx_bios_image.shell_entry_phys);

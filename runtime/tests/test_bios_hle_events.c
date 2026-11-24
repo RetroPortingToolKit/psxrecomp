@@ -49,6 +49,12 @@ int fntrace_is_game_started(void) { return 1; }
 int psx_get_in_exception(void) { return 0; }
 void psx_restore_state_escape(void) { CHECK(0); }
 void psx_scheduler_resume_at(uint32_t pc) { (void)pc; CHECK(0); }
+uint32_t psx_sched_current_tcb(CPUState *cpu) { (void)cpu; CHECK(0); return 0; }
+void psx_sched_save_context(CPUState *cpu, uint32_t tcb, uint32_t pc) {
+    (void)cpu; (void)tcb; (void)pc; CHECK(0);
+}
+int psx_syscall(CPUState *cpu, uint32_t code) { (void)cpu; (void)code; CHECK(0); return 0; }
+
 uint64_t psx_get_cycle_count(void) { return psx_cycle_count; }
 void psx_devices_service_to_now(void) { CHECK(0); }
 void psx_advance_cycles_slow(uint32_t cycles) { (void)cycles; CHECK(0); }
@@ -200,6 +206,10 @@ static void check_native_calls(void)
     CHECK(cpu.pc == CALLER_RESUME && cpu.gpr[2] == 5 &&
           cpu.gpr[29] == 0x801fe000 && cpu.gpr[30] == 0x801fdff0);
     for (unsigned i = 16; i <= 23; ++i) CHECK(cpu.gpr[i] == 0x9000 + i);
+    native_call(&cpu, 0xb0, 0x19, 0x1900, 0, 0);
+    CHECK(read_word(PSX_NATIVE_EXCEPTION_JUMP_PTR) == 0x1900);
+    native_call(&cpu, 0xb0, 0x18, 0, 0, 0);
+    CHECK(read_word(PSX_NATIVE_EXCEPTION_JUMP_PTR) == 0);
     native_call(&cpu, 0xa0, 0x44, 0, 0, 0);
     CHECK(cache_resets == 1);
     CHECK(!g_psx_bios_hle_hook(&cpu, 0x80010000u & 0x1fffffffu));
