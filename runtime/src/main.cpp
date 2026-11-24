@@ -23613,6 +23613,10 @@ session_reboot:
             return 1;
         }
         psx_bios_hle_configure_native();
+        // The scheduler restores the live thread from its TCB on the very
+        // first dispatch, so publish the initial register context through its
+        // existing guest-ABI writer before it takes ownership.
+        psx_sched_save_context(&cpu, psx_sched_current_tcb(&cpu), cpu.pc);
         std::fprintf(stdout, "psxrecomp: native kernel boot entry=0x%08x\n", cpu.pc);
     }
 #else
