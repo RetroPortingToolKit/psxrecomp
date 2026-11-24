@@ -2076,13 +2076,18 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_test(NAME program_set_lock_test COMMAND program_set_lock_test)
 
     # The player-facing "skip the BIOS" flag must resolve to the same boot
-    # behaviour on retail SCPH-1001 and on the bundled OpenBIOS, whose
-    # kernel-call HLE is (correctly) refused for want of a DeliverEvent anchor.
+    # behaviour across shell-entry images, regardless of the event table ABI.
     add_executable(bios_hle_plan_test
         tests/test_bios_hle_plan.c
         src/bios_hle_plan.c)
     target_include_directories(bios_hle_plan_test PRIVATE include)
     add_test(NAME bios_hle_plan_test COMMAND bios_hle_plan_test)
+
+    add_executable(bios_hle_events_test
+        tests/test_bios_hle_events.c
+        src/bios_hle.c)
+    target_include_directories(bios_hle_events_test PRIVATE include)
+    add_test(NAME bios_hle_events_test COMMAND bios_hle_events_test)
 
     # Every func_override failure mode is silent at runtime: a registration
     # that is never consulted, a package override that survives clear-mods

@@ -39,6 +39,7 @@
 #include "psx_cycles.h"
 
 #include <stddef.h>
+#include <string.h>
 
 /* fntrace.c — game-entry handoff latch (drives the boot turbo window). */
 extern int fntrace_is_game_started(void);
@@ -60,7 +61,8 @@ static int s_shell_skipped   = 0;   /* boot skip already fired */
  * 0x67FF0)) and entered via an indirect call, which always routes through
  * the dispatcher. A profile that omits an anchor exports 0 = the feature is
  * STRUCTURALLY UNAVAILABLE on that BIOS (never "address 0"): the boot skip
- * then simply never fires, and DeliverEvent callbacks stay LLE. */
+ * then simply never fires. Event delivery can use the caller's link on
+ * an image whose event table ABI is known. */
 #include "psx_bios_image.h"
 
 /* Kernel EvCB table anchors (docs/psx_bios_disasm.txt; kseg1 like the kernel
@@ -82,10 +84,15 @@ static int s_shell_skipped   = 0;   /* boot skip already fired */
 #define EVMD_CALLBACK 0x1000u
 #define EVMD_MARK     0x2000u
 
-/* DeliverEvent's callback return site (psx_bios_image.deliver_event_ret):
- * the instruction after the kernel loop's `jalr v0` — the exact $ra an LLE
- * delivery gives the callback, reused here so the dispatch return contract
- * matches. 0 = unknown for this BIOS: callback delivery stays LLE. */
+int psx_bios_hle_event_abi_supported(void)
+{
+    if (psx_bios_image.deliver_event_ret) return 1;
+    /* The pinned OpenBIOS EventInfo and kernel globals use the same EvCB
+     * layout. Keep unverified firmware revisions out of the call tier. */
+    const char *sha256 = psx_bios_image.image_sha256;
+    return sha256 && strcmp(sha256,
+        "fabe498fbf224e4721f12f31b6f5fe0659205e341dc4e5c5f91b9bd1a1011c57") == 0;
+}
 
 /* ── always-on ring ──────────────────────────────────────────────────────── */
 
@@ -220,9 +227,10 @@ static void hle_set_event_status(CPUState* cpu, uint32_t base, uint32_t status)
 }
 
 /* DeliverEvent (kernel 0x1B44): for every ENABLED EvCB matching class+spec,
- * mode MARK => status=READY; mode CALLBACK => call the handler exactly as the
- * kernel's `jalr v0` does (same $ra, args untouched). */
-static void hle_deliver_event(CPUState* cpu, uint32_t base, uint32_t n)
+ * mode MARK => status=READY; mode CALLBACK => call the handler with the
+ * usual guest call ABI. */
+static void hle_deliver_event(CPUState* cpu, uint32_t base, uint32_t n,
+                              uint32_t return_address)
 {
     uint32_t cls  = cpu->gpr[4];
     uint32_t spec = cpu->gpr[5];
@@ -236,20 +244,15 @@ static void hle_deliver_event(CPUState* cpu, uint32_t base, uint32_t n)
             cpu->write_word(ev + EV_STATUS, EVST_READY);
         } else if (mode == EVMD_CALLBACK) {
             uint32_t func = cpu->read_word(ev + EV_FUNC);
-            /* deliver_event_ret == 0 never reaches here: configure() refuses
-             * call-HLE when the linked BIOS exports no anchor (dropping a
-             * callback silently wedges Ape LOAD card EvCBs). */
-            if (func != 0 && psx_bios_image.deliver_event_ret != 0) {
-                /* Nested guest call, same shape as any compiled call site.
-                 * $ra is the kernel's real post-jalr address so the callback
-                 * returns through the standard dispatch contract; the caller's
-                 * $ra is restored before the hook returns. */
+            if (func != 0) {
+                /* The nested dispatcher stops when the callback reaches this
+                 * link. The outer call still owns its return to the game. */
                 uint32_t saved_ra = cpu->gpr[31];
-                cpu->gpr[31] = psx_bios_image.deliver_event_ret;
+                cpu->gpr[31] = return_address;
                 extern int g_exec_phase;   /* wall-time sampler (dirty_ram_interp.c) */
                 int prev_phase = g_exec_phase;
                 g_exec_phase = 3;   /* compiled route; dirty/native callees re-tag inside */
-                psx_dispatch_call(cpu, func, psx_bios_image.deliver_event_ret);
+                psx_dispatch_call(cpu, func, return_address);
                 g_exec_phase = prev_phase;
                 cpu->gpr[31] = saved_ra;
             }
@@ -274,7 +277,13 @@ static int hle_service_b0(CPUState* cpu, uint32_t fn)
     if (n == 0 || n > 0x1000u) return 0; /* implausible table => LLE */
 
     switch (fn) {
-    case 0x07u: hle_deliver_event(cpu, base, n);                  return 1;
+    case 0x07u: {
+        uint32_t return_address = psx_bios_image.deliver_event_ret;
+        if (!return_address) return_address = cpu->gpr[31];
+        if (!return_address) return 0;
+        hle_deliver_event(cpu, base, n, return_address);
+        return 1;
+    }
     case 0x08u: hle_open_event(cpu, base, n);                     return 1;
     case 0x09u: hle_close_event(cpu, base);                       return 1;
     case 0x0Bu: hle_test_event(cpu, base);                        return 1;
@@ -339,12 +348,7 @@ int psx_bios_hle_dispatch_quiet(uint32_t address) {
 
 void psx_bios_hle_configure(int call_hle, int boot_skip)
 {
-    /* IMPORTANT (Ape Escape + OpenBIOS): clamp call-HLE to deliver_event_ret.
-     * OpenBIOS omits the anchor; servicing B0:07 without it silently skips
-     * CALLBACK EvCBs (HwCARD/SwCARD flag handlers at 0x80022930/0x80022980
-     * never run → LOAD phase waits never complete). Plan should already
-     * refuse; this is the runtime backstop. Boot-skip remains independent. */
-    s_call_hle_on  = (call_hle && psx_bios_image.deliver_event_ret != 0) ? 1 : 0;
+    s_call_hle_on = call_hle && psx_bios_hle_event_abi_supported();
     /* Clamp to what THIS image can actually do, so the state the banner and
      * `hle_dump` report can never claim a skip that bios_hle_dispatch below is
      * structurally unable to perform. Callers are expected to have gone

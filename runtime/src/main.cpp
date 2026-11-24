@@ -23635,14 +23635,14 @@ session_reboot:
         /* The two axes (kernel-call HLE, boot-skip) have DIFFERENT per-image
          * requirements, so they are decided in ONE pure place —
          * psx_bios_hle_plan(), runtime/src/bios_hle_plan.c. Conflating them
-         * broke boot-skip on OpenBIOS: call-HLE needs deliver_event_ret, the
+         * broke boot-skip on OpenBIOS: call-HLE needs the event table ABI,
          * boot-skip needs only shell_entry_phys, so refusing the former must
          * not silently cancel the latter. */
         PsxBiosHleRequest req;
         req.bios_hle               = boot.bios_hle;
         req.keep_intro             = boot.keep_intro;
         req.fast_boot              = boot.fast_boot;
-        req.have_deliver_event_ret = (psx_bios_image.deliver_event_ret != 0);
+        req.have_event_abi         = psx_bios_hle_event_abi_supported();
         req.have_shell_entry       = (psx_bios_image.shell_entry_phys != 0);
         req.have_game_entry        = (game_entry_pc != 0);
         const PSXModNetplayProfile* boot_profile = psx_mod_netplay_profile();
@@ -23653,14 +23653,11 @@ session_reboot:
         }
         const PsxBiosHlePlan plan = psx_bios_hle_plan(req);
 
-        /* Call-HLE is a per-image capability, not just a preference: an image
-         * exporting no DeliverEvent anchor (OpenBIOS until validated) declares
-         * that axis STRUCTURALLY UNAVAILABLE — servicing B0 events with
-         * mismatched semantics wedges the guest in event waits. */
+        /* B0 event calls rely on the selected image's kernel event table. */
         if (plan.call_hle_denied) {
             std::fprintf(stdout,
-                "psxrecomp: bios_hle kernel-call tier unavailable on %s (no "
-                "DeliverEvent anchor); kernel calls stay LLE\n",
+                "psxrecomp: bios_hle kernel-call tier unavailable on %s "
+                "(unverified event table ABI); kernel calls stay LLE\n",
                 psx_bios_image.image_id);
         }
         if (plan.boot_skip_denied) {

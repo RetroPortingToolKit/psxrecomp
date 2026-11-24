@@ -32,8 +32,8 @@
  * The boot-skip is BIOS-INDEPENDENT and works under pure LLE. It needs only
  * the image's shell_entry_phys anchor — nothing is synthesized, the shell call
  * just returns immediately — so it fires identically on retail SCPH-1001 and
- * on the bundled OpenBIOS, whose kernel-call HLE is separately (and correctly)
- * refused for want of a DeliverEvent anchor. bios_hle_plan.h documents why the
+ * on the bundled OpenBIOS. Kernel-call HLE separately requires a compatible
+ * event table ABI. bios_hle_plan.h documents why the
  * two axes must not be collapsed; deriving the skip from the granted call-HLE
  * axis is exactly the bug that made the flag mean different things per BIOS.
  * With the tier fully off, LLE plays the real intro.
@@ -62,12 +62,15 @@ struct CPUState;
  * bios_hle.c, emitted-extern by full_function_emitter.cpp). NULL = pure LLE. */
 extern int (*g_psx_bios_hle_hook)(struct CPUState* cpu, uint32_t phys);
 
+/* Whether the selected firmware uses the supported kernel event table ABI. */
+int psx_bios_hle_event_abi_supported(void);
+
 /* Select the BIOS backend. Call at bring-up (and again on netplay rematch
  * session_reboot), after config + env resolution, before psx_scheduler_run.
  * Two independent axes — decide them with psx_bios_hle_plan() (bios_hle_plan.h)
  * rather than open-coding the policy at the call site:
  *   call_hle  — service implemented kernel calls in HLE ([runtime] bios_hle);
- *               requires the image's deliver_event_ret anchor
+ *               requires a supported event table ABI
  *   boot_skip — one-shot shell intercept ((bios_hle && !keep_intro) OR the
  *               deprecated fast_boot alias, which skips boot only); requires
  *               only the image's shell_entry_phys anchor, and is clamped to it
