@@ -1,7 +1,9 @@
 #!/bin/sh
-# AppImage entry point. Its placeholders (upper-case names between at-signs) are
-# stamped by psxrecomp/tools/package_title_release.py from packaging/release.toml,
-# so this file is title-neutral.
+# AppImage entry point. The new-project scaffold (setup_project.sh or
+# setup_project.ps1) stamped the environment variable prefix into this copy
+# when the project was created. The placeholders still left (upper-case names
+# between at-signs) are stamped at release time by
+# psxrecomp/tools/package_title_release.py from packaging/release.toml.
 #
 # psxrecomp anchors settings, assets, saves, cache, and mods to argv[0]. Inside
 # an AppImage that anchor is a read-only squashfs mount, so everything writable
@@ -27,6 +29,8 @@ else
     fi
     data_dir=$data_home/@ARTIFACT_NAME@
 fi
+# The launcher path below is built from data_dir and exec'd after cd into it.
+case $data_dir in /*) ;; *) data_dir=$PWD/$data_dir ;; esac
 
 payload=$APPDIR/usr/share/@PAYLOAD_DIR@
 runtime=$APPDIR/usr/bin/@EXE_NAME@
@@ -102,21 +106,84 @@ export RECOMP_APPIMAGE_PATH=$appimage_path
 # An explicit validation/runtime override may preselect a disc without baking
 # a developer path into the reproducible release configuration.
 disc_override=${@ENV_PREFIX@_DISC:-}
+# A TOML basic string cannot hold a raw control character.
+case $disc_override in
+    *[[:cntrl:]]*)
+        echo "@APP_NAME@: @ENV_PREFIX@_DISC contains a control character; ignoring it." >&2
+        disc_override=
+        ;;
+esac
+if [ -n "$disc_override" ] && [ ! -f "$disc_override" ]; then
+    echo "@APP_NAME@: @ENV_PREFIX@_DISC is not a file; ignoring it." >&2
+    disc_override=
+fi
 if [ -n "$disc_override" ] && [ -f "$disc_override" ]; then
+    # game.toml resolves a relative disc against its own directory (the data
+    # directory), not against the directory this script was started from.
+    case $disc_override in /*) ;; *) disc_override=$PWD/$disc_override ;; esac
     config_tmp=$data_dir/.game.toml.tmp
-    awk -v disc="$disc_override" '
-        BEGIN { inserted = 0 }
-        /^[[:space:]]*disc[[:space:]]*=/ { next }
-        /^\[/ && $0 != "[game]" && !inserted {
-            escaped = disc
-            gsub(/\\/, "\\\\", escaped)
-            gsub(/"/, "\\\"", escaped)
-            print "disc = \"" escaped "\""
-            inserted = 1
+    # The path reaches awk through ENVIRON, not -v: awk expands backslash
+    # escapes in -v values, so a literal backslash-n in a path would become a
+    # newline. It is escaped one character at a time because what gsub does
+    # with backslashes in its replacement differs between awk implementations,
+    # and blanks are matched with [ \t] because mawk 1.3.3 has no [[:space:]].
+    # The line replaces any disc key in [game] and is written at the end of
+    # that table, wherever the table sits in the file; a header may be
+    # indented, use a quoted key, carry a trailing comment, or end in CR.
+    # awk exits 3 without a [game] table and 4 when [game] lists discs.
+    if PSXRECOMP_APPRUN_DISC=$disc_override awk '
+        BEGIN {
+            raw = ENVIRON["PSXRECOMP_APPRUN_DISC"]
+            escaped = ""
+            for (i = 1; i <= length(raw); i++) {
+                c = substr(raw, i, 1)
+                if (c == "\\" || c == "\"") {
+                    escaped = escaped "\\"
+                }
+                escaped = escaped c
+            }
+            disc_line = "disc = \"" escaped "\""
+            in_game = 0
+            inserted = 0
+            multi = 0
         }
+        {
+            line = $0
+            sub(/\r$/, "", line)
+        }
+        line ~ /^[ \t]*\[/ && line ~ /\][ \t]*(#.*)?$/ {
+            if (in_game && !inserted) {
+                print disc_line
+                inserted = 1
+            }
+            in_game = (line ~ /^[ \t]*\[[ \t]*(game|"game"|\047game\047)[ \t]*\][ \t]*(#.*)?$/)
+        }
+        in_game && line ~ /^[ \t]*(discs|"discs"|\047discs\047)[ \t]*=/ { multi = 1 }
+        in_game && line ~ /^[ \t]*(disc|"disc"|\047disc\047)[ \t]*=/ { next }
         { print }
-    ' "$data_dir/game.toml" > "$config_tmp"
-    mv "$config_tmp" "$data_dir/game.toml"
+        END {
+            if (in_game && !inserted) {
+                print disc_line
+                inserted = 1
+            }
+            if (multi) {
+                exit 4
+            }
+            if (!inserted) {
+                exit 3
+            }
+        }
+    ' "$data_dir/game.toml" > "$config_tmp"; then
+        mv "$config_tmp" "$data_dir/game.toml"
+    else
+        status=$?
+        rm -f "$config_tmp"
+        case $status in
+            3) echo "@APP_NAME@: game.toml has no [game] table; ignoring @ENV_PREFIX@_DISC." >&2 ;;
+            4) echo "@APP_NAME@: [game] lists discs, which wins over disc; ignoring @ENV_PREFIX@_DISC." >&2 ;;
+            *) echo "@APP_NAME@: could not rewrite game.toml (awk exit $status); ignoring @ENV_PREFIX@_DISC." >&2 ;;
+        esac
+    fi
 fi
 unset APPIMAGE
 

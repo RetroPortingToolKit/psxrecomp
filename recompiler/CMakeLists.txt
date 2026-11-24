@@ -1424,8 +1424,11 @@ if(BUILD_TESTING)
         # (PSXRECOMP_LIBCHDR); its container/selection cases always run.
         # test_bundled_release_layout pins the bundled-release contract (CI
         # template, scaffold, check_generated.sh, Project Studio audit/ops).
+        # test_apprun_template runs the scaffold's rendered AppImage entry
+        # point against a fake AppDir (skipped on Windows).
         foreach(_t IN ITEMS
                 aligned_lzss_banks
+                apprun_template
                 bpe_container
                 audit_playtest_diagnostics_package
                 package_title_release
