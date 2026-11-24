@@ -10333,8 +10333,18 @@ static void replay_record_sampled_input(void) {
     replay_frontend_observe(sio_get_pad_buttons_slot(0), sticks);
 }
 
+static bool s_capture_load_pending;
+
 static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     NetplayVblankEpilogue ep{};
+    if (s_capture_load_pending) {
+        if (savestate_take_load_failed())
+            replay_exit(2, "capture-state-load-failed");
+        if (savestate_take_load_completed()) {
+            s_capture_load_pending = false;
+            psx_capture_begin();
+        }
+    }
     if (psx_capture_vblank()) {
         /* Capture range finished (--capture-to / --exit-at-frame). */
         psx_capture_finish();
@@ -23229,7 +23239,8 @@ session_reboot:
                         "cannot start.\n\nSDL_CreateWindow: ") + SDL_GetError());
     }
     psx_apply_window_icon(sdl_window, argv[0]);
-    psx_capture_begin();   /* no-op unless a --capture-* option was given */
+    s_capture_load_pending = false;
+    if (!psx_capture_load_state_path()) psx_capture_begin();
     s_window_fullscreen = {};
     if (psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, g_fullscreen) != 0)
         std::fprintf(stderr, "Fullscreen setup failed: %s\n", SDL_GetError());
@@ -23736,6 +23747,10 @@ session_reboot:
     /* User save states: slots live under
      * <memcard>/<openbios|scph1001>/, keyed by entry_pc + boot_state integrity
      * (codegen hash/abi/ver). Memory cards stay in the memcard root. */
+    if (!game_entry_pc && psx_capture_load_state_path()) {
+        std::fprintf(stderr, "psxrecomp capture: --load-state requires a game save-state context\n");
+        return 2;
+    }
     if (game_entry_pc != 0) {
         const char* bios_token =
             psx_bios_image.image_bundled ? "openbios" : "scph1001";
@@ -23768,27 +23783,20 @@ session_reboot:
         psx_rewind_set_depth((uint32_t)g_rewind_depth);
         psx_rewind_set_interval((uint32_t)g_rewind_interval);
         psx_rewind_configure(memory_get_bios_checksum(), game_entry_pc);
-        /* --load-state FILE: place the file in slot 0 of this run's own save
-         * directory (use --memcard-dir to keep it off the player's saves) and
-         * stage the load, exactly like PSX_LOAD_SLOT=0 below. */
+        /* Capture starts at the first guest vblank after a successful restore. */
         if (const char *lp = psx_capture_load_state_path()) {
-            char dst[1024];
-            std::error_code ec;
-            if (!savestate_slot_path(0, dst, sizeof dst)) {
-                std::fprintf(stderr, "psxrecomp capture: no slot path for --load-state\n");
-            } else {
-                std::filesystem::create_directories(std::filesystem::path(dst).parent_path(), ec);
-                std::filesystem::copy_file(lp, dst, std::filesystem::copy_options::overwrite_existing, ec);
-                if (ec) std::fprintf(stderr, "psxrecomp capture: cannot stage %s: %s\n", lp, ec.message().c_str());
-                else if (savestate_request_load(0))
-                    std::fprintf(stdout, "psxrecomp capture: --load-state %s staged in slot 0\n", lp);
-                else
-                    std::fprintf(stderr, "psxrecomp capture: --load-state %s rejected by savestate\n", lp);
+            const char *replay_env = std::getenv("PSX_REPLAY_FILE");
+            if (g_replay_cli_path || (replay_env && *replay_env)) {
+                std::fprintf(stderr, "psxrecomp capture: the replay supplies its own initial state\n");
+                return 2;
             }
-        }
-        /* Headless load: PSX_LOAD_SLOT=N stages slot load (0..11)
-         * at the next safe block boundary after boot. */
-        if (const char *ls = std::getenv("PSX_LOAD_SLOT"); ls && *ls) {
+            if (!savestate_request_load_file_quiet(lp)) {
+                std::fprintf(stderr, "psxrecomp capture: cannot stage --load-state '%s'\n", lp);
+                return 2;
+            }
+            s_capture_load_pending = true;
+        } else if (const char *ls = std::getenv("PSX_LOAD_SLOT"); ls && *ls) {
+            /* Headless slot loads still use the next safe block boundary. */
             char *end = nullptr;
             const long parsed = std::strtol(ls, &end, 10);
             if (!end || *end != '\0' || parsed < 0 || parsed >= SAVESTATE_SLOTS) {

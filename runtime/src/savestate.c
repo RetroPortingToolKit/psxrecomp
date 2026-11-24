@@ -811,15 +811,13 @@ static int state_file_header_ok(const char* path) {
                                    reason, sizeof(reason));
 }
 
-static int read_slot_for_disc(int slot, int disc, uint8_t** data_out, size_t* size_out) {
-    char path[600];
+static int read_state_file(const char* path, uint8_t** data_out, size_t* size_out) {
     FILE* f;
     long sz;
     uint8_t* buf;
     if (!data_out || !size_out) return 0;
     *data_out = NULL;
     *size_out = 0;
-    if (!slot_file_path(slot, disc, "pst", path, sizeof(path))) return 0;
     f = fopen(path, "rb");
     if (!f) return 0;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
@@ -838,6 +836,17 @@ static int read_slot_for_disc(int slot, int disc, uint8_t** data_out, size_t* si
     *data_out = buf;
     *size_out = (size_t)sz;
     return 1;
+}
+
+static int read_slot_for_disc(int slot, int disc, uint8_t** data_out, size_t* size_out) {
+    char path[600];
+    if (!data_out || !size_out) return 0;
+    if (!slot_file_path(slot, disc, "pst", path, sizeof(path))) {
+        *data_out = NULL;
+        *size_out = 0;
+        return 0;
+    }
+    return read_state_file(path, data_out, size_out);
 }
 
 /* Replay/netplay callers read the mounted disc, independently of menu lookup. */
@@ -1000,6 +1009,24 @@ int savestate_request_load_blob_quiet(const void* data, size_t size) {
     if (!savestate_request_load_blob_protocol(data, size)) return 0;
     s_load_blob_quiet = 1;
     return 1;
+}
+
+int savestate_request_load_file_quiet(const char* path) {
+    uint8_t* data;
+    size_t size;
+    char reason[160] = {0};
+    int ok;
+    if (!path || !read_state_file(path, &data, &size)) return 0;
+    ok = boot_state_check_buffer(data, size, s_bios_checksum, s_entry_pc,
+                                 reason, sizeof(reason));
+    if (ok) {
+        ok = savestate_request_load_blob_quiet(data, size);
+    } else {
+        fprintf(stderr, "savestate: cannot load '%s': %s\n", path,
+                reason[0] ? reason : "incompatible state");
+    }
+    free(data);
+    return ok;
 }
 
 int savestate_pending(void) {

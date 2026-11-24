@@ -45,6 +45,7 @@ static char s_loaded_path[700];
 static int  s_load_result = 1;
 static int  s_header_ok = 1;
 static int  s_rollbacks;
+static const char kExternalState[] = "external state";
 
 int boot_state_save(const CPUState* cpu, uint32_t bios, uint32_t entry, const char* path) {
     (void)cpu; (void)bios; (void)entry; (void)path; return 0;
@@ -58,7 +59,10 @@ int boot_state_load_checked(const char* path, uint32_t bios, uint32_t entry,
 }
 int boot_state_load_buffer_checked(const uint8_t* data, size_t size, uint32_t bios,
                                    uint32_t entry, CPUState* cpu, BootStateResumeAccept accept) {
-    (void)data; (void)size; (void)bios; (void)entry; (void)cpu; (void)accept; return 0;
+    if (bios != BIOS_SUM || entry != ENTRY_PC || size != sizeof(kExternalState) - 1 ||
+        memcmp(data, kExternalState, size) != 0 || !accept(RESUME_PC)) return 0;
+    cpu->pc = RESUME_PC;
+    return 1;
 }
 int boot_state_load_buffer_quiet(const uint8_t* data, size_t size, uint32_t bios,
                                  uint32_t entry, CPUState* cpu) {
@@ -359,6 +363,36 @@ static void single_disc_unchanged(void) {
     unplant(0, 8);
 }
 
+static void file_load_preserves_slot(CPUState* cpu) {
+    char path[700];
+    uint8_t* slot = NULL;
+    size_t slot_size = 0;
+    launch(1, 1);
+    plant(0, 0, T_NEW);
+    snprintf(path, sizeof(path), "%s/external.pst", s_work);
+    FILE* f = fopen(path, "wb");
+    if (!f) exit(2);
+    fputs(kExternalState, f);
+    fclose(f);
+
+    CHECK(savestate_request_load_file_quiet(path));
+    CHECK(savestate_pending() && s_load_blob_quiet);
+    CHECK(s_load_blob_len == sizeof(kExternalState) - 1 &&
+          !memcmp(s_load_blob, kExternalState, sizeof(kExternalState) - 1));
+    savestate_poll(cpu, 0x80010000u);
+    CHECK(!savestate_pending() && savestate_take_load_completed() && cpu->pc == RESUME_PC);
+    CHECK(savestate_read_slot(0, &slot, &slot_size) && slot_size == 10 &&
+          !memcmp(slot, "stub state", 10));
+    free(slot);
+
+    s_header_ok = 0;
+    CHECK(!savestate_request_load_file_quiet(path) && !savestate_pending());
+    s_header_ok = 1;
+    CHECK(remove(path) == 0);
+    CHECK(!savestate_request_load_file_quiet(path) && !savestate_pending());
+    unplant(0, 0);
+}
+
 int main(int argc, char** argv) {
     CPUState cpu;
     if (argc < 2) {
@@ -379,6 +413,7 @@ int main(int argc, char** argv) {
     refusals_keep_the_disc(&cpu);
     mounted_disc_only();
     single_disc_unchanged();
+    file_load_preserves_slot(&cpu);
 
     if (s_fails) {
         fprintf(stderr, "savestate_disc_scope_test: %d check(s) failed\n", s_fails);
