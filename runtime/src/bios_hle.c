@@ -360,6 +360,12 @@ static void native_exception_entry(CPUState *cpu)
             }
         }
     }
+    const uint32_t pending = cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u);
+    if (cpu->read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE) &&
+        (pending & ((1u << IRQ_CDROM) | (1u << IRQ_DMA)))) {
+        fprintf(stderr, "native BIOS CD IRQ provider gap: kernel CD handlers still active\n");
+        exit(1);
+    }
     cpu->gpr[29] = PSX_NATIVE_EXCEPTION_STACK;
     cpu->gpr[30] = PSX_NATIVE_EXCEPTION_STACK;
     cpu->gpr[28] = 0;
@@ -386,8 +392,29 @@ static void native_exception_entry(CPUState *cpu)
             exit(1); /* exception escape must not return */
         }
     }
+    /* Generic IRQ events run last; the game-owned CD/DMA driver receives
+     * these notifications and keeps control of its hardware IRQs. */
+    const uint8_t irq_order[] = {IRQ_CDROM, IRQ_SPU, IRQ_GPU, IRQ_PIO,
+        IRQ_SIO1, IRQ_VBLANK, IRQ_TIMER0, IRQ_TIMER1, IRQ_TIMER2, IRQ_SIO0, IRQ_DMA};
+    const uint8_t irq_class[] = {1, 2, 3, 4, 5, 6, 6, 8, 11, 9, 10};
+    for (unsigned i = 0; i < sizeof(irq_order); ++i) {
+        uint32_t irq = irq_order[i];
+        uint32_t bit = 1u << irq;
+        if (!(cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & bit))
+            continue;
+        cpu->gpr[4] = 0xf0000000u + irq_class[irq];
+        cpu->gpr[5] = 0x1000;
+        cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
+        hle_deliver_event(cpu, events, count, PSX_NATIVE_IRQ_CALLBACK_LINK);
+        if (cpu->read_word(PSX_NATIVE_GENERIC_IRQ_ACK + irq * 4))
+            cpu->write_word(0x1f801070u, ~bit);
+    }
     const uint32_t jump = cpu->read_word(PSX_NATIVE_EXCEPTION_JUMP_PTR);
-    if (!jump || !psx_ram_resolve(jump, 48, NULL)) {
+    if (!jump) {
+        native_exception_return(cpu);
+        exit(1);
+    }
+    if (!psx_ram_resolve(jump, 48, NULL)) {
         fprintf(stderr, "native IRQ provider gap: no usable custom exception hook "
                 "(I_STAT=%04x I_MASK=%04x)\n",
                 cpu->read_word(0x1f801070u), cpu->read_word(0x1f801074u));

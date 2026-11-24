@@ -260,8 +260,9 @@ int main(int argc, char **argv) {
           ram_word(0x114) == 5 * 0xc0 && ram_word(0x124) == 18 * 0x1c &&
           ram_word(ram_word(0x108)) == threads &&
           ram_word(threads) == 0x4000 && ram_word(threads + 0xc0) == 0x1000 &&
-          ram_word(events + 4) == 0,
-          "native tables expose correct counts, active thread, and free event slots");
+          ram_word(events) == 0xf0000003u && ram_word(events + 4) == 0x2000 &&
+          ram_word(events + 8) == 0x10 && ram_word(events + 5 * 0x1c + 4) == 0,
+          "native tables expose counts, active thread, five boot CD events, and free slots");
     check(std::memcmp(guest_ram.data() + 0x10000, launch_image.data() + 2048, 4096) == 0 &&
           guest_ram[0x11000] == 0x5a && ram_word(0x12000) == 0 &&
           ram_word(0x123fc) == 0 && guest_ram[0x12400] == 0x5a,

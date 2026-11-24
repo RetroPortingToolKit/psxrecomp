@@ -66,7 +66,8 @@ bool psx_prepare_native_bios_boot(CPUState &cpu, const std::string &disc,
     const uint64_t tables_size = uint64_t(kHandlerCount) * kHandlerBytes +
         sizeof(uint32_t) + uint64_t(config->threads) * kThreadBytes +
         uint64_t(config->events) * kEventBytes;
-    if (!config->threads || !config->events || tables_size > kKernelEnd - kHeapBegin) {
+    if (!config->threads || config->events < PSX_NATIVE_BOOT_CD_EVENTS ||
+        tables_size > kKernelEnd - kHeapBegin) {
         error = "SYSTEM.CNF kernel tables do not fit in native kernel RAM";
         return false;
     }
@@ -99,6 +100,9 @@ bool psx_prepare_native_bios_boot(CPUState &cpu, const std::string &disc,
     psx_host_write_word(PSX_NATIVE_SIO_AUTO_ACK, 0);
     for (uint32_t timer = 0; timer < 4; ++timer)
         psx_host_write_word(PSX_NATIVE_TIMER_AUTO_ACK + timer * 4, 1);
+    psx_host_write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 1);
+    for (uint32_t irq = 0; irq < 11; ++irq)
+        psx_host_write_word(PSX_NATIVE_GENERIC_IRQ_ACK + irq * 4, 0);
     psx_host_write_word(0x100, handlers);
     psx_host_write_word(0x104, kHandlerCount * kHandlerBytes);
     psx_host_write_word(0x108, process);
@@ -110,6 +114,18 @@ bool psx_prepare_native_bios_boot(CPUState &cpu, const std::string &disc,
     psx_host_write_word(process, threads);
     for (uint32_t i = 0; i < config->threads; ++i)
         psx_host_write_word(threads + i * kThreadBytes, i ? 0x1000u : 0x4000u);
+
+    // The standard boot has already opened five polled CD events before
+    // transferring to the executable; Sony SDK games may close them when
+    // selecting their own CD driver.
+    const uint32_t disc_specs[] = {0x10, 0x20, 0x40, 0x80, 0x8000};
+    for (uint32_t i = 0; i < PSX_NATIVE_BOOT_CD_EVENTS; ++i) {
+        const uint32_t ev = events + i * kEventBytes;
+        psx_host_write_word(ev, 0xf0000003u);
+        psx_host_write_word(ev + 4, 0x2000u);
+        psx_host_write_word(ev + 8, disc_specs[i]);
+        psx_host_write_word(ev + 12, 0x2000u);
+    }
 
     write_payload(header->text_address, payload.get(), header->text_size);
     if (header->fill_size) clear_span(header->fill_address, header->fill_size);

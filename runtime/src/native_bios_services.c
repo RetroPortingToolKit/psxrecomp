@@ -169,6 +169,24 @@ static int service_thread(CPUState *cpu, uint32_t vector, uint32_t fn) {
 }
 
 int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
+    if (vector == 0xa0 && (fn == 0x56 || fn == 0x72)) {
+        const uint32_t events = cpu->read_word(0x120u);
+        const uint32_t size = cpu->read_word(0x124u);
+        if (size < PSX_NATIVE_BOOT_CD_EVENTS * 0x1cu ||
+            !psx_ram_resolve(events, size, NULL)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->cop0[12] &= ~1u;  /* deinitCDRom enters, and stays in, critical section */
+        for (uint32_t i = 0; i < PSX_NATIVE_BOOT_CD_EVENTS; ++i)
+            cpu->write_word(events + i * 0x1cu + 4, 0);
+        cpu->write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 0);
+        psx_cpu_charge(40);
+        return PSX_NATIVE_BIOS_RETURN;
+    }
+    if (vector == 0xc0 && fn == 0x0d) {
+        if (cpu->gpr[4] >= 11) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->write_word(PSX_NATIVE_GENERIC_IRQ_ACK + cpu->gpr[4] * 4, cpu->gpr[5]);
+        psx_cpu_charge(24);
+        return PSX_NATIVE_BIOS_RETURN;
+    }
     if (vector == 0xb0 && (fn == 0x18 || fn == 0x19)) {
         cpu->write_word(PSX_NATIVE_EXCEPTION_JUMP_PTR, fn == 0x19 ? cpu->gpr[4] : 0);
         psx_cpu_charge(24);

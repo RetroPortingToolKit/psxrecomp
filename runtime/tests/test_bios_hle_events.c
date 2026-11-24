@@ -229,6 +229,15 @@ static void check_native_calls(void)
     CHECK(native_call(&cpu, 0xc0, 0x0a, 3, 0, 0) == 1);
     CHECK(native_call(&cpu, 0xc0, 0x0a, 3, 1, 0) == 0);
     CHECK(read_word(PSX_NATIVE_TIMER_AUTO_ACK + 3 * 4) == 1);
+    write_word(0x120, EVENT_BASE);
+    write_word(0x124, 6 * EVENT_SIZE);
+    for (unsigned i = 0; i < 6; ++i) add_event(i, 2, MODE_MARK, 0);
+    write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 1);
+    cpu.cop0[12] = 0x40000401u;
+    native_call(&cpu, 0xa0, 0x72, 0, 0, 0);
+    CHECK(!(cpu.cop0[12] & 1u) && read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE) == 0);
+    for (unsigned i = 0; i < 5; ++i) CHECK(read_word(EVENT_BASE + i * EVENT_SIZE + 4) == 0);
+    CHECK(read_word(EVENT_BASE + 5 * EVENT_SIZE + 4) == ENABLED);
     native_call(&cpu, 0xa0, 0x44, 0, 0, 0);
     CHECK(cache_resets == 1);
     CHECK(!g_psx_bios_hle_hook(&cpu, 0x80010000u & 0x1fffffffu));
@@ -280,6 +289,20 @@ static void check_native_root_counter_irq(void)
     CHECK(escaped == 2 && test_istat == 1);
     CHECK(read_word(EVENT_BASE + 4) == READY && irq_cpu.pc == CALLER_RESUME &&
           irq_cpu.gpr[2] == 1 && irq_cpu.gpr[29] == 0x801fe000);
+    // With native BIOS CD ownership relinquished, the generic hardware IRQ
+    // notification and its configured acknowledgement remain available.
+    write_word(PSX_NATIVE_EXCEPTION_JUMP_PTR, 0);
+    add_event(0, 0x1000, MODE_MARK, 0);
+    write_word(EVENT_BASE, 0xf0000003u);
+    write_word(PSX_NATIVE_GENERIC_IRQ_ACK + 2 * 4, 1);
+    test_istat = test_imask = 1u << 2;
+    irq_cpu.cop0[12] = 0x40000404u;
+    escaped = setjmp(irq_escape);
+    if (!escaped) {
+        g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_ENTRY);
+        CHECK(0);
+    }
+    CHECK(escaped == 1 && test_istat == 0 && read_word(EVENT_BASE + 4) == READY);
     irq_active = 0;
 }
 
