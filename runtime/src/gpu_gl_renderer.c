@@ -92,6 +92,7 @@
 #include "psx_video_timing.h"
 #include "mod_plugins.h"      /* PSX_MOD_RENDER_PASS_* reasons */
 #include "host_osd.h"
+#include "psx_capture.h"
 #include "psx_savestate_menu.h"
 #include "psx_host_menu.h"
 #include "host_time.h"
@@ -9570,16 +9571,20 @@ static void gl_swap_with_osd(void) {
             if (ui < 1) ui = 1;
             if (ui > 8) ui = 8;
             margin = 8 * ui;
-            if (ov_image(0, &px, &ow, &oh) && px)
+            /* Unattended capture shows the game's own picture: no host toasts,
+             * volume bar, rewind strip, save-state menu or overlay menu. The
+             * title's HUD layer (psx_host_hud_draw) is part of the image. */
+            const int cap_on = psx_capture_active();
+            if (!cap_on && ov_image(0, &px, &ow, &oh) && px)
                 gl_draw_osd_image(px, ow, oh, ow * ui, oh * ui,
                                   margin, margin, ww, wh);
-            if (ov_image(1, &px, &ow, &oh) && px) {
+            if (!cap_on && ov_image(1, &px, &ow, &oh) && px) {
                 const int dw = ow * ui, dh = oh * ui;
                 int vx = (ww > dw + margin) ? (ww - dw - margin) : margin;
                 int vy = (wh > dh) ? ((wh - dh) / 2) : margin;
                 gl_draw_osd_image(px, ow, oh, dw, dh, vx, vy, ww, wh);
             }
-            if (ov_image(2, &px, &ow, &oh) && px) {
+            if (!cap_on && ov_image(2, &px, &ow, &oh) && px) {
                 float slide = ov_rewind_slide();
                 int dw = ww;
                 int dh = (wh * oh) / 480;
@@ -9588,13 +9593,13 @@ static void gl_swap_with_osd(void) {
                 vy = wh - (int)((float)dh * slide + 0.5f);
                 gl_draw_osd_image(px, ow, oh, dw, dh, 0, vy, ww, wh);
             }
-            if (ov_image(3, &px, &ow, &oh) && px)
+            if (!cap_on && ov_image(3, &px, &ow, &oh) && px)
                 gl_draw_osd_image(px, ow, oh, ww, wh, 0, 0, ww, wh);
             /* The title's HUD layer, then the in-game overlay provider
              * (host_overlay.h P2) over everything; each a no-op unless one
              * registered. */
             psx_host_hud_draw(ww, wh);
-            psx_host_overlay_draw(ww, wh);
+            if (!cap_on) psx_host_overlay_draw(ww, wh);
         }
     }
     if (!rth_replaying()) host_osd_present_done();   /* replay: done at record */
@@ -9703,6 +9708,31 @@ static void gl_swap_with_osd(void) {
                 free(rows);
             }
             present_shot_done(wrote);
+        }
+    }
+    /* Unattended capture (psx_capture.h): hold the composed frame for the
+     * vblank handler to write. Same readback as present_shot above. */
+    if (psx_capture_wants_readback()) {
+        static uint8_t *cap_rows = NULL, *cap_flip = NULL;
+        static size_t cap_bytes = 0;
+        int ww = 0, wh = 0;
+        SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+        if (ww > 0 && wh > 0) {
+            size_t need = (size_t)ww * wh * 3;
+            if (need != cap_bytes) {
+                free(cap_rows); free(cap_flip);
+                cap_rows = (uint8_t *)malloc(need);
+                cap_flip = (uint8_t *)malloc(need);
+                cap_bytes = (cap_rows && cap_flip) ? need : 0;
+            }
+            if (cap_bytes) {
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glReadPixels(0, 0, ww, wh, GL_RGB, GL_UNSIGNED_BYTE, cap_rows);
+                for (int y = 0; y < wh; y++)
+                    memcpy(cap_flip + (size_t)y * ww * 3,
+                           cap_rows + (size_t)(wh - 1 - y) * ww * 3, (size_t)ww * 3);
+                psx_capture_store_frame(cap_flip, ww, wh);
+            }
         }
     }
     gl_swap_now(0);
