@@ -30,9 +30,9 @@ int psx_capture_active(void);
 /* Requested drawable size, 0x0 when --capture-size was not given. */
 void psx_capture_size(int *w, int *h);
 
-/* Call once the window + GL context exist. Creates the output directory,
- * opens the WAV, and stages --load-state. */
+/* Call before the first captured frame, after any requested restore. */
 void psx_capture_begin(void);
+int psx_capture_failed(void);
 
 /* Renderer hook: nonzero when the composed frame should be read back this
  * swap; psx_capture_store_frame() receives top-down RGB (w*h*3 bytes). */

@@ -10283,6 +10283,11 @@ static void replay_live_p1(int override, uint16_t *buttons, uint8_t sticks[4]) {
 }
 
 static void replay_exit(int status, const char *origin) {
+    psx_capture_finish();
+    if (!status && psx_capture_failed()) {
+        status = 2;
+        origin = "capture-output-failed";
+    }
     std::fflush(stdout);
     psx_crash_trace_set_exit_origin(origin);
     std::exit(status);
@@ -10347,7 +10352,6 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     }
     if (psx_capture_vblank()) {
         /* Capture range finished (--capture-to / --exit-at-frame). */
-        psx_capture_finish();
         replay_exit(0, "capture-complete");
     }
     /* The guest just finished the previous input frame. A clean quit during
@@ -23249,7 +23253,10 @@ session_reboot:
     }
     psx_apply_window_icon(sdl_window, argv[0]);
     s_capture_load_pending = false;
-    if (!psx_capture_load_state_path()) psx_capture_begin();
+    if (!psx_capture_load_state_path()) {
+        psx_capture_begin();
+        if (psx_capture_failed()) return 2;
+    }
     s_window_fullscreen = {};
     if (psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, g_fullscreen) != 0)
         std::fprintf(stderr, "Fullscreen setup failed: %s\n", SDL_GetError());

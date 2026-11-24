@@ -29,7 +29,7 @@ static char     s_state_path[1024];
 static int      s_req_w, s_req_h;
 static uint64_t s_from = 0, s_to = UINT64_MAX, s_every = 1, s_exit_at = UINT64_MAX;
 static int      s_ppm;
-static int      s_requested, s_active, s_finished;
+static int      s_requested, s_active, s_finished, s_failed;
 
 static uint8_t *s_rgb;           /* latest composed frame, top-down RGB */
 static int      s_rgb_w, s_rgb_h;
@@ -211,7 +211,7 @@ static void make_dirs(const char *path)
     PSXCAP_MKDIR(tmp);
 }
 
-static void wav_header(FILE *f, uint32_t data_bytes)
+static int wav_header(FILE *f, uint32_t data_bytes)
 {
     uint8_t h[44];
     uint32_t rate = 44100, byte_rate = 44100 * 4, riff = 36 + data_bytes;
@@ -221,21 +221,27 @@ static void wav_header(FILE *f, uint32_t data_bytes)
     memcpy(h + 24, &rate, 4); memcpy(h + 28, &byte_rate, 4);
     { uint16_t v = 4; memcpy(h + 32, &v, 2); v = 16; memcpy(h + 34, &v, 2); }
     memcpy(h + 36, "data", 4); memcpy(h + 40, &data_bytes, 4);
-    fwrite(h, 1, 44, f);
+    return fwrite(h, 1, sizeof(h), f) == sizeof(h);
 }
 
 void psx_capture_begin(void)
 {
-    if (!s_requested || s_active) return;
+    if (!s_requested || s_active || s_failed) return;
+    if (s_script_path[0] && !load_script(s_script_path)) {
+        s_failed = 1;
+        return;
+    }
     if (s_out_dir[0]) make_dirs(s_out_dir);
     if (s_wav_path[0]) {
         s_wav = fopen(s_wav_path, "wb");
-        if (!s_wav) fprintf(stderr, "psxrecomp capture: cannot open %s: %s\n", s_wav_path, strerror(errno));
-        else wav_header(s_wav, 0);
-    }
-    if (s_script_path[0] && !load_script(s_script_path)) {
-        fprintf(stderr, "psxrecomp capture: input script rejected; exiting\n");
-        exit(2);
+        if (!s_wav || !wav_header(s_wav, 0)) {
+            fprintf(stderr, "psxrecomp capture: cannot start WAV '%s': %s\n",
+                    s_wav_path, strerror(errno));
+            if (s_wav) fclose(s_wav);
+            s_wav = NULL;
+            s_failed = 1;
+            return;
+        }
     }
     s_active = 1;
     fprintf(stdout, "psxrecomp capture: out=%s size=%dx%d from=%llu to=%llu every=%llu wav=%s script=%s\n",
@@ -246,6 +252,8 @@ void psx_capture_begin(void)
 }
 
 /* ---- per-frame ------------------------------------------------------ */
+
+int psx_capture_failed(void) { return s_failed; }
 
 int psx_capture_wants_readback(void)
 {
@@ -260,7 +268,11 @@ void psx_capture_store_frame(const uint8_t *rgb, int w, int h)
     if (w != s_rgb_w || h != s_rgb_h || !s_rgb) {
         free(s_rgb);
         s_rgb = (uint8_t *)malloc(need);
-        if (!s_rgb) { s_rgb_w = s_rgb_h = 0; return; }
+        if (!s_rgb) {
+            fprintf(stderr, "psxrecomp capture: cannot allocate frame buffer\n");
+            s_failed = 1;
+            return;
+        }
         s_rgb_w = w; s_rgb_h = h;
     }
     memcpy(s_rgb, rgb, need);
@@ -278,21 +290,30 @@ static void write_frame(uint64_t f)
         w = s_req_w ? s_req_w : 640; h = s_req_h ? s_req_h : 480;
         black = (uint8_t *)calloc((size_t)w * h, 3);
         px = black;
-        if (!black) return;
+        if (!black) {
+            fprintf(stderr, "psxrecomp capture: cannot allocate first frame\n");
+            s_failed = 1;
+            return;
+        }
     }
     snprintf(path, sizeof path, "%s/frame_%06llu.%s", s_out_dir, (unsigned long long)f, s_ppm ? "ppm" : "png");
     fp = fopen(path, "wb");
+    int ok = 0;
     if (fp) {
         if (s_ppm) {
-            fprintf(fp, "P6\n%d %d\n255\n", w, h);
-            fwrite(px, 1, (size_t)w * h * 3, fp);
+            const size_t bytes = (size_t)w * h * 3;
+            ok = fprintf(fp, "P6\n%d %d\n255\n", w, h) > 0 &&
+                 fwrite(px, 1, bytes, fp) == bytes;
         } else {
-            png_write_rgb(fp, px, (uint32_t)w, (uint32_t)h);
+            ok = png_write_rgb(fp, px, (uint32_t)w, (uint32_t)h);
         }
-        fclose(fp);
+        ok = fclose(fp) == 0 && ok;
+    }
+    if (ok) {
         s_frames_written++;
     } else {
-        fprintf(stderr, "psxrecomp capture: cannot write %s: %s\n", path, strerror(errno));
+        fprintf(stderr, "psxrecomp capture: cannot write '%s'\n", path);
+        s_failed = 1;
     }
     free(black);
 }
@@ -300,6 +321,7 @@ static void write_frame(uint64_t f)
 int psx_capture_vblank(void)
 {
     uint64_t end;
+    if (s_failed) return 1;
     if (!s_active) return 0;
     s_cur = s_vb++;
     if (s_cur > 0) {
@@ -310,15 +332,18 @@ int psx_capture_vblank(void)
     }
     if (s_cur >= s_from) s_wav_started = 1;
     end = s_exit_at < s_to ? s_exit_at : s_to;
-    if (end != UINT64_MAX && s_cur > end) return 1;
-    return 0;
+    return s_failed || (end != UINT64_MAX && s_cur > end);
 }
 
 void psx_capture_audio(const int16_t *stereo, uint32_t frames)
 {
-    if (!s_active || !s_wav || !s_wav_started || s_wav_stopped || !frames) return;
-    fwrite(stereo, 4, frames, s_wav);
-    s_wav_frames += frames;
+    if (!s_active || s_failed || !s_wav || !s_wav_started || s_wav_stopped || !frames) return;
+    size_t written = fwrite(stereo, 4, frames, s_wav);
+    s_wav_frames += written;
+    if (written != frames) {
+        fprintf(stderr, "psxrecomp capture: WAV sample write failed\n");
+        s_failed = 1;
+    }
 }
 
 void psx_capture_finish(void)
@@ -327,10 +352,11 @@ void psx_capture_finish(void)
     s_finished = 1;
     if (s_wav) {
         uint32_t bytes = (uint32_t)(s_wav_frames * 4u);
-        fflush(s_wav);
-        fseek(s_wav, 0, SEEK_SET);
-        wav_header(s_wav, bytes);
-        fclose(s_wav);
+        int ok = fseek(s_wav, 0, SEEK_SET) == 0 && wav_header(s_wav, bytes);
+        if (fclose(s_wav) != 0 || !ok) {
+            fprintf(stderr, "psxrecomp capture: WAV finalization failed\n");
+            s_failed = 1;
+        }
         s_wav = NULL;
     }
     fprintf(stdout, "psxrecomp capture: done frames_written=%llu audio_samples=%llu present_size=%dx%d "
