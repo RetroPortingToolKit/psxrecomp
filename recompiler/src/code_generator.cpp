@@ -1116,22 +1116,26 @@ std::string CodeGenerator::generate_branch_condition(uint32_t instr, uint32_t ad
         uint32_t regimm_op = (instr >> 16) & 0x1F;
         if ((regimm_op & 0x01u) == 0x00u) { // bltz family (incl. bltzal + undefined mirrors)
             // LEFT-edge funnel bltz: reject only past the revealed margin.
-            // Identity at 4:3 (margin 0). Two sources: (a) auto_screen_x's
-            // detect_cull_bltz_sites classification (ws_cull_bltz_pcs_), and
-            // (b) explicit [widescreen.cull] bltz_sites — the left-edge
-            // counterpart to slti_sites, for X-only funnels auto_screen_x can't
-            // qualify (whose bltz would otherwise never be widened).
-            if (regimm_op == 0x00 &&
-                (ws_cull_bltz_pcs_.count(addr) || config_.ws_cull_bltz_sites.count(addr)))
+            // Identity at 4:3 (margin 0). Three sources, in the precedence the
+            // dirty-RAM interpreter applies (docs/WIDESCREEN.md): (a) explicit
+            // [widescreen.cull] bltz_sites, the left-edge counterpart to
+            // slti_sites, for X-only funnels auto_screen_x can't qualify (whose
+            // bltz would otherwise never be widened); (b) screen_x_sites; (c)
+            // auto_screen_x's detect_cull_bltz_sites classification
+            // (ws_cull_bltz_pcs_).
+            if (regimm_op == 0x00 && config_.ws_cull_bltz_sites.count(addr))
                 return fmt::format("psx_ws_cull_bltz({}) /* ws cull (left edge) */",
                                    reg_name(rs));
             // [widescreen.cull] screen_x_sites on a bltz: the tested register
             // holds a screen X in its high half (`SX << 16`). bltz_sites
             // compares the whole register with -margin and so never widens
             // this form; take the branch only while SX < -margin. Identity at
-            // 4:3.
+            // 4:3. An explicit listing outranks the classifier.
             if (regimm_op == 0x00 && config_.ws_cull_screen_x_sites.count(addr))
                 return fmt::format("psx_ws_cull_bltz_hi({}) /* ws cull (left edge, X in the high half) */",
+                                   reg_name(rs));
+            if (regimm_op == 0x00 && ws_cull_bltz_pcs_.count(addr))
+                return fmt::format("psx_ws_cull_bltz({}) /* ws cull (left edge) */",
                                    reg_name(rs));
             if (regimm_op == 0x00) {
                 const std::string n = nclip_sign_branch("<");

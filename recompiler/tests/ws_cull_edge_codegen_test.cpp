@@ -1,7 +1,8 @@
 // [widescreen.cull] bgez_sites and clip_edge_x_load_sites: config parsing,
 // overlay-cache identity, emitted native code, main-EXE opcode guards (also
-// for bltz_sites and branch_keep_sites), and the shared runtime math
-// (ws_cull_edge.h) the emitted helpers call.
+// for bltz_sites and branch_keep_sites), the bltz precedence under
+// auto_screen_x, and the shared runtime math (ws_cull_edge.h) the emitted
+// helpers call.
 #include "code_generator.h"
 #include "config_loader.h"
 #include "control_flow.h"
@@ -710,6 +711,38 @@ void sxy_runtime_math() {
           "a negative margin is treated as 0");
 }
 
+// A listed bltz follows the precedence bltz_sites, then screen_x_sites, then
+// the auto_screen_x classifier, the order the dirty-RAM interpreter applies
+// (docs/WIDESCREEN.md). The function qualifies for auto_screen_x (a width and
+// a height compare) and its bltz is a classified left-edge reject (the width
+// compare in its delay slot):
+//   +00 bltz t0,+2   +04 slti v0,a0,0x140   +08 slti v1,a1,0xE0 ; jr ra ; nop
+// Built as an overlay variant so the branch decision is checked on its own,
+// apart from the main-EXE screen_x opcode guard.
+void bltz_precedence_with_auto_screen_x() {
+    const std::vector<uint32_t> words = {
+        0x05000002u, 0x28820140u, 0x28A300E0u, 0x03E00008u, 0x00000000u};
+    const char* const low = "psx_ws_cull_bltz(cpu->gpr[8])";
+    const char* const high = "psx_ws_cull_bltz_hi(cpu->gpr[8])";
+    PSXRecomp::CodeGenConfig config{};
+    config.overlay_mode = true;
+    config.ws_auto_screen_x_cull = true;
+
+    const auto classified = generate_words(words, config).full_code;
+    check(has_text(classified, low) && !has_text(classified, high),
+          "auto_screen_x classifies the bltz as a left-edge reject");
+
+    config.ws_cull_screen_x_sites.insert(kBase);
+    const auto screen_x = generate_words(words, config).full_code;
+    check(has_text(screen_x, high) && !has_text(screen_x, low),
+          "screen_x_sites wins over the auto_screen_x classifier");
+
+    config.ws_cull_bltz_sites.insert(kBase);
+    const auto both = generate_words(words, config).full_code;
+    check(has_text(both, low) && !has_text(both, high),
+          "bltz_sites wins over screen_x_sites under auto_screen_x");
+}
+
 void runtime_math() {
     // Identity at 4:3 (margin 0) for every input.
     for (int32_t v : {-1000, -54, -53, -1, 0, 1, 98, 222, 319, 320, 321, 1000}) {
@@ -759,6 +792,7 @@ int main(int argc, char** argv) {
     sxy_hash_identity();
     sxy_codegen();
     sxy_runtime_math();
+    bltz_precedence_with_auto_screen_x();
 
     if (g_exit_probe >= 0) return 3;  // no call had that probe index
     if (failures != 0) {
