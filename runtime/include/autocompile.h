@@ -60,6 +60,9 @@ int autocompile_session_interpreted_sealed(void);
 /* Kick a compile if configured and idle. Returns 1 if started. */
 int  autocompile_request(void);
 
+/* Actual start and completion failures. Read on the emulation thread. */
+uint32_t autocompile_failure_count(void);
+
 /* Emu-thread tick: applies a finished compile (cache rescan on success).
  * Must be called from the same thread that owns the overlay loader. */
 void autocompile_poll_main(void);

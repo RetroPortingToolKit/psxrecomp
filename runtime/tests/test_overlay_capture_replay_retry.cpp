@@ -8,9 +8,8 @@
  * "a native code unit is unavailable after local compilation". An MDK
  * (SLES-00599) playback stopped this way at frame 2894.
  *
- * Here the provider refuses its first request. With the frame held:
- *   - overlay_autocapture_replay_has_work() is nonzero while the request waits;
- *   - the next tick at the same frame asks the provider again, and it accepts.
+ * Backoff polls and genuine launch failures arrive at the same guest frame.
+ * The playback must keep waiting through backoff and stop for a broken compiler.
  */
 #include "code_provider.h"
 #include "dirty_ram_interp.h"
@@ -45,19 +44,28 @@ uint8_t g_ram[2u * 1024u * 1024u]{};
 uint32_t g_dirty_pages[DIRTY_RAM_EXEC_PAGE_BITMAP_WORDS]{};
 int g_requests = 0;
 int g_accepts = 0;
+uint32_t g_failures = 20;
+bool g_fail_launch = false;
+constexpr int kBackoffPolls = 5;
 
 int provider_available() { return 1; }
 int provider_request() {
     ++g_requests;
-    if (g_requests == 1) return 0;   /* the provider's backoff is running */
+    if (g_requests <= kBackoffPolls) return 0;
+    if (g_fail_launch) {
+        // Alternate a real failure and a poll within its backoff.
+        if (g_requests % 2 != 0) ++g_failures;
+        return 0;
+    }
     ++g_accepts;
     return 1;
 }
 int provider_busy() { return 0; }
+uint32_t provider_failure_count() { return g_failures; }
 
 const CodeProvider kProvider = {
     "capture-replay-retry-test", provider_available, provider_request,
-    provider_busy, nullptr,
+    provider_busy, nullptr, provider_failure_count,
 };
 
 void set_exec(uint32_t phys) {
@@ -143,11 +151,13 @@ int main() {
         return fail("the refused request is not kept pending", root);
 
     /* The playback now holds frame 2714 and waits for the unit. */
-    if (!overlay_autocapture_replay_has_work())
-        return fail("at a held boundary a refused request shows no work, so the playback "
-                    "stops with the unit unmade", root);
-    overlay_autocapture_tick();
-    if (g_requests != 2 || g_accepts != 1)
+    while (g_requests <= kBackoffPolls) {
+        if (!overlay_autocapture_replay_has_work())
+            return fail("provider backoff stopped playback at the held frame", root);
+        overlay_autocapture_tick();
+    }
+    const int accepted_request = kBackoffPolls + 1;
+    if (g_requests != accepted_request || g_accepts != 1)
         return fail("at a held boundary the refused request was not retried (requests " +
                     std::to_string(g_requests) + ")", root);
     if (overlay_capture_test_provider_pending() || overlay_autocapture_replay_has_work())
@@ -163,7 +173,7 @@ int main() {
         overlay_autocapture_tick();
         SDL_Delay(5);
     }
-    if (overlay_capture_test_write_attempts() < 2 || g_requests != 2)
+    if (overlay_capture_test_write_attempts() < 2 || g_requests != accepted_request)
         return fail("the failed capture did not retry before reporting unavailable work", root);
 
     // A new playback can retry the retained snapshot once the directory returns.
@@ -176,12 +186,31 @@ int main() {
         overlay_autocapture_tick();
         SDL_Delay(5);
     }
+    while (overlay_autocapture_replay_has_work()) {
+        overlay_autocapture_tick();
+        SDL_Delay(5);
+    }
+
+    // A different capture reaches a configured compiler whose process cannot start.
+    const int accepted_before_failure = g_accepts;
+    const uint32_t failures_before_capture = g_failures;
+    g_fail_launch = true;
+    set_exec(0x10004u);
+    if (!overlay_autocapture_replay_capture())
+        return fail("the compiler failure scenario could not capture", root);
+    while (overlay_autocapture_replay_has_work() && g_failures - failures_before_capture < 3) {
+        overlay_autocapture_tick();
+        SDL_Delay(5);
+    }
+    if (g_failures - failures_before_capture != 3 || g_accepts != accepted_before_failure ||
+        overlay_autocapture_replay_has_work() || overlay_capture_test_provider_pending())
+        return fail("playback did not report a terminal error after actual launch failures", root);
 
     overlay_autocapture_replay_set(0);
     overlay_capture_wait_pending();
     std::filesystem::remove_all(root, ignored);
     SDL_Quit();
-    std::puts("PASS: a held playback retries transient writer and compiler failures "
-              "and returns an error for a persistently unavailable writer");
+    std::puts("PASS: held playback waits through backoff and transient writes, "
+              "and reports persistent writer or compiler failure");
     return 0;
 }

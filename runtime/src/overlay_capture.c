@@ -1155,6 +1155,7 @@ int overlay_capture_count(void)
 #define AUTOCAP_BACKOFF_MAX     64u    /* futile-retry ceiling: 64*5s ≈ 5min */
 #define AUTOCAP_WRITE_RETRY_MAX_FRAMES 60u /* cap failed-I/O retry at ~1 s */
 #define AUTOCAP_REPLAY_WRITE_ATTEMPTS 3u
+#define AUTOCAP_REPLAY_PROVIDER_FAILURES 3u
 
 static int      s_autocap_enabled    = 0;
 static uint64_t s_autocap_last_check = 0;
@@ -1172,6 +1173,7 @@ static uint32_t s_autocap_futile     = 0;    /* futile skips (telemetry)      */
 static uint64_t s_autocap_provider_sig_pending = 0;
 static uint64_t s_autocap_provider_retry_frame = 0;
 static unsigned s_autocap_provider_attempts = 0;
+static uint32_t s_autocap_provider_initial_failures = 0;
 static uint64_t s_autocap_last_check_ms = 0; /* host twin of last_check      */
 static uint64_t s_autocap_next_ok_ms    = 0; /* host twin of next_ok         */
 static void (*s_autocap_observer)(void);
@@ -1433,6 +1435,13 @@ static void autocap_write_retry(AutocapWriteJob *job, uint64_t frame)
     job->retry_ms = autocap_now_ms() + delay * 1000u / 60u;
 }
 
+static void autocap_provider_request_clear(void)
+{
+    s_autocap_provider_sig_pending = 0;
+    s_autocap_provider_retry_frame = 0;
+    s_autocap_provider_attempts = 0;
+}
+
 /* A durable contribution and a successfully started compiler request are two
  * separate commits. Retain the former's signature until request() accepts it;
  * otherwise a transient CreateProcess/pipe/thread failure would mark identical
@@ -1460,22 +1469,30 @@ static int autocap_provider_request_try(const CodeProvider *cp, uint64_t frame)
             (uint64_t)AUTOCAP_COOLDOWN_FRAMES * s_autocap_backoff;
         s_autocap_next_ok_ms = autocap_now_ms() +
             AUTOCAP_COOLDOWN_MS * (uint64_t)s_autocap_backoff;
-        s_autocap_provider_sig_pending = 0;
-        s_autocap_provider_retry_frame = 0;
-        s_autocap_provider_attempts = 0;
+        autocap_provider_request_clear();
         return 0;
     }
-    if (cp->request && cp->request()) {
+    const int unavailable = !cp->request ||
+        (s_autocap_replay_paced && cp->available && !cp->available());
+    if (!unavailable && cp->request()) {
         s_autocap_backoff = 1;
         s_autocap_sig_at_req = s_autocap_provider_sig_pending;
         s_autocap_reg_at_req = reg;
         s_autocap_triggers++;
-        s_autocap_provider_sig_pending = 0;
-        s_autocap_provider_retry_frame = 0;
-        s_autocap_provider_attempts = 0;
+        autocap_provider_request_clear();
         return 0;
     }
     s_autocap_provider_attempts++;
+    if (s_autocap_replay_paced) {
+        const uint32_t failures = cp->failure_count
+            ? cp->failure_count() - s_autocap_provider_initial_failures
+            : s_autocap_provider_attempts;
+        if (unavailable || failures >= AUTOCAP_REPLAY_PROVIDER_FAILURES) {
+            fprintf(stderr, "psxrecomp: replay overlay compiler could not start\n");
+            autocap_provider_request_clear();
+            return 0;
+        }
+    }
     s_autocap_provider_retry_frame = frame +
         autocap_write_retry_delay(s_autocap_provider_attempts);
     return 1;
@@ -1733,6 +1750,8 @@ void overlay_autocapture_tick(void)
             s_autocap_provider_sig_pending = sig;
             s_autocap_provider_retry_frame = s_frame_count;
             s_autocap_provider_attempts = 0;
+            s_autocap_provider_initial_failures =
+                cp->failure_count ? cp->failure_count() : 0;
             (void)autocap_provider_request_try(cp, s_frame_count);
         }
         autocap_write_job_free(job);
