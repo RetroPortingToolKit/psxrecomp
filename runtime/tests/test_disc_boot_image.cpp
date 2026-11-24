@@ -145,6 +145,74 @@ int main(int argc, char **argv) {
     expect("subdirectory, exe names the file", marl, "disc/SLUS_010.73", "MARL/SLUS_010.73", &marl_exe);
     expect("subdirectory, no exe field", marl, "", "MARL/SLUS_010.73", &marl_exe);
 
+    // The last sector of the EXE has only three file bytes.
+    const fs::path launch = root / "launch.iso";
+    auto launch_image = exe(7, 4099);
+    auto word = [&](size_t at, uint32_t value) {
+        for (unsigned i = 0; i < 4; ++i)
+            launch_image[at + i] = static_cast<uint8_t>(value >> (i * 8));
+    };
+    word(0x10, 0xa0010020);  // PC uses a different alias of the text.
+    word(0x14, 0x80011004);
+    word(0x18, 0x80010000);
+    word(0x1c, 4096);
+    word(0x28, 0x80012000);
+    word(0x2c, 1024);
+    word(0x30, 0x801fff00);
+    word(0x34, 32);
+    write_iso(launch, {{"", "GAME.EXE", launch_image}});
+    expect("partial last sector", launch, "GAME.EXE", "GAME.EXE", &launch_image);
+    {
+        PS1::ISOReader reader;
+        PS1::ISOFileEntry entry;
+        if (reader.Open(launch.string()) && reader.FindFile("GAME.EXE", entry)) {
+            uint8_t bytes[10] = {};
+            const uint32_t offset = 2048 * 3 - 2;
+            const size_t got = reader.ReadFile(entry, offset, bytes, sizeof(bytes));
+            check(got == 5 && std::memcmp(bytes, launch_image.data() + offset, got) == 0,
+                  "resolved range spans sectors and stops at file end");
+            check(reader.ReadFile(entry, entry.size, bytes, sizeof(bytes)) == 0,
+                  "resolved range starting at EOF is empty");
+        } else {
+            check(false, "launch fixture mounts and resolves");
+        }
+    }
+    std::optional<PsxDiscBootHeader> header;
+    uint32_t len = 0;
+    std::string name;
+    auto read_header = [&](const fs::path &disc) {
+        uint8_t *payload = psx_read_disc_boot_image("GAME.EXE", disc.string(), &len, &name, &header);
+        const bool readable = payload && len == launch_image.size() - 2048 &&
+                              std::memcmp(payload, launch_image.data() + 2048, len) == 0;
+        std::free(payload);
+        return readable;
+    };
+    check(read_header(launch) && header && header->entry_pc == 0xa0010020 &&
+          header->global_pointer == 0x80011004 && header->text_address == 0x80010000 &&
+          header->text_size == 4096 && header->fill_address == 0x80012000 &&
+          header->fill_size == 1024 && header->stack_start == 0x801fff00 &&
+          header->stack_size == 32, "reads the launch fields separately from trailing payload bytes");
+
+    struct InvalidHeader {
+        size_t field;
+        uint32_t invalid;
+        uint32_t restore;
+        const char *message;
+    };
+    for (const auto &invalid : {
+        InvalidHeader{0x10, 0x80011000, 0xa0010020, "entry lies beyond the declared text"},
+        InvalidHeader{0x1c, 8192, 4096, "declared text exceeds the readable payload"},
+        InvalidHeader{0x28, 0x807ffff0, 0x80012000, "fill crosses the RAM window"},
+        InvalidHeader{0x30, 0xfffffff0, 0x801fff00, "stack does not map to RAM"},
+    }) {
+        word(invalid.field, invalid.invalid);
+        const fs::path bad_launch = root / "bad-launch.iso";
+        write_iso(bad_launch, {{"", "GAME.EXE", launch_image}});
+        check(read_header(launch) && header, "has a previous successful launch header");
+        check(read_header(bad_launch) && !header, invalid.message);
+        word(invalid.field, invalid.restore);
+    }
+
     // --- the BOOT line's other spellings ------------------------------------
     const auto nauts_exe = exe(3);
     const fs::path nauts = root / "nauts.iso";

@@ -2,13 +2,54 @@
 #include "disc_boot_image.h"
 
 #include "iso_reader.h"
+#include "psx_memory.h"
 
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
-#include <vector>
 
 namespace {
+
+constexpr uint32_t kExeHeaderSize = 2048;
+constexpr uint32_t kPhysicalAddressMask = 0x1fffffffu;
+
+uint32_t read_le32(const uint8_t *p) {
+    return uint32_t(p[0]) | (uint32_t(p[1]) << 8) |
+           (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
+}
+
+bool in_main_ram_window(uint32_t address, uint32_t size) {
+    const uint32_t segment = address & ~kPhysicalAddressMask;
+    if (segment != 0 && segment != 0x80000000u && segment != 0xa0000000u) return false;
+    const uint32_t start = address & kPhysicalAddressMask;
+    return start < PSX_MAIN_RAM_WINDOW_BYTES && size <= PSX_MAIN_RAM_WINDOW_BYTES - start;
+}
+
+std::optional<PsxDiscBootHeader> decode_boot_header(const uint8_t *bytes, size_t available) {
+    if (std::memcmp(bytes, "PS-X EXE", 8) != 0) return std::nullopt;
+
+    const PsxDiscBootHeader header{
+        read_le32(bytes + 0x10), read_le32(bytes + 0x14),
+        read_le32(bytes + 0x18), read_le32(bytes + 0x1c),
+        read_le32(bytes + 0x28), read_le32(bytes + 0x2c),
+        read_le32(bytes + 0x30), read_le32(bytes + 0x34),
+    };
+    if (header.text_size < sizeof(uint32_t) || header.text_size > available ||
+        !in_main_ram_window(header.text_address, header.text_size) ||
+        !in_main_ram_window(header.entry_pc, sizeof(uint32_t)) ||
+        (header.entry_pc & 3u) != 0) {
+        return std::nullopt;
+    }
+
+    const uint32_t pc = header.entry_pc & kPhysicalAddressMask;
+    const uint32_t start = header.text_address & kPhysicalAddressMask;
+    if (pc < start || pc - start > header.text_size - sizeof(uint32_t) ||
+        (header.fill_size && !in_main_ram_window(header.fill_address, header.fill_size)) ||
+        (header.stack_start && !in_main_ram_window(header.stack_start, header.stack_size))) {
+        return std::nullopt;
+    }
+    return header;
+}
 
 /* The path after `cdrom:` in SYSTEM.CNF's BOOT line, as the disc reader takes
  * it: no leading separator, no `;1`, `/` between a directory and the file.
@@ -55,7 +96,9 @@ std::string last_two_components(const std::string &path) {
 uint8_t *psx_read_disc_boot_image(const std::string &exe_path,
                                   const std::string &disc_path,
                                   uint32_t *out_len,
-                                  std::string *out_name) {
+                                  std::string *out_name,
+                                  std::optional<PsxDiscBootHeader> *out_header) {
+    if (out_header) out_header->reset();
     if (disc_path.empty()) return nullptr;
     PS1::ISOReader iso;
     if (!iso.Open(disc_path)) return nullptr;
@@ -71,43 +114,37 @@ uint8_t *psx_read_disc_boot_image(const std::string &exe_path,
      *   4. the BOOT path's basename at the root, as before the directory was
      *      kept.
      * The reader lists one directory level, so a deeper BOOT path finds nothing. */
-    std::vector<std::string> candidates;
-    if (!exe_path.empty()) {
-        candidates.push_back(last_component(exe_path));
-        const std::string nested = last_two_components(exe_path);
-        if (!nested.empty()) candidates.push_back(nested);
-    }
-    const std::string boot = boot_path_from_system_cnf(iso);
-    if (!boot.empty()) {
-        candidates.push_back(boot);
-        if (boot.find('/') != std::string::npos)
-            candidates.push_back(last_component(boot));
-    }
-
     std::string boot_name;
     PS1::ISOFileEntry ent;
-    for (const std::string &candidate : candidates) {
-        if (!candidate.empty() && iso.FindFile(candidate, ent) && !ent.is_directory) {
-            boot_name = candidate;
-            break;
-        }
+    auto select = [&](const std::string &candidate) {
+        if (candidate.empty() || !iso.FindFile(candidate, ent) || ent.is_directory)
+            return false;
+        boot_name = candidate;
+        return true;
+    };
+    if (exe_path.empty() ||
+        (!select(last_component(exe_path)) && !select(last_two_components(exe_path)))) {
+        const std::string boot = boot_path_from_system_cnf(iso);
+        if (!select(boot) && boot.find('/') != std::string::npos)
+            select(last_component(boot));
     }
-    if (boot_name.empty() || ent.size <= 2048) return nullptr;
+    if (boot_name.empty() || ent.size <= kExeHeaderSize) return nullptr;
 
-    uint8_t *file = (uint8_t *)std::malloc(ent.size);
-    if (!file) return nullptr;
-    size_t got = iso.ReadFile(boot_name, file, ent.size);
-    if (got > 2048) {
-        uint32_t img_len = (uint32_t)(got - 2048);
-        uint8_t *img = (uint8_t *)std::malloc(img_len);
-        if (img) {
-            memcpy(img, file + 2048, img_len);
-            std::free(file);
-            *out_len = img_len;
-            *out_name = boot_name;
-            return img;
-        }
+    uint8_t header[kExeHeaderSize];
+    if (iso.ReadFile(ent, 0, header, sizeof(header)) != sizeof(header)) return nullptr;
+
+    const uint32_t size = ent.size - kExeHeaderSize;
+    uint8_t *image = static_cast<uint8_t *>(std::malloc(size));
+    if (!image) return nullptr;
+
+    const size_t got = iso.ReadFile(ent, kExeHeaderSize, image, size);
+    if (got == 0) {
+        std::free(image);
+        return nullptr;
     }
-    std::free(file);
-    return nullptr;
+
+    if (out_header) *out_header = decode_boot_header(header, got);
+    *out_len = static_cast<uint32_t>(got);
+    *out_name = boot_name;
+    return image;
 }
