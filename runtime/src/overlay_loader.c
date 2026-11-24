@@ -3594,6 +3594,32 @@ static int unit_line_equal(const char *a, const char *b) {
 #endif
 }
 
+/* A unit's guest code is named by its address and hash, which every host
+ * computes alike; only the arch-abi segment and the extension name the
+ * host. A name whose second segment is not "<os>-<arch>", or whose leaf
+ * has no library extension, is copied unchanged. */
+int overlay_loader_unit_local(const char *line, char *out, size_t cap) {
+    static const char *const oses[] = {"win-", "linux-", "macos-"};
+    const char *abi, *rest, *leaf, *ext;
+    int n, os_ok = 0;
+    if (!line || !out || !cap) return 0;
+    abi = strchr(line, '/');
+    rest = abi ? strchr(abi + 1, '/') : NULL;
+    leaf = strrchr(line, '/');
+    ext = leaf ? strrchr(leaf, '.') : NULL;
+    for (size_t i = 0; rest && i < sizeof(oses) / sizeof(oses[0]); i++) {
+        const size_t ol = strlen(oses[i]);
+        os_ok |= (size_t)(rest - abi - 1) > ol && !strncmp(abi + 1, oses[i], ol);
+    }
+    if (!os_ok || !ext || (strcmp(ext, ".dll") && strcmp(ext, ".so")))
+        n = snprintf(out, cap, "%s", line);
+    else
+        n = snprintf(out, cap, "%.*s/%s%.*s%s", (int)(abi - line), line,
+                     PSX_OVERLAY_ARCH_ABI, (int)(ext - rest), rest,
+                     OVERLAY_SHARED_EXT);
+    return n >= 0 && (size_t)n < cap;
+}
+
 static OverlayCodeObserver s_code_observer;
 static int s_admit_on;
 static char **s_admit;
@@ -3626,9 +3652,10 @@ void overlay_loader_admit_begin(void) {
     s_admit_on = 1;
 }
 
-int overlay_loader_admit(const char *line) {
-    char *copy;
-    if (!s_admit_on || !line || !line[0]) return 0;
+int overlay_loader_admit(const char *unit) {
+    char line[768], *copy;
+    if (!s_admit_on || !unit || !unit[0] ||
+        !overlay_loader_unit_local(unit, line, sizeof(line))) return 0;
     if (line_admitted(line)) return 1;
     if (s_admit_n == s_admit_cap) {
         const int cap = s_admit_cap ? s_admit_cap * 2 : 256;
@@ -3675,10 +3702,11 @@ static int line_loaded(const char *line) {
 static int overlay_loader_commit_published_impl(OverlayPreparedImage *image,
                                                 int replay);
 
-int overlay_loader_unit_present(const char *line) {
-    char path[1400];
+int overlay_loader_unit_present(const char *unit) {
+    char path[1400], line[768];
     FILE *f;
-    if (!s_active || !line || !line[0] || strstr(line, "..")) return 0;
+    if (!s_active || !unit || !unit[0] || strstr(unit, "..") ||
+        !overlay_loader_unit_local(unit, line, sizeof(line))) return 0;
     if (line_loaded(line)) return 1;
     snprintf(path, sizeof(path), "%s/%s/%s", s_cache_dir, s_game_id, line);
     if (!(f = fopen(path, "rb"))) return 0;
@@ -3686,9 +3714,10 @@ int overlay_loader_unit_present(const char *line) {
     return 1;
 }
 
-int overlay_loader_load_unit(const char *line) {
-    char path[1400];
-    if (!overlay_loader_unit_present(line)) return 0;
+int overlay_loader_load_unit(const char *unit) {
+    char path[1400], line[768];
+    if (!overlay_loader_unit_present(unit) ||
+        !overlay_loader_unit_local(unit, line, sizeof(line))) return 0;
     if (line_loaded(line)) return 1;
     if (!overlay_loads_allowed()) return -1;
     snprintf(path, sizeof(path), "%s/%s/%s", s_cache_dir, s_game_id, line);
