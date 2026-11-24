@@ -17,7 +17,7 @@ def check_load_timeline(compiler, source):
         found = re.search(r"^static\s+(?:int|u?int(?:8|16|32|64)_t)\s+" + name + r"\s*(?:=[^;]*)?;", source, re.M)
         assert found, name
         declarations.append(found.group(0))
-    mdec = (Path(__file__).resolve().parents[1] / "src/mdec.c").read_text()
+    mdec = (Path(__file__).resolve().parents[1] / "src/mdec.c").read_text(encoding="utf-8")
     functions = "int mdec_recently_active(uint32_t within_frames)\n{" + function_body(
         mdec, "int mdec_recently_active(uint32_t within_frames)") + "}\n"
     for signature in (
@@ -128,7 +128,7 @@ int main(int argc, char **argv) {
     with tempfile.TemporaryDirectory(prefix="psx-rb-load-era-") as directory:
         path = Path(directory) / "load.c"
         exe = Path(directory) / "load.exe"
-        path.write_text(fixture)
+        path.write_text(fixture, encoding="utf-8")
         subprocess.run([compiler, "-std=c11", "-O2", str(path), "-o", str(exe)], check=True)
         assert subprocess.run([str(exe), "--legacy-desync-clear"]).returncode == 3
         subprocess.run([str(exe)], check=True)
@@ -138,7 +138,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--compiler", required=True)
     args = parser.parse_args()
-    source = (Path(__file__).resolve().parents[1] / "src/psx_netplay_rb.c").read_text()
+    source = (Path(__file__).resolve().parents[1] / "src/psx_netplay_rb.c").read_text(encoding="utf-8")
     reset = function_body(source, "static void rb_reset_session_peer_state(void)")
     progress = function_body(source, "static int rb_owing_seats_progressed(uint32_t owing)")
     replaying = function_body(source, "static int rb_owing_seats_replaying(uint32_t owing, uint32_t cap)")
@@ -162,7 +162,7 @@ def main():
     assert "rb_start(0);" in function_body(source[enabled:], "void psx_netplay_rb_restart_after_load(void)")
     assert "rb_start(1);" in function_body(source[enabled:], "void psx_netplay_rb_start(void)")
     assert "rb_shutdown(1);" in function_body(source[enabled:], "void psx_netplay_rb_shutdown(void)")
-    application = (Path(__file__).resolve().parents[1] / "src/psx_netplay.c").read_text()
+    application = (Path(__file__).resolve().parents[1] / "src/psx_netplay.c").read_text(encoding="utf-8")
     commit = function_body(application, "static void np_commit_load_sync(void)\n{")
     assert commit.index("rnet_session_hard_resync(") < commit.index("psx_netplay_rb_restart_after_load();")
     assert "psx_netplay_host_profile" not in commit
@@ -234,7 +234,7 @@ int main(void) {
     with tempfile.TemporaryDirectory(prefix="psx-rb-reset-") as tmp:
         path = Path(tmp) / "reset.c"
         exe = Path(tmp) / "reset.exe"
-        path.write_text(fixture)
+        path.write_text(fixture, encoding="utf-8")
         subprocess.run([args.compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
                         str(path), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
