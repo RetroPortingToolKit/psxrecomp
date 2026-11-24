@@ -42,6 +42,8 @@ static CodeEvent *s_code_ev;
 static uint32_t s_code_ev_n, s_code_ev_next;
 static int s_code_admitting, s_code_log_events = -1;
 static int s_code_paced, s_code_rebuild;
+/* The code log's K event: its captures compiled the autocapture itself. */
+static int s_code_autocapture_input;
 static unsigned s_code_missing;
 static char s_code_missing_unit[768];
 
@@ -51,6 +53,7 @@ static void code_play_end(void)
     if (s_code_paced) replay_host_code_capture_schedule(0);
     s_code_admitting = 0;
     s_code_paced = s_code_rebuild = 0;
+    s_code_autocapture_input = 0;
     free(s_code_ev);
     s_code_ev = NULL;
     free(s_code_text);
@@ -90,15 +93,19 @@ static const char *code_log_parse(char *text, uint32_t frames)
         if (frame > frames || frame < last || q[0] != ' ' || !q[1] || q[2] != ' ' || !q[3])
             return "a frame number";
         const char op = q[1];
-        if (op != 'S' && op != 'L' && op != 'I' && op != 'R' && op != 'A' && op != 'C')
+        if (op != 'S' && op != 'L' && op != 'I' && op != 'R' && op != 'A' && op != 'K' && op != 'C')
             return "an operation";
         if (op == 'S' && (frame || started)) return "a start unit after the start";
         if (op == 'A') {
             if (frame || started || s_code_paced) return "capture schedule order";
             s_code_paced = 1;
         }
+        if (op == 'K') {
+            if (frame || !n || s_code_ev[n - 1].op != 'A') return "capture input order";
+            s_code_autocapture_input = 1;
+        }
         if (op == 'C' && !s_code_paced) return "capture without a schedule";
-        if (op == 'R' || op == 'A' || op == 'C') {
+        if (op == 'R' || op == 'A' || op == 'K' || op == 'C') {
             if (strcmp(q + 3, "-")) return "a capture or scan operation with a unit";
         } else if (!code_unit_name_ok(q + 3)) {
             return "a native code unit name";
@@ -157,7 +164,7 @@ static int code_apply(uint32_t frame, const char **why)
     while (s_code_ev_next < s_code_ev_n && s_code_ev[s_code_ev_next].frame <= frame) {
         const CodeEvent *ev = &s_code_ev[s_code_ev_next++];
         int r;
-        if (ev->op == 'A') continue;
+        if (ev->op == 'A' || ev->op == 'K') continue;
         if (ev->op == 'C') {
             if (s_code_rebuild && !replay_host_code_capture()) {
                 *why = "Replay stopped: the local compiler could not capture the recorded boundary";
@@ -517,7 +524,9 @@ int replay_session_play_file(const char *path)
          * units the recording started with now, the rest at their frames. */
         replay_host_code_admit(1);
         s_code_admitting = 1;
-        if (s_code_paced) replay_host_code_capture_schedule(1);
+        if (s_code_paced)
+            replay_host_code_capture_schedule(s_code_autocapture_input ? REPLAY_CAPTURE_INPUT_AUTOCAPTURE
+                                                                       : REPLAY_CAPTURE_INPUT_LATEST);
         s_code_log_events = (int)s_code_ev_n;
         /* No rescan here: the recording started with no rescan either, and
          * a rescan changes which indexed units the guest can call. */
@@ -527,6 +536,8 @@ int replay_session_play_file(const char *path)
         }
         fprintf(stdout, "replay_code_log: events=%u start_units=%u missing=%u\n", (unsigned)s_code_ev_n,
                 (unsigned)s_code_ev_next, s_code_missing);
+        if (s_code_paced)
+            fprintf(stdout, "replay_capture_input: %s\n", s_code_autocapture_input ? "autocapture" : "latest");
         if (s_code_missing)
             fprintf(stderr, "replay: %u native code units the recording started with are not in this cache; "
                             "playing on, it may go out of sync\n", s_code_missing);
@@ -761,7 +772,7 @@ static void code_log_add(uint32_t frame, char op, const char *unit)
     const int hn = snprintf(head, sizeof head, "%u %c ", (unsigned)frame, op);
     const size_t need = (size_t)hn + strlen(unit) + 1u;
     if (s_rec_code_log_full) return;
-    if ((op != 'R' && op != 'A' && op != 'C' && !code_unit_name_ok(unit)) ||
+    if ((op != 'R' && op != 'A' && op != 'K' && op != 'C' && !code_unit_name_ok(unit)) ||
         s_rec_code_log_len + need > REPLAY_FILE_CODE_LOG_MAX) {
         s_rec_code_log_full = 1;
         fprintf(stderr, "replay: cannot represent another native code event\n");
@@ -808,6 +819,9 @@ static void code_log_start(void)
     }
     free(lines);
     code_log_add(0, 'A', "-");
+    /* A recording compiles each capture itself (overlay_autocapture_watch);
+     * K tells its playback to do the same. */
+    code_log_add(0, 'K', "-");
     replay_host_code_watch(code_watch);
 }
 

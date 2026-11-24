@@ -72,9 +72,16 @@ void overlay_autocapture_set_enabled(int on);
 void overlay_autocapture_tick(void);
 /* Replays record when the emulation thread accepted a coherent snapshot.
  * During playback, the recorded boundaries replace periodic capture starts.
- * Worker completion and compiler submission still use the ordinary tick. */
+ * Worker completion and compiler submission still use the ordinary tick.
+ * A recording always compiles the autocapture a compile was requested for,
+ * never a later DMA snapshot. A playback does the same only for a recording
+ * made that way (PACED_AUTOCAPTURE); for an older one (PACED_LATEST) the
+ * compiler reads the latest capture file, DMA snapshots included, as the
+ * recording did. */
+#define OVERLAY_REPLAY_PACED_LATEST      1
+#define OVERLAY_REPLAY_PACED_AUTOCAPTURE 2
 void overlay_autocapture_watch(void (*observer)(void));
-void overlay_autocapture_replay_set(int paced);
+void overlay_autocapture_replay_set(int paced);  /* 0, or OVERLAY_REPLAY_PACED_* */
 int overlay_autocapture_replay_capture(void);
 int overlay_autocapture_replay_has_work(void);
 /* Join any in-flight atomic writer before the final shutdown snapshot. */

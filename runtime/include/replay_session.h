@@ -142,7 +142,13 @@ void replay_host_code_watch(void (*fn)(char op, const char *unit));
 /* Playback: 1 begins (no unit runs natively until admitted), 0 ends. */
 void replay_host_code_admit(int on);
 int replay_host_code_admit_unit(const char *unit);   /* 0 out of memory */
-/* Reproduce the recorded capture boundary using the local game and compiler. */
+/* Reproduce the recorded capture boundary using the local game and compiler.
+ * paced: 0 ends; REPLAY_CAPTURE_INPUT_LATEST for a code log without the K
+ * event (the compiler reads the latest capture file, as the recording's
+ * did); REPLAY_CAPTURE_INPUT_AUTOCAPTURE with it (the compiler reads the
+ * autocapture of the boundary, never a later DMA snapshot). */
+#define REPLAY_CAPTURE_INPUT_LATEST      1
+#define REPLAY_CAPTURE_INPUT_AUTOCAPTURE 2
 void replay_host_code_capture_schedule(int paced);
 int replay_host_code_capture(void);
 /* The unit's file: waited for while the local compiler may write it (wait),

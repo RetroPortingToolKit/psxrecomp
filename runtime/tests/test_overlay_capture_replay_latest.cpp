@@ -11,9 +11,14 @@
  *
  * This test commits one capture, then makes a series of DMAs:
  *   A  no replay: the latest file is the last DMA snapshot (unchanged rule);
- *   B  a replay plays (overlay_autocapture_replay_set): the latest file is
- *      still the capture, and the DMA snapshots are in the history;
- *   C  a replay records (overlay_autocapture_watch): the same as B.
+ *   B  a replay plays a recording whose code log says its captures compiled
+ *      the autocapture (overlay_autocapture_replay_set PACED_AUTOCAPTURE):
+ *      the latest file is still the capture, and the DMA snapshots are in
+ *      the history;
+ *   C  a replay records (overlay_autocapture_watch): the same as B;
+ *   D  a replay plays an older recording, made when the compiler read the
+ *      latest file (PACED_LATEST): as A, so its units are compiled from the
+ *      same input as when it was recorded.
  */
 #include "code_provider.h"
 #include "dirty_ram_interp.h"
@@ -103,7 +108,7 @@ void make_dmas() {
     }
 }
 
-enum class Mode { none, playing, recording };
+enum class Mode { none, playing, playing_latest, recording };
 
 void no_observer(void) {}
 
@@ -117,7 +122,8 @@ void run(const fs::path &root, const char *name, Mode mode, std::string *capture
     overlay_capture_set_path(capture.string().c_str());
     overlay_capture_set_enabled(1);
     overlay_capture_on_dma(0x10000u, 4u, &g_ram[0x10000]);   /* the store wakes */
-    if (mode == Mode::playing) overlay_autocapture_replay_set(1);
+    if (mode == Mode::playing) overlay_autocapture_replay_set(OVERLAY_REPLAY_PACED_AUTOCAPTURE);
+    if (mode == Mode::playing_latest) overlay_autocapture_replay_set(OVERLAY_REPLAY_PACED_LATEST);
     if (mode == Mode::recording) overlay_autocapture_watch(no_observer);
     /* The capture the compiler is asked to read: code in a third page. */
     for (uint32_t j = 0; j < 64u; ++j) g_ram[0x40000u + j] = static_cast<uint8_t>(0x11u + j);
@@ -179,13 +185,19 @@ int main() {
     check(history > 2u, "C: the DMA snapshots are kept in the history, got " + std::to_string(history));
     check(latest == capture, "C: while a replay records, a DMA snapshot replaced the latest file");
 
+    run(root, "d-playing-latest", Mode::playing_latest, &capture, &latest, &history);
+    check(history > 2u, "D: the DMA snapshots are kept in the history, got " + std::to_string(history));
+    check(latest != capture,
+          "D: an older recording plays with the last DMA snapshot as the latest file, as it was recorded");
+
     fs::remove_all(root, ignored);
     SDL_Quit();
     if (g_failures) {
         std::fprintf(stderr, "overlay capture replay latest: %d failure(s)\n", g_failures);
         return 1;
     }
-    std::puts("PASS: while a replay records or plays, the compiler's capture file is the capture "
-              "it was asked to read; DMA snapshots stay in the history");
+    std::puts("PASS: while a replay records or plays a recording made so, the compiler's capture "
+              "file is the capture it was asked to read; DMA snapshots stay in the history; an "
+              "older recording plays with the latest file, as recorded");
     return 0;
 }

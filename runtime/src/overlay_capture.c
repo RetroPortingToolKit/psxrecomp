@@ -73,7 +73,9 @@ static uint64_t s_latest_commit_seq;
  * 000F7000_570A0CE6 from a later DMA snapshot (PS1B-698). While this is set,
  * those snapshots go to the history only and the compiler reads the
  * autocapture it was requested for. Written on the emulation thread, read by
- * the writer. */
+ * the writer. A playback sets it only for a recording made this way (its
+ * code log says so); an older recording's units were compiled from whichever
+ * file was the latest, so its playback keeps that input. */
 static SDL_atomic_t s_latest_autocap_only;
 
 static int      s_history_enabled = 0;
@@ -1549,12 +1551,14 @@ static int autocap_write_start(void)
 
 void overlay_autocapture_watch(void (*observer)(void)) {
     s_autocap_observer = observer;
-    SDL_AtomicSet(&s_latest_autocap_only, observer || s_autocap_replay_paced);
+    SDL_AtomicSet(&s_latest_autocap_only,
+                  observer || s_autocap_replay_paced == OVERLAY_REPLAY_PACED_AUTOCAPTURE);
 }
 
 void overlay_autocapture_replay_set(int paced) {
     s_autocap_replay_paced = paced;
-    SDL_AtomicSet(&s_latest_autocap_only, s_autocap_observer || paced);
+    SDL_AtomicSet(&s_latest_autocap_only,
+                  s_autocap_observer || paced == OVERLAY_REPLAY_PACED_AUTOCAPTURE);
 }
 
 int overlay_autocapture_replay_capture(void) {

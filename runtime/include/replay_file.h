@@ -84,7 +84,11 @@ extern "C" {
  *            cache rescan then, loaded when the guest first calls it;
  *            R (unit "-"): the host rescanned its cache then.
  *            A (unit "-", frame 0 after the S events) enables the recorded
- *            capture schedule. C (unit "-") saves the game's local evidence
+ *            capture schedule. K (unit "-", frame 0, right after A): the
+ *            compiler's input at each capture was that capture, not a later
+ *            DMA snapshot; without K a playback compiles the latest capture
+ *            file, as the recording did. A reader that does not know K
+ *            refuses the log. C (unit "-") saves the game's local evidence
  *            for the compiler. Playback uses the same guest boundaries. */
 #define REPLAY_TAG_THUMB       0x80000304u
 #define REPLAY_TAG_NAME        0x80000305u
