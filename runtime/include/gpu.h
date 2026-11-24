@@ -475,12 +475,13 @@ int  psx_ws_cull_bgez(uint32_t v);
  * becomes -margin and one of `w` becomes w+margin; interior bounds and 4:3
  * are unchanged (see ws_cull_edge.h). */
 uint32_t psx_ws_clip_edge_x(uint32_t v, uint32_t w);
-/* [widescreen.cull] screen_x_sites on `lui` and `bltz`: a screen X kept in the
- * high half of a register. The edge `lui rt, W` becomes (W + margin) << 16 and
- * the `bltz` is taken while SX < -margin (see ws_cull_edge.h). Identity at
- * 4:3. */
+/* [widescreen.cull] screen_x_sites on `lui`, `bltz` and `bgez`: a screen X kept
+ * in the high half of a register. The edge `lui rt, W` becomes (W + margin)
+ * << 16, the `bltz` is taken while SX < -margin and the `bgez` while
+ * SX >= -margin (see ws_cull_edge.h). Identity at 4:3. */
 uint32_t psx_ws_cull_lui_hi(uint32_t imm);
 int  psx_ws_cull_bltz_hi(uint32_t v);
+int  psx_ws_cull_bgez_hi(uint32_t v);
 void gpu_ws_set_cull_screen_x_sites(const uint32_t *sites, int nsites);
 int  psx_ws_is_cull_screen_x_site(uint32_t pc);
 int  psx_ws_cull_vxrange(uint32_t x, uint32_t imm);

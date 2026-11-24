@@ -44,7 +44,7 @@ int main(void) {
     callbacks.cpu_charge = advance;
     overlay_init(&callbacks);
     assert(overlay_abi() == PSX_OVERLAY_ABI_TAG);
-    assert(PSX_OVERLAY_ABI_VERSION == 35);
+    assert(PSX_OVERLAY_ABI_VERSION == 40);
     assert((overlay_abi() & 0xFFFF) != 30 && (overlay_abi() & 0xFFFF) != 31);
     assert(psx_ws_screen_x_bound(-256) == -512);
     assert(psx_ws_screen_x_bound(256) == 512);
@@ -69,9 +69,10 @@ int main(void) {
     assert(psx_ws_cull_bgez(0u) == 1 && psx_ws_cull_bgez((uint32_t)-1) == 0);
     assert(psx_ws_clip_edge_x(0u, 0x140u) == 0u);
     assert(psx_ws_clip_edge_x(0x140u, 0x140u) == 0x140u);
-    /* screen_x_sites on lui / bltz: a screen X in the high half. */
+    /* screen_x_sites on lui / bltz / bgez: a screen X in the high half. */
     assert(psx_ws_cull_lui_hi(0x0200u) == (0x0200u << 16));
     assert(psx_ws_cull_bltz_hi((uint32_t)-1 << 16) == 1 && psx_ws_cull_bltz_hi(0u) == 0);
+    assert(psx_ws_cull_bgez_hi((uint32_t)-1 << 16) == 0 && psx_ws_cull_bgez_hi(0u) == 1);
     callbacks.ws_x_margin = margin120;
     overlay_init(&callbacks);
     assert(psx_ws_cull_bgez((uint32_t)-120) == 1);
@@ -83,6 +84,8 @@ int main(void) {
     assert(psx_ws_cull_lui_hi(0x0200u) == ((0x0200u + 120u) << 16));
     assert(psx_ws_cull_bltz_hi((uint32_t)-120 << 16) == 0);
     assert(psx_ws_cull_bltz_hi((uint32_t)-121 << 16) == 1);
+    assert(psx_ws_cull_bgez_hi((uint32_t)-120 << 16) == 1);
+    assert(psx_ws_cull_bgez_hi((uint32_t)-121 << 16) == 0);
     /* Newly cached modules forward the guarded packed predicate. Missing
      * callbacks retain the original reject, rather than widening unsafely. */
     assert(psx_ws_masked_reject(0xFE00u, 0xFFFF0000u) == 1);

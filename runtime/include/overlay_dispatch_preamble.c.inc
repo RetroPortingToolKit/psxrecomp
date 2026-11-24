@@ -285,14 +285,18 @@ int psx_ws_cull_bgez(uint32_t v) {
 uint32_t psx_ws_clip_edge_x(uint32_t v, uint32_t w) {
     return psx_ws_clip_edge_x_value(v, w, psx_ws_x_margin());
 }
-/* [widescreen.cull] screen_x_sites on `lui` and `bltz` (a screen X in the high
- * half of a register). Emitted in overlay code at a listed address whose
- * instruction matches, so the shard must define them. Same math as gpu.c. */
+/* [widescreen.cull] screen_x_sites on `lui`, `bltz` and `bgez` (a screen X in
+ * the high half of a register). Emitted in overlay code at a listed address
+ * whose instruction matches, so the shard must define them. Same math as
+ * gpu.c. */
 uint32_t psx_ws_cull_lui_hi(uint32_t imm) {
     return psx_ws_cull_lui_hi_value(imm, psx_ws_x_margin());
 }
 int psx_ws_cull_bltz_hi(uint32_t v) {
     return psx_ws_cull_bltz_hi_value(v, psx_ws_x_margin());
+}
+int psx_ws_cull_bgez_hi(uint32_t v) {
+    return psx_ws_cull_bgez_hi_value(v, psx_ws_x_margin());
 }
 int psx_ws_cull_vxrange(uint32_t x, uint32_t imm) {
     int32_t margin = psx_ws_x_margin();

@@ -34,9 +34,9 @@
  * so interior viewports keep their vanilla culls while full-width viewports
  * widen on each side that touches the display edge.
  *
- * screen_x_sites on `lui` and `bltz` -- a screen X kept in the high half of
- * a register (`SX << 16`), as a renderer does when it tests the sign of
- * differences and masks whole points at once:
+ * screen_x_sites on `lui`, `bltz` and `bgez` -- a screen X kept in the
+ * high half of a register (`SX << 16`), as a renderer does when it tests the
+ * sign of differences and masks whole points at once:
  *
  *     lui   edge, W       ; right screen edge as W << 16
  *     sll   x, sx, 16
@@ -49,6 +49,8 @@
  * register with -m, and every negative `SX << 16` is far below that.
  * `slti rt, x, 0` on the same `SX << 16` value is the same sign test as a
  * flag instead of a branch, and screen_x_sites widens it identically.
+ * `bgez x, keep` on `SX << 16`, the left-edge keep of a per-vertex chain
+ * that ends in this `bltz`, is its complement: taken while SX >= -m.
  *
  * [[widescreen.cull.sxy]] -- the all-vertices trivial reject over packed GTE
  * SXY words (Y in the high half, X in the low half), folded with AND:
@@ -74,7 +76,6 @@
 extern "C" {
 #endif
 
-/* bgez predicate (1 = branch taken = keep) for a signed screen X. */
 /* SLTU on screen X and width shifted into the high half. Only proven packed
  * operands widen; original comparison is exact at 4:3 and for other layouts. */
 static inline uint32_t psx_ws_cull_packed_x_value(uint32_t x, uint32_t width,
@@ -89,6 +90,7 @@ static inline uint32_t psx_ws_cull_packed_x_value(uint32_t x, uint32_t width,
     return offset >= 0 && offset < span ? 1u : 0u;
 }
 
+/* bgez predicate (1 = branch taken = keep) for a signed screen X. */
 static inline int psx_ws_cull_bgez_value(int32_t v, int32_t m)
 {
     return v >= -(m > 0 ? m : 0);
@@ -124,6 +126,15 @@ static inline uint32_t psx_ws_cull_lui_hi_value(uint32_t imm, int32_t m)
 static inline int psx_ws_cull_bltz_hi_value(uint32_t v, int32_t m)
 {
     return (int32_t)v < -((m > 0 ? m : 0) * 65536);
+}
+
+/* bgez predicate (1 = branch taken = keep) for a screen X in the high half
+ * of `v`: the left-edge keep of a chain whose last vertex uses the bltz form.
+ * Taken while SX >= -m, so the chain rejects only when every vertex is left
+ * of the revealed edge. */
+static inline int psx_ws_cull_bgez_hi_value(uint32_t v, int32_t m)
+{
+    return !psx_ws_cull_bltz_hi_value(v, m);
 }
 
 /* One AND of a [[widescreen.cull.sxy]] fold: `acc & sxy`, keeping bit 15 (X
