@@ -38,7 +38,7 @@ project(GameRuntimeBiosProbe C)
 set(PSXRECOMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/framework")
 set(PSXRECOMP_BIOS_STEMS FixtureRetail CACHE STRING "")
 set(PSX_RECOMP_UI OFF)
-include("''' + (ROOT / "runtime/psx_split_keyword_tail.cmake").as_posix() + '''")
+include("''' + (ROOT / "runtime/psx_partition_game_runtime_args.cmake").as_posix() + '''")
 ''' + registry + '''
 function(psxrecomp_add_runtime_target target)
     _psxrt_validate_bios()

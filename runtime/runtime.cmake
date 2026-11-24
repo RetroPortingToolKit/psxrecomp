@@ -1139,8 +1139,8 @@ endfunction()
 # EXCLUDE_BUILTIN_MODS; the selection (and its loud failures) lives in
 # psx_mod_catalog_select.cmake so the tests can drive it via `cmake -P`.
 include("${CMAKE_CURRENT_LIST_DIR}/psx_mod_catalog_select.cmake")
-# psxrecomp_add_game_runtime hands forwarded keywords back out of its own lists.
-include("${CMAKE_CURRENT_LIST_DIR}/psx_split_keyword_tail.cmake")
+# psxrecomp_add_game_runtime keeps forwarded keywords out of its own lists.
+include("${CMAKE_CURRENT_LIST_DIR}/psx_partition_game_runtime_args.cmake")
 
 # Immediate subdirectory names of `root` (package ids), sorted.
 function(_psxrt_package_ids root out_var)
@@ -2852,14 +2852,10 @@ function(psxrecomp_add_game_runtime target)
     # setup sources, and those are dropped when recomp-ui is off.
     set(multiValueArgs GEN_FULL_GLOB CODEGEN_SETUP_SOURCES EXCLUDE_BUILTIN_MODS
         NATIVE_IDLE_WAIT_SITES EXTRAS_SOURCES)
-    cmake_parse_arguments(PSXG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-    # A forwarded keyword (APP_ICON, ...) written after one of these lists is
-    # collected into it with its values. Hand it back to the forwarded
-    # arguments, so that it keeps its value and the lists keep only their own.
-    foreach(_psxg_list IN LISTS multiValueArgs)
-        psx_split_keyword_tail(PSXG_${_psxg_list} _psxg_tail ${PSXG_${_psxg_list}})
-        list(APPEND PSXG_UNPARSED_ARGUMENTS ${_psxg_tail})
-    endforeach()
+    psx_partition_game_runtime_args(_psxg_wrapper_args _psxg_forwarded_args
+        "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+    cmake_parse_arguments(PSXG "${options}" "${oneValueArgs}" "${multiValueArgs}"
+        ${_psxg_wrapper_args})
 
     if(NOT PSXRECOMP_ROOT)
         message(FATAL_ERROR
@@ -3041,7 +3037,6 @@ function(psxrecomp_add_game_runtime target)
     # The title's own sources, in every mode.
     list(APPEND _psxg_extras ${PSXG_EXTRAS_SOURCES})
 
-    set(_psxg_forwarded_args ${PSXG_UNPARSED_ARGUMENTS})
     if(PSXG_NATIVE_IDLE_WAIT_SITES)
         list(APPEND _psxg_forwarded_args NATIVE_IDLE_WAIT_SITES ${PSXG_NATIVE_IDLE_WAIT_SITES})
     endif()

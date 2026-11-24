@@ -3,7 +3,7 @@
 what it is, whatever order the title writes them in.
 
 Runs the REAL psxrecomp_add_game_runtime body from runtime.cmake under
-`cmake -P`, with the real psx_split_keyword_tail. psxrecomp_add_runtime_target
+`cmake -P`, with the real argument partition. psxrecomp_add_runtime_target
 is replaced by its own real argument parse (everything up to its
 cmake_parse_arguments call), so what is checked is what the runtime target
 would actually receive. The wrapper parses some list keywords itself and
@@ -30,7 +30,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 RUNTIME_CMAKE = REPO / "runtime" / "runtime.cmake"
-SPLIT_CMAKE = REPO / "runtime" / "psx_split_keyword_tail.cmake"
+PARTITION_CMAKE = REPO / "runtime" / "psx_partition_game_runtime_args.cmake"
 
 TITLE_SOURCES = ["title/plugin.c", "title/plugin_hooks.c"]
 CODEGEN_SETUP = "codegen_setup.c"
@@ -142,7 +142,8 @@ def main() -> int:
         return 0
     runtime = RUNTIME_CMAKE.read_text(encoding="utf-8")
     functions = "\n".join((
-        extract_function(SPLIT_CMAKE.read_text(encoding="utf-8"), "psx_split_keyword_tail"),
+        extract_function(PARTITION_CMAKE.read_text(encoding="utf-8"),
+                         "psx_partition_game_runtime_args"),
         runtime_target_parse(runtime),
         extract_function(runtime, "psxrecomp_add_game_runtime")))
     failures = 0
@@ -181,6 +182,12 @@ def main() -> int:
                       "%s: NATIVE_IDLE_WAIT_SITES keeps just its own values" % what, out)
                 check(got["EXCLUDE_BUILTIN_MODS"] == ([EXCLUDED] if EXCLUDE in pieces else []),
                       "%s: EXCLUDE_BUILTIN_MODS keeps just its own ids" % what, out)
+
+    repeated = (WINDOW, MARKER, SETUP, "MAX_PLAYERS 3", GLOB, "MAX_PLAYERS 4", EXTRAS)
+    call = "psxrecomp_add_game_runtime(psx-runtime\n    %s)" % "\n    ".join(repeated)
+    got, out = run_case(args.cmake, functions, call, "ON", True)
+    check(got is not None and got["MAX_PLAYERS"] == ["4"],
+          "repeated forwarded scalars keep the last value in call order", out)
 
     call = ("psxrecomp_add_game_runtime(psx-runtime\n    %s\n    APP_ICNO \"icon.ico\")"
             % "\n    ".join((WINDOW, MARKER, GLOB, SETUP)))
