@@ -65,6 +65,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -742,6 +743,129 @@ def stage_linux_tcc(toolchain, dl_cache, pins, log=print):
         % (pins['tcc_version'], pins['musl_version'], dest))
 
 
+_WINDOWS_SYSTEM_DLLS = frozenset("""
+    advapi32.dll bcrypt.dll bcryptprimitives.dll cfgmgr32.dll comctl32.dll
+    comdlg32.dll crypt32.dll dbghelp.dll gdi32.dll imm32.dll iphlpapi.dll
+    kernel32.dll kernelbase.dll msvcrt.dll ntdll.dll ole32.dll oleaut32.dll
+    powrprof.dll psapi.dll rpcrt4.dll secur32.dll setupapi.dll shell32.dll
+    shlwapi.dll ucrtbase.dll user32.dll userenv.dll version.dll winhttp.dll
+    winmm.dll ws2_32.dll
+""".split())
+
+
+def _windows_imports(pe):
+    """Read PE32/PE32+ import descriptors without running target tools."""
+    data = pe.read_bytes()
+    try:
+        header, = struct.unpack_from('<I', data, 0x3c)
+        if data[:2] != b'MZ' or data[header:header + 4] != b'PE\0\0':
+            raise ValueError('missing PE signature')
+        section_count, = struct.unpack_from('<H', data, header + 6)
+        optional_size, = struct.unpack_from('<H', data, header + 20)
+        optional = header + 24
+        magic, = struct.unpack_from('<H', data, optional)
+        if magic not in (0x10b, 0x20b):
+            raise ValueError('unknown PE optional header')
+        directories = optional + (96 if magic == 0x10b else 112)
+        directory_count, = struct.unpack_from('<I', data, directories - 4)
+        section_table = optional + optional_size
+        sections = [struct.unpack_from('<III', data, section_table + i * 40 + 12)
+                    for i in range(section_count)]
+
+        def file_span(rva):
+            for address, size, start in sections:
+                if address <= rva < address + size:
+                    return start + rva - address, min(start + size, len(data))
+            raise ValueError('RVA outside file-backed sections')
+
+        # Data directories 1 and 13 contain the eager and delay-load imports.
+        for index, stride, name_field in ((1, 20, 3), (13, 32, 1)):
+            directory = directories + 8 * index
+            if index >= directory_count:
+                continue
+            if directory + 8 > section_table:
+                raise ValueError('data directory extends beyond the optional header')
+            table_rva, table_size = struct.unpack_from('<II', data, directory)
+            if not table_rva:
+                continue
+            start, end = file_span(table_rva)
+            for offset in range(start, min(end, start + table_size) - stride + 1, stride):
+                descriptor = struct.unpack_from('<%dI' % (stride // 4), data, offset)
+                if not any(descriptor):
+                    break
+                if index == 13 and not descriptor[0] & 1:
+                    raise ValueError('delay-load descriptor uses legacy virtual addresses')
+                name, name_end = file_span(descriptor[name_field])
+                dll = data[name:data.index(0, name, name_end)].decode('ascii')
+                if not re.fullmatch(r'[A-Za-z0-9_.+ -]+\.dll', dll, re.IGNORECASE):
+                    raise ValueError('invalid DLL name %r' % dll)
+                yield dll
+            else:
+                raise ValueError('unterminated import table')
+    except (ValueError, struct.error) as error:
+        _die('cannot inspect Windows imports in %s: %s' % (pe, error))
+
+
+def _stage_windows_runtime_notices(dest, dependencies, runtime_bin):
+    for dll, source in dependencies.items():
+        prefix = source.parent.parent
+        notices = prefix / 'share' / 'licenses'
+        if dll in ('libc++.dll', 'libunwind.dll'):
+            candidates = [source.parent / 'LLVM-LICENSE.txt', prefix / 'LICENSE.TXT',
+                          prefix.parent / 'LICENSE.TXT']
+            if runtime_bin:
+                candidates.append(runtime_bin.parent / 'LICENSE.TXT')
+            notice = next((p for p in candidates if p.is_file()), None)
+            if notice is None:
+                _die('cannot find the LLVM license for %s; pass --mingw-bin '
+                     'pointing to the LLVM toolchain bin directory' % source)
+            shutil.copy2(notice, dest / 'LLVM-LICENSE.txt')
+        elif dll.startswith(('libgcc_s_', 'libstdc++-', 'libssp-')):
+            for filename in ('COPYING3', 'COPYING.RUNTIME', 'COPYING.LIB'):
+                notice = notices / 'gcc-libs' / filename
+                if notice.is_file():
+                    shutil.copy2(notice, dest / ('GCC-' + filename))
+        elif dll == 'libwinpthread-1.dll':
+            notice = notices / 'libwinpthread' / 'COPYING'
+            if not notice.is_file():
+                notice = notices / 'winpthreads' / 'COPYING'
+            if notice.is_file():
+                shutil.copy2(notice, dest / 'winpthreads-COPYING')
+
+
+def _stage_windows_emitter_runtime(dest, emitters, mingw_bin, log):
+    dest = Path(dest)
+    runtime_bin = Path(mingw_bin) if mingw_bin else None
+    search_dirs = dict.fromkeys([runtime_bin, *(pe.parent for pe in emitters)])
+    available = {}
+    for directory in search_dirs:
+        if directory is not None and directory.is_dir():
+            for path in directory.iterdir():
+                if path.suffix.lower() == '.dll' and path.is_file():
+                    available.setdefault(path.name.lower(), path)
+
+    pending = list(emitters)
+    dependencies = {}
+    for pe in pending:
+        for name in _windows_imports(pe):
+            dll = name.lower()
+            if (dll in dependencies or dll in _WINDOWS_SYSTEM_DLLS
+                    or dll.startswith(('api-ms-', 'ext-ms-'))):
+                continue
+            source = available.get(dll)
+            if source is None:
+                _die('Windows emitter dependency %s (imported by %s) was not '
+                     'found beside the emitters or in --mingw-bin' % (name, pe))
+            dependencies[dll] = source
+            pending.append(source)
+
+    _stage_windows_runtime_notices(dest, dependencies, runtime_bin)
+    for dll, source in dependencies.items():
+        shutil.copy2(source, dest / dll)
+    log('Windows emitter runtime DLLs: %s' %
+        (', '.join(sorted(dependencies)) or 'none'))
+
+
 def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
                     platform_tag=None, mingw_bin=None, log=print):
     """Stage the self-contained overlay toolchain (interpreter + recompiler +
@@ -814,22 +938,6 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
     shutil.copy2(src_recompiler, os.path.join(toolchain, recompiler))
     os.chmod(os.path.join(toolchain, recompiler), 0o755)
 
-    # Windows needs the mingw runtime beside the recompiler; a Linux build links
-    # against the system libstdc++ that is already present.
-    if platform_tag == 'win':
-        # A recompiler built against a static CRT (the cmake-clang-v1 emitters) needs no
-        # runtime DLLs; a gcc-built one does. Copy whatever the named bin dir (or the
-        # emitter's own directory) holds, and say which case this is.
-        dll_src = mingw_bin or recomp_dir
-        copied = 0
-        for d in ('libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll'):
-            p = os.path.join(dll_src, d)
-            if os.path.isfile(p):
-                shutil.copy2(p, os.path.join(toolchain, d))
-                copied += 1
-        log('mingw runtime DLLs staged beside the recompiler: %d (from %s)%s'
-            % (copied, dll_src, '' if copied else ' -- assuming a static recompiler'))
-
     shutil.copy2(os.path.join(recomp_tools, 'compile_overlays.py'), toolchain)
     # The BIOS module builder (docs/BIOS_SELECTION.md, "player-side backend
     # build"): turns the player's own retail dump into a loadable backend with
@@ -843,6 +951,9 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
              'psxrecomp-bios target first' % src_bios_emitter)
     shutil.copy2(src_bios_emitter, os.path.join(toolchain, bios_emitter))
     os.chmod(os.path.join(toolchain, bios_emitter), 0o755)
+    if platform_tag == 'win':
+        _stage_windows_emitter_runtime(
+            toolchain, (Path(src_recompiler), Path(src_bios_emitter)), mingw_bin, log)
     tool_inc = _mkdirs(os.path.join(toolchain, 'include'))
     for h in os.listdir(recomp_include):
         if h.endswith(('.h', '.c.inc')):
@@ -1207,7 +1318,8 @@ def main(argv=None):
     p.add_argument('--recomp-include', required=True, help='framework runtime/include')
     p.add_argument('--dl-cache', required=True, help='download cache directory')
     p.add_argument('--platform', choices=sorted(TOOLCHAIN_PINS), default=None)
-    p.add_argument('--mingw-bin', default=None, help='Windows only')
+    p.add_argument('--mingw-bin', default=None,
+                   help='Windows compiler bin directory supplying emitter runtime DLLs')
     p.set_defaults(func=cmd_stage_toolchain)
 
     p = sub.add_parser('stage-mods', help='stage and verify the mod catalog')
