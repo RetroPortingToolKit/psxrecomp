@@ -105,6 +105,7 @@ def run_guard(
 
 
 SELECT = REPO / "runtime" / "psx_mod_catalog_select.cmake"
+SPLIT = REPO / "runtime" / "psx_split_keyword_tail.cmake"
 
 
 def run_select(
@@ -346,11 +347,12 @@ def main() -> int:
               "an exclusion with no builtin catalog at all FAILS configure")
 
         # psxrecomp_add_game_runtime forwards keywords it does not parse, so
-        # its EXCLUDE_BUILTIN_MODS list can swallow one written after it.
+        # its lists (EXCLUDE_BUILTIN_MODS among them) can swallow one written
+        # after them; psx_split_keyword_tail hands it back.
         split = tmp / "split_driver.cmake"
         split.write_text(
-            f'include("{SELECT.as_posix()}")\n'
-            "psx_split_exclude_builtin_mods(_ids _tail psx.enhancement.fast-loading "
+            f'include("{SPLIT.as_posix()}")\n'
+            "psx_split_keyword_tail(_ids _tail psx.enhancement.fast-loading "
             "psx.presentation.bezel GAME_OVERLAY_STATIC_C generated/x.c APP_ICON a.ico)\n"
             'list(JOIN _ids "," _i)\nlist(JOIN _tail "," _t)\n'
             'message(STATUS "IDS=[${_i}] TAIL=[${_t}]")\n', encoding="utf-8")
@@ -425,8 +427,8 @@ def main() -> int:
     check(
         text.count("EXCLUDE_BUILTIN_MODS)") >= 2
         and "${PSXRT_EXCLUDE_BUILTIN_MODS}" in text
-        and "psx_split_exclude_builtin_mods(_psxg_exclude_ids" in text
-        and "EXCLUDE_BUILTIN_MODS ${_psxg_exclude_ids}" in text,
+        and "psx_split_keyword_tail(PSXG_${_psxg_list}" in text
+        and "EXCLUDE_BUILTIN_MODS ${PSXG_EXCLUDE_BUILTIN_MODS}" in text,
         "both psxrecomp_add_runtime_target and psxrecomp_add_game_runtime "
         "parse EXCLUDE_BUILTIN_MODS as a multi-value arg and pass it on",
     )

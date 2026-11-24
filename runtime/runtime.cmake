@@ -1139,6 +1139,8 @@ endfunction()
 # EXCLUDE_BUILTIN_MODS; the selection (and its loud failures) lives in
 # psx_mod_catalog_select.cmake so the tests can drive it via `cmake -P`.
 include("${CMAKE_CURRENT_LIST_DIR}/psx_mod_catalog_select.cmake")
+# psxrecomp_add_game_runtime hands forwarded keywords back out of its own lists.
+include("${CMAKE_CURRENT_LIST_DIR}/psx_split_keyword_tail.cmake")
 
 # Immediate subdirectory names of `root` (package ids), sorted.
 function(_psxrt_package_ids root out_var)
@@ -1590,6 +1592,13 @@ function(psxrecomp_add_runtime_target target)
     set(multiValueArgs EXTRAS_SOURCES GAME_GENERATED_FULL_C EXCLUDE_BUILTIN_MODS
         AUDIT_MOD_DIRS NATIVE_IDLE_WAIT_SITES)
     cmake_parse_arguments(PSXRT "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+    # An argument no keyword claims (a misspelt or retired keyword, or one a
+    # wrapper handed on) would otherwise be dropped without a word.
+    if(PSXRT_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR
+            "psxrecomp_add_runtime_target(${target}): unknown argument(s): "
+            "${PSXRT_UNPARSED_ARGUMENTS}")
+    endif()
 
     _psxrt_validate_bios()
 
@@ -2804,6 +2813,7 @@ endfunction()
 #     GEN_MARKER "generated/SLUS_01234_dispatch.c"
 #     GEN_FULL_GLOB "generated/SLUS_01234_full_*.c"
 #     CODEGEN_SETUP_SOURCES codegen_setup.c
+#     EXTRAS_SOURCES src/title_plugin.c   # optional; built with or without recomp-ui
 #     DEFAULT_GAME_CONFIG_PATH "game.toml"
 #     LAUNCHER_BOXART "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/img/boxart.tga"
 #     LAUNCHER_THEME "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/theme.ini" # optional game colors
@@ -2836,12 +2846,20 @@ function(psxrecomp_add_game_runtime target)
         NETPLAY_LOBBY_URL
         PRELOADED_MODS_DIR
     )
-    # EXCLUDE_BUILTIN_MODS is parsed here (not left in the unparsed tail) for
-    # the same reason as PRELOADED_MODS_DIR: an unknown keyword written after
-    # CODEGEN_SETUP_SOURCES would otherwise be swallowed as more source files.
+    # EXCLUDE_BUILTIN_MODS and EXTRAS_SOURCES are parsed here (not left in the
+    # unparsed tail) for the same reason as PRELOADED_MODS_DIR: written after
+    # CODEGEN_SETUP_SOURCES they would otherwise be collected as more codegen
+    # setup sources, and those are dropped when recomp-ui is off.
     set(multiValueArgs GEN_FULL_GLOB CODEGEN_SETUP_SOURCES EXCLUDE_BUILTIN_MODS
-        NATIVE_IDLE_WAIT_SITES)
+        NATIVE_IDLE_WAIT_SITES EXTRAS_SOURCES)
     cmake_parse_arguments(PSXG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+    # A forwarded keyword (APP_ICON, ...) written after one of these lists is
+    # collected into it with its values. Hand it back to the forwarded
+    # arguments, so that it keeps its value and the lists keep only their own.
+    foreach(_psxg_list IN LISTS multiValueArgs)
+        psx_split_keyword_tail(PSXG_${_psxg_list} _psxg_tail ${PSXG_${_psxg_list}})
+        list(APPEND PSXG_UNPARSED_ARGUMENTS ${_psxg_tail})
+    endforeach()
 
     if(NOT PSXRECOMP_ROOT)
         message(FATAL_ERROR
@@ -3020,6 +3038,8 @@ function(psxrecomp_add_game_runtime target)
         list(APPEND _psxg_extras
             "${PSXRECOMP_ROOT}/host/psxrecomp_codegen_host.c")
     endif()
+    # The title's own sources, in every mode.
+    list(APPEND _psxg_extras ${PSXG_EXTRAS_SOURCES})
 
     set(_psxg_forwarded_args ${PSXG_UNPARSED_ARGUMENTS})
     if(PSXG_NATIVE_IDLE_WAIT_SITES)
@@ -3033,15 +3053,8 @@ function(psxrecomp_add_game_runtime target)
             PRELOADED_MODS_DIR "${PSXG_PRELOADED_MODS_DIR}")
     endif()
     if(PSXG_EXCLUDE_BUILTIN_MODS)
-        # Hand back any forwarded keyword (and its values) the multi-value
-        # parse swallowed after EXCLUDE_BUILTIN_MODS; see the helper.
-        psx_split_exclude_builtin_mods(_psxg_exclude_ids _psxg_exclude_tail
-            ${PSXG_EXCLUDE_BUILTIN_MODS})
-        if(_psxg_exclude_ids)
-            list(APPEND _psxg_forwarded_args
-                EXCLUDE_BUILTIN_MODS ${_psxg_exclude_ids})
-        endif()
-        list(APPEND _psxg_forwarded_args ${_psxg_exclude_tail})
+        list(APPEND _psxg_forwarded_args
+            EXCLUDE_BUILTIN_MODS ${PSXG_EXCLUDE_BUILTIN_MODS})
     endif()
 
     set(_psxg_rt_args

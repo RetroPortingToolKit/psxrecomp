@@ -29,33 +29,6 @@
 #   * an excluded id the title's own catalog also provides (a title catalog may
 #     OVERRIDE a builtin at the same id -- excluding and overriding the same id
 #     at once contradicts itself, and either reading would surprise someone).
-# psx_split_exclude_builtin_mods(<ids_var> <tail_var> <tokens>...)
-#
-# psxrecomp_add_game_runtime() parses EXCLUDE_BUILTIN_MODS as a multi-value
-# argument but forwards keywords it does not know (GAME_OVERLAY_STATIC_C,
-# APP_ICON, ...) to psxrecomp_add_runtime_target(). cmake_parse_arguments keeps
-# collecting a multi-value list until it meets one of ITS OWN keywords, so a
-# forwarded keyword written after EXCLUDE_BUILTIN_MODS -- and its value -- would
-# be swallowed as package ids. Package ids are lower-case dotted names, never
-# an upper-case keyword, so everything from the first keyword-shaped token on
-# is handed back as the tail to forward.
-function(psx_split_exclude_builtin_mods ids_var tail_var)
-    set(_ids "")
-    set(_tail "")
-    set(_in_tail FALSE)
-    foreach(_tok IN LISTS ARGN)
-        if(NOT _in_tail AND _tok MATCHES "^[A-Z][A-Z0-9_]*$")
-            set(_in_tail TRUE)
-        endif()
-        if(_in_tail)
-            list(APPEND _tail "${_tok}")
-        else()
-            list(APPEND _ids "${_tok}")
-        endif()
-    endforeach()
-    set(${ids_var} "${_ids}" PARENT_SCOPE)
-    set(${tail_var} "${_tail}" PARENT_SCOPE)
-endfunction()
 
 function(psx_select_builtin_mod_ids out_var)
     cmake_parse_arguments(_psxsel "" "LABEL" "AVAILABLE;ALLOWLIST;EXCLUDE;TITLE" ${ARGN})
