@@ -6950,8 +6950,18 @@ static void apply_input_override_to_sio(int override_word) {
     /* Prefer the configured seat mode (incl. game.toml lock_mode / settings
      * p1_mode). Falling back to DIGITAL when kind==0 made DualShock-locked
      * titles (Ape Escape) ignore debug-server injection in headless runs. */
+    /* A local DualShock seat powers on digital and flips to analog only when
+     * the game sends the config/set-mode command (real hardware). Injected
+     * pads follow the live-controller contract: the SIO type stays game-owned,
+     * so scripted input never presents ID 0x73 before the game asked for it
+     * (the BIOS shell ignores such a pad). */
+    bool game_owned_type = live_pad_mode(0);
+#ifndef PSX_NO_DEBUG_TOOLS
+    game_owned_type = game_owned_type && debug_server_get_pad_type_override() < 0;
+#endif
     int mode;
-    if (p.kind != 0)                  mode = effective_player_mode(p);
+    if (game_owned_type)              mode = sampled_pad_mode(0);
+    else if (p.kind != 0)             mode = effective_player_mode(p);
     else if (dev_any_input_enabled()) mode = (int)PSXRecompV4::PAD_MODE_ANALOG;
     else                              mode = p.mode;
 
@@ -6992,7 +7002,7 @@ static void apply_input_override_to_sio(int override_word) {
         sio_set_pad_config_capable(0, injected_type != SIO_PAD_DIGITAL);
     }
 #endif
-    sio_request_pad_type(0, injected_type);
+    if (!game_owned_type) sio_request_pad_type(0, injected_type);
 #ifndef PSX_NO_DEBUG_TOOLS
     const int debug_connected = debug_server_get_pad_connected_override(0);
     if (debug_connected >= 0) sio_set_pad_connected(0, debug_connected);
