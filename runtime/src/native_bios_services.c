@@ -4,7 +4,9 @@
 #include "psx_icache.h"
 #include "psx_memory.h"
 
-#include <stdbool.h>
+#include <limits.h>
+#include <stdio.h>
+#include <string.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -47,6 +49,164 @@ static void fill_bytes(CPUState *cpu, uint32_t dest, uint8_t value, uint32_t cou
         count -= 4;
     }
     while (count--) cpu->write_byte(dest++, value);
+}
+
+/* The guest's O32 variadic argument slots are 32-bit, independent of host
+ * pointer size. Only a validated integer/character conversion reaches host
+ * stdio; guest string pointers are read using normal guest memory access. */
+static uint32_t console_arg(CPUState *cpu, uint32_t *slot) {
+    uint32_t index = (*slot)++;
+    return index < 4 ? cpu->gpr[4 + index] :
+                       cpu->read_word(cpu->gpr[29] + index * 4u);
+}
+
+static int console_string_length(CPUState *cpu, uint32_t address, int precision) {
+    uint32_t offset;
+    if (!psx_ram_resolve(address, 1, &offset)) return -1;
+    uint32_t limit = psx_ram_live_bytes() - offset;
+    if (precision >= 0 && (uint32_t)precision < limit) limit = (uint32_t)precision;
+    for (uint32_t i = 0; i < limit; ++i) {
+        if (!cpu->read_byte(address + i)) return (int)i;
+    }
+    return precision >= 0 && (uint32_t)precision == limit ? (int)limit : -1;
+}
+
+static int console_string(CPUState *cpu, uint32_t address, int width,
+                          int precision, int left) {
+    int length = address ? console_string_length(cpu, address, precision) : 6;
+    if (length < 0) return -1;
+    if (!address && precision >= 0 && length > precision) length = precision;
+    int padding = width > length ? width - length : 0;
+    if (!left) for (int i = 0; i < padding; ++i) fputc(' ', stdout);
+    for (int i = 0; i < length; ++i)
+        fputc(address ? cpu->read_byte(address + (uint32_t)i) : "<NULL>"[i], stdout);
+    if (left) for (int i = 0; i < padding; ++i) fputc(' ', stdout);
+    return length + padding;
+}
+
+static int console_decimal(CPUState *cpu, uint32_t *address, int *result) {
+    int value = 0;
+    uint8_t c;
+    while ((c = cpu->read_byte(*address)) >= '0' && c <= '9') {
+        if (value > (INT_MAX - (c - '0')) / 10) return 0;
+        value = value * 10 + c - '0';
+        ++*address;
+    }
+    *result = value;
+    return 1;
+}
+
+static int console_printf(CPUState *cpu) {
+    uint32_t address = cpu->gpr[4], slot = 1;
+    int length = console_string_length(cpu, address, -1);
+    if (length < 0) return -1;
+    uint32_t end = address + (uint32_t)length;
+    int written = 0;
+    while (address < end) {
+        uint8_t c = cpu->read_byte(address++);
+        if (c != '%') {
+            if (written == INT_MAX || fputc(c, stdout) == EOF) return -1;
+            ++written;
+            continue;
+        }
+        if (cpu->read_byte(address) == '%') {
+            ++address;
+            if (written == INT_MAX || fputc('%', stdout) == EOF) return -1;
+            ++written;
+            continue;
+        }
+        char format[48] = "%";
+        size_t at = 1;
+        int left = 0;
+        while (address < end && (c = cpu->read_byte(address)) && strchr("-+ #0", c)) {
+            if (at >= 8) return -1;
+            if (c == '-') left = 1;
+            format[at++] = (char)c;
+            ++address;
+        }
+        int width = 0, precision = -1;
+        if (cpu->read_byte(address) == '*') {
+            ++address;
+            width = (int32_t)console_arg(cpu, &slot);
+            if (width == INT_MIN) return -1;
+            if (width < 0) {
+                width = -width;
+                left = 1;
+                format[at++] = '-';
+            }
+        } else if (!console_decimal(cpu, &address, &width)) return -1;
+        if (cpu->read_byte(address) == '.') {
+            ++address;
+            if (cpu->read_byte(address) == '*') {
+                ++address;
+                precision = (int32_t)console_arg(cpu, &slot);
+            } else if (!console_decimal(cpu, &address, &precision)) return -1;
+        }
+        if ((uint32_t)width > PSX_MAIN_RAM_WINDOW_BYTES ||
+            (precision >= 0 && (uint32_t)precision > PSX_MAIN_RAM_WINDOW_BYTES)) return -1;
+        int narrow = 0;
+        if (cpu->read_byte(address) == 'h') {
+            ++address;
+            narrow = 16;
+            if (cpu->read_byte(address) == 'h') { ++address; narrow = 8; }
+        } else if (cpu->read_byte(address) == 'l') {
+            ++address; /* PSX long is 32-bit. */
+        }
+        if (address >= end) return -1;
+        c = cpu->read_byte(address++);
+        uint32_t value = console_arg(cpu, &slot);
+        int count;
+        if (c == 's') {
+            count = console_string(cpu, value, width, precision, left);
+        } else {
+            if (!strchr("diuoxXcp", c)) return -1;
+            if (c == 'p') {
+                if (!width) width = 8;
+                format[at++] = '0';
+                c = 'x';
+            }
+            if (width) at += (size_t)snprintf(format + at, sizeof format - at, "%d", width);
+            if (precision >= 0)
+                at += (size_t)snprintf(format + at, sizeof format - at, ".%d", precision);
+            if (at + 1 >= sizeof format) return -1;
+            format[at++] = (char)c;
+            format[at] = 0;
+            if (c == 'd' || c == 'i') {
+                int32_t signed_value = narrow == 8 ? (int8_t)value :
+                                       narrow == 16 ? (int16_t)value : (int32_t)value;
+                count = fprintf(stdout, format, (int)signed_value);
+            } else if (c == 'c') {
+                count = fprintf(stdout, format, (int)(uint8_t)value);
+            } else {
+                if (narrow == 8) value &= 0xffu;
+                if (narrow == 16) value &= 0xffffu;
+                count = fprintf(stdout, format, (unsigned)value);
+            }
+        }
+        if (count < 0 || written > INT_MAX - count) return -1;
+        written += count;
+    }
+    fflush(stdout);
+    return written;
+}
+
+static int service_console(CPUState *cpu, uint32_t vector, uint32_t fn) {
+    if (vector == 0xa0 && fn == 0x3f) {
+        int written = console_printf(cpu);
+        if (written < 0) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->gpr[2] = (uint32_t)written;
+    } else if (vector == 0xb0 && fn == 0x3f) {
+        if (console_string(cpu, cpu->gpr[4], 0, -1, 0) < 0)
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+        fflush(stdout);
+    } else if (vector == 0xb0 && (fn == 0x3d || (fn == 0x3b && cpu->gpr[5] == 1))) {
+        fputc((uint8_t)cpu->gpr[4], stdout);
+        fflush(stdout);
+    } else {
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    }
+    psx_cpu_charge(32);
+    return PSX_NATIVE_BIOS_RETURN;
 }
 
 static int service_a0(CPUState *cpu, uint32_t fn) {
@@ -169,6 +329,9 @@ static int service_thread(CPUState *cpu, uint32_t vector, uint32_t fn) {
 }
 
 int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
+    int console = service_console(cpu, vector, fn);
+    if (console) return console;
+
     if (vector == 0xb0 && (fn == 0x56 || fn == 0x57)) {
         cpu->gpr[2] = fn == 0x56 ? PSX_NATIVE_C0_TABLE : PSX_NATIVE_B0_TABLE;
         psx_cpu_charge(24);

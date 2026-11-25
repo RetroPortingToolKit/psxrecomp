@@ -263,6 +263,15 @@ static void check_native_calls(void)
     CHECK(!(cpu.cop0[12] & 1u) && read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE) == 0);
     for (unsigned i = 0; i < 5; ++i) CHECK(read_word(EVENT_BASE + i * EVENT_SIZE + 4) == 0);
     CHECK(read_word(EVENT_BASE + 5 * EVENT_SIZE + 4) == ENABLED);
+    const char format[] = "%08x %d %s %c %%";
+    const char word[] = "ok";
+    for (unsigned i = 0; i < sizeof format; ++i) write_byte(0x1a00 + i, (uint8_t)format[i]);
+    for (unsigned i = 0; i < sizeof word; ++i) write_byte(0x1a40 + i, (uint8_t)word[i]);
+    cpu.gpr[7] = 0x1a40;
+    cpu.gpr[29] = 0x3000;
+    write_word(0x3010, '!');
+    CHECK(native_call(&cpu, 0xa0, 0x3f, 0x1a00, 0x2a, (uint32_t)-7) == 18);
+    native_call(&cpu, 0xb0, 0x3f, 0x1a40, 0, 0);
     native_call(&cpu, 0xa0, 0x44, 0, 0, 0);
     CHECK(cache_resets == 1);
     CHECK(!g_psx_bios_hle_hook(&cpu, 0x80010000u & 0x1fffffffu));
