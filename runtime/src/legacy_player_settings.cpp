@@ -17,15 +17,17 @@
 
 namespace PSXRecompV4 {
 bool preserve_legacy_player_settings(const std::filesystem::path& settings,
-                                     std::string* error) {
+                                     std::string* error,
+                                     const std::filesystem::path& title_config) {
     namespace fs = std::filesystem;
     fs::path temp;
     try {
         toml::value doc(toml::table{});
         if (fs::exists(settings)) doc=toml::parse(settings.string());
-        if (doc.contains("legacy_builtin_settings_migrated") &&
+        const bool migrated = doc.contains("legacy_builtin_settings_migrated") &&
             doc.at("legacy_builtin_settings_migrated").is_boolean() &&
-            toml::find<bool>(doc,"legacy_builtin_settings_migrated")) return true;
+            toml::find<bool>(doc,"legacy_builtin_settings_migrated");
+        if (migrated && title_config.empty()) return true;
         ModPackageManager saved(settings.parent_path()/"mods");
         if (!saved.load_state(error)) return false;
         if (saved.selections().empty()) return true;
@@ -73,6 +75,36 @@ bool preserve_legacy_player_settings(const std::filesystem::path& settings,
             const auto v=value(f,old);
             if (v=="on" || v=="off") put(key,v=="on" ? "true" : "false");
         };
+        // Off previously meant the title baseline, which can change when a
+        // retired package moves into Settings. Only an explicit title contract
+        // supplies that former baseline; generic disabled-mod behavior is intact.
+        const auto* old_pgxp=feature("psx.enhancement.pgxp","pgxp");
+        bool pgxp_disabled=old_pgxp && old_pgxp->has_enabled && !old_pgxp->enabled;
+        if (!old_pgxp && !title_config.empty()) {
+            // The v1 loader intentionally cannot distinguish an omitted enabled
+            // field from false. Consult the original field for this migration.
+            const auto old_state=toml::parse((settings.parent_path()/"mods/state.toml").string());
+            if (toml::find<int64_t>(old_state,"format_version")==1 && old_state.contains("package"))
+                for (const auto& p:toml::find(old_state,"package").as_array())
+                    if (toml::find<std::string>(p,"id")=="psx.enhancement.pgxp" &&
+                        p.contains("enabled") && p.at("enabled").is_boolean())
+                        pgxp_disabled=!toml::find<bool>(p,"enabled");
+        }
+        if (pgxp_disabled && !title_config.empty()) {
+            const auto title=toml::parse(title_config.string());
+            if (title.contains("legacy_player_settings") &&
+                title.at("legacy_player_settings").contains("pgxp_disabled_baseline")) {
+                const auto& baseline=toml::find(title,"legacy_player_settings","pgxp_disabled_baseline");
+                const char* keys[]={"geometry_correction","perspective_texturing","pgxp_cpu_mode","pgxp_culling"};
+                bool values[4];
+                if (!baseline.is_table() || baseline.as_table().size()!=4)
+                    throw std::runtime_error("PGXP disabled baseline requires all four boolean preferences");
+                for (int i=0;i<4;i++) values[i]=toml::find<bool>(baseline,keys[i]);
+                for (int i=0;i<4;i++) put((std::string("video.")+keys[i]).c_str(),values[i]?"true":"false");
+            }
+        }
+        if (migrated && !changed) return true;
+        if (!migrated) {
         const auto* resolution=feature("psx.enhancement.internal-resolution","internal-resolution");
         if (resolution && resolution->has_enabled) {
             // The old resolver made Off native, dynamic off, supersample 1.
@@ -141,6 +173,7 @@ bool preserve_legacy_player_settings(const std::filesystem::path& settings,
                     put("video.post_shader",resource->second);
                 }
             }
+        }
         }
         if (!changed && !seen_legacy) return true;
         doc["legacy_builtin_settings_migrated"]=true;

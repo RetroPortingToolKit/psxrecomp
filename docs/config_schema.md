@@ -813,6 +813,25 @@ package (`psx.enhancement.internal-resolution`, `crt-filter`,
 Settings keys. Existing Settings choices win; the retired packages stay
 inactive and the original mod state is untouched. See docs/PLAYER_SETTINGS.md.
 
+A title changing the PGXP baseline while retiring its old package can declare
+the former disabled values explicitly:
+
+```toml
+[legacy_player_settings.pgxp_disabled_baseline]
+geometry_correction = false
+perspective_texturing = false
+pgxp_cpu_mode = false
+pgxp_culling = false
+```
+
+All four values must be booleans. This applies only to an explicit saved old
+PGXP Off, including profiles whose older built-in migration already ran. It
+fills absent canonical Video keys; existing keys, enabled old PGXP options,
+fresh profiles and version-only package pins keep their normal meanings. With
+no declaration, a disabled old PGXP package still follows the title baseline.
+The migration reads the actual runtime game config and never edits mod state
+or native saves.
+
 **Audio sample rate.** The host audio device opens at the runtime's built-in
 rate (44.1 kHz, the SPU's own). It is not a player setting: the launcher has no
 Sample rate row for PSX and `settings.toml` has no `[audio] frequency`. Volume

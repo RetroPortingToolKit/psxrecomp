@@ -37,9 +37,10 @@ static void state(const std::filesystem::path& root,bool enabled) {
     feature("fixture.custom","keep","[feature.values]\nchoice='untouched'\n");
     assert(out.good());
 }
-static PSXRecompV4::UserSettings startup(const std::filesystem::path& path) {
+static PSXRecompV4::UserSettings startup(const std::filesystem::path& path,
+                                        const std::filesystem::path& title = {}) {
     std::string error;
-    assert(PSXRecompV4::preserve_legacy_player_settings(path,&error));
+    assert(PSXRecompV4::preserve_legacy_player_settings(path,&error,title));
     auto prefs=PSXRecompV4::load_user_settings(path);assert(!prefs.parse_error);
     bool intro=false;int audio=100;apply_extra_player_settings(prefs,intro,audio);
     player_settings_configure(path,player_settings_baseline(false,false,intro,audio,"cards"));
@@ -159,6 +160,62 @@ int main() {
     }
     write(root/"mods/state.toml","format_version=1\n[[package]]\nid='psx.enhancement.internal-resolution'\nenabled=true\n[package.values]\nresolution='3x'\n");
     write(path,"");prefs=startup(path);assert(prefs.extra_player_settings.at("video.internal_resolution")=="3x");
+    // A title may move its fresh PGXP default to Settings without changing what
+    // a player's explicit old Off meant, including profiles migrated earlier.
+    const auto title=root/"game.toml";
+    const std::string baseline_off="[legacy_player_settings.pgxp_disabled_baseline]\n"
+        "geometry_correction=false\nperspective_texturing=false\npgxp_cpu_mode=false\npgxp_culling=false\n";
+    write(title,baseline_off);state(root,false);
+    const auto off_state=read(root/"mods/state.toml");
+    const char* pgxp_keys[]={"video.geometry_correction","video.perspective_texturing",
+                            "video.pgxp_cpu_mode","video.pgxp_culling"};
+    for (bool migrated:{false,true}) {
+        write(path,migrated ? "legacy_builtin_settings_migrated=true\n" : "");
+        prefs=startup(path,title);
+        for (const char* key:pgxp_keys) {
+            if (!prefs.extra_player_settings.count(key)) {
+                std::fputs("FAIL: explicit old PGXP Off did not preserve the declared title baseline\n",stderr);
+                return 1;
+            }
+            assert(prefs.extra_player_settings.at(key)=="false");
+        }
+        const auto off_once=read(path);const auto off_stamp=std::filesystem::last_write_time(path);
+        startup(path,title);assert(read(path)==off_once && std::filesystem::last_write_time(path)==off_stamp);
+    }
+    // Individual explicit canonical keys win; the declared baseline need not
+    // be all Off. Dormant old option values cannot override that baseline.
+    write(title,"[legacy_player_settings.pgxp_disabled_baseline]\ngeometry_correction=false\n"
+        "perspective_texturing=false\npgxp_cpu_mode=false\npgxp_culling=true\n");
+    write(path,"legacy_builtin_settings_migrated=true\n[video]\ngeometry_correction=true\n");
+    prefs=startup(path,title);
+    assert(prefs.extra_player_settings.at(pgxp_keys[0])=="true");
+    assert(prefs.extra_player_settings.at(pgxp_keys[1])=="false");
+    assert(prefs.extra_player_settings.at(pgxp_keys[2])=="false");
+    assert(prefs.extra_player_settings.at(pgxp_keys[3])=="true");
+    assert(read(root/"mods/state.toml")==off_state && read(card)==old_card);
+    // Existing On/options retain their original meaning, independent of the
+    // title's disabled baseline or its new fresh defaults.
+    write(title,baseline_off);state(root,true);write(path,"");prefs=startup(path,title);
+    assert(prefs.extra_player_settings.at(pgxp_keys[0])=="true");
+    assert(prefs.extra_player_settings.at(pgxp_keys[1])=="false");
+    assert(prefs.extra_player_settings.at(pgxp_keys[2])=="true");
+    assert(prefs.extra_player_settings.at(pgxp_keys[3])=="true");
+    // v1 explicit Off without options differs from a modern version-only pin.
+    write(root/"mods/state.toml","format_version=1\n[[package]]\nid='psx.enhancement.pgxp'\nenabled=false\n");
+    write(path,"legacy_builtin_settings_migrated=true\n");prefs=startup(path,title);
+    for (const char* key:pgxp_keys) assert(prefs.extra_player_settings.at(key)=="false");
+    write(root/"mods/state.toml","format_version=2\n[[package]]\nid='psx.enhancement.pgxp'\nversion='1.0.0'\n");
+    write(path,"");prefs=startup(path,title);
+    for (const char* key:pgxp_keys) assert(!prefs.extra_player_settings.count(key));
+    // A partial or mistyped baseline is rejected before publishing preferences.
+    state(root,false);write(path,"legacy_builtin_settings_migrated=true\n");
+    const auto unmodified=read(path);std::string baseline_error;
+    write(title,"[legacy_player_settings.pgxp_disabled_baseline]\ngeometry_correction=false\n");
+    assert(!PSXRecompV4::preserve_legacy_player_settings(path,&baseline_error,title) && read(path)==unmodified);
+    write(title,baseline_off+"unexpected=true\n");
+    assert(!PSXRecompV4::preserve_legacy_player_settings(path,&baseline_error,title) && read(path)==unmodified);
+    assert(read(card)==old_card && read(root/"mods/state.toml")==off_state);
+
     // Invalid new settings and malformed inputs are preserved, never overwritten.
     write(path,"[video]\ninternal_resolution='owner-invalid-value'\n");
     std::string error;
