@@ -126,6 +126,10 @@ static void autocompile_note_success(void) {
     s_consecutive_fails = 0;
     s_retry_not_before_ms = 0;
 }
+
+uint32_t autocompile_failure_count(void) {
+    return s_fails;
+}
 /* Per-shard build accounting, parsed from compile_overlays.py's machine-readable
  * "PSX_SHARD_RESULT ok=N failed=M skipped=K" line. Before this, a compile run
  * that built zero shards because a header change broke EVERY shard compile
@@ -1275,7 +1279,10 @@ static int autocompile_request_impl(void) {
     LeaveCriticalSection(&s_out_lock);
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
     HANDLE rd = NULL, wr = NULL;
-    if (!CreatePipe(&rd, &wr, &sa, 0)) return 0;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) {
+        autocompile_note_failure();
+        return 0;
+    }
     SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
 
     /* Pin the WRITE cache + READ captures to the loader's canonical locations.

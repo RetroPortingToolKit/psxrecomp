@@ -56,6 +56,7 @@ static const CodeProvider s_gcc = {
     /* request          */ autocompile_request,
     /* busy             */ autocompile_busy,
     /* poll_main        */ autocompile_poll_main,
+    /* failure_count    */ autocompile_failure_count,
 };
 
 /* ---- active selection ------------------------------------------------------ */

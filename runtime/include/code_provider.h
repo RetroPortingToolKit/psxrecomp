@@ -41,6 +41,8 @@ typedef struct CodeProvider {
     int  (*request)(void);
     int  (*busy)(void);
     void (*poll_main)(void);
+    // Actual failures on the emulation thread. Waiting for backoff is not a failure.
+    uint32_t (*failure_count)(void);
 } CodeProvider;
 
 /* Resolve the active backend (overlay_backend_resolve) and cache the matching

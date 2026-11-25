@@ -137,6 +137,7 @@ int replay_host_state_digest(uint32_t out[4])
 /* Recording hooks. */
 static int s_can_record = 1, s_anchor_requests, s_anchor_take;
 static int s_write_cards = 1;
+static const char *s_write_code_log;   /* CODE_LOG text write_replay writes; NULL none */
 static int s_input_supported = 1;
 static uint64_t s_input_profile = 7;
 int replay_host_recording_input_contract(uint64_t *profile, char *why, size_t cap)
@@ -227,6 +228,7 @@ static void write_replay(int power_on, const uint32_t last[4])
     o.digests = (const uint32_t(*)[5])digests;
     o.digest_count = 3;
     o.product = "exe_sha256=aa\nplatform=windows-x64\n";
+    o.code_log = s_write_code_log;
     if (power_on || s_write_cards) { o.cards = cards; o.cards_mask = 2u; }
     if (power_on) {
         o.power_on = 1;
@@ -532,7 +534,9 @@ int main(void)
     replay_session_shutdown();
     CHECK(!s_watch);
     {
-        static const char want[] = "0 S gcc/x/b.dll\n0 S gcc/x/a.dll\n0 A -\n5 C -\n10 L gcc/x/c.dll\n"
+        /* K: this recording compiled each capture itself, not a later DMA
+         * snapshot; its playback must do the same. */
+        static const char want[] = "0 S gcc/x/b.dll\n0 S gcc/x/a.dll\n0 A -\n0 K -\n5 C -\n10 L gcc/x/c.dll\n"
                                    "25 I gcc/x/d.dll\n25 I gcc/x/e.dll\n30 R -\n";
         ReplayFileInfo info;
         static ReplayStep steps[128];
@@ -549,7 +553,8 @@ int main(void)
         const uint8_t centre4[4] = {0x80, 0x80, 0x80, 0x80};
         uint32_t fed = 0;
         int seen10 = 0, seen25 = 0, seen30 = 0;
-        CHECK(replay_session_play_file(REPLAY) == 1 && s_admitting && s_capture_paced);
+        CHECK(replay_session_play_file(REPLAY) == 1 && s_admitting &&
+              s_capture_paced == REPLAY_CAPTURE_INPUT_AUTOCAPTURE);
         /* No rescan at the start: the recording had none there. */
         CHECK(!strcmp(s_code_trace, "a:gcc/x/b.dll;p:gcc/x/b.dll;a:gcc/x/a.dll;p:gcc/x/a.dll;"));
         s_code_trace[0] = 0;
@@ -574,7 +579,7 @@ int main(void)
         }
         CHECK(seen10 && seen25 && seen30 && fed == 39 && replay_session_last_result() == REPLAY_RESULT_IN_SYNC);
         CHECK(!s_admitting && !s_capture_paced && s_captures == 0);
-        CHECK(verdict_has("\"code_log_events\": 8") && verdict_has("\"code_units_missing_at_start\": 0"));
+        CHECK(verdict_has("\"code_log_events\": 9") && verdict_has("\"code_units_missing_at_start\": 0"));
     }
     /* An independent cache can reproduce the capture before publication. */
     s_missing_unit = "gcc/x/c.dll";
@@ -629,6 +634,48 @@ int main(void)
         CHECK(run(0xFFFFu, &fed_ok) == FRAMES && fed_ok);
     }
     CHECK(!s_code_trace[0] && verdict_has("\"code_log_events\": null"));
+
+    /* The compile input follows the code log: a log without K (an older
+     * recording, whose compiler read the latest capture file) plays with
+     * that input; with K, with the autocapture of each boundary. */
+    {
+        static const struct { const char *log; int paced; } cases[] = {
+            {"0 S gcc/x/b.dll\n0 S gcc/x/a.dll\n0 A -\n5 C -\n", REPLAY_CAPTURE_INPUT_LATEST},
+            {"0 S gcc/x/b.dll\n0 S gcc/x/a.dll\n0 A -\n0 K -\n5 C -\n", REPLAY_CAPTURE_INPUT_AUTOCAPTURE},
+            {"0 A -\n0 K -\n", REPLAY_CAPTURE_INPUT_AUTOCAPTURE},
+        };
+        for (unsigned k = 0; k < sizeof cases / sizeof cases[0]; ++k) {
+            int seen = -1;
+            reset_host();
+            s_write_code_log = cases[k].log;
+            write_replay(0, s_digest);
+            s_load_result = 1;
+            CHECK(replay_session_play_file(REPLAY) == 1);
+            seen = s_capture_paced;
+            CHECK(seen == cases[k].paced);
+            CHECK(run(0xFFFFu, &ok) == FRAMES && ok && !s_capture_paced);
+            CHECK(replay_session_last_result() == REPLAY_RESULT_IN_SYNC);
+        }
+    }
+    /* K only right after A, at frame 0, once, without a unit. */
+    {
+        static const char *const bad[] = {
+            "0 K -\n",
+            "0 S gcc/x/a.dll\n0 K -\n0 A -\n",
+            "0 A -\n0 K -\n0 K -\n",
+            "0 A -\n3 K -\n",
+            "0 A -\n0 R -\n0 K -\n",
+            "0 A -\n0 K gcc/x/a.dll\n",
+        };
+        for (unsigned k = 0; k < sizeof bad / sizeof bad[0]; ++k) {
+            reset_host();
+            s_write_code_log = bad[k];
+            write_replay(0, s_digest);
+            CHECK(replay_session_play_file(REPLAY) == 0 && !s_capture_paced && !s_cards_in);
+            CHECK(verdict_has("its code log is damaged"));
+        }
+    }
+    s_write_code_log = NULL;
 
     /* Power-on recording: only at boot; it keeps the inserted card, ends at
      * shutdown, and plays back with that card installed. */

@@ -10163,7 +10163,9 @@ extern "C" void replay_host_code_admit(int on) {
 }
 extern "C" int replay_host_code_admit_unit(const char *unit) { return overlay_loader_admit(unit); }
 extern "C" void replay_host_code_capture_schedule(int paced) {
-    overlay_autocapture_replay_set(paced);
+    overlay_autocapture_replay_set(paced == REPLAY_CAPTURE_INPUT_AUTOCAPTURE ? OVERLAY_REPLAY_PACED_AUTOCAPTURE
+                                   : paced                                 ? OVERLAY_REPLAY_PACED_LATEST
+                                                                           : 0);
 }
 
 static bool replay_poll_compiler() {
