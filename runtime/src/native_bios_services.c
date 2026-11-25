@@ -230,6 +230,33 @@ static int service_a0(CPUState *cpu, uint32_t fn) {
         }
         return PSX_NATIVE_BIOS_RETURN;
     }
+    case 0x17: case 0x18: { /* strcmp, strncmp */
+        uint32_t count = fn == 0x18 ? a2 : UINT32_MAX;
+        result = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            uint8_t left = cpu->read_byte(a0 + i);
+            uint8_t right = cpu->read_byte(a1 + i);
+            if (left != right) {
+                result = (uint32_t)((int)left - (int)right);
+                break;
+            }
+            if (!left) break;
+        }
+        break;
+    }
+    case 0x19: case 0x1a: { /* strcpy, strncpy */
+        uint32_t count = fn == 0x1a ? a2 : UINT32_MAX;
+        uint32_t i = 0;
+        while (i < count) {
+            uint8_t value = cpu->read_byte(a1 + i);
+            cpu->write_byte(a0 + i++, value);
+            if (!value) break;
+        }
+        if (fn == 0x1a && i < count)
+            fill_bytes(cpu, a0 + i, 0, count - i);
+        result = a0;
+        break;
+    }
     case 0x1b:  /* strlen */
         result = 0;
         while (cpu->read_byte(a0 + result)) ++result;

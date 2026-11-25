@@ -318,6 +318,15 @@ static void check_native_calls(void)
     const char word[] = "ok";
     for (unsigned i = 0; i < sizeof format; ++i) write_byte(0x1a00 + i, (uint8_t)format[i]);
     for (unsigned i = 0; i < sizeof word; ++i) write_byte(0x1a40 + i, (uint8_t)word[i]);
+    CHECK(native_call(&cpu, 0xa0, 0x19, 0x1b00, 0x1a40, 0) == 0x1b00);
+    CHECK(read_byte(0x1b00) == 'o' && read_byte(0x1b01) == 'k' && !read_byte(0x1b02));
+    write_byte(0x1b01, 'z');
+    CHECK(native_call(&cpu, 0xa0, 0x18, 0x1b00, 0x1a40, 1) == 0);
+    CHECK((int32_t)native_call(&cpu, 0xa0, 0x18, 0x1b00, 0x1a40, 2) > 0);
+    CHECK((int32_t)native_call(&cpu, 0xa0, 0x17, 0x1a40, 0x1b00, 0) < 0);
+    write_word(0x1b00, UINT32_MAX);
+    CHECK(native_call(&cpu, 0xa0, 0x1a, 0x1b00, 0x1a40, 4) == 0x1b00);
+    CHECK(read_word(0x1b00) == 0x00006b6fu);
     cpu.gpr[7] = 0x1a40;
     cpu.gpr[29] = 0x3000;
     write_word(0x3010, '!');
