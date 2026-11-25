@@ -415,6 +415,11 @@ static void check_native_calls(void)
     CHECK(native_call(&cpu, 0xb0, 0x4c, 0, 0, 0) == 1);
     CHECK(read_word(PSX_NATIVE_CARD_STARTED) == 0 &&
           read_word(PSX_NATIVE_TIMER_AUTO_ACK + 12) == 1);
+    native_call(&cpu, 0xa0, 0x30, 1, 0, 0);
+    CHECK(native_call(&cpu, 0xa0, 0x2f, 0, 0, 0) == 16838);
+    CHECK(native_call(&cpu, 0xa0, 0x2f, 0, 0, 0) == 5758);
+    native_call(&cpu, 0xa0, 0x30, 1, 0, 0);
+    CHECK(native_call(&cpu, 0xa0, 0x2f, 0, 0, 0) == 16838);
     test_gpu_status = 0x14000000u;
     CHECK(native_call(&cpu, 0xa0, 0x49, 0xe1001234u, 0, 0) == 0);
     CHECK(test_gpu_data == 0xe1001234u && test_gpu_writes == 1);

@@ -404,6 +404,17 @@ static int service_a0(CPUState *cpu, uint32_t fn) {
             }
         }
         break;
+    case 0x2f: { /* rand: PSX SDK's deterministic 32-bit generator */
+        uint32_t seed = cpu->read_word(PSX_NATIVE_RANDOM_SEED);
+        seed = seed * 1103515245u + 12345u;
+        cpu->write_word(PSX_NATIVE_RANDOM_SEED, seed);
+        result = (seed >> 16) & 0x7fffu;
+        break;
+    }
+    case 0x30:  /* srand */
+        cpu->write_word(PSX_NATIVE_RANDOM_SEED, a0);
+        psx_cpu_charge(24);
+        return PSX_NATIVE_BIOS_RETURN;
     case 0x44:  /* FlushCache: invalidate the host cache model directly */
         psx_icache_reset();
         cpu->write_word(0xfffe0130u, 0x0001e988u);
