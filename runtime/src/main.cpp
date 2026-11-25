@@ -15107,6 +15107,7 @@ namespace {
         std::memset(caps->mods, 0, sizeof(caps->mods));
         const auto* title_profile = psx_mod_netplay_profile();
         const bool title_loading = title_profile && title_profile->loading_plugin_id;
+        const bool title_content = title_profile && title_profile->content_feature_count;
         if (const PSXModNetplayProfile* profile = title_loading ? nullptr : title_profile) {
             if (!profile->settings_package_id) return 1;
             RecompLauncherCModPackage package{};
@@ -15126,16 +15127,20 @@ namespace {
                 ae_append_feature_options(token, sizeof(token), mods, feature);
                 ae_copy_lobby_text(caps->mods[0].feats, sizeof(caps->mods[0].feats), token);
                 caps->mod_count = 1;
+                if (title_content) break;
                 std::string fingerprint;
                 if (!PSXRecompV4::mod_runtime_netplay_settings_fingerprint(
                         *caps, fingerprint, &g_lnch_mod_plan_error)) return 0;
                 ae_copy_lobby_text(caps->mod_plan_fp, sizeof(caps->mod_plan_fp), fingerprint.c_str());
                 return 1;
             }
-            g_lnch_mod_plan_error = "Title netplay settings feature is unavailable";
-            return 0;
+            if (!caps->mod_count) {
+                g_lnch_mod_plan_error = "Title netplay settings feature is unavailable";
+                return 0;
+            }
         }
-        if (!title_loading && !PSXRecompV4::mod_runtime_prepare_resources(g_launcher_disc_path,
+        if (!title_loading && !title_content &&
+            !PSXRecompV4::mod_runtime_prepare_resources(g_launcher_disc_path,
                                                        &g_lnch_mod_plan_error)) return 0;
         if (!mods || !mods->package_count || !mods->package_get)
             return 1;
@@ -15152,6 +15157,8 @@ namespace {
                                                                feature.id))
                     continue;
                 if (title_loading && !psx_mod_netplay_loading_feature(
+                        feature.package_id, feature.id)) continue;
+                if (title_content && !psx_mod_netplay_content_feature(
                         feature.package_id, feature.id)) continue;
                 int pkg_index = -1;
                 for (int j = 0; j < caps->mod_count; ++j) {
@@ -15188,6 +15195,13 @@ namespace {
             }
         }
 
+        if (title_content) {
+            std::string fingerprint;
+            if (!PSXRecompV4::mod_runtime_netplay_profile_content_fingerprint(*caps,
+                    g_launcher_disc_path, fingerprint, &g_lnch_mod_plan_error)) return 0;
+            ae_copy_lobby_text(caps->mod_plan_fp, sizeof(caps->mod_plan_fp), fingerprint.c_str());
+            return 1;
+        }
         if (caps->mod_count > 0) {
             const std::string fp = PSXRecompV4::mod_runtime_plan_fingerprint_portable(
                 g_launcher_disc_path, &g_lnch_mod_plan_error);
@@ -17594,10 +17608,21 @@ namespace {
         } else if (std::strcmp(op, "settle") == 0) {
             char why[256] = {};
             PsxLobbyMatchCaps caps{};
-            if (psx_lobby_replay_room(req.c_str(), why, sizeof(why)) != 0 ||
-                ae_np_settle_start_caps(settings, &caps, why, sizeof(why)) != 0) {
+            const bool room_ready = psx_lobby_replay_room(req.c_str(), why, sizeof(why)) == 0;
+            if (room_ready && g_netplay_content_negotiation) {
+                // A standalone query has not received the launcher's disc callback.
+                const std::string d = disc[0] ? std::string(disc) : initial_disc;
+                if (!d.empty()) {
+                    RecompLauncherCDiscVerify dv{};
+                    ae_disc_verify(d.c_str(), &dv);
+                }
+            }
+            const bool settled = room_ready &&
+                ae_np_settle_start_caps(settings, &caps, why, sizeof(why)) == 0;
+            if (!settled || !g_lnch_mod_plan_error.empty()) {
                 ans += ",\"error\":";
-                ae_np_json_escaped(ans, why[0] ? why : "the match cannot be settled");
+                const char* detail = why[0] ? why : g_lnch_mod_plan_error.c_str();
+                ae_np_json_escaped(ans, detail[0] ? detail : "the match cannot be settled");
             } else if (psx_lobby_start_message(&caps, msg, sizeof(msg)) == 0) {
                 ans += ",\"start\":";
                 ans += msg;

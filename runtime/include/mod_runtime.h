@@ -51,6 +51,10 @@ bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path = {},
 bool mod_runtime_netplay_settings_fingerprint(const PsxLobbyMatchCaps& caps,
                                                std::string& fingerprint,
                                                std::string* error = nullptr);
+bool mod_runtime_netplay_profile_content_fingerprint(const PsxLobbyMatchCaps& caps,
+                                                     const std::filesystem::path& disc_path,
+                                                     std::string& fingerprint,
+                                                     std::string* error = nullptr);
 /* [netplay] content_negotiation from game.toml. Off (default): clear package
  * simulation mods; an executable-owned profile takes precedence when present. */
 void mod_runtime_set_netplay_content_negotiation(bool enabled);
