@@ -1010,13 +1010,17 @@ uint32_t psx_ws_clip_edge_x(uint32_t v, uint32_t w) {
     return psx_ws_clip_edge_x_value(v, w, psx_ws_x_margin());
 }
 /* [widescreen.cull] screen_x_sites on a screen X kept in the high half of a
- * register: `lui rt, W` becomes (W + margin) << 16, and `bltz` is taken only
- * while SX < -margin. Identity at margin 0 (4:3). */
+ * register: `lui rt, W` becomes (W + margin) << 16, `bltz` is taken only
+ * while SX < -margin and `bgez` while SX >= -margin. Identity at margin 0
+ * (4:3). */
 uint32_t psx_ws_cull_lui_hi(uint32_t imm) {
     return psx_ws_cull_lui_hi_value(imm, psx_ws_x_margin());
 }
 int psx_ws_cull_bltz_hi(uint32_t v) {
     return psx_ws_cull_bltz_hi_value(v, psx_ws_x_margin());
+}
+int psx_ws_cull_bgez_hi(uint32_t v) {
+    return psx_ws_cull_bgez_hi_value(v, psx_ws_x_margin());
 }
 /* Per-primitive X-reject bound ([widescreen.cull] xclip_load_sites). While
  * the margins are revealed the reject is disabled (INT32_MAX passes every

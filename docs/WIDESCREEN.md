@@ -300,13 +300,14 @@ are non-empty, so titles that do not use them keep their caches.
 
 `screen_x_sites` is the explicit form of the `auto_screen_x` compare, for a
 title whose width is not in `screen_w_imms` or whose function has no paired
-height compare. It takes five instructions:
+height compare. It takes six instructions:
 
 | Instruction at the site | While widened |
 |---|---|
 | `sltiu rt, SX, W` | `rt = -m <= SX < W + m` |
 | `lui rt, W` (a screen edge kept as `W << 16`) | `rt = (W + m) << 16`; a negative `W` moves left instead |
 | `bltz x, outside` where `x` is `SX << 16` | taken while `SX < -m` |
+| `bgez x, keep` where `x` is `SX << 16` | taken while `SX >= -m` |
 | `slti rt, x, 0` where `x` is `SX << 16` | `rt = SX < -m` (the `bltz` test as a flag) |
 | `sltu rd, SX, W` with `W` in a register | `rd = -4m <= (int16)SX < W` |
 
@@ -324,14 +325,18 @@ loaded one (`x + r < W + 2r` bounding-sphere tests) works the same way.
 Kula World (SCES-01000) is the first user: its object, level-quad and sky
 tests use this shape, and forcing them true instead overflowed its renderer.
 
-The last two cover a renderer that keeps a screen X in the high half of a
-register (`sll x, sx, 16`), tests the sign of differences against a `lui`-held
-edge and masks whole points at once; polygon splitters do this. `bltz_sites`
-does not fit that `bltz`: it compares the whole register with `-m`, and every
-negative `SX << 16` is far below that. Widen such tests rather than keeping
-the branch: a splitter that takes its pieces from a fixed list runs out of
-entries when every off-screen half is kept, and then drops polygons inside
-the 4:3 area.
+The `lui`, `bltz`, `bgez` and `slti` forms cover a renderer that keeps a
+screen X in the high half of a register (`sll x, sx, 16`), tests the sign of
+differences against a `lui`-held edge and masks whole points at once; polygon
+splitters do this. `bltz_sites` does not fit that `bltz` (nor `bgez_sites`
+its `bgez`): they compare the whole register with `-m`, and every negative
+`SX << 16` is far below that. A per-vertex left chain mixing both shapes
+(`bgez x0,keep` on a loaded X, `bgez x1,keep` on `X << 16`, ...,
+`bltz xN,reject` on `X << 16`) lists each branch under the key matching its
+register, so the chain rejects only when every vertex is left of `-m`. Widen
+such tests rather than keeping the branch: a splitter that takes its pieces
+from a fixed list runs out of entries when every off-screen half is kept, and
+then drops polygons inside the 4:3 area.
 
 ```toml
 [widescreen.cull]
@@ -345,11 +350,13 @@ screen_x_sites = [
 `screen_x_sites` is applied when code is generated (native code and overlay
 shards) and, at runtime, by the dirty-RAM interpreter: code that runs from
 RAM through the interpreter (including under `PSX_FORCE_INTERP=1`) widens the
-same five instruction forms at the listed addresses, with the same helpers and
+same six instruction forms at the listed addresses, with the same helpers and
 the same identity at 4:3. A listed `bltz` follows the precedence `bltz_sites`,
-then `screen_x_sites`, then the `auto_screen_x` classifier. In the main EXE
+then `screen_x_sites`, then the `auto_screen_x` classifier; a listed `bgez`
+follows `bgez_sites`, then `screen_x_sites`. In the main EXE
 a listed address holding another non-branch instruction is a hard build error;
-a branch other than `bltz` at a listed address is left as it is, and a
+any other branch or jump at a listed address (`bltzal`, `bgezal`, `beq`, `j`,
+...) is left as it is, and a
 `slti` with a nonzero immediate is a build error (it is not this form).
 
 ### Packed-SXY all-vertices reject (`[[widescreen.cull.sxy]]`)

@@ -1147,6 +1147,12 @@ std::string CodeGenerator::generate_branch_condition(uint32_t instr, uint32_t ad
             if (regimm_op == 0x01 && config_.ws_cull_bgez_sites.count(addr))
                 return fmt::format("psx_ws_cull_bgez({}) /* ws cull (left keep) */",
                                    reg_name(rs));
+            // [widescreen.cull] screen_x_sites on a bgez: the left-edge keep
+            // of a chain whose register holds `SX << 16`, paired with the
+            // high-half bltz above. Keep while SX >= -margin. Identity at 4:3.
+            if (regimm_op == 0x01 && config_.ws_cull_screen_x_sites.count(addr))
+                return fmt::format("psx_ws_cull_bgez_hi({}) /* ws cull (left keep, X in the high half) */",
+                                   reg_name(rs));
             if (regimm_op == 0x01) {
                 const std::string n = nclip_sign_branch(">=");
                 if (!n.empty()) return n;
@@ -1933,15 +1939,17 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                                " /* ws explicit screen-x left edge (high half) */{}",
                                reg_name(get_rt(instr)), reg_name(get_rs(instr)),
                                comment);
-        } else if (!config_.overlay_mode) {
+        } else if (!config_.overlay_mode &&
+                   !FunctionAnalyzer::is_branch_or_jump(instr)) {
             fmt::print(stderr, "ERROR: [widescreen.cull] screen_x site 0x{:08X} "
-                       "is not sltiu, sltu, lui, slti rt,rs,0 or bltz (0x{:08X})\n",
+                       "is not sltiu, sltu, lui, slti rt,rs,0, bltz or bgez (0x{:08X})\n",
                        addr, instr);
             std::exit(1);
         }
-        // Overlay variant: the configured main-EXE PC holds different code.
-        // (A `bltz` at a listed address is a branch and never comes here; it
-        // is widened in generate_branch_condition.)
+        // A branch at a listed address is decided in generate_branch_condition:
+        // `bltz` and `bgez` are widened there and any other branch stays
+        // vanilla. Otherwise this is an overlay variant: the configured PC
+        // holds different code, which stays vanilla.
     }
     // Widescreen automatic horizontal-FOV cull widening ([widescreen.cull]
     // auto_screen_x). ws_auto_cull_func_ is set when this function carries the
@@ -4645,6 +4653,7 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     if (!config_.ws_cull_screen_x_sites.empty()) {
         ss << "extern uint32_t psx_ws_cull_lui_hi(uint32_t imm);          /* ws screen-x edge in the high half (gpu.c) */\n";
         ss << "extern int  psx_ws_cull_bltz_hi(uint32_t v);               /* ws cull left edge, X in the high half (gpu.c) */\n";
+        ss << "extern int  psx_ws_cull_bgez_hi(uint32_t v);               /* ws cull left keep, X in the high half (gpu.c) */\n";
         ss << "extern int  psx_ws_cull_sltu_band(uint32_t sx, uint32_t bound); /* ws screen-x band, W in a register (gpu.c) */\n";
     }
     // Only for a config that lists [[widescreen.cull.sxy]] sites.

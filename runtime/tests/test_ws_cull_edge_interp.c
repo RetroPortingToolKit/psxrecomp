@@ -543,6 +543,48 @@ static void test_screen_x_precedence(void) {
     gpu_ws_set_signed_x_bound_sites(NULL, NULL, 0);
 }
 
+/* screen_x_sites on a bgez whose register holds `SX << 16`: the left-edge
+ * keep is taken while SX >= -m, an unlisted twin keeps the vanilla sign test,
+ * and an address also in bgez_sites keeps the low-half form, as in codegen. */
+static void test_screen_x_bgez_hi(void) {
+    CPUState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    memset(test_ram, 0, sizeof test_ram);
+
+    const uint32_t bgez_x_site = CODE + 0x300, bgez_x_plain = CODE + 0x310;
+    const uint32_t bgez_both = CODE + 0x320;
+    const uint32_t bgez = i_type(0x01, V0, 0x01, 3); /* bgez v0,+3 */
+    const uint32_t screen_x[] = { bgez_x_site, bgez_both }, bgez_l[] = { bgez_both };
+    gpu_ws_set_cull_screen_x_sites(screen_x, 2);
+    gpu_ws_set_branch_cull_sites(NULL, 0, bgez_l, 1, NULL, 0);
+
+    for (int pass = 0; pass < 2; pass++) {
+        const int m = pass ? 53 : 0;
+        gpu_ws_set_margin_override(m);
+
+        cpu.gpr[V0] = (uint32_t)-10 << 16;
+        CHECK(branch_taken(&cpu, bgez_x_site, bgez) == (m > 0),
+              "explicit screen-X high-half bgez at -10, m=%d", m);
+        CHECK(!branch_taken(&cpu, bgez_x_plain, bgez),
+              "unlisted high-half bgez stays vanilla, m=%d", m);
+        CHECK(!branch_taken(&cpu, bgez_both, bgez),
+              "bgez_sites beats screen_x bgez, m=%d", m);
+        cpu.gpr[V0] = ((uint32_t)-53 << 16) | 0xFFFFu;
+        CHECK(branch_taken(&cpu, bgez_x_site, bgez) == (m > 0),
+              "explicit screen-X high-half bgez at -53 with a fraction, m=%d", m);
+        cpu.gpr[V0] = (uint32_t)-54 << 16;
+        CHECK(!branch_taken(&cpu, bgez_x_site, bgez),
+              "explicit screen-X high-half bgez at -54, m=%d", m);
+        cpu.gpr[V0] = 5u << 16;
+        CHECK(branch_taken(&cpu, bgez_x_site, bgez),
+              "explicit screen-X high-half bgez at 5, m=%d", m);
+    }
+
+    gpu_ws_set_margin_override(-1);
+    gpu_ws_set_cull_screen_x_sites(NULL, 0);
+    gpu_ws_set_branch_cull_sites(NULL, 0, NULL, 0, NULL, 0);
+}
+
 /* [[widescreen.cull.sxy]] and the screen_x `slti rt, x, 0` form through
  * real interpreted instructions. The fold is Wild 9's triangle reject (with
  * its interleaved mfc2/sw/sub left in RAM); the interpreter must produce the
@@ -727,6 +769,7 @@ int main(int argc, char **argv) {
     test_helpers();
     test_interpreter();
     test_screen_x_precedence();
+    test_screen_x_bgez_hi();
     test_masked_reject();
     test_sxy_fold();
     test_gte_summary_reject();

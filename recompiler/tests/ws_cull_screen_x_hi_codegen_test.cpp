@@ -1,4 +1,4 @@
-// [widescreen.cull] screen_x_sites on `lui` and `bltz`: a screen X kept in the
+// [widescreen.cull] screen_x_sites on `lui`, `bltz` and `bgez`: a screen X kept in the
 // high half of a register. Emitted native code for hand-written instruction
 // words, the main-EXE guard, overlay variants, the declarations (only when the
 // key is used), and the shared runtime math (ws_cull_edge.h) the emitted
@@ -116,6 +116,8 @@ constexpr uint32_t kLuiZero = 0x3C000200u;   // lui   zero, 0x200
 constexpr uint32_t kBltzT0 = 0x05000002u;    // bltz  t0, +2
 constexpr uint32_t kBgezT0 = 0x05010002u;    // bgez  t0, +2
 constexpr uint32_t kBltzalT0 = 0x05100002u;  // bltzal t0, +2
+constexpr uint32_t kBgezalT0 = 0x05110002u;  // bgezal t0, +2
+constexpr uint32_t kBeqT0 = 0x11000002u;     // beq   t0, zero, +2
 constexpr uint32_t kAddiuV0 = 0x24820070u;   // addiu v0, a0, 0x70
 constexpr uint32_t kSltiAtS6 = 0x2AC10000u;  // slti  at, s6, 0 (s6 = SX << 16)
 constexpr uint32_t kSltiAtS6Imm = 0x2AC10010u; // slti at, s6, 0x10
@@ -125,16 +127,21 @@ const char* const kLuiHelper =
     "/* ws explicit screen-x edge (high half) */";
 const char* const kBltzHelper =
     "psx_ws_cull_bltz_hi(cpu->gpr[8]) /* ws cull (left edge, X in the high half) */";
+const char* const kBgezHelper =
+    "psx_ws_cull_bgez_hi(cpu->gpr[8]) /* ws cull (left keep, X in the high half) */";
 
 void unlisted_instructions_stay_vanilla() {
     PSXRecomp::CodeGenConfig config{};
     config.emit_comments = true;
     const auto lui = generate_first_instruction(kLuiS6, config);
-    check(has(lui, "cpu->gpr[22] = 0x0200 << 16;"), "unlisted lui stays vanilla");
+    check(has(lui, "cpu->gpr[22] = 0x0200u << 16;"), "unlisted lui stays vanilla");
     check(!has(lui, "psx_ws_cull_lui_hi"), "unlisted lui does not call the helper");
     const auto bltz = generate_first_instruction(kBltzT0, config);
     check(has(bltz, "(int32_t)cpu->gpr[8] < 0"), "unlisted bltz stays vanilla");
     check(!has(bltz, "psx_ws_cull_bltz_hi"), "unlisted bltz does not call the helper");
+    const auto bgez = generate_first_instruction(kBgezT0, config);
+    check(has(bgez, "(int32_t)cpu->gpr[8] >= 0"), "unlisted bgez stays vanilla");
+    check(!has(bgez, "psx_ws_cull_bgez_hi"), "unlisted bgez does not call the helper");
 
     // A site at another address does not touch these instructions.
     config.ws_cull_screen_x_sites.insert(kBase + 0x100u);
@@ -142,6 +149,8 @@ void unlisted_instructions_stay_vanilla() {
           "a screen_x site elsewhere leaves the lui's function unchanged");
     check(generate_first_instruction(kBltzT0, config) == bltz,
           "a screen_x site elsewhere leaves the bltz's function unchanged");
+    check(generate_first_instruction(kBgezT0, config) == bgez,
+          "a screen_x site elsewhere leaves the bgez's function unchanged");
 }
 
 void listed_sites_emit_the_helpers() {
@@ -151,7 +160,7 @@ void listed_sites_emit_the_helpers() {
 
     const auto lui = generate_first_instruction(kLuiS6, config);
     check(has(lui, kLuiHelper), "a screen_x site on lui routes through psx_ws_cull_lui_hi");
-    check(!has(lui, "cpu->gpr[22] = 0x0200 << 16;"), "the vanilla lui is replaced");
+    check(!has(lui, "cpu->gpr[22] = 0x0200u << 16;"), "the vanilla lui is replaced");
     check(!exits_with_failure([&] { generate_first_instruction(kLuiS6, config); }),
           "a screen_x site on lui generates");
 
@@ -160,6 +169,12 @@ void listed_sites_emit_the_helpers() {
     check(!has(bltz, "(int32_t)cpu->gpr[8] < 0"), "the vanilla bltz predicate is replaced");
     check(!exits_with_failure([&] { generate_first_instruction(kBltzT0, config); }),
           "a screen_x site on bltz generates");
+
+    const auto bgez = generate_first_instruction(kBgezT0, config);
+    check(has(bgez, kBgezHelper), "a screen_x site on bgez routes through psx_ws_cull_bgez_hi");
+    check(!has(bgez, "(int32_t)cpu->gpr[8] >= 0"), "the vanilla bgez predicate is replaced");
+    check(!exits_with_failure([&] { generate_first_instruction(kBgezT0, config); }),
+          "a screen_x site on bgez generates");
 
     // The existing form is unchanged.
     check(has(generate_first_instruction(kSltiuV0, config),
@@ -222,6 +237,16 @@ void bltz_sites_wins_over_screen_x_sites() {
           "an address in bltz_sites keeps the low-half helper");
 }
 
+// bgez_sites is the low-half keep and likewise wins over screen_x_sites.
+void bgez_sites_wins_over_screen_x_sites() {
+    PSXRecomp::CodeGenConfig config{};
+    config.ws_cull_screen_x_sites.insert(kBase);
+    config.ws_cull_bgez_sites.insert(kBase);
+    const auto both = generate_first_instruction(kBgezT0, config);
+    check(has(both, "psx_ws_cull_bgez(cpu->gpr[8])") && !has(both, "psx_ws_cull_bgez_hi"),
+          "an address in bgez_sites keeps the low-half helper");
+}
+
 void main_exe_guard_and_overlay_variants() {
     PSXRecomp::CodeGenConfig config{};
     config.ws_cull_screen_x_sites.insert(kBase);
@@ -230,16 +255,23 @@ void main_exe_guard_and_overlay_variants() {
     check(exits_with_failure([&] { generate_first_instruction(kLuiZero, config); }),
           "a screen_x site holding lui into $zero fails main-EXE generation");
 
-    // Other branches at a listed address keep their vanilla predicate.
-    const auto bgez = generate_first_instruction(kBgezT0, config);
-    check(has(bgez, "(int32_t)cpu->gpr[8] >= 0") && !has(bgez, "psx_ws_cull_bltz_hi"),
-          "a bgez at a screen_x site is not widened");
+    // Other branches at a listed address generate and keep their vanilla predicate.
+    check(!exits_with_failure([&] { generate_first_instruction(kBltzalT0, config); }),
+          "a bltzal at a screen_x site generates");
     const auto bltzal = generate_first_instruction(kBltzalT0, config);
     check(!has(bltzal, "psx_ws_cull_bltz_hi"), "a bltzal at a screen_x site is not widened");
+    check(!exits_with_failure([&] { generate_first_instruction(kBgezalT0, config); }),
+          "a bgezal at a screen_x site generates");
+    const auto bgezal = generate_first_instruction(kBgezalT0, config);
+    check(!has(bgezal, "psx_ws_cull_bgez_hi"), "a bgezal at a screen_x site is not widened");
+    check(!exits_with_failure([&] { generate_first_instruction(kBeqT0, config); }),
+          "a beq at a screen_x site generates");
+    check(!has(generate_first_instruction(kBeqT0, config), "psx_ws_cull_"),
+          "a beq at a screen_x site is not widened");
 
     // Captured overlays may hold unrelated code at a listed address: keep it.
     // A matching instruction is widened like the main EXE, so the shard must
-    // link both helpers (overlay_dispatch_preamble.c.inc defines them).
+    // link every helper (overlay_dispatch_preamble.c.inc defines them).
     config.overlay_mode = true;
     check(!exits_with_failure([&] { generate_first_instruction(kAddiuV0, config); }),
           "an overlay variant holding addiu at a screen_x site generates");
@@ -249,9 +281,11 @@ void main_exe_guard_and_overlay_variants() {
           "an overlay lui at a screen_x site emits psx_ws_cull_lui_hi");
     check(has(generate_first_instruction(kBltzT0, config), "psx_ws_cull_bltz_hi(cpu->gpr[8])"),
           "an overlay bltz at a screen_x site emits psx_ws_cull_bltz_hi");
+    check(has(generate_first_instruction(kBgezT0, config), "psx_ws_cull_bgez_hi(cpu->gpr[8])"),
+          "an overlay bgez at a screen_x site emits psx_ws_cull_bgez_hi");
 }
 
-// The two prototypes are written only for a config that lists screen_x_sites,
+// The high-half prototypes are written only for a config that lists screen_x_sites,
 // so every other title's generated declarations are byte-identical.
 void declarations_only_when_the_key_is_used() {
     PSXRecomp::PS1Executable exe{};
@@ -260,8 +294,9 @@ void declarations_only_when_the_key_is_used() {
 
     PSXRecomp::CodeGenerator plain(exe);
     const auto without = plain.build_shared_decls_header(functions);
-    check(!has(without, "psx_ws_cull_lui_hi") && !has(without, "psx_ws_cull_bltz_hi"),
-          "a config without screen_x_sites declares neither helper");
+    check(!has(without, "psx_ws_cull_lui_hi") && !has(without, "psx_ws_cull_bltz_hi") &&
+              !has(without, "psx_ws_cull_bgez_hi"),
+          "a config without screen_x_sites declares none of the helpers");
 
     PSXRecomp::CodeGenConfig config{};
     config.ws_cull_screen_x_sites.insert(kBase);
@@ -271,6 +306,8 @@ void declarations_only_when_the_key_is_used() {
           "a config with screen_x_sites declares psx_ws_cull_lui_hi");
     check(has(with, "extern int  psx_ws_cull_bltz_hi(uint32_t v);"),
           "a config with screen_x_sites declares psx_ws_cull_bltz_hi");
+    check(has(with, "extern int  psx_ws_cull_bgez_hi(uint32_t v);"),
+          "a config with screen_x_sites declares psx_ws_cull_bgez_hi");
 }
 
 void runtime_math() {
@@ -286,6 +323,10 @@ void runtime_math() {
               "bltz is vanilla at margin 0");
         check(psx_ws_cull_bltz_hi_value(v | 0xFFFFu, 0) == (x < 0 ? 1 : 0),
               "bltz is vanilla at margin 0 with a fraction in the low half");
+        check(psx_ws_cull_bgez_hi_value(v, 0) == (x >= 0 ? 1 : 0),
+              "bgez is vanilla at margin 0");
+        check(psx_ws_cull_bgez_hi_value(v | 0xFFFFu, 0) == (x >= 0 ? 1 : 0),
+              "bgez is vanilla at margin 0 with a fraction in the low half");
     }
 
     // 21:9 on a 512-wide display: margin 192.
@@ -301,6 +342,12 @@ void runtime_math() {
     check(psx_ws_cull_bltz_hi_value((uint32_t)-5 << 16, 192) == 0,
           "bltz keeps the revealed band");
     check(psx_ws_cull_bltz_hi_value(5u << 16, 192) == 0, "bltz keeps an on-screen x");
+    check(psx_ws_cull_bgez_hi_value((uint32_t)-192 << 16, 192) == 1, "bgez keeps x = -m");
+    check(psx_ws_cull_bgez_hi_value((uint32_t)-5 << 16, 192) == 1,
+          "bgez keeps the revealed band");
+    check(psx_ws_cull_bgez_hi_value(((uint32_t)-193 << 16) | 0xFFFFu, 192) == 0,
+          "bgez falls through for x < -m with a fraction in the low half");
+    check(psx_ws_cull_bgez_hi_value(5u << 16, 192) == 1, "bgez keeps an on-screen x");
 
     // 16:9 on a 320-wide display: margin 53.
     check(psx_ws_cull_lui_hi_value(0x0140u, 53) == (373u << 16),
@@ -353,6 +400,7 @@ int main(int argc, char** argv) {
     listed_sltu_emits_the_band_helper();
     listed_slti_zero_emits_the_high_half_test();
     bltz_sites_wins_over_screen_x_sites();
+    bgez_sites_wins_over_screen_x_sites();
     main_exe_guard_and_overlay_variants();
     declarations_only_when_the_key_is_used();
     runtime_math();

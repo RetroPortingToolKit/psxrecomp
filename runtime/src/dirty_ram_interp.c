@@ -2383,6 +2383,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
              * keep that pairs with bltz_sites. Identity at 4:3. */
             if (psx_ws_is_cull_bgez_site(pc))
                 taken = psx_ws_cull_bgez(cpu->gpr[rs]);
+            else if (psx_ws_is_cull_screen_x_site(pc))
+                taken = psx_ws_cull_bgez_hi(cpu->gpr[rs]);
             else
                 taken = ((int32_t)cpu->gpr[rs] >= 0);
             break;
