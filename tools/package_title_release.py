@@ -51,6 +51,7 @@ re-checks a finished ZIP or AppImage by extracting it.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -597,7 +598,18 @@ def wait_training_guest_frames(process, stdout_path, frames):
     pending = b''
     with Path(stdout_path).open('rb') as output:
         while True:
-            raw = output.readline()
+            position = output.tell()
+            try:
+                raw = output.readline()
+            except OSError as error:
+                if error.errno != errno.ENODATA:
+                    raise
+                # DrvFs can briefly report ENODATA while a native child grows
+                # this log. Preserve the exact byte cursor and finite-frame
+                # requirement; a read transport error does not stop the child.
+                output.seek(position)
+                time.sleep(0.025)
+                continue
             if raw:
                 pending += raw
                 if not pending.endswith(b'\n'):

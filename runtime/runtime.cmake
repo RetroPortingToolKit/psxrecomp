@@ -2115,7 +2115,19 @@ function(psxrecomp_add_runtime_target target)
     set_source_files_properties(
         ${PSXRECOMP_ROOT}/runtime/src/overlay_loader.c
         ${PSXRECOMP_ROOT}/runtime/src/boot_state.c
+        ${PSXRECOMP_ROOT}/runtime/src/boot_state_capture_jobs.c
+        ${PSXRECOMP_ROOT}/runtime/src/psx_bios_module.c
         PROPERTIES OBJECT_DEPENDS ${_codegen_hash_hdr})
+    # Earlier providers can already have added an equivalent runtime/include
+    # path (for example cmake/../runtime/include). Source include directories
+    # precede target include directories, keeping the build-owned hash ahead
+    # of an ignored legacy header without changing every runtime command.
+    set_property(SOURCE
+        ${PSXRECOMP_ROOT}/runtime/src/overlay_loader.c
+        ${PSXRECOMP_ROOT}/runtime/src/boot_state.c
+        ${PSXRECOMP_ROOT}/runtime/src/boot_state_capture_jobs.c
+        ${PSXRECOMP_ROOT}/runtime/src/psx_bios_module.c
+        APPEND PROPERTY INCLUDE_DIRECTORIES ${PSXRECOMP_CODEGEN_HASH_INCLUDE_DIR})
 
     target_include_directories(${target} PRIVATE
         ${PSXRECOMP_RUNTIME_INCLUDE_DIRS}

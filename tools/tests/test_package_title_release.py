@@ -595,6 +595,28 @@ class SelectiveReleasePgoTests(unittest.TestCase):
         profiles.assert_not_called()
         self.assertEqual(json.loads((directory / 'training.json').read_text())['status'], 'failed')
 
+    def test_guest_completion_survives_transient_drvfs_read_without_stopping_child(self):
+        process = self.training_process()
+        stream = mock.MagicMock()
+        stream.tell.return_value = 27
+        stream.readline.side_effect = [OSError(ptr.errno.ENODATA, 'No data available'),
+                                      b'[BENCH] window=1:601 frames=600 mean_us=1\n']
+        with mock.patch.object(Path, 'open') as opened, mock.patch.object(ptr.time, 'sleep'):
+            opened.return_value.__enter__.return_value = stream
+            result = ptr.wait_training_guest_frames(process, Path('stdout.log'), 600)
+        self.assertEqual(result, dict(first=1, last=601, frames=600))
+        stream.seek.assert_called_once_with(27)
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
+    def test_unrelated_guest_log_read_error_is_still_reported(self):
+        stream = mock.MagicMock()
+        stream.readline.side_effect = OSError(ptr.errno.EIO, 'I/O failure')
+        with mock.patch.object(Path, 'open') as opened:
+            opened.return_value.__enter__.return_value = stream
+            with self.assertRaises(OSError):
+                ptr.wait_training_guest_frames(self.training_process(), Path('stdout.log'), 600)
+
     def test_nonzero_self_exit_still_rejects_training(self):
         directory = self.training_files()
         process = self.training_process(code=7)
