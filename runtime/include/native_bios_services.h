@@ -22,7 +22,10 @@ extern "C" {
 #define PSX_NATIVE_CARD_PAD_STARTED 0x0000b108u
 #define PSX_NATIVE_CARD_PORT 0x0000b10cu
 #define PSX_NATIVE_CARD_ALLOW_NEW 0x0000b110u
+#define PSX_NATIVE_CARD_LAST_DEVICE 0x0000b114u
 #define PSX_NATIVE_CARD_STATUS 0x0000b118u
+#define PSX_NATIVE_CARD_REQUEST 0x0000b120u
+#define PSX_NATIVE_CARD_VOLUME_VALID 0x0000b160u
 #define PSX_NATIVE_CARD_FASTTRACK_SCRATCH 0x0000ad00u
 #define PSX_NATIVE_IRQ_CALLBACK_LINK 0x8000a100u
 #define PSX_NATIVE_BOOT_RETURN_PHYS 0x0000a104u
@@ -108,6 +111,8 @@ enum {
 int psx_native_bios_service(struct CPUState *cpu, uint32_t vector, uint32_t fn);
 int psx_native_card_service(struct CPUState *cpu, uint32_t vector, uint32_t fn);
 void psx_native_card_vblank(struct CPUState *cpu);
+void psx_native_card_bind(struct CPUState *cpu);
+void psx_native_bios_event(struct CPUState *cpu, uint32_t cls, uint32_t spec, int deliver);
 
 #ifdef __cplusplus
 }

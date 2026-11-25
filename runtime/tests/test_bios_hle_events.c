@@ -4,6 +4,8 @@
 #include "psx_bios_image.h"
 #include "psx_cycles.h"
 #include "psx_memory.h"
+#include "sio.h"
+#include "memcard.h"
 
 #include <setjmp.h>
 #include <stdio.h>
@@ -39,6 +41,11 @@ static unsigned cache_resets;
 static int irq_active;
 static uint32_t test_istat, test_imask;
 static uint16_t test_sio_mode, test_sio_ctrl, test_sio_baud;
+static uint8_t test_card[2][MEMCARD_SECTORS][MEMCARD_SECTOR_SIZE];
+static int test_card_present[2];
+static uint8_t test_card_flag[2];
+static unsigned card_flushes;
+static void (*card_replaced_hook)(void);
 static jmp_buf irq_escape;
 static CPUState irq_cpu;
 void psx_icache_reset(void) { ++cache_resets; }
@@ -51,6 +58,23 @@ int g_exec_phase, g_event_step_conservative, g_ls_replay_active, psx_in_device_s
 #define CHECK(test) do { \
     if (!(test)) { fprintf(stderr, "B0 event fixture line %d: %s\n", __LINE__, #test); exit(1); } \
 } while (0)
+
+void sio_set_cards_replaced_hook(void (*hook)(void)) { card_replaced_hook = hook; }
+uint8_t sio_card_flag(int port) { return test_card_flag[port]; }
+void sio_card_mark_written(int port) { test_card_flag[port] = 0; }
+int memcard_is_present(int port) { return test_card_present[port]; }
+int memcard_read_sector(int port, int sector, uint8_t *buffer) {
+    if (!test_card_present[port] || sector < 0 || sector >= MEMCARD_SECTORS) return -1;
+    memcpy(buffer, test_card[port][sector], MEMCARD_SECTOR_SIZE);
+    return 0;
+}
+int memcard_write_sector(int port, int sector, const uint8_t *buffer) {
+    if (!test_card_present[port] || sector < 0 || sector >= MEMCARD_SECTORS) return -1;
+    memcpy(test_card[port][sector], buffer, MEMCARD_SECTOR_SIZE);
+    return 0;
+}
+void memcard_flush(int port) { CHECK(test_card_present[port]); ++card_flushes; }
+int memcard_last_flush_result(int port) { CHECK(test_card_present[port]); return 0; }
 
 int fntrace_is_game_started(void) { return 1; }
 int psx_get_in_exception(void) { return irq_active; }
@@ -298,6 +322,58 @@ static void check_native_calls(void)
     test_istat = 1;
     psx_native_card_vblank(&cpu);
     CHECK(test_istat == 0 && read_word(PSX_NATIVE_CARD_PORT) == 1);
+    /* Real backup-unit scan, async byte transfer, shared event ABI and
+     * backing-replacement invalidation. */
+    test_card_present[0] = 1;
+    test_card_present[1] = 0;
+    test_card_flag[0] = 8;
+    test_card[0][0][0] = 'M';
+    test_card[0][0][1] = 'C';
+    test_card[0][0][127] = 'M' ^ 'C';
+    psx_native_card_bind(&cpu);
+    CHECK(native_call(&cpu, 0xa0, 0x70, 0, 0, 0) == 0);
+    CHECK(read_word(PSX_NATIVE_CARD_VOLUME_VALID) == 1 &&
+          read_word(PSX_NATIVE_CARD_VOLUME_VALID + 4) == 0);
+    CHECK(card_flushes == 1 && test_card_flag[0] == 0 &&
+          !memcmp(test_card[0][0], test_card[0][63], MEMCARD_SECTOR_SIZE));
+    write_word(0x124, 4 * EVENT_SIZE);
+    const uint32_t specs[] = {4, 0x8000, 4, 0x8000};
+    for (unsigned i = 0; i < 4; ++i) {
+        add_event(i, specs[i], MODE_MARK, 0);
+        write_word(EVENT_BASE + i * EVENT_SIZE, i < 2 ? 0xf0000011u : 0xf4000001u);
+    }
+    for (unsigned i = 0; i < MEMCARD_SECTOR_SIZE; ++i)
+        write_byte(0x3000 + i, (uint8_t)(i ^ 0x5a));
+    CHECK(native_call(&cpu, 0xb0, 0x4e, 0, 64, 0x3000) == 1);
+    CHECK(native_call(&cpu, 0xb0, 0x4e, 0, 65, 0x3000) == 0);
+    CHECK(native_call(&cpu, 0xb0, 0x5c, 0, 0, 0) == 4);
+    CHECK(card_flushes == 1);
+    psx_native_card_vblank(&cpu); /* port 0 */
+    CHECK(card_flushes == 2 && read_word(EVENT_BASE + 4) == READY);
+    for (unsigned i = 0; i < MEMCARD_SECTOR_SIZE; ++i)
+        CHECK(test_card[0][64][i] == (uint8_t)(i ^ 0x5a));
+    CHECK(native_call(&cpu, 0xb0, 0x4f, 0, 64, 0x3100) == 1);
+    psx_native_card_vblank(&cpu); /* port 1: no operation */
+    CHECK(read_word(EVENT_BASE + 4) == ENABLED);
+    psx_native_card_vblank(&cpu); /* port 0: read */
+    for (unsigned i = 0; i < MEMCARD_SECTOR_SIZE; ++i)
+        CHECK(read_byte(0x3100 + i) == (uint8_t)(i ^ 0x5a));
+    CHECK(read_word(EVENT_BASE + 4) == READY);
+    CHECK(native_call(&cpu, 0xa0, 0xab, 0x10, 0, 0) == 1);
+    psx_native_card_vblank(&cpu);
+    CHECK(read_word(EVENT_BASE + EVENT_SIZE + 4) == READY &&
+          read_word(EVENT_BASE + 3 * EVENT_SIZE + 4) == READY);
+    CHECK(native_call(&cpu, 0xb0, 0x5c, 1, 0, 0) == 0x21);
+    CHECK(native_call(&cpu, 0xb0, 0x58, 0, 0, 0) == 0x10);
+    CHECK(native_call(&cpu, 0xb0, 0x4e, 0, 65, 0x3000) == 1);
+    CHECK(card_replaced_hook);
+    card_replaced_hook();
+    psx_native_card_vblank(&cpu);
+    CHECK(card_flushes == 2 && test_card[0][65][0] == 0 &&
+          read_word(EVENT_BASE + EVENT_SIZE + 4) == READY &&
+          read_word(PSX_NATIVE_CARD_VOLUME_VALID) == 0);
+    psx_native_card_bind(NULL);
+    CHECK(!card_replaced_hook);
     CHECK(native_call(&cpu, 0xb0, 0x4c, 0, 0, 0) == 1);
     CHECK(read_word(PSX_NATIVE_CARD_STARTED) == 0 &&
           read_word(PSX_NATIVE_TIMER_AUTO_ACK + 12) == 1);

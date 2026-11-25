@@ -35,6 +35,7 @@
 #include "source_stateio_identity.h"
 #include "bios_hle.h"
 #include "native_bios_boot.h"
+#include "native_bios_services.h"
 #include "bios_hle_plan.h"
 #include "psx_bios_known_images.h"
 #include "psx_bios_backend.h"
@@ -22313,6 +22314,9 @@ session_reboot:
     /* A replay belongs to the session it started in. */
     replay_frontend_reset();
     s_replay_guest_restored = false;
+#if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
+    psx_native_card_bind(nullptr);
+#endif
     g_ovl_session_disc = resolved_disc.string();
     ovl_look_posted_reset();
     /* A new backend/session must not inherit the prior applied settings or
@@ -23613,6 +23617,7 @@ session_reboot:
             return 1;
         }
         psx_bios_hle_configure_native();
+        psx_native_card_bind(&cpu);
         // The scheduler restores the live thread from its TCB on the very
         // first dispatch, so publish the initial register context through its
         // existing guest-ABI writer before it takes ownership.

@@ -310,6 +310,11 @@ int sio_card_protocol_active(void);
 
 /* Card backing was replaced. In-flight transactions cannot use the new cards. */
 void sio_cards_replaced(void);
+/* Native card executive shares the device's new-card flag and replacement
+ * notification with the byte-level SIO path. */
+void sio_set_cards_replaced_hook(void (*hook)(void));
+uint8_t sio_card_flag(int slot);
+void sio_card_mark_written(int slot);
 
 /* Post-probe handoff ring: diagnostic device state only, no guest-RAM probes. */
 typedef struct {

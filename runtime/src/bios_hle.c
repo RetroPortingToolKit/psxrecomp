@@ -272,6 +272,37 @@ static void hle_deliver_event(CPUState* cpu, uint32_t base, uint32_t n,
     psx_cpu_charge(36u + 12u * n);
 }
 
+static void hle_undeliver_event(CPUState *cpu, uint32_t base, uint32_t count,
+                                uint32_t cls, uint32_t spec)
+{
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t ev = base + i * EVCB_STRIDE;
+        if (cpu->read_word(ev + EV_STATUS) == EVST_READY &&
+            cpu->read_word(ev + EV_CLASS) == cls &&
+            cpu->read_word(ev + EV_SPEC) == spec &&
+            cpu->read_word(ev + EV_MODE) == EVMD_MARK)
+            cpu->write_word(ev + EV_STATUS, EVST_ENABLED);
+    }
+}
+
+#if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
+void psx_native_bios_event(CPUState *cpu, uint32_t cls, uint32_t spec, int deliver)
+{
+    uint32_t base = cpu->read_word(KADDR_EVCB_BASE);
+    uint32_t size = cpu->read_word(KADDR_EVCB_SIZE);
+    if (!base || size % EVCB_STRIDE || !psx_ram_resolve(base, size, NULL))
+        return;
+    uint32_t count = size / EVCB_STRIDE;
+    if (deliver) {
+        cpu->gpr[4] = cls;
+        cpu->gpr[5] = spec;
+        hle_deliver_event(cpu, base, count, PSX_NATIVE_IRQ_CALLBACK_LINK);
+    } else {
+        hle_undeliver_event(cpu, base, count, cls, spec);
+    }
+}
+#endif
+
 /* B0 vector service. Returns 1 iff serviced in HLE. */
 static int hle_service_b0(CPUState* cpu, uint32_t fn)
 {
@@ -295,7 +326,12 @@ static int hle_service_b0(CPUState* cpu, uint32_t fn)
     case 0x0Bu: hle_test_event(cpu, base);                        return 1;
     case 0x0Cu: hle_set_event_status(cpu, base, EVST_ENABLED);    return 1;
     case 0x0Du: hle_set_event_status(cpu, base, EVST_DISABLED);   return 1;
-    default:    return 0; /* WaitEvent, threads, pads, card, ... => LLE */
+    case 0x20u:
+        hle_undeliver_event(cpu, base, n, cpu->gpr[4], cpu->gpr[5]);
+        cpu->gpr[2] = 0;
+        psx_cpu_charge(36u + 12u * n);
+        return 1;
+    default:    return 0; /* WaitEvent, threads, pads, card, ... */
     }
 }
 
