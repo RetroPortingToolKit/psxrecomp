@@ -9,6 +9,30 @@ both implementations or offer live implementation switching.
 
 ## Selecting a build
 
+Normal ENHANCED builds select the strict host-native BIOS executive
+(`PSX_NATIVE_KERNEL=ON`). It reads the original disc's boot executable, owns
+kernel initialization and supported BIOS services, and reports unsupported
+services instead of dispatching them into firmware. Writable guest vectors,
+tables, SDK patches, RAM and runtime overlays retain their ordinary byte guards
+and dispatch paths. The `bios-kernel` execution family identifies the selected
+executive and its source contract. REFERENCE targets retain their separately
+selected firmware implementation; they do not inherit another target's native
+compile definition.
+
+The native event wait advances to device deadlines while retaining a guest
+continuation, so interrupts, thread changes and current-build snapshots can
+resume a waiting call. Native service coverage is qualified by title and route;
+an executive identity alone does not establish gameplay, native saves or a
+cross-build netplay profile.
+
+The native backup-unit provider publishes writable File/Device records and
+honors device callback overrides. It supports synchronous memory-card file
+open, seek, read, write, close, directory iteration and format, plus deferred
+directory loading. Descriptor and cursor state lives in guest RAM; original
+directory checksums, block chains and the shared atomic card-file publisher
+remain authoritative. Asynchronous file-transfer flags remain an explicit
+coverage gap rather than selecting firmware execution.
+
 Configure separate output directories with `-DPSX_EXECUTION_PROFILE=ENHANCED`
 (default) or `-DPSX_EXECUTION_PROFILE=REFERENCE`. Oracle runtime targets always
 select REFERENCE. The setting selects only declared implementation families;

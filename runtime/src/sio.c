@@ -586,12 +586,29 @@ int sio_card_protocol_active(void) {
     return 0;
 }
 
+static void (*cards_replaced_hook)(void);
+
+void sio_set_cards_replaced_hook(void (*hook)(void)) {
+    cards_replaced_hook = hook;
+}
+
+uint8_t sio_card_flag(int slot) {
+    return slot >= 0 && slot < 2 ? mc_slots[slot].flag : 0xff;
+}
+
+void sio_card_mark_written(int slot) {
+    if (slot < 0 || slot >= 2) return;
+    mc_slots[slot].flag = 0;
+    if (mc_slot == slot) mc_flag = 0;
+}
+
 void sio_cards_replaced(void) {
     if (mc_state != MC_IDLE)
         mc_cmd |= MC_CARD_REPLACED;
     for (int slot = 0; slot < 2; ++slot)
         if (mc_slots[slot].state != MC_IDLE)
             mc_slots[slot].cmd |= MC_CARD_REPLACED;
+    if (cards_replaced_hook) cards_replaced_hook();
 }
 
 #if SIO_MODEL_CYCLE_PACED

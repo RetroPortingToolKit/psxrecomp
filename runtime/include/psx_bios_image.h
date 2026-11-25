@@ -8,8 +8,8 @@
  * cannot disagree with the linked BIOS. Same seam as psx_bios_kernel_bodies.
  *
  * A zero value means "this BIOS has no such thing" (no kernel-bless window,
- * no shell boot-skip entry, no DeliverEvent HLE return): consumers must treat
- * zero as structurally-unavailable, never as address 0.
+ * no shell boot-skip entry, no firmware-specific DeliverEvent link):
+ * consumers must never treat zero as an address.
  */
 #ifndef PSX_BIOS_IMAGE_H
 #define PSX_BIOS_IMAGE_H
