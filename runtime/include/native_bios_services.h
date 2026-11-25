@@ -15,6 +15,10 @@ extern "C" {
 #define PSX_NATIVE_GENERIC_IRQ_ACK 0x0000b01cu
 #define PSX_NATIVE_BOOT_CD_EVENTS 5u
 #define PSX_NATIVE_RANDOM_SEED 0x0000b050u
+#define PSX_NATIVE_USER_HEAP_HEAD 0x0000b054u
+#define PSX_NATIVE_USER_HEAP_BEGIN 0x0000b058u
+#define PSX_NATIVE_USER_HEAP_END 0x0000b05cu
+#define PSX_NATIVE_USER_HEAP_MARKER 0x0000b060u
 /* The legacy SDK card fast-track compatibility region is guest-writable.
  * Keep the native exception stack below 0xdf80..0xdffc. */
 #define PSX_NATIVE_EXCEPTION_STACK 0x8000df70u

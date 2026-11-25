@@ -315,6 +315,186 @@ static int service_gpu(CPUState *cpu, uint32_t fn)
     return PSX_NATIVE_BIOS_RETURN;
 }
 
+/* The user heap is entirely in guest RAM, including its sorted free list
+ * and 8-byte block headers. This keeps ordinary guest pointers, snapshots
+ * and writes coherent; host pointers and an extra host allocator are never
+ * visible to the game. Match the SDK's best-fit and 8-byte alignment. */
+enum { NATIVE_HEAP_HEADER_SIZE = 8 };
+
+static uint32_t heap_total(uint32_t payload)
+{
+    if (payload > UINT32_MAX - 15u) return 0;
+    return (payload + 15u) & ~7u;
+}
+
+static int heap_valid_block(CPUState *cpu, uint32_t block, uint32_t size)
+{
+    uint32_t begin = cpu->read_word(PSX_NATIVE_USER_HEAP_BEGIN);
+    uint32_t end = cpu->read_word(PSX_NATIVE_USER_HEAP_END);
+    return begin && end > begin && block >= begin && block < end &&
+           !(block & 7u) && size >= NATIVE_HEAP_HEADER_SIZE &&
+           !(size & 7u) && size <= end - block &&
+           psx_ram_resolve(block, size, NULL);
+}
+
+static void heap_init(CPUState *cpu, uint32_t base, uint32_t size)
+{
+    cpu->write_word(PSX_NATIVE_USER_HEAP_HEAD, PSX_NATIVE_USER_HEAP_MARKER);
+    cpu->write_word(PSX_NATIVE_USER_HEAP_BEGIN, 0);
+    cpu->write_word(PSX_NATIVE_USER_HEAP_END, 0);
+    cpu->write_word(PSX_NATIVE_USER_HEAP_MARKER, 0);
+    cpu->write_word(PSX_NATIVE_USER_HEAP_MARKER + 4, 0);
+    if (size < 16 || base > UINT32_MAX - 7u ||
+        !psx_ram_resolve(base, size, NULL)) return;
+    uint32_t aligned = (base + 7u) & ~7u;
+    uint32_t available = size - (aligned - base);
+    uint32_t span = (available - NATIVE_HEAP_HEADER_SIZE) & ~7u;
+    if (span < NATIVE_HEAP_HEADER_SIZE) return;
+    cpu->write_word(PSX_NATIVE_USER_HEAP_BEGIN, aligned);
+    cpu->write_word(PSX_NATIVE_USER_HEAP_END, aligned + span);
+    cpu->write_word(PSX_NATIVE_USER_HEAP_HEAD, aligned);
+    cpu->write_word(aligned, PSX_NATIVE_USER_HEAP_MARKER);
+    cpu->write_word(aligned + 4, span);
+}
+
+static uint32_t heap_malloc(CPUState *cpu, uint32_t payload)
+{
+    uint32_t need = heap_total(payload);
+    if (!need) return 0;
+    uint32_t link = PSX_NATIVE_USER_HEAP_HEAD;
+    uint32_t best_link = 0, best = 0, best_size = UINT32_MAX;
+    uint32_t node = cpu->read_word(link);
+    while (node && node != PSX_NATIVE_USER_HEAP_MARKER) {
+        if (!heap_valid_block(cpu, node, NATIVE_HEAP_HEADER_SIZE)) return 0;
+        uint32_t size = cpu->read_word(node + 4);
+        if (!heap_valid_block(cpu, node, size)) return 0;
+        if (size >= need && size < best_size) {
+            best_link = link;
+            best = node;
+            best_size = size;
+            if (size == need) break;
+        }
+        uint32_t next = cpu->read_word(node);
+        if (next != PSX_NATIVE_USER_HEAP_MARKER && next < node + size) return 0;
+        link = node;
+        node = next;
+    }
+    if (!best) return 0;
+    uint32_t next = cpu->read_word(best);
+    if (best_size == need) {
+        cpu->write_word(best_link, next);
+    } else {
+        uint32_t rest = best + need;
+        cpu->write_word(rest, next);
+        cpu->write_word(rest + 4, best_size - need);
+        cpu->write_word(best_link, rest);
+    }
+    cpu->write_word(best + 4, need);
+    return best + NATIVE_HEAP_HEADER_SIZE;
+}
+
+/* Locate the adjacent free blocks without trusting host pointers or walking
+ * malformed guest links. The same insertion handles split/realloc tails. */
+static void heap_free(CPUState *cpu, uint32_t pointer)
+{
+    if (pointer < NATIVE_HEAP_HEADER_SIZE) return;
+    uint32_t block = pointer - NATIVE_HEAP_HEADER_SIZE;
+    if (!heap_valid_block(cpu, block, NATIVE_HEAP_HEADER_SIZE)) return;
+    uint32_t size = cpu->read_word(block + 4);
+    if (!heap_valid_block(cpu, block, size)) return;
+    uint32_t link = PSX_NATIVE_USER_HEAP_HEAD;
+    uint32_t previous = 0, previous_size = 0;
+    uint32_t node = cpu->read_word(link);
+    while (node && node != PSX_NATIVE_USER_HEAP_MARKER && node < block) {
+        if (!heap_valid_block(cpu, node, NATIVE_HEAP_HEADER_SIZE)) return;
+        uint32_t node_size = cpu->read_word(node + 4);
+        if (!heap_valid_block(cpu, node, node_size)) return;
+        uint32_t next = cpu->read_word(node);
+        if (next != PSX_NATIVE_USER_HEAP_MARKER && next < node + node_size) return;
+        previous = node;
+        previous_size = node_size;
+        link = node;
+        node = next;
+    }
+    if (!node || (previous && previous + previous_size > block)) return;
+    if (node != PSX_NATIVE_USER_HEAP_MARKER) {
+        if (!heap_valid_block(cpu, node, NATIVE_HEAP_HEADER_SIZE) ||
+            node < block + size) return;
+        uint32_t node_size = cpu->read_word(node + 4);
+        if (!heap_valid_block(cpu, node, node_size)) return;
+        if (node == block + size) {
+            size += node_size;
+            node = cpu->read_word(node);
+        }
+    }
+    if (previous && previous + previous_size == block) {
+        cpu->write_word(previous, node);
+        cpu->write_word(previous + 4, previous_size + size);
+    } else {
+        cpu->write_word(block, node);
+        cpu->write_word(block + 4, size);
+        cpu->write_word(link, block);
+    }
+}
+
+static uint32_t heap_realloc(CPUState *cpu, uint32_t pointer, uint32_t payload)
+{
+    if (!pointer) return heap_malloc(cpu, payload);
+    if (!payload) {
+        heap_free(cpu, pointer);
+        return 0;
+    }
+    uint32_t need = heap_total(payload);
+    if (!need || pointer < NATIVE_HEAP_HEADER_SIZE) return 0;
+    uint32_t block = pointer - NATIVE_HEAP_HEADER_SIZE;
+    if (!heap_valid_block(cpu, block, NATIVE_HEAP_HEADER_SIZE)) return 0;
+    uint32_t old_size = cpu->read_word(block + 4);
+    if (!heap_valid_block(cpu, block, old_size)) return 0;
+    if (need <= old_size) {
+        if (need != old_size) {
+            uint32_t rest = block + need;
+            cpu->write_word(block + 4, need);
+            cpu->write_word(rest + 4, old_size - need);
+            heap_free(cpu, rest + NATIVE_HEAP_HEADER_SIZE);
+        }
+        return pointer;
+    }
+    uint32_t link = PSX_NATIVE_USER_HEAP_HEAD;
+    uint32_t node = cpu->read_word(link);
+    while (node && node != PSX_NATIVE_USER_HEAP_MARKER && node < block + old_size) {
+        if (!heap_valid_block(cpu, node, NATIVE_HEAP_HEADER_SIZE)) return 0;
+        uint32_t size = cpu->read_word(node + 4);
+        uint32_t next = cpu->read_word(node);
+        if (!heap_valid_block(cpu, node, size) ||
+            (next != PSX_NATIVE_USER_HEAP_MARKER && next < node + size)) return 0;
+        link = node;
+        node = next;
+    }
+    if (node == block + old_size && heap_valid_block(cpu, node, NATIVE_HEAP_HEADER_SIZE)) {
+        uint32_t size = cpu->read_word(node + 4);
+        if (heap_valid_block(cpu, node, size) && size >= need - old_size) {
+            uint32_t next = cpu->read_word(node);
+            uint32_t remaining = size - (need - old_size);
+            if (remaining) {
+                uint32_t rest = block + need;
+                cpu->write_word(rest, next);
+                cpu->write_word(rest + 4, remaining);
+                cpu->write_word(link, rest);
+            } else {
+                cpu->write_word(link, next);
+            }
+            cpu->write_word(block + 4, need);
+            return pointer;
+        }
+    }
+    uint32_t replacement = heap_malloc(cpu, payload);
+    if (replacement) {
+        copy_bytes(cpu, replacement, pointer, old_size - NATIVE_HEAP_HEADER_SIZE, 0);
+        heap_free(cpu, pointer);
+    }
+    return replacement;
+}
+
 static int service_a0(CPUState *cpu, uint32_t fn) {
     const uint32_t a0 = cpu->gpr[4], a1 = cpu->gpr[5], a2 = cpu->gpr[6];
     uint32_t result;
@@ -414,6 +594,26 @@ static int service_a0(CPUState *cpu, uint32_t fn) {
     case 0x30:  /* srand */
         cpu->write_word(PSX_NATIVE_RANDOM_SEED, a0);
         psx_cpu_charge(24);
+        return PSX_NATIVE_BIOS_RETURN;
+    case 0x33: /* malloc */
+        result = heap_malloc(cpu, a0);
+        break;
+    case 0x34: /* free */
+        heap_free(cpu, a0);
+        psx_cpu_charge(32);
+        return PSX_NATIVE_BIOS_RETURN;
+    case 0x37: { /* calloc */
+        uint64_t bytes = (uint64_t)a0 * a1;
+        result = bytes <= UINT32_MAX ? heap_malloc(cpu, (uint32_t)bytes) : 0;
+        if (result) fill_bytes(cpu, result, 0, (uint32_t)bytes);
+        break;
+    }
+    case 0x38: /* realloc */
+        result = heap_realloc(cpu, a0, a1);
+        break;
+    case 0x39: /* InitHeap */
+        heap_init(cpu, a0, a1);
+        psx_cpu_charge(32);
         return PSX_NATIVE_BIOS_RETURN;
     case 0x44:  /* FlushCache: invalidate the host cache model directly */
         psx_icache_reset();
