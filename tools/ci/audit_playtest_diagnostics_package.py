@@ -215,8 +215,9 @@ def validate_diagnostics(manifest, name, game_id, diagnostics_id, staged):
         raise ValueError("diagnostics manifest has the wrong game target: " + name)
     features = {feature.get("id"): feature for feature in manifest.get("feature", [])}
     recording = "recording" if "recording" in features else "input-recording"
-    if diagnostics_id == "mmx4.diagnostics" and recording not in features and "inputs" in features:
-        recording = "inputs"  # Preserve X4's saved public control ID and plugin binding.
+    if (diagnostics_id in ("mmx4.diagnostics", "mmx5.diagnostics") and
+            recording not in features and "inputs" in features):
+        recording = "inputs"  # Preserve the saved public control ID and plugin binding.
     provided = [(recording, diagnostics_id)]
     if "osd" in features:
         provided.append(("osd", diagnostics_id + ".osd"))
