@@ -25,6 +25,7 @@
 #include "psx_sha256_file.h"
 #include "cpu_state.h"
 #include "psx_lobby_client.h"
+#include <set>
 
 extern "C" uint32_t host_launch_timing_snapshot(HostLaunchTimingEvent* out,
     uint32_t cap, uint64_t* total, uint64_t* overwritten) {
@@ -137,6 +138,8 @@ struct RuntimeMods {
     std::string error;
     std::string exe_sha256;
     std::string disc_sha256;
+    std::string disc_files_source_identity;
+    std::map<std::string, std::string> disc_files;
     std::filesystem::path disc_path;
     std::filesystem::path effective_disc_path;
     uint32_t entry_phys = 0;
@@ -165,6 +168,53 @@ struct RuntimeMods {
 RuntimeMods& state() {
     static RuntimeMods value;
     return value;
+}
+
+// Measurements belong to the exact original disc digest, never to a filename
+// alone or to mod-effective bytes. Alternative targets may require different
+// files, so an unavailable file is recorded and resolution chooses/fails the
+// appropriate target. Disabled packages cannot require additional disc files.
+ModResolution resolve_with_disc_files(const ModPackageManager& manager,
+                                      RuntimeMods& s, bool deferred = false) {
+    const auto mount = s.disc_path.empty() ? std::filesystem::path{} :
+        resolve_disc_path(s.disc_path).mount;
+    std::string mount_stamp;
+    const bool reliable_mount = !mount.empty() && host_file_identity(mount, mount_stamp);
+    const std::string identity = s.disc_sha256 + "\n" + psx_path::utf8(mount) + "\n" + mount_stamp;
+    if (!reliable_mount || s.disc_files_source_identity != identity || s.disc_sha256.empty()) {
+        s.disc_files.clear();
+        s.disc_files_source_identity = reliable_mount ? identity : "";
+    }
+    std::set<std::string> needed;
+    if (!s.disc_path.empty() && !s.disc_sha256.empty()) {
+        for (const auto& [id, versions] : manager.packages()) {
+            (void)versions;
+            const auto* package = manager.selected_package(id);
+            if (!package) continue;
+            bool enabled = false;
+            for (const auto& feature : package->features)
+                enabled |= manager.feature_enabled(id, feature.id) ||
+                           manager.feature_implicitly_enabled(id, feature.id);
+            if (!enabled) continue;
+            for (const auto& target : package->targets) {
+                if (target.game_id != "*" && target.game_id != s.game_id) continue;
+                for (const auto& [path, hash] : target.disc_files) {
+                    (void)hash;
+                    if (!s.disc_files.count(path)) needed.insert(path);
+                }
+            }
+        }
+    }
+    if (!needed.empty()) {
+        PS1::ISOReader disc;
+        const bool opened = disc.Open(psx_path::utf8(mount));
+        for (const auto& path : needed) {
+            std::string digest;
+            if (opened) disc_file_sha256(disc, path, digest);
+            s.disc_files[path] = std::move(digest);
+        }
+    }
+    return manager.resolve(s.game_id, s.exe_sha256, s.disc_sha256, deferred, s.disc_files);
 }
 
 /* "package/feature" of every feature whose plugin forced driver vsync off in
@@ -202,7 +252,7 @@ bool offline_disc_independent(const RuntimeMods& s) {
         bool matches_game = false;
         for (const auto& target : package->targets) {
             if (target.game_id != "*" && target.game_id != s.game_id) continue;
-            if (!target.disc_sha256.empty()) return false;
+            if (!target.disc_sha256.empty() || !target.disc_files.empty()) return false;
             matches_game = true;
         }
         if (!matches_game) continue;
@@ -241,7 +291,8 @@ bool dependency_files(RuntimeMods& s, const std::filesystem::path& disc,
         files[path] = std::move(stamp);
         return true;
     };
-    if (!add(disc) || !add(resolve_disc_path(disc).data)) return false;
+    const auto resolved = resolve_disc_path(disc);
+    if (!add(disc) || !add(resolved.data) || !add(resolved.mount)) return false;
     std::error_code ec;
     size_t entries = 0;
     for (std::filesystem::recursive_directory_iterator it(s.manager.root(), ec), end;
@@ -1040,8 +1091,7 @@ int mutate(Callback callback) {
     if (!record_selection_file(state(), state().loaded_catalog))
         state().catalog_stamped = false;
     if (!state().disc_path.empty())
-        state().validation = state().manager.resolve(
-            state().game_id, state().exe_sha256, state().disc_sha256, true);
+        state().validation = resolve_with_disc_files(state().manager, state(), true);
     else
         state().validation = {};
     state().error.clear();
@@ -1752,6 +1802,8 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
     s.error.clear();
     s.exe_sha256.clear();
     s.disc_sha256.clear();
+    s.disc_files_source_identity.clear();
+    s.disc_files.clear();
     s.disc_path.clear();
     s.effective_disc_path.clear();
     s.entry_phys = 0;
@@ -2021,7 +2073,7 @@ static bool prepare_profile_loader(const PSXModNetplayProfile* profile,
     }
     loading = selected.feature_enabled(profile->loading_package_id, profile->loading_feature_id);
     if (!verify_title_loading_disc(s, disc_path, error)) return false;
-    plan = selected.resolve(s.game_id, s.exe_sha256, s.disc_sha256);
+    plan = resolve_with_disc_files(selected, s);
     if (!plan.ok || !plan.writes.empty() || !plan.overlays.empty() ||
         !plan.derived_discs.empty() || !plan.resources.empty() ||
         plan.plugins.size() != (loading ? 1u : 0u) ||
@@ -2577,7 +2629,7 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
     ModResolution plan;
     {
         HostLaunchTimingScope resolve_timing(HOST_LAUNCH_RESOLVE);
-        plan = s.manager.resolve(s.game_id, s.exe_sha256, s.disc_sha256);
+        plan = resolve_with_disc_files(s.manager, s);
         if (plan.ok) resolve_timing.success();
     }
     const bool ok = install_plan(s, std::move(plan), save_selection,
@@ -2651,8 +2703,7 @@ std::string mod_runtime_plan_fingerprint_portable(const std::filesystem::path& d
         s.disc_sha256 = std::move(digest);
     }
     auto manager = title_loading ? title_loading_selection(s.manager) : s.manager;
-    ModResolution plan = manager.resolve(s.game_id, s.exe_sha256,
-                                         s.disc_sha256);
+    ModResolution plan = resolve_with_disc_files(manager, s);
     if (!plan.ok || !netplay_resources_verified(plan)) return {};
     return plan.fingerprint;
 }
@@ -2748,7 +2799,7 @@ void mod_runtime_end_netplay() {
     s.manager = std::move(*offline_manager_before_netplay);
     offline_manager_before_netplay.reset();
     session_plan_fp().clear();
-    s.validation = s.manager.resolve(s.game_id, s.exe_sha256, s.disc_sha256, true);
+    s.validation = resolve_with_disc_files(s.manager, s, true);
 }
 
 bool mod_runtime_feature_host_only(const std::string& package_id,
@@ -2815,7 +2866,7 @@ static bool commit_netplay_own_features(const std::filesystem::path& disc_path,
     if (!s.initialized) return true;
     note_disc(s, disc_path);
     const ModResolution full =
-        s.manager.resolve(s.game_id, s.exe_sha256, s.disc_sha256);
+        resolve_with_disc_files(s.manager, s);
     if (!full.ok) return true; /* the player's set does not resolve: vanilla */
     std::vector<std::string> keep = mod_runtime_netplay_view_features(full);
     if (host_only_features)
@@ -2840,7 +2891,7 @@ static bool commit_netplay_own_features(const std::filesystem::path& disc_path,
     }
     std::map<std::string, ModSelection> player =
         s.manager.exchange_selections(std::move(reduced));
-    ModResolution plan = s.manager.resolve(s.game_id, s.exe_sha256, s.disc_sha256);
+    ModResolution plan = resolve_with_disc_files(s.manager, s);
     (void)s.manager.exchange_selections(std::move(player));
     if (!install_plan(s, std::move(plan), /*save*/ false, /*verify_netplay*/ false, &why)) {
         std::fprintf(stderr, "psxrecomp: netplay own-view mods unavailable (%s)\n",

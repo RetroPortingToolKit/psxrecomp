@@ -21,6 +21,7 @@
 #include "cpu_state.h"
 
 #include <array>
+#include <chrono>
 #include <csetjmp>
 #include <algorithm>
 #include <cstdint>
@@ -1487,6 +1488,56 @@ int main(int argc, char** argv) {
     const auto disc_root=root/"host-reader";
     const auto iso_path=disc_root/"original.iso";
     write_bytes(iso_path,iso);
+    {
+        const auto guard_root = root / "file-target-reader";
+        const auto manifest_path = guard_root / "bundled/file.guard/1.0.0/manifest.toml";
+        const auto expected = sha256_hex(std::vector<uint8_t>(iso.begin()+22*2048, iso.begin()+22*2048+3000));
+        write_text(manifest_path,
+            "format_version=15\nid=\"file.guard\"\nversion=\"1.0.0\"\nname=\"File guard\"\n"
+            "[[target]]\ngame_id=\"READER\"\n[target.disc_files]\n\"S0/LEVEL.NSF\"=\""+expected+"\"\n"
+            "[[feature]]\nid=\"guard\"\nname=\"Guard\"\ndefault_enabled=true\n");
+        std::vector<uint8_t> raw(24*2352);
+        for (unsigned i=0; i<24; ++i) {
+            std::fill_n(raw.begin()+i*2352+1,10,0xff);
+            raw[i*2352+15]=2;
+            std::copy_n(iso.begin()+i*2048,2048,raw.begin()+i*2352+24);
+        }
+        const auto raw_path = guard_root / "original.bin";
+        write_bytes(raw_path, raw);
+        check(PSXRecompV4::mod_runtime_initialize(guard_root,"READER",0,{},&error) &&
+              PSXRecompV4::mod_runtime_commit(raw_path,&error), "original file target commits from raw BIN");
+        const auto first_fp = PSXRecompV4::mod_runtime_plan_fingerprint_portable(raw_path);
+        raw[2351]^=1;
+        const auto ecc_path = guard_root / "ecc-only.bin";
+        write_bytes(ecc_path,raw);
+        check(PSXRecompV4::mod_runtime_commit(ecc_path,&error),
+              "ECC-only change keeps original game file identity");
+        check(first_fp != PSXRecompV4::mod_runtime_plan_fingerprint_portable(ecc_path),
+              "raw source identity remains in the netplay/plan fingerprint");
+        const auto target_cue = guard_root / "original.cue";
+        const std::string cue_text = "FILE \"original.bin\" BINARY\n  TRACK 01 MODE2/2352\n";
+        write_text(target_cue, cue_text + "    INDEX 01 00:00:00\n");
+        check(PSXRecompV4::mod_runtime_commit(target_cue,&error), "file target accepts original CUE");
+        write_text(target_cue, cue_text + "    PREGAP 00:00:01\n    INDEX 01 00:00:00\n");
+        fs::last_write_time(target_cue,fs::last_write_time(target_cue)+std::chrono::seconds(1));
+        check(!PSXRecompV4::mod_runtime_commit(target_cue,&error) &&
+              error.find("S0/LEVEL.NSF") != std::string::npos,
+              "changed CUE view invalidates file observations even with the same BIN digest");
+        write_text(target_cue, cue_text + "    INDEX 01 00:00:00\n");
+        raw[22*2352+24]^=1;
+        write_bytes(ecc_path,raw);
+        fs::last_write_time(ecc_path,fs::last_write_time(ecc_path)+std::chrono::seconds(1));
+        check(!PSXRecompV4::mod_runtime_commit(ecc_path,&error) &&
+              error.find("S0/LEVEL.NSF differs") != std::string::npos,
+              "same-path file mutation invalidates measured targets and names the changed asset");
+        write_text(manifest_path,
+            "format_version=15\nid=\"file.guard\"\nversion=\"1.0.0\"\nname=\"File guard\"\n"
+            "[[target]]\ngame_id=\"READER\"\n[target.disc_files]\n\"MISSING.BIN\"=\""+expected+"\"\n"
+            "[[feature]]\nid=\"guard\"\nname=\"Guard\"\ndefault_enabled=true\n");
+        check(PSXRecompV4::mod_runtime_initialize(guard_root,"READER",0,{},&error) &&
+              !PSXRecompV4::mod_runtime_commit(raw_path,&error) &&
+              error.find("MISSING.BIN") != std::string::npos, "missing required file fails runtime preparation");
+    }
     check(PSXRecompV4::mod_runtime_initialize(disc_root,"READER",0,{},&error),"reader initialize");
     check(PSXRecompV4::mod_runtime_commit(iso_path,&error),"reader mount original ISO");
     uint32_t bytes=0;

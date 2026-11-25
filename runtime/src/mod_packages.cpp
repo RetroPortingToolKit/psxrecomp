@@ -30,7 +30,7 @@ namespace PSXRecompV4 {
 namespace {
 
 constexpr uint32_t kMinFormatVersion = 1;
-constexpr uint32_t kMaxFormatVersion = 14;
+constexpr uint32_t kMaxFormatVersion = 15;
 
 /* A mod may only point the launcher at a file inside the game folder. */
 static fs::path relative_status_file(const std::string& text) {
@@ -694,7 +694,9 @@ const ModPackage* find_selected(
 }
 
 bool target_matches(const ModPackage& package, const std::string& game,
-                    const std::string& exe, const std::string& disc) {
+                    const std::string& exe, const std::string& disc,
+                    const std::map<std::string, std::string>& disc_files,
+                    std::string& reason) {
     if (package.targets.empty()) return false;
     for (const ModTarget& target : package.targets) {
         /* "*" targets every game. Framework-owned mods (loading speed, and
@@ -705,6 +707,17 @@ bool target_matches(const ModPackage& package, const std::string& game,
         if (target.game_id != "*" && target.game_id != game) continue;
         if (!target.exe_sha256.empty() && target.exe_sha256 != exe) continue;
         if (!target.disc_sha256.empty() && target.disc_sha256 != disc) continue;
+        bool files_match = true;
+        for (const auto& [path, expected] : target.disc_files) {
+            const auto found = disc_files.find(path);
+            if (found != disc_files.end() && found->second == expected) continue;
+            files_match = false;
+            if (reason.empty()) reason = path + " differs; expected SHA-256 " + expected +
+                "; found " + (found == disc_files.end() || found->second.empty()
+                    ? "missing or unreadable file" : found->second);
+            break;
+        }
+        if (!files_match) continue;
         return true;
     }
     return false;
@@ -1896,6 +1909,20 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                     v.contains("exe_sha256") ? toml::find<std::string>(v, "exe_sha256") : "";
                 target.disc_sha256 =
                     v.contains("disc_sha256") ? toml::find<std::string>(v, "disc_sha256") : "";
+                if (v.contains("disc_files")) {
+                    if (out.format_version < 15)
+                        throw std::runtime_error("target disc_files requires format_version 15");
+                    for (const auto& [path, value] : toml::find(v, "disc_files").as_table()) {
+                        auto hash = toml::get<std::string>(value);
+                        if (relative_status_file(path).empty() || !valid_sha256(hash))
+                            throw std::runtime_error("target disc_files requires safe relative ISO paths and SHA-256 values");
+                        std::transform(hash.begin(), hash.end(), hash.begin(),
+                            [](unsigned char c) { return char(std::tolower(c)); });
+                        target.disc_files.emplace(path, std::move(hash));
+                    }
+                    if (target.disc_files.empty())
+                        throw std::runtime_error("target disc_files must not be empty");
+                }
                 if (target.game_id.empty()) throw std::runtime_error("target game_id is empty");
                 out.targets.push_back(std::move(target));
             }
@@ -3836,7 +3863,8 @@ bool ModPackageManager::prepare_resources(const std::string& game_id,
 ModResolution ModPackageManager::resolve(const std::string& game_id,
                                          const std::string& exe_sha256,
                                          const std::string& disc_sha256,
-                                         bool defer_prepared_resources) const {
+                                         bool defer_prepared_resources,
+                                         const std::map<std::string, std::string>& disc_files) const {
     ModResolution result;
     /* Everything below reads the EFFECTIVE selection: the player's state plus
      * the features active [[requirement]]s derive. selections itself is never
@@ -3859,8 +3887,10 @@ ModResolution ModPackageManager::resolve(const std::string& game_id,
             continue;
         }
         if (!has_enabled_feature(*package, selection)) continue;
-        if (!target_matches(*package, game_id, exe_sha256, disc_sha256)) {
-            result.errors.push_back("package does not target this game/image: " + id);
+        std::string target_reason;
+        if (!target_matches(*package, game_id, exe_sha256, disc_sha256, disc_files, target_reason)) {
+            result.errors.push_back("package does not target this game/image: " + id +
+                (target_reason.empty() ? "" : " (" + target_reason + ")"));
             continue;
         }
         active[id] = package;

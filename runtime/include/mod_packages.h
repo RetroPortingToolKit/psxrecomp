@@ -156,6 +156,8 @@ struct ModTarget {
     std::string game_id;
     std::string exe_sha256;
     std::string disc_sha256;
+    // Format 15: exact original ISO file bytes, independent of raw-sector ECC.
+    std::map<std::string, std::string> disc_files;
 };
 
 enum class ModPatchTarget {
@@ -602,7 +604,8 @@ public:
     ModResolution resolve(const std::string& game_id,
                           const std::string& exe_sha256 = {},
                           const std::string& disc_sha256 = {},
-                          bool defer_prepared_resources = false) const;
+                           bool defer_prepared_resources = false,
+                           const std::map<std::string, std::string>& disc_files = {}) const;
 
     static bool read_manifest(const std::filesystem::path& path, ModPackage& out,
                               std::string* error = nullptr);

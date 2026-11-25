@@ -2706,6 +2706,43 @@ int main() {
               "status_reads_a_capped_prefix_from_a_utf8_path");
     }
 
+    {
+        const auto folder = root / "disc-file-targets";
+        const auto path = folder / "bundled/files.mod/1.0.0/manifest.toml";
+        const auto hash = sha256_hex({'s','t','o','c','k'});
+        const auto text = [&](int format, const std::string& name, const std::string& digest) {
+            return "format_version=" + std::to_string(format) +
+                "\nid=\"files.mod\"\nversion=\"1.0.0\"\nname=\"Files\"\n"
+                "[[target]]\ngame_id=\"SLUS-TEST\"\n[target.disc_files]\n\"" + name +
+                "\"=\"" + digest + "\"\n[[feature]]\nid=\"play\"\nname=\"Play\"\ndefault_enabled=true\n";
+        };
+        write_text(path, text(15, "STAGE.DAT", hash));
+        ModPackageManager files(folder);
+        check(files.scan(&error) && files.scan_errors().empty(), "format 15 file target parses");
+        const std::map<std::string, std::string> stock_files{{"STAGE.DAT", hash}};
+        check(files.resolve("SLUS-TEST", {}, "raw-a", false, stock_files).ok,
+              "exact game file accepts the original image");
+        check(files.resolve("SLUS-TEST", {}, "raw-b", false, stock_files).ok,
+              "same file accepts a different raw-sector fingerprint");
+        check(!files.resolve("OTHER", {}, {}, false, stock_files).ok,
+              "file hashes do not bypass target game identity");
+        auto missing = files.resolve("SLUS-TEST");
+        check(!missing.ok && missing.errors[0].find("STAGE.DAT") != std::string::npos &&
+              missing.errors[0].find("missing or unreadable") != std::string::npos,
+              "missing file fails closed with its name");
+        auto changed = files.resolve("SLUS-TEST", {}, {}, false,
+            {{"STAGE.DAT", sha256_hex({'c','h','a','n','g','e','d'})}});
+        check(!changed.ok && changed.errors[0].find("expected SHA-256") != std::string::npos,
+              "changed file reports expected and actual fingerprints");
+        for (const auto& invalid : {text(14, "STAGE.DAT", hash), text(15, "../STAGE.DAT", hash),
+                                   text(15, "/STAGE.DAT", hash), text(15, "STAGE.DAT", "bad")}) {
+            write_text(path, invalid);
+            ModPackage parsed;
+            check(!ModPackageManager::read_manifest(path, parsed, &error),
+                  "old schema, traversal and malformed file identities are rejected");
+        }
+    }
+
     fs::remove_all(root, ec);
     if (failures) {
         std::cerr << failures << " mod package test(s) failed\n";

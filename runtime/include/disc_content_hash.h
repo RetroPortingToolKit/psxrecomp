@@ -17,6 +17,33 @@
 
 namespace PSXRecompV4 {
 
+// Hash only the named ISO file's declared bytes, before runtime overlays.
+// Read bounded chunks; reject absent entries, directories and partial reads.
+inline bool disc_file_sha256(PS1::ISOReader& disc, const std::string& path,
+                             std::string& out) {
+    out.clear();
+    PS1::ISOFileEntry entry{};
+    if (!disc.FindFile(path, entry) || entry.is_directory ||
+        uint64_t(entry.size) > uint64_t(disc.GetSectorCount()) * 2048u)
+        return false;
+    psx_sha256_ctx hash;
+    psx_sha256_init(&hash);
+    std::array<uint8_t, 65536> buffer{};
+    for (uint32_t offset = 0; offset < entry.size;) {
+        const auto count = std::min<size_t>(buffer.size(), entry.size - offset);
+        if (disc.ReadFile(entry, offset, buffer.data(), count) != count) return false;
+        psx_sha256_update(&hash, buffer.data(), count);
+        offset += uint32_t(count);
+    }
+    uint8_t digest[32];
+    psx_sha256_final(&hash, digest);
+    std::ostringstream text;
+    for (uint8_t byte : digest)
+        text << std::hex << std::setw(2) << std::setfill('0') << unsigned(byte);
+    out = text.str();
+    return true;
+}
+
 // One byte identity for package targets and mandatory original-disc policy:
 // CUE hashes its data-track file; CHD hashes every decoded raw 2352-byte sector.
 // Host crypto and its portable fallback are shared through psx_sha256_file.

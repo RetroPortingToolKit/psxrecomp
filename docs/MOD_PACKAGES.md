@@ -16,6 +16,32 @@ The player selects a verified stock BIN/CUE. Resolution produces guarded native
 operations and sparse disc overlays without rewriting or replacing that stock
 image.
 
+## Original game file targets
+
+Format 15 adds exact ISO9660 file identities for mods that depend on specific
+game files rather than every raw disc-sector byte:
+
+```toml
+format_version = 15
+# Package metadata and features omitted.
+[[target]]
+game_id = "SLUS-00000"
+[target.disc_files]
+"GAME.DAT" = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+```
+
+Every listed file must be readable and have the declared SHA-256 over its exact
+file length. The runtime measures the original mounted image before applying
+overlays. CUE/BIN and decoded CHD use the same file reader. Sector headers,
+error-correction bytes and padding outside the files are not file content.
+Missing or changed files fail with the filename and expected/observed hash.
+Game IDs and any additional executable or raw-disc targets still apply.
+Older runtimes reject format 15 instead of silently ignoring these guards.
+
+The full raw-disc digest remains part of content-plan and netplay identity;
+matching file targets do not declare different disc images network-compatible.
+Runtime write guards, conflicts and transactional rollback remain unchanged.
+
 ## Save-state isolation
 
 An active package with `save_compatibility = "isolated"` gives normal save slots
