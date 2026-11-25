@@ -258,10 +258,23 @@ static int pattern_matches(const char *pattern, const uint8_t *name)
     return pattern[20] == 0;
 }
 
-static uint32_t find_file(CPUState *cpu, uint32_t file, uint32_t output)
+static uint32_t find_file(CPUState *cpu, uint32_t file, uint32_t output, int first)
 {
     unsigned port = file_word(cpu, file, 4) >> 4;
-    if (port > 1 || !card_ready(cpu, port) || !psx_ram_resolve(output, 40, NULL)) return 0;
+    if (port > 1 || !psx_ram_resolve(output, 40, NULL) ||
+        !(cpu->read_word(PSX_NATIVE_CARD_STATUS + port * 4) & 1u)) return 0;
+    uint8_t header[MEMCARD_SECTOR_SIZE];
+    int read = memcard_is_present(port) && memcard_read_sector(port, 0, header) == 0;
+    if (first) {
+        /* FirstFile probes sector zero before scanning the directory. The SDK
+         * observes this raw-card completion even when no filename matches.
+         * Keep that callback while replacing the firmware's serial/wait loop;
+         * NextFile does not start another observable header-read operation. */
+        cpu->write_word(PSX_NATIVE_CARD_LAST_DEVICE, port << 4);
+        cpu->write_word(PSX_NATIVE_CARD_STATUS + port * 4, read ? 1 : 0x21);
+        psx_native_bios_event(cpu, CARD_EVENT, read ? CARD_SUCCESS : CARD_ERROR, 1);
+    }
+    if (!read || header[0] != 'M' || header[1] != 'C') return 0;
     char pattern[21];
     if (!guest_name(cpu, PSX_NATIVE_CARD_FIND_PATTERN, pattern)) return 0;
     for (unsigned block = file_word(cpu, file, 16) + 1; block <= 15; ++block) {
@@ -333,10 +346,10 @@ static int filesystem_service(CPUState *cpu, uint32_t vector, uint32_t fn)
             for (unsigned i = 0; i <= 20; ++i)
                 cpu->write_byte(PSX_NATIVE_CARD_FIND_PATTERN + i, (uint8_t)pattern[i]);
             cpu->write_word(file + 16, 0);
-            result = find_file(cpu, file, cpu->gpr[6]);
+            result = find_file(cpu, file, cpu->gpr[6], 1);
             break;
         }
-        default: result = find_file(cpu, file, cpu->gpr[5]); break;
+        default: result = find_file(cpu, file, cpu->gpr[5], 0); break;
         }
         cpu->gpr[2] = result;
         return PSX_NATIVE_BIOS_RETURN;

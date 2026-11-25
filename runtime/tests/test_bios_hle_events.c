@@ -23,6 +23,7 @@ enum {
     CALLBACK_NESTED = 0x10008,
     CALLBACK_OVERRIDE = 0x10014,
     CALLBACK_CARD_FIND = 0x10024,
+    CALLBACK_CARD_COMPLETE = 0x10028,
     IRQ_VERIFY_A = 0x10018,
     IRQ_VERIFY_B = 0x1001c,
     IRQ_HANDLER = 0x10020,
@@ -56,6 +57,8 @@ static uint8_t test_card_flag[2];
 static unsigned card_flushes;
 static int card_flush_result;
 static unsigned card_find_overrides;
+static unsigned card_file_completions;
+static uint32_t expected_card_device, expected_card_spec;
 static void (*card_replaced_hook)(void);
 static jmp_buf irq_escape;
 static CPUState irq_cpu;
@@ -197,6 +200,20 @@ void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_address)
     const PsxNativeBiosTable *table = &psx_native_bios_tables[0];
     uint32_t first = psx_native_bios_stub(table, 0x65);
     uint32_t last = psx_native_bios_stub(table, 0x6d);
+    if (addr == CALLBACK_CARD_COMPLETE) {
+        CHECK(return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
+        if (cpu->gpr[4] != 0xf0000011u || cpu->gpr[5] != expected_card_spec)
+            fprintf(stderr, "card completion %u: class=%08x spec=%08x expected=%08x device=%08x\n",
+                    card_file_completions, cpu->gpr[4], cpu->gpr[5], expected_card_spec,
+                    read_word(PSX_NATIVE_CARD_LAST_DEVICE));
+        CHECK(cpu->gpr[4] == 0xf0000011u && cpu->gpr[5] == expected_card_spec);
+        CHECK(read_word(PSX_NATIVE_CARD_LAST_DEVICE) == expected_card_device);
+        CHECK(read_word(PSX_NATIVE_CARD_STATUS + (expected_card_device >> 4) * 4) & 1u);
+        ++card_file_completions;
+        /* A real guest callback can overwrite volatile argument registers. */
+        cpu->gpr[4] = cpu->gpr[5] = cpu->gpr[6] = 0xffffffffu;
+        return;
+    }
     if (addr == CALLBACK_CARD_FIND) {
         CHECK(return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
         CHECK(read_word(cpu->gpr[4]) == 1);
@@ -814,11 +831,41 @@ static void check_native_files(void)
     /* The original X6 SDK wraps the writable bu firstFile callback. */
     const char pattern[] = "bu00:BASLUS*";
     for (unsigned i = 0; i < sizeof pattern; ++i) write_byte(0x1900 + i, (uint8_t)pattern[i]);
+    write_word(0x120, EVENT_BASE); write_word(0x124, EVENT_SIZE * 2);
+    add_event(0, 4, MODE_CALLBACK, CALLBACK_CARD_COMPLETE);
+    add_event(1, 0x8000, MODE_CALLBACK, CALLBACK_CARD_COMPLETE);
+    write_word(EVENT_BASE, 0xf0000011u);
+    write_word(EVENT_BASE + EVENT_SIZE, 0xf0000011u);
+    expected_card_device = 0; expected_card_spec = 4;
+    card_file_completions = 0;
     write_word(PSX_NATIVE_DEVICE_TABLE + 0x34, CALLBACK_CARD_FIND);
     CHECK(native_call(&cpu, 0xb0, 0x42, 0x1900, 0x3000, 0) == 0x3000);
+    CHECK(card_file_completions == 1 && cpu.gpr[31] == CALLER_RESUME);
     CHECK(card_find_overrides == 1 && read_word(0x3018) == 8192 && read_word(0x3020) == 64);
     for (unsigned i = 0; i < sizeof path - 5; ++i) CHECK(read_byte(0x3000 + i) == (uint8_t)path[5 + i]);
     CHECK(native_call(&cpu, 0xb0, 0x43, 0x3000, 0, 0) == 0);
+    CHECK(card_file_completions == 1); /* NextFile does not start a header read. */
+    const char missing[] = "bu00:NO_MATCH";
+    for (unsigned i = 0; i < sizeof missing; ++i) write_byte(0x1940 + i, (uint8_t)missing[i]);
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1940, 0x3000, 0) == 0);
+    CHECK(card_file_completions == 2); /* Completion is observable even with no match. */
+    const char absent[] = "bu10:*";
+    for (unsigned i = 0; i < sizeof absent; ++i) write_byte(0x1980 + i, (uint8_t)absent[i]);
+    expected_card_device = 0x10; expected_card_spec = 0x8000;
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1980, 0x3000, 0) == 0);
+    CHECK(card_file_completions == 3);
+    /* Rejected requests do not manufacture a card completion. */
+    write_word(PSX_NATIVE_CARD_STATUS, 2);
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1900, 0x3000, 0) == 0);
+    write_word(PSX_NATIVE_CARD_STATUS, 1);
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1900, PSX_MAIN_RAM_WINDOW_BYTES, 0) == 0);
+    CHECK(card_file_completions == 3);
+    /* A readable, malformed volume still completed its raw header read. */
+    expected_card_device = 0; expected_card_spec = 4;
+    test_card[0][0][0] = 'X';
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1900, 0x3000, 0) == 0);
+    CHECK(card_file_completions == 4);
+    test_card[0][0][0] = 'M';
     CHECK(native_call(&cpu, 0xb0, 0x32, 0x1800, 1, 0) == 3);
     card_replaced_hook();
     CHECK(native_call(&cpu, 0xb0, 0x34, 3, 0x6000, 128) == UINT32_MAX);
