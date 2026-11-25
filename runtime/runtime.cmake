@@ -2328,12 +2328,11 @@ function(psxrecomp_add_runtime_target target)
     if(PSX_SHELLWIN_INTERP)
         target_compile_definitions(${target} PRIVATE PSX_SHELLWIN_INTERP_DEFAULT=1)
     endif()
-    if(PSX_NATIVE_KERNEL)
-        set_property(SOURCE
-            "${PSXRECOMP_ROOT}/runtime/src/main.cpp"
-            "${PSXRECOMP_ROOT}/runtime/src/bios_hle.c"
-            APPEND PROPERTY COMPILE_DEFINITIONS PSX_NATIVE_KERNEL=1)
-    endif()
+    set_property(SOURCE
+        "${PSXRECOMP_ROOT}/runtime/src/main.cpp"
+        "${PSXRECOMP_ROOT}/runtime/src/bios_hle.c"
+        APPEND PROPERTY COMPILE_DEFINITIONS
+        "$<$<BOOL:$<TARGET_PROPERTY:PSX_USE_NATIVE_KERNEL>>:PSX_NATIVE_KERNEL=1>")
     if(PSX_GL_BATCH_IMPL STREQUAL "HLE")
         target_compile_definitions(${target} PRIVATE PSX_GL_BATCH_HLE=1)
     endif()
