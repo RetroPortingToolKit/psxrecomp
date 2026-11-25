@@ -415,12 +415,12 @@ static void check_native_root_counter_irq(void)
     write_word(0x1748, IRQ_VERIFY_A);
     write_word(0x1754, IRQ_HANDLER);
     write_word(0x1758, IRQ_VERIFY_B);
-    CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1740, 0) == 0);
-    CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1750, 0) == 0);
+    CHECK(native_call(&irq_cpu, 0xc0, 2, 1, 0x1740, 0) == 0);
+    CHECK(native_call(&irq_cpu, 0xc0, 2, 1, 0x1750, 0) == 0);
     CHECK(read_word(0x1708) == 0x1750 && read_word(0x1750) == 0x1740);
-    CHECK(native_call(&irq_cpu, 0xc0, 4, 1, 0x1740, 0) == 0x1740);
+    CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1740, 0) == 0x1740);
     CHECK(read_word(0x1750) == 0);
-    CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1740, 0) == 0);
+    CHECK(native_call(&irq_cpu, 0xc0, 2, 1, 0x1740, 0) == 0);
     CHECK(read_word(0x1708) == 0x1740 && read_word(0x1740) == 0x1750);
     call_count = 0;
 
@@ -442,8 +442,8 @@ static void check_native_root_counter_irq(void)
     CHECK(escaped == 1 && test_istat == (1u << 5));
     CHECK(call_count == 3 && calls[0] == IRQ_VERIFY_A &&
           calls[1] == IRQ_HANDLER && calls[2] == IRQ_VERIFY_B);
-    CHECK(native_call(&irq_cpu, 0xc0, 4, 1, 0x1740, 0) == 0x1740);
-    CHECK(native_call(&irq_cpu, 0xc0, 4, 1, 0x1750, 0) == 0x1750);
+    CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1740, 0) == 0x1740);
+    CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1750, 0) == 0x1750);
     CHECK(read_word(0x1708) == 0);
     CHECK(read_word(EVENT_BASE + 4) == READY &&
           read_word(EVENT_BASE + EVENT_SIZE + 4) == ENABLED);

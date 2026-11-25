@@ -339,7 +339,7 @@ static int service_irq_chain(CPUState *cpu, uint32_t fn)
         !psx_ram_resolve(table, 32, NULL) || !psx_ram_resolve(handler, 12, NULL))
         return PSX_NATIVE_BIOS_UNSUPPORTED;
     uint32_t link = table + priority * 8;
-    if (fn == 3) {
+    if (fn == 2) {
         cpu->write_word(handler, cpu->read_word(link));
         cpu->write_word(link, handler);
         cpu->gpr[2] = 0;
@@ -360,7 +360,7 @@ static int service_irq_chain(CPUState *cpu, uint32_t fn)
 }
 
 int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
-    if (vector == 0xc0 && (fn == 3 || fn == 4))
+    if (vector == 0xc0 && (fn == 2 || fn == 3))
         return service_irq_chain(cpu, fn);
     int console = service_console(cpu, vector, fn);
     if (console) return console;
