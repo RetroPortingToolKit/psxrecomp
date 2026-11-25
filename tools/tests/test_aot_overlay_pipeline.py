@@ -126,29 +126,69 @@ class ReleaseCompilerCacheTests(unittest.TestCase):
 
 
 class PgxpReleaseNamespaceTests(unittest.TestCase):
-    def test_pgxp_compile_and_audit_follow_runtime_flavor(self):
+    def test_release_cli_preserves_native_flavors_and_rejects_unknown_bits(self):
+        class ReachedProfile(Exception):
+            pass
         with tempfile.TemporaryDirectory() as directory:
-            work = Path(directory)
-            commands = []
+            root = Path(directory)
+            config = root / 'game.toml'
+            config.write_text('[runtime]\noverlay_cache=true\n')
+            runtime = root / 'runtime'
+            runtime.mkdir()
+            marker = runtime / 'psxrecomp_overlay_flavor-psx-runtime.txt'
+            argv = ['aot_overlay_pipeline', 'release', '--profile', str(root / 'profile.json'),
+                    '--game-toml', str(config), '--recompiler', str(root / 'emitter'),
+                    '--work-dir', str(root / 'work'), '--stage', str(root / 'stage'),
+                    '--runtime-build-dir', str(runtime), '--runtime-target', 'psx-runtime']
+            for flavor in (0, 2, 4, 6, 1, 3, 5, 7, 8, 99):
+                with self.subTest(flavor=flavor):
+                    marker.write_text(str(flavor))
+                    with mock.patch.object(sys, 'argv', argv), \
+                         mock.patch.object(pipeline, 'require_release_codegen') as codegen, \
+                         mock.patch.object(pipeline, 'load_profile', side_effect=ReachedProfile) as profile:
+                        if flavor in (0, 2, 4, 6):
+                            with self.assertRaises(ReachedProfile):
+                                pipeline.run()
+                            codegen.assert_called_once()
+                            profile.assert_called_once()
+                        else:
+                            with self.assertRaisesRegex(pipeline.ProfileError, 'Unsupported runtime overlay flavor'):
+                                pipeline.run()
+                            codegen.assert_not_called()
+                            profile.assert_not_called()
+            for flavor in (4, 6):
+                with self.subTest(static_flavor=flavor):
+                    marker.write_text(str(flavor))
+                    with mock.patch.object(sys, 'argv', [argv[0], 'static', *argv[2:]]), \
+                         mock.patch.object(pipeline, 'load_profile') as profile:
+                        with self.assertRaisesRegex(pipeline.ProfileError, 'Static AOT generation'):
+                            pipeline.run()
+                        profile.assert_not_called()
 
-            def compile_fixture(command, **kwargs):
-                commands.append(command)
-                Path(command[command.index('--out-dir') + 1]).mkdir(parents=True)
+    def test_pgxp_compile_and_audit_follow_runtime_flavor(self):
+        for flavor in (0, 2, 4, 6):
+            with self.subTest(flavor=flavor), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory)
+                commands = []
 
-            with mock.patch.object(pipeline.subprocess, 'run', side_effect=compile_fixture):
-                pipeline.build(dict(jobs=[dict(input='invented.json', name='image')]),
-                               work / 'game.toml', work / 'emitter', work,
-                               'gcc', 1, flavor=2)
-            self.assertEqual(commands[0][commands[0].index('--flavor') + 1], '2')
-            receipt = work / 'audit.json'
-            receipt.write_text('{"flavor": 2}')
-            with mock.patch.object(pipeline.subprocess, 'run') as run:
-                result = pipeline.audit(work / 'game.toml', work / 'emitter',
-                                        work / 'cache', work / 'inventory.json',
-                                        receipt, flavor=2)
-            command = run.call_args.args[0]
-            self.assertEqual(command[command.index('--flavor') + 1], '2')
-            self.assertEqual(result['flavor'], 2)
+                def compile_fixture(command, **kwargs):
+                    commands.append(command)
+                    Path(command[command.index('--out-dir') + 1]).mkdir(parents=True)
+
+                with mock.patch.object(pipeline.subprocess, 'run', side_effect=compile_fixture):
+                    pipeline.build(dict(jobs=[dict(input='invented.json', name='image')]),
+                                   work / 'game.toml', work / 'emitter', work,
+                                   'gcc', 1, flavor=flavor)
+                self.assertEqual(commands[0][commands[0].index('--flavor') + 1], str(flavor))
+                receipt = work / 'audit.json'
+                receipt.write_text(json.dumps({'flavor': flavor}))
+                with mock.patch.object(pipeline.subprocess, 'run') as run:
+                    result = pipeline.audit(work / 'game.toml', work / 'emitter',
+                                            work / 'cache', work / 'inventory.json',
+                                            receipt, flavor=flavor)
+                command = run.call_args.args[0]
+                self.assertEqual(command[command.index('--flavor') + 1], str(flavor))
+                self.assertEqual(result['flavor'], flavor)
 
 
     def test_release_default_root_reaches_external_ws_config(self):
