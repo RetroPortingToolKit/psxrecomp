@@ -35,6 +35,7 @@ extern "C" {
 #define PSX_NATIVE_IRQ_CALLBACK_LINK 0x8000a100u
 #define PSX_NATIVE_BOOT_RETURN_PHYS 0x0000a104u
 #define PSX_NATIVE_EXCEPTION_PATCH_RESUME 0x0000a108u
+#define PSX_NATIVE_WAIT_EVENT_RESUME 0x0000a10cu
 #define PSX_NATIVE_EXCEPTION_ENTRY 0x0000a000u
 #define PSX_NATIVE_EXCEPTION_MARKER 0x0000000du
 #define PSX_NATIVE_A0_TABLE 0x200u
@@ -107,6 +108,7 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
                0x08000000u | (PSX_NATIVE_EXCEPTION_PATCH_RESUME >> 2));
     write_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x3c, 0);
     write_word(PSX_NATIVE_EXCEPTION_PATCH_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
+    write_word(PSX_NATIVE_WAIT_EVENT_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
     /* Psy-Q's legacy card patch obtains a writable fast-track code address
      * by decoding the two immediate fields at exception-handler +70/+74.
      * Native card operations do not execute that serial loop. Expose its

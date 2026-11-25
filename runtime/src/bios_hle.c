@@ -515,6 +515,38 @@ static void native_bios_unavailable(CPUState *cpu, uint32_t vector, uint32_t fn)
     exit(1);
 }
 
+/* WaitEvent's original 0x1e44..0x1ec4 routine consumes READY once, returns
+ * zero for an initially inactive event, and otherwise waits without changing
+ * threads. Replace its guest polling loop with device deadlines. The event
+ * pointer lives in V1, as in the original routine, and the resume token lives
+ * in guest RAM so IRQ thread changes and current-build snapshots can resume
+ * without relying on an abandoned host stack. */
+static void native_wait_event(CPUState *cpu, int resume)
+{
+    uint32_t event = resume ? cpu->gpr[3] :
+        cpu->read_word(KADDR_EVCB_BASE) + (cpu->gpr[4] & 0xffffu) * EVCB_STRIDE;
+    if (!psx_ram_resolve(event, EVCB_STRIDE, NULL))
+        native_bios_unavailable(cpu, 0xb0, 0x0a);
+    uint32_t status = cpu->read_word(event + EV_STATUS);
+    if (!resume && status != EVST_ENABLED && status != EVST_READY) {
+        cpu->gpr[2] = 0;
+        cpu->pc = cpu->gpr[31];
+        psx_cpu_charge(40);
+        return;
+    }
+    cpu->gpr[3] = event;
+    while (cpu->read_word(event + EV_STATUS) != EVST_READY) {
+        const uint32_t next = psx_idle_cycles_to_next_observable_event();
+        cpu->pc = 0x80000000u | PSX_NATIVE_WAIT_EVENT_RESUME;
+        psx_advance_cycles(next ? next : 1u);
+        psx_check_interrupts_at(cpu, cpu->pc);
+    }
+    cpu->write_word(event + EV_STATUS, EVST_ENABLED);
+    cpu->gpr[2] = 1;
+    cpu->pc = cpu->gpr[31];
+    psx_cpu_charge(40);
+}
+
 static int native_stub_unchanged(CPUState *cpu, const PsxNativeBiosTable *table, uint32_t fn)
 {
     uint32_t stub = psx_native_bios_stub(table, fn);
@@ -527,6 +559,11 @@ static int native_stub_unchanged(CPUState *cpu, const PsxNativeBiosTable *table,
 
 static int native_service_dispatch(CPUState *cpu, uint32_t vector, uint32_t fn)
 {
+    if (vector == 0xb0 && fn == 0x0a) {
+        native_wait_event(cpu, 0);
+        hle_record(vector, fn, cpu, cpu->gpr[2], PSX_HLE_ROUTE_HLE);
+        return 1;
+    }
     if (vector == 0xb0 && fn == 0x17 && psx_get_in_exception()) {
         native_exception_return(cpu);
         exit(1);
@@ -547,6 +584,11 @@ static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
 {
 #if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
     if (s_native_kernel_on) {
+        if (phys == PSX_NATIVE_WAIT_EVENT_RESUME) {
+            if (cpu->read_word(phys) != PSX_NATIVE_EXCEPTION_MARKER) return 0;
+            native_wait_event(cpu, 1);
+            return 1;
+        }
         if (phys == PSX_NATIVE_EXCEPTION_ENTRY || phys == PSX_NATIVE_EXCEPTION_PATCH_RESUME) {
             if (cpu->read_word(phys) != PSX_NATIVE_EXCEPTION_MARKER) return 0;
             if (phys == PSX_NATIVE_EXCEPTION_PATCH_RESUME) {

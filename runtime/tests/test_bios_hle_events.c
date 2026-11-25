@@ -55,6 +55,8 @@ static unsigned card_flushes;
 static void (*card_replaced_hook)(void);
 static jmp_buf irq_escape;
 static CPUState irq_cpu;
+static unsigned wait_checks;
+static uint32_t wait_delivery;
 void psx_icache_reset(void) { ++cache_resets; }
 uint64_t psx_cycle_count;
 uint64_t psx_next_service_cycle = UINT64_MAX;
@@ -65,6 +67,14 @@ int g_exec_phase, g_event_step_conservative, g_ls_replay_active, psx_in_device_s
 #define CHECK(test) do { \
     if (!(test)) { fprintf(stderr, "B0 event fixture line %d: %s\n", __LINE__, #test); exit(1); } \
 } while (0)
+
+uint32_t psx_idle_cycles_to_next_observable_event(void) { return 64; }
+void psx_check_interrupts_at(CPUState *cpu, uint32_t pc) {
+    CHECK(pc == (0x80000000u | PSX_NATIVE_WAIT_EVENT_RESUME));
+    CHECK(wait_delivery && cpu->gpr[3] == wait_delivery);
+    cpu->write_word(wait_delivery + 4, READY);
+    ++wait_checks;
+}
 
 void sio_set_cards_replaced_hook(void (*hook)(void)) { card_replaced_hook = hook; }
 uint8_t sio_card_flag(int port) { return test_card_flag[port]; }
@@ -580,6 +590,38 @@ static void check_native_root_counter_irq(void)
     irq_active = 0;
 }
 
+static void check_native_wait_event(void)
+{
+    CPUState cpu = {0};
+    cpu.read_word = read_word;
+    cpu.write_word = write_word;
+    psx_bios_hle_configure_native();
+    psx_native_bios_init_tables(write_word);
+    write_word(0x120, EVENT_BASE);
+    write_word(0x124, EVENT_SIZE);
+    write_word(EVENT_BASE + 4, 0x1000);
+    wait_checks = 0;
+    CHECK(native_call(&cpu, 0xb0, 0x0a, 0xf1000000, 0, 0) == 0);
+    CHECK(!wait_checks && cpu.pc == CALLER_RESUME);
+    write_word(EVENT_BASE + 4, READY);
+    CHECK(native_call(&cpu, 0xb0, 0x0a, 0xf1000000, 0, 0) == 1);
+    CHECK(read_word(EVENT_BASE + 4) == ENABLED && !wait_checks);
+    wait_delivery = EVENT_BASE;
+    CHECK(native_call(&cpu, 0xb0, 0x0a, 0xf1000000, 0, 0) == 1);
+    CHECK(wait_checks == 1 && read_word(EVENT_BASE + 4) == ENABLED);
+    CHECK(cpu.pc == CALLER_RESUME);
+    /* An already waiting thread keeps waiting even if the event is disabled.
+     * Its pointer and continuation are fully in the restored CPU/RAM state. */
+    CPUState restored = cpu;
+    restored.gpr[3] = EVENT_BASE;
+    restored.pc = 0x80000000u | PSX_NATIVE_WAIT_EVENT_RESUME;
+    write_word(EVENT_BASE + 4, 0x1000);
+    CHECK(g_psx_bios_hle_hook(&restored, PSX_NATIVE_WAIT_EVENT_RESUME));
+    CHECK(wait_checks == 2 && restored.gpr[2] == 1 && restored.pc == CALLER_RESUME);
+    CHECK(read_word(EVENT_BASE + 4) == ENABLED);
+    wait_delivery = 0;
+}
+
 int main(void)
 {
     psx_bios_image.image_id = "OPENBIOS";
@@ -594,6 +636,7 @@ int main(void)
     psx_bios_image.image_sha256 = NULL;
     check_delivery(RETAIL_RESUME);
     check_native_calls();
+    check_native_wait_event();
     check_native_root_counter_irq();
     puts("bios_hle_events_test: OK");
     return 0;
