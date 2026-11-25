@@ -775,13 +775,17 @@ int psx_native_padcard_set_active(CPUState *cpu, int active)
 
 static int init_pad(CPUState *cpu, const uint32_t buffers[2], const uint32_t sizes[2])
 {
+    /* InitPAD uses safeMemZero: NULL and non-positive signed lengths do not
+     * initialize memory. IRQ writes later follow the actual packet length,
+     * independently of these initialization sizes. */
     for (unsigned port = 0; port < 2; ++port) {
-        const uint32_t extent = sizes[port] > 34 ? sizes[port] : 34;
-        if (!psx_ram_resolve(buffers[port], extent, NULL))
+        if (buffers[port] && sizes[port] && sizes[port] <= INT32_MAX &&
+            !psx_ram_resolve(buffers[port], sizes[port], NULL))
             return PSX_NATIVE_BIOS_UNSUPPORTED;
     }
     for (unsigned port = 0; port < 2; ++port) {
-        fill_bytes(cpu, buffers[port], 0, sizes[port]);
+        if (buffers[port] && sizes[port] && sizes[port] <= INT32_MAX)
+            fill_bytes(cpu, buffers[port], 0, sizes[port]);
         cpu->write_word(PSX_NATIVE_PAD_BUFFERS + port * 4, buffers[port]);
     }
     cpu->write_word(PSX_NATIVE_PAD_INITIALIZED, 1);

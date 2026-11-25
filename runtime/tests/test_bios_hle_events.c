@@ -1032,6 +1032,25 @@ static void check_native_pad(void)
     psx_bios_hle_configure_native();
     psx_native_bios_init_tables(write_word);
     write_word(0x100, 0x1700);
+    /* safeMemZero skips NULL, zero and negative signed sizes. Init must not
+     * dereference an unused pointer or apply the later IRQ packet extent. */
+    write_word(0, 0x55aa1234);
+    irq_cpu.gpr[7] = 0;
+    CHECK(native_call(&irq_cpu, 0xb0, 0x12, 0, 34, 0xffffffffu) == 1);
+    CHECK(read_word(0) == 0x55aa1234);
+    CHECK(read_word(PSX_NATIVE_PAD_BUFFERS + 4) == 0xffffffffu);
+    memset((uint8_t *)ram + 0x4000, 0xcc, 36);
+    memset((uint8_t *)ram + 0x4100, 0xcc, 36);
+    irq_cpu.gpr[7] = UINT32_MAX;
+    CHECK(native_call(&irq_cpu, 0xb0, 0x12, 0x4000, 2, 0x4100) == 1);
+    CHECK(read_byte(0x4000) == 0 && read_byte(0x4001) == 0 &&
+          read_byte(0x4002) == 0xcc && read_byte(0x4100) == 0xcc);
+    uint32_t before_init[sizeof ram / sizeof ram[0]];
+    memcpy(before_init, ram, sizeof ram);
+    irq_cpu.gpr[4] = 0xfffffff0u; irq_cpu.gpr[5] = 34;
+    irq_cpu.gpr[6] = 0x4100; irq_cpu.gpr[7] = 34;
+    CHECK(psx_native_bios_service(&irq_cpu, 0xb0, 0x12) == PSX_NATIVE_BIOS_UNSUPPORTED);
+    CHECK(!memcmp(before_init, ram, sizeof ram));
     const uint32_t node = PSX_NATIVE_IRQ_NODES +
         PSX_NATIVE_PAD_CARD_IRQ_NODE * PSX_NATIVE_IRQ_NODE_BYTES;
     memset((uint8_t *)ram + 0x4000, 0xcc, 36);
