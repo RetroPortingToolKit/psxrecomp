@@ -36,6 +36,7 @@
 #include "bios_hle.h"
 #include "native_bios_boot.h"
 #include "native_bios_services.h"
+#include "psx_native_idle_wait.h"
 #include "bios_hle_plan.h"
 #include "psx_bios_known_images.h"
 #include "psx_bios_backend.h"
@@ -23618,6 +23619,7 @@ session_reboot:
         }
         psx_bios_hle_configure_native();
         psx_native_card_bind(&cpu);
+        psx_idle_skip_set_hw_countdown_timing(1);
         // The scheduler restores the live thread from its TCB on the very
         // first dispatch, so publish the initial register context through its
         // existing guest-ABI writer before it takes ownership.
