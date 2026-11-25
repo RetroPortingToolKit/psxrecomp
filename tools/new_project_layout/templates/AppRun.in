@@ -52,6 +52,10 @@ for tree in assets bios licenses docs; do
         chmod -R u+rwX "$data_dir/$tree"
     fi
 done
+# Only the release owns bundled/. Replacing that catalog also retires removed
+# packages; merging it would leave old controls active after an update.
+# Installed packages, selections, settings, saves and generated cache stay put.
+rm -rf "$data_dir/mods/bundled"
 if [ -d "$payload/mods" ]; then
     cp -a "$payload/mods/." "$data_dir/mods/"
     chmod -R u+rwX "$data_dir/mods"

@@ -217,5 +217,46 @@ class AppRunTemplate(unittest.TestCase):
                     self.assertIn("runtime ran in", r.stdout)
                     self.assertEqual((data / "game.toml").read_text(encoding="utf-8"), release)
 
+    def test_update_replaces_only_the_release_owned_bundled_catalog(self):
+        current = self.payload / "mods/bundled/current/1.0.0/manifest.toml"
+        current.parent.mkdir(parents=True)
+        current.write_bytes(b"current release catalog")
+        for shell in _shells():
+            with self.subTest(shell=shell):
+                data = self.tmp / ("catalog-" + Path(shell).name)
+                stale = data / "mods/bundled/psx.enhancement.pgxp/1.0.0/manifest.toml"
+                stale.parent.mkdir(parents=True)
+                stale.write_bytes(b"retired setting control")
+                preserved = {
+                    "mods/installed/player/1.0.0/manifest.toml": b"player content",
+                    "mods/state.toml": b"saved choices",
+                    "settings.toml": b"canonical settings",
+                    "saves/card.mcd": b"native progress",
+                    "cache/player.shard": b"generated cache",
+                }
+                for relative, content in preserved.items():
+                    path = data / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(content)
+                for _ in range(2):
+                    run = self.run_app(shell, data, SEED_ONLY="1")
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertFalse(stale.exists(), "removed package must not survive an update")
+                    self.assertEqual((data / "mods/bundled/current/1.0.0/manifest.toml").read_bytes(),
+                                     b"current release catalog")
+                    for relative, content in preserved.items():
+                        self.assertEqual((data / relative).read_bytes(), content, relative)
+
+    def test_empty_release_catalog_retires_old_bundled_packages(self):
+        for shell in _shells():
+            with self.subTest(shell=shell):
+                data = self.tmp / ("empty-" + Path(shell).name)
+                stale = data / "mods/bundled/obsolete/manifest.toml"
+                stale.parent.mkdir(parents=True)
+                stale.write_bytes(b"old release catalog")
+                run = self.run_app(shell, data, SEED_ONLY="1")
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertFalse(stale.exists())
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
