@@ -42,6 +42,7 @@ uint32_t g_psx_ram_size = sizeof ram;
 uint32_t g_psx_ram_mask = sizeof ram - 1;
 static unsigned cache_resets;
 static int irq_active;
+static uint32_t expected_saved_v0;
 static uint32_t test_istat, test_imask;
 static uint32_t test_gpu_status, test_gpu_data, test_gpu_control;
 static unsigned test_gpu_writes;
@@ -90,6 +91,7 @@ uint32_t psx_sched_current_tcb(CPUState *cpu) { CHECK(irq_active && cpu == &irq_
 void psx_sched_save_context(CPUState *cpu, uint32_t tcb, uint32_t pc) {
     CHECK(irq_active && cpu == &irq_cpu && tcb == 0x1000 && pc == CALLER_RESUME);
     CHECK(cpu->cop0[12] == 0x40000401u);
+    if (expected_saved_v0) CHECK(cpu->gpr[2] == expected_saved_v0);
 }
 int psx_syscall(CPUState *cpu, uint32_t code) {
     CHECK(irq_active && cpu == &irq_cpu && code == 0 &&
@@ -273,6 +275,9 @@ static void check_native_calls(void)
     CHECK(native_call(&cpu, 0xb0, 0x56, 0, 0, 0) == PSX_NATIVE_C0_TABLE);
     CHECK(native_call(&cpu, 0xb0, 0x57, 0, 0, 0) == PSX_NATIVE_B0_TABLE);
     CHECK(read_word(PSX_NATIVE_C0_TABLE + 6 * 4) == (0x80000000u | PSX_NATIVE_EXCEPTION_ENTRY));
+    CHECK(read_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x38) ==
+          (0x08000000u | (PSX_NATIVE_EXCEPTION_PATCH_RESUME >> 2)));
+    CHECK(read_word(PSX_NATIVE_EXCEPTION_PATCH_RESUME) == PSX_NATIVE_EXCEPTION_MARKER);
     const PsxNativeBiosTable *a0 = &psx_native_bios_tables[0];
     const uint32_t fill_stub = psx_native_bios_stub(a0, 0x2b);
     write_word(PSX_NATIVE_A0_TABLE + 0x2b * 4, CALLBACK_OVERRIDE);
@@ -537,6 +542,23 @@ static void check_native_root_counter_irq(void)
         CHECK(0);
     }
     CHECK(escaped == 1 && test_istat == 0 && read_word(EVENT_BASE + 4) == READY);
+    /* Simulate the writable SDK prefix's observed Cause load after it
+     * saved the original V0. The continuation must preserve the real TCB
+     * value when the existing scheduler snapshots the rest of the context. */
+    write_word(PSX_NATIVE_EXCEPTION_ENTRY, 0);
+    CHECK(!g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_ENTRY));
+    expected_saved_v0 = 0x12345678u;
+    write_word(0x1010, expected_saved_v0);
+    irq_cpu.gpr[2] = 0x400u;
+    irq_cpu.cop0[12] = 0x40000404u;
+    test_istat = test_imask = 0;
+    escaped = setjmp(irq_escape);
+    if (!escaped) {
+        g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_PATCH_RESUME);
+        CHECK(0);
+    }
+    CHECK(escaped == 1);
+    expected_saved_v0 = 0;
     irq_active = 0;
 }
 

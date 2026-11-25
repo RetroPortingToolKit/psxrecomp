@@ -547,8 +547,19 @@ static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
 {
 #if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
     if (s_native_kernel_on) {
-        if (phys == PSX_NATIVE_EXCEPTION_ENTRY) {
+        if (phys == PSX_NATIVE_EXCEPTION_ENTRY || phys == PSX_NATIVE_EXCEPTION_PATCH_RESUME) {
             if (cpu->read_word(phys) != PSX_NATIVE_EXCEPTION_MARKER) return 0;
+            if (phys == PSX_NATIVE_EXCEPTION_PATCH_RESUME) {
+                /* The writable SDK prefix has already preserved V0 in
+                 * the current thread and used the live V0 for Cause. */
+                uint32_t tcb = psx_sched_current_tcb(cpu);
+                if (!tcb || !psx_get_in_exception() ||
+                    !psx_ram_resolve(tcb, 0xc0u, NULL)) {
+                    fprintf(stderr, "native exception continuation without a live TCB\n");
+                    exit(1);
+                }
+                cpu->gpr[2] = cpu->read_word(tcb + 8u + 2u * 4u);
+            }
             native_exception_entry(cpu);
             exit(1); /* exception escape must not return */
         }
@@ -623,6 +634,7 @@ int psx_bios_hle_dispatch_quiet(uint32_t address) {
     if (s_native_kernel_on)
         return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
                phys != PSX_NATIVE_BOOT_RETURN_PHYS && phys != PSX_NATIVE_EXCEPTION_ENTRY &&
+               phys != PSX_NATIVE_EXCEPTION_PATCH_RESUME &&
                (phys < 0x8e00u || phys >= 0x9f00u) &&
                (phys < 0x1fc00000u || phys >= 0x1fc80000u);
     return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&

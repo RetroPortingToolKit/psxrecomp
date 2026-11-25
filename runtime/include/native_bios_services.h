@@ -34,6 +34,7 @@ extern "C" {
 #define PSX_NATIVE_CARD_FASTTRACK_SCRATCH 0x0000ad00u
 #define PSX_NATIVE_IRQ_CALLBACK_LINK 0x8000a100u
 #define PSX_NATIVE_BOOT_RETURN_PHYS 0x0000a104u
+#define PSX_NATIVE_EXCEPTION_PATCH_RESUME 0x0000a108u
 #define PSX_NATIVE_EXCEPTION_ENTRY 0x0000a000u
 #define PSX_NATIVE_EXCEPTION_MARKER 0x0000000du
 #define PSX_NATIVE_A0_TABLE 0x200u
@@ -97,6 +98,15 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
     for (uint32_t word = 0; word < 0x100; word += 4)
         write_word(PSX_NATIVE_EXCEPTION_ENTRY + word, 0);
     write_word(PSX_NATIVE_EXCEPTION_ENTRY, PSX_NATIVE_EXCEPTION_MARKER);
+    /* Some normal SDK exception patches copy the first 0x38 bytes of
+     * the legacy handler into this writable address. Their prologue saves
+     * AT/V0/V1/RA into the TCB, then reads Cause into V0. Continue into the
+     * host-native executive after that actual guest prologue instead of
+     * requiring an immutable entry or letting it run into filler RAM. */
+    write_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x38,
+               0x08000000u | (PSX_NATIVE_EXCEPTION_PATCH_RESUME >> 2));
+    write_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x3c, 0);
+    write_word(PSX_NATIVE_EXCEPTION_PATCH_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
     /* Psy-Q's legacy card patch obtains a writable fast-track code address
      * by decoding the two immediate fields at exception-handler +70/+74.
      * Native card operations do not execute that serial loop. Expose its
