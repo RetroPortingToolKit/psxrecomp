@@ -129,7 +129,7 @@ static void check_direct_memory(CPUState *cpu,OverlayCallbacks *callbacks){
     cpu->read_word=direct_word;cpu->read_half=direct_half;cpu->read_byte=direct_byte;
     cpu->write_word=direct_store_word;cpu->write_half=direct_store_half;cpu->write_byte=direct_store_byte;
     direct_flush_owner=overlay_flush_cycles;overlay_init(callbacks);
-    assert(PSX_OVERLAY_ABI_VERSION==39 && g_psx_overlay_memory_view==&view);
+    assert(PSX_OVERLAY_ABI_VERSION==40 && g_psx_overlay_memory_view==&view);
     const uint32_t aliases[]={0x00120000u,0x80120000u,0xA0320000u,0x1F800100u,0x9F800100u,0xBF800100u};
     for(unsigned i=0;i<6;++i){
         uint8_t *p=direct_byte_ptr(aliases[i]);p[0]=0x44;p[1]=0x33;p[2]=0x22;p[3]=0x11;

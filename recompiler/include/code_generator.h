@@ -499,7 +499,8 @@ private:
     // LEFT-edge funnel bltz addresses in the current function (auto_screen_x,
     // signed min/max + center±halfwidth idioms — ws_cull_detect.h). Populated
     // per function alongside ws_auto_cull_func_; generate_branch_condition
-    // emits a listed bltz through psx_ws_cull_bltz. Cleared per function.
+    // emits a listed bltz through psx_ws_cull_bltz unless screen_x_sites also
+    // lists it. Cleared per function.
     std::set<uint32_t> ws_cull_bltz_pcs_;
 
     // True iff the function's instruction stream contains both a screen-width

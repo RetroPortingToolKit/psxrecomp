@@ -3070,6 +3070,11 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_include_directories(overlay_store_pc_forwarding_test PRIVATE include)
     target_compile_definitions(overlay_store_pc_forwarding_test PRIVATE
         PSX_OVERLAY_DLL_BUILD PSX_NO_DEBUG_TOOLS PSX_ENABLE_BLOCK_CYCLES=1)
+    if(MSVC)
+        target_compile_options(overlay_store_pc_forwarding_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(overlay_store_pc_forwarding_test PRIVATE -UNDEBUG)
+    endif()
     add_test(NAME overlay_store_pc_forwarding_test
              COMMAND overlay_store_pc_forwarding_test)
 
