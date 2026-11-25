@@ -22,6 +22,9 @@ enum {
     CALLBACK_SECOND = 0x10004,
     CALLBACK_NESTED = 0x10008,
     CALLBACK_OVERRIDE = 0x10014,
+    IRQ_VERIFY_A = 0x10018,
+    IRQ_VERIFY_B = 0x1001c,
+    IRQ_HANDLER = 0x10020,
     CALLER_RESUME = 0x1000c,
     NESTED_RESUME = 0x10010,
     RETAIL_RESUME = 0x1bfc,
@@ -145,6 +148,18 @@ static int deliver(CPUState *cpu, uint32_t spec, uint32_t caller_resume)
 
 void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_address)
 {
+    if (addr == IRQ_VERIFY_A || addr == IRQ_VERIFY_B || addr == IRQ_HANDLER) {
+        CHECK(irq_active && cpu == &irq_cpu && return_address == PSX_NATIVE_IRQ_CALLBACK_LINK &&
+              cpu->gpr[31] == PSX_NATIVE_IRQ_CALLBACK_LINK);
+        CHECK(call_count < sizeof calls / sizeof calls[0]);
+        calls[call_count++] = addr;
+        if (addr == IRQ_HANDLER) {
+            CHECK(cpu->gpr[4] == 7 && read_word(EVENT_BASE + 4) == ENABLED);
+        } else {
+            cpu->gpr[2] = addr == IRQ_VERIFY_A ? 7 : 0;
+        }
+        return;
+    }
     if (addr == CALLBACK_OVERRIDE) {
         CHECK(return_address == CALLER_RESUME && cpu->gpr[31] == CALLER_RESUME);
         cpu->gpr[2] = 0x7bad;
@@ -395,6 +410,20 @@ static void check_native_root_counter_irq(void)
     psx_bios_hle_configure_native();
     psx_native_bios_init_tables(write_word);
 
+    write_word(0x100, 0x1700);
+    write_word(0x1744, IRQ_HANDLER);
+    write_word(0x1748, IRQ_VERIFY_A);
+    write_word(0x1754, IRQ_HANDLER);
+    write_word(0x1758, IRQ_VERIFY_B);
+    CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1740, 0) == 0);
+    CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1750, 0) == 0);
+    CHECK(read_word(0x1708) == 0x1750 && read_word(0x1750) == 0x1740);
+    CHECK(native_call(&irq_cpu, 0xc0, 4, 1, 0x1740, 0) == 0x1740);
+    CHECK(read_word(0x1750) == 0);
+    CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1740, 0) == 0);
+    CHECK(read_word(0x1708) == 0x1740 && read_word(0x1740) == 0x1750);
+    call_count = 0;
+
     write_word(0x120, EVENT_BASE);
     write_word(0x124, 2 * EVENT_SIZE);
     add_event(0, 2, MODE_MARK, 0);
@@ -411,6 +440,11 @@ static void check_native_root_counter_irq(void)
         CHECK(0);
     }
     CHECK(escaped == 1 && test_istat == (1u << 5));
+    CHECK(call_count == 3 && calls[0] == IRQ_VERIFY_A &&
+          calls[1] == IRQ_HANDLER && calls[2] == IRQ_VERIFY_B);
+    CHECK(native_call(&irq_cpu, 0xc0, 4, 1, 0x1740, 0) == 0x1740);
+    CHECK(native_call(&irq_cpu, 0xc0, 4, 1, 0x1750, 0) == 0x1750);
+    CHECK(read_word(0x1708) == 0);
     CHECK(read_word(EVENT_BASE + 4) == READY &&
           read_word(EVENT_BASE + EVENT_SIZE + 4) == ENABLED);
 

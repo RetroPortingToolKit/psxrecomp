@@ -328,7 +328,40 @@ static int service_thread(CPUState *cpu, uint32_t vector, uint32_t fn) {
     return 1;
 }
 
+/* The IRQ executive keeps ordinary guest HandlerInfo chains in the SDK's
+ * existing four-priority table, not in opaque host registration state. */
+static int service_irq_chain(CPUState *cpu, uint32_t fn)
+{
+    uint32_t priority = cpu->gpr[4];
+    uint32_t handler = cpu->gpr[5];
+    uint32_t table = cpu->read_word(0x100u);
+    if (priority >= 4 || !table || !handler || (handler & 3u) ||
+        !psx_ram_resolve(table, 32, NULL) || !psx_ram_resolve(handler, 12, NULL))
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    uint32_t link = table + priority * 8;
+    if (fn == 3) {
+        cpu->write_word(handler, cpu->read_word(link));
+        cpu->write_word(link, handler);
+        cpu->gpr[2] = 0;
+    } else {
+        uint32_t node = cpu->read_word(link);
+        uint32_t remaining = g_psx_ram_size / 4;
+        while (node && node != handler) {
+            if (!remaining-- || (node & 3u) || !psx_ram_resolve(node, 12, NULL))
+                return PSX_NATIVE_BIOS_UNSUPPORTED;
+            link = node;
+            node = cpu->read_word(link);
+        }
+        if (node) cpu->write_word(link, cpu->read_word(node));
+        cpu->gpr[2] = node;
+    }
+    psx_cpu_charge(36);
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
 int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
+    if (vector == 0xc0 && (fn == 3 || fn == 4))
+        return service_irq_chain(cpu, fn);
     int console = service_console(cpu, vector, fn);
     if (console) return console;
 

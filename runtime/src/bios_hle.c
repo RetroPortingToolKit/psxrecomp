@@ -369,6 +369,47 @@ static void native_exception_return(CPUState *cpu)
     (void)psx_syscall(cpu, 0);
 }
 
+static uint32_t native_irq_call(CPUState *cpu, uint32_t function)
+{
+    cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
+    extern int g_exec_phase;
+    int previous_phase = g_exec_phase;
+    g_exec_phase = 3;
+    psx_dispatch_call(cpu, function, PSX_NATIVE_IRQ_CALLBACK_LINK);
+    g_exec_phase = previous_phase;
+    return cpu->gpr[2];
+}
+
+static void native_irq_chain(CPUState *cpu, unsigned priority)
+{
+    uint32_t handlers = cpu->read_word(0x100u);
+    if (!handlers) return;
+    if (!psx_ram_resolve(handlers, 32, NULL)) {
+        fprintf(stderr, "native IRQ: invalid priority table\n");
+        exit(1);
+    }
+    uint32_t node = cpu->read_word(handlers + priority * 8);
+    uint32_t remaining = g_psx_ram_size / 4;
+    while (node) {
+        if (!remaining-- || (node & 3u) || !psx_ram_resolve(node, 12, NULL)) {
+            fprintf(stderr, "native IRQ: invalid handler chain at priority %u\n", priority);
+            exit(1);
+        }
+        uint32_t handler = cpu->read_word(node + 4);
+        uint32_t verifier = cpu->read_word(node + 8);
+        if (verifier) {
+            uint32_t result = native_irq_call(cpu, verifier);
+            if (result && handler) {
+                cpu->gpr[4] = result;
+                native_irq_call(cpu, handler);
+            }
+        }
+        /* The callback may change or unlink its own HandlerInfo. Read the
+         * next pointer only after it returns, as the kernel does. */
+        node = cpu->read_word(node);
+    }
+}
+
 static void native_exception_entry(CPUState *cpu)
 {
     const uint32_t tcb = psx_sched_current_tcb(cpu);
@@ -385,17 +426,6 @@ static void native_exception_entry(CPUState *cpu)
     psx_sched_save_context(cpu, tcb, cpu->cop0[14]);
     cpu->cop0[12] = sr;
 
-    /* Installed priority chains cannot be ignored. The native boot currently
-     * starts them empty; surface the missing provider if a route installs one. */
-    uint32_t handlers = cpu->read_word(0x100u);
-    if (handlers) {
-        for (uint32_t priority = 0; priority < 4; ++priority) {
-            if (cpu->read_word(handlers + priority * 8u)) {
-                fprintf(stderr, "native IRQ provider gap: priority chain %u\n", priority);
-                exit(1);
-            }
-        }
-    }
     const uint32_t pending = cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u);
     if (cpu->read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE) &&
         (pending & ((1u << IRQ_CDROM) | (1u << IRQ_DMA)))) {
@@ -405,6 +435,12 @@ static void native_exception_entry(CPUState *cpu)
     cpu->gpr[29] = PSX_NATIVE_EXCEPTION_STACK;
     cpu->gpr[30] = PSX_NATIVE_EXCEPTION_STACK;
     cpu->gpr[28] = 0;
+
+    /* Boot installs its native root/SIO/generic providers first. Later
+     * title registrations prepend to each priority, so they run before
+     * the corresponding built-in provider. */
+    native_irq_chain(cpu, 0);
+    native_irq_chain(cpu, 1);
 
     /* Boot's root-counter handlers run in priority 1, reverse insertion
      * order: VBlank, timer 2, timer 1, timer 0. Deliver the real event before
@@ -428,8 +464,10 @@ static void native_exception_entry(CPUState *cpu)
             exit(1); /* exception escape must not return */
         }
     }
+    native_irq_chain(cpu, 2);
     if (cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & (1u << IRQ_VBLANK))
         psx_native_card_vblank(cpu);
+    native_irq_chain(cpu, 3);
 
     /* Generic IRQ events run last; the game-owned CD/DMA driver receives
      * these notifications and keeps control of its hardware IRQs. */
