@@ -88,6 +88,13 @@ static inline uint32_t psx_native_bios_stub(const PsxNativeBiosTable *table,
     return 0x80000000u + table->stubs + fn * 12u;
 }
 
+/* Older SDK PAD patches derive these two callbacks from ChangeClearPAD's
+ * table entry. Keep their ordinary RAM addresses and patch storage usable. */
+static inline uint32_t psx_native_pad_patch_helper(int started) {
+    return psx_native_bios_stub(&psx_native_bios_tables[1], 0x5b) +
+           (started ? 0x884u : 0x894u);
+}
+
 static inline uint32_t psx_native_bios_stub_words(const PsxNativeBiosTable *table,
                                                  uint32_t fn) {
     return table->vector == 0xa0 && fn == 0x9d ? 5u : 3u;
@@ -138,6 +145,12 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
                 write_word(stub + word * 4, psx_native_bios_stub_word(table, fn, word));
         }
     }
+    const uint32_t pad_patch_base =
+        psx_native_bios_stub(&psx_native_bios_tables[1], 0x5b);
+    for (uint32_t word = 0; word < 11; ++word)
+        write_word(pad_patch_base + 0x594u + word * 4, 0);
+    write_word(psx_native_pad_patch_helper(1), PSX_NATIVE_EXCEPTION_MARKER);
+    write_word(psx_native_pad_patch_helper(0), PSX_NATIVE_EXCEPTION_MARKER);
     write_word(PSX_NATIVE_C0_TABLE + 6 * 4, 0x80000000u | PSX_NATIVE_EXCEPTION_ENTRY);
     for (uint32_t word = 0; word < 0x100; word += 4)
         write_word(PSX_NATIVE_EXCEPTION_ENTRY + word, 0);

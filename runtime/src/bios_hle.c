@@ -638,6 +638,14 @@ static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
 {
 #if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
     if (s_native_kernel_on) {
+        const uint32_t pad_start = psx_native_pad_patch_helper(1) & 0x1fffffffu;
+        const uint32_t pad_stop = psx_native_pad_patch_helper(0) & 0x1fffffffu;
+        if (phys == pad_start || phys == pad_stop) {
+            if (cpu->read_word(phys) != PSX_NATIVE_EXCEPTION_MARKER) return 0;
+            cpu->write_word(PSX_NATIVE_CARD_PAD_STARTED, phys == pad_start);
+            psx_cpu_charge(16);
+            return 1;
+        }
         if (phys == PSX_NATIVE_WAIT_EVENT_RESUME) {
             if (cpu->read_word(phys) != PSX_NATIVE_EXCEPTION_MARKER) return 0;
             native_wait_event(cpu, 1);
@@ -738,6 +746,8 @@ int psx_bios_hle_dispatch_quiet(uint32_t address) {
         return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
                phys != PSX_NATIVE_BOOT_RETURN_PHYS && phys != PSX_NATIVE_EXCEPTION_ENTRY &&
                phys != PSX_NATIVE_EXCEPTION_PATCH_RESUME && phys != PSX_NATIVE_INFO_STUB &&
+               phys != (psx_native_pad_patch_helper(1) & 0x1fffffffu) &&
+               phys != (psx_native_pad_patch_helper(0) & 0x1fffffffu) &&
                (phys < 0x8e00u || phys >= 0x9f00u) &&
                (phys < 0x1fc00000u || phys >= 0x1fc80000u);
     return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&

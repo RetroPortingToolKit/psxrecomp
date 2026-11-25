@@ -1051,6 +1051,21 @@ static void check_native_pad(void)
     irq_cpu.gpr[6] = 0x4100; irq_cpu.gpr[7] = 34;
     CHECK(psx_native_bios_service(&irq_cpu, 0xb0, 0x12) == PSX_NATIVE_BIOS_UNSUPPORTED);
     CHECK(!memcmp(before_init, ram, sizeof ram));
+    /* SDK _patch_pad derives start/stop callbacks from B0[ChangeClearPAD]. */
+    const uint32_t pad_base = read_word(PSX_NATIVE_B0_TABLE + 0x5b * 4);
+    const uint32_t pad_start = pad_base + 0x884u, pad_stop = pad_base + 0x894u;
+    CHECK(pad_start == psx_native_pad_patch_helper(1) &&
+          pad_stop == psx_native_pad_patch_helper(0));
+    CHECK(!psx_bios_hle_dispatch_quiet(pad_start));
+    CHECK(!psx_bios_hle_dispatch_quiet(pad_stop));
+    irq_cpu.gpr[2] = 0x12345678;
+    CHECK(g_psx_bios_hle_hook(&irq_cpu, pad_stop & 0x1fffffffu));
+    CHECK(!read_word(PSX_NATIVE_CARD_PAD_STARTED) && irq_cpu.gpr[2] == 0x12345678);
+    CHECK(g_psx_bios_hle_hook(&irq_cpu, pad_start & 0x1fffffffu));
+    CHECK(read_word(PSX_NATIVE_CARD_PAD_STARTED) == 1 && irq_cpu.gpr[2] == 0x12345678);
+    write_word(pad_start, 0x03e00008u);
+    CHECK(!g_psx_bios_hle_hook(&irq_cpu, pad_start & 0x1fffffffu));
+    write_word(pad_start, PSX_NATIVE_EXCEPTION_MARKER);
     const uint32_t node = PSX_NATIVE_IRQ_NODES +
         PSX_NATIVE_PAD_CARD_IRQ_NODE * PSX_NATIVE_IRQ_NODE_BYTES;
     memset((uint8_t *)ram + 0x4000, 0xcc, 36);

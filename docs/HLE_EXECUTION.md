@@ -235,3 +235,9 @@ Unknown services and invalid packet/buffer contracts still fail explicitly.
 The ABI and shared handler order follow the primary OpenBIOS
 [driver](https://github.com/pcsx-redux/nugget/blob/main/openbios/sio0/driver.c)
 and [legacy PAD routines](https://github.com/pcsx-redux/nugget/blob/main/openbios/sio0/pad.c).
+
+Older SDK `_patch_pad` routines also derive start/stop callbacks and writable
+patch storage from the `ChangeClearPAD` table entry. The native table exposes
+those addresses; intact callback markers update the same guest pad-enable
+state, while edited markers remain owned by the guest. This follows the
+OpenBIOS [PAD counterpatch](https://github.com/pcsx-redux/nugget/blob/main/openbios/patches/patch_pad_2.c).
