@@ -90,7 +90,8 @@ class Fixture:
         self.tmp.cleanup()
 
 
-def write_stage(stage, channel, version='v1.2.3', exe='Fixture.exe'):
+def write_stage(stage, channel, version='v1.2.3', exe='Fixture.exe',
+                package_id='fixture.diagnostics'):
     stage.mkdir(parents=True)
     (stage / exe).write_bytes(b'MZ fixture')
     (stage / 'psx_game_version.txt').write_text(version + '\n')
@@ -99,14 +100,14 @@ def write_stage(stage, channel, version='v1.2.3', exe='Fixture.exe'):
     (stage / 'replay-diagnostics.py').write_text('# helper\n')
     (stage / 'bios').mkdir()
     (stage / 'bios/openbios.bin').write_bytes(b'\0' * ptr.OPENBIOS_SIZE)
-    package = stage / 'mods/bundled/fixture.diagnostics/1.0.0'
+    package = stage / 'mods/bundled' / package_id / '1.0.0'
     package.mkdir(parents=True)
     (package / 'manifest.toml').write_text(
-        DIAG.format(recording='true', osd='false'))
+        DIAG.format(recording='true', osd='false').replace('fixture.diagnostics', package_id))
     files = {p.relative_to(stage).as_posix(): ptr.sha256(p)
              for p in sorted(stage.rglob('*')) if p.is_file()}
     manifest = dict(channel=channel, version=version, product='FixtureRecomp', executable=exe,
-                    mod_packages=['fixture.diagnostics'],
+                    mod_packages=[package_id],
                     playtest_diagnostics_default_enabled=True, files=files)
     (stage / 'RELEASE_MANIFEST.json').write_text(json.dumps(manifest))
 
@@ -737,6 +738,42 @@ class DiagnosticsTests(unittest.TestCase):
         write_stage(stage, 'public')
         with self.assertRaisesRegex(ptr.PackagingError, 'no \\[diagnostics\\]'):
             ptr.check_diagnostics(self.ctx('public'), stage)
+
+    def test_legacy_inputs_control_uses_all_recording_gates(self):
+        for package in ('mmx4.diagnostics', 'mmx5.diagnostics'):
+            for channel in ptr.CHANNELS:
+                with self.subTest(package=package, channel=channel):
+                    stage = Path(self.tmp.name) / (package + '-' + channel)
+                    write_stage(stage, channel, package_id=package)
+                    manifest = stage / 'mods/bundled' / package / '1.0.0/manifest.toml'
+                    text = manifest.read_text().replace('"recording"', '"inputs"')
+                    manifest.write_text(text)
+                    ctx = self.ctx(channel)
+                    ctx.config.diagnostics['package_id'] = package
+                    ptr.check_diagnostics(ctx, stage)
+                    ptr.check_diagnostics_dir(SimpleNamespace(
+                        bundled=stage / 'mods/bundled', channel=channel))
+                    refresh_manifest(stage)
+                    ptr.verify_payload(stage, None, ctx.config, channel, 'windows', 'v1.2.3')
+                    self.assertEqual(manifest.read_text(), text)
+                    manifest.write_text(text.replace('default_enabled = true', 'default_enabled = false'))
+                    with self.assertRaisesRegex(ptr.PackagingError, 'default_enabled'):
+                        ptr.check_diagnostics(ctx, stage)
+                    with self.assertRaisesRegex(ptr.PackagingError, 'default_enabled'):
+                        ptr.check_diagnostics_dir(SimpleNamespace(
+                            bundled=stage / 'mods/bundled', channel=channel))
+                    refresh_manifest(stage)
+                    with self.assertRaisesRegex(ptr.PackagingError, 'default_enabled'):
+                        ptr.verify_payload(stage, None, ctx.config, channel, 'windows', 'v1.2.3')
+
+    def test_legacy_inputs_alias_does_not_mask_other_recording_controls(self):
+        inputs = {'id': 'inputs', 'default_enabled': True}
+        recording = {'id': 'recording', 'default_enabled': False}
+        self.assertNotIn('recording', ptr.diagnostics_features({
+            'id': 'fixture.diagnostics', 'feature': [inputs]}))
+        for package in ('mmx4.diagnostics', 'mmx5.diagnostics'):
+            self.assertIs(ptr.diagnostics_features({
+                'id': package, 'feature': [inputs, recording]})['recording'], recording)
 
 
 class VerifyZipTests(unittest.TestCase):

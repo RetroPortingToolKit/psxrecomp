@@ -1033,9 +1033,9 @@ def diagnostics_features(data):
     features = {f.get('id'): f for f in data.get('feature', [])}
     if 'recording' not in features and 'input-recording' in features:
         features['recording'] = features['input-recording']
-    # X4's maintained recording control predates the shared feature spelling.
-    # Normalize only this known package; preserve its public ID and bindings.
-    if (data.get('id') == 'mmx4.diagnostics' and
+    # These maintained recording controls predate the shared feature spelling.
+    # Normalize only the known packages; preserve their public IDs and bindings.
+    if (data.get('id') in ('mmx4.diagnostics', 'mmx5.diagnostics') and
             'recording' not in features and 'inputs' in features):
         features['recording'] = features['inputs']
     return features
