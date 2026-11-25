@@ -1327,7 +1327,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
         // in the host's current-byte range. This block test alone is NOT proof
         // of reachability: the publisher must compare the emitted host+alias
         // CRC/range identities with the preselected cached owner before use.
-        PSXRecomp::ControlFlowAnalyzer hosted_cfg_analyzer(*exe);
+        PSXRecomp::ControlFlowAnalyzer hosted_cfg_analyzer(*exe, overlay_mode && native_kernel_boundaries);
         std::map<uint32_t, PSXRecomp::ControlFlowGraph> hosted_cfgs;
         for (const auto& seed : hosted_interior_seeds) {
             uint32_t target = seed.first;
@@ -1533,7 +1533,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
 
 
     // Control flow analysis
-    PSXRecomp::ControlFlowAnalyzer cfg_analyzer(*exe);
+    PSXRecomp::ControlFlowAnalyzer cfg_analyzer(*exe, overlay_mode && native_kernel_boundaries);
     auto all_cfgs = cfg_analyzer.analyze_all_functions(analysis_result.functions);
 
     // Print CFG summary statistics
@@ -1805,7 +1805,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
             variant_views.push_back(std::make_unique<PSXRecomp::PS1Executable>(
                 PSXRecomp::segment_view(*exe, plan.segment)));
             const PSXRecomp::PS1Executable& view = *variant_views.back();
-            PSXRecomp::ControlFlowAnalyzer view_cfg(view);
+            PSXRecomp::ControlFlowAnalyzer view_cfg(view, overlay_mode && native_kernel_boundaries);
             const auto variant_cfgs = view_cfg.analyze_all_functions(plan.functions);
             variant_codegens.push_back(std::make_unique<PSXRecomp::CodeGenerator>(
                 view, PSXRecomp::rebase_codegen_config(codegen_config, *exe, plan.segment)));

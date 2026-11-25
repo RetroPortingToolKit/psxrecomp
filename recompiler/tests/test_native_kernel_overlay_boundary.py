@@ -15,10 +15,15 @@ ROOT = Path(__file__).resolve().parents[2]
 LOAD = 0x8000A000
 ANCHOR = 0x8000A108
 
-def generate(exe, directory, marker, native, overlay=True):
+def generate(exe, directory, marker, native, overlay=True, fallthrough=False):
     directory.mkdir()
     body = bytearray(0x120)
-    struct.pack_into('<2I', body, 0, 0x08000000 | ((ANCHOR >> 2) & 0x3ffffff), 0)
+    if fallthrough:
+        # Keep the path executable rather than a long zero-padding heuristic.
+        # These writes preserve the preceding guest value all the way to A108.
+        for offset in range(0, 0x108, 4):
+            struct.pack_into('<I', body, offset, 0x24630000)
+    struct.pack_into('<2I', body, 0, (0x24030009 if fallthrough else 0x08000000 | ((ANCHOR >> 2) & 0x3ffffff)), 0)
     struct.pack_into('<3I', body, 0x108, marker, 0x03e00008, 0)
     header = bytearray(2048)
     header[:8] = b'PS-X EXE'
@@ -51,8 +56,11 @@ def main():
         original = generate(args.recompiler, temp / 'ordinary', 0x0000000d, False)
         edited = generate(args.recompiler, temp / 'edited', 0x24020007, True)
         static = generate(args.recompiler, temp / 'static', 0x0000000d, True, False)
+        fallthrough = generate(args.recompiler, temp / 'fallthrough', 0x0000000d, True, fallthrough=True)
     handoff = re.compile(r'block_8000A108:\s*cpu->pc = 0x8000A108u; return;')
     assert handoff.search(native), 'native local jump executes marker instead of returning to dispatch'
+    assert handoff.search(fallthrough), 'fallthrough prefix must split before intact native marker'
+    assert '0x24030009' in fallthrough, 'preceding guest register write was lost'
     assert not handoff.search(original), 'firmware code unexpectedly selected native ownership'
     assert not handoff.search(edited), 'edited marker must remain ordinary guest code'
     assert not handoff.search(static), 'original static game generation must remain unchanged'

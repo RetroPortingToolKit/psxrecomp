@@ -243,7 +243,7 @@ state, while edited markers remain owned by the guest. This follows the
 OpenBIOS [PAD counterpatch](https://github.com/pcsx-redux/nugget/blob/main/openbios/patches/patch_pad_2.c).
 
 
-Mutable kernel prefixes may branch to native BIOS marker entries. Overlay
+Mutable kernel prefixes may branch or fall through to native BIOS marker entries. Overlay
 code generation keeps an intact marker as an external CPS transfer through the
 normal dispatcher, whose live-word check retains ownership only while the
 marker is intact. Edited marker bytes remain ordinary guest code. The selected
