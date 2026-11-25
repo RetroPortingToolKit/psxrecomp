@@ -21,7 +21,11 @@ enum {
     CARD_REQ_BUFFER = 8,
     CARD_REQ_INVALID = 12,
     CARD_REQ_BACKUP_INFO = 16,
+    CARD_REQ_FILE = 20,
+    CARD_REQ_BYTES = 24,
     CARD_REQ_STRIDE = 32,
+    CARD_FILE_READ = 8,
+    CARD_FILE_WRITE = 10,
 };
 
 static CPUState *bound_cpu;
@@ -248,6 +252,37 @@ static int32_t transfer_file(CPUState *cpu, uint32_t file, uint32_t buffer, uint
     return (int32_t)bytes;
 }
 
+static int32_t transfer_or_enqueue_file(CPUState *cpu, uint32_t file, uint32_t buffer,
+                                        uint32_t bytes, int writing)
+{
+    if (!(file_word(cpu, file, 0) & 0x8000u))
+        return transfer_file(cpu, file, buffer, bytes, writing);
+    unsigned port = file_word(cpu, file, 4) >> 4;
+    uint32_t offset = file_word(cpu, file, 16), length = file_word(cpu, file, 32);
+    if (port > 1 || !(cpu->read_word(PSX_NATIVE_CARD_STATUS + port * 4) & 1u) ||
+        (offset & 127u) || offset >= length || bytes > INT32_MAX ||
+        (bytes && !psx_ram_resolve(buffer, bytes, NULL))) return -1;
+    /* The backup-unit async interface transfers whole card sectors and
+     * returns zero when accepted. Keep pending work in guest RAM, not a host
+     * closure, so current-build snapshots retain the actual operation. */
+    bytes &= ~127u;
+    if (bytes > length - offset) return -1;
+    if (!bytes) {
+        psx_native_bios_event(cpu, BACKUP_EVENT, CARD_SUCCESS, 1);
+        return 0;
+    }
+    uint32_t request = card_request(port);
+    cpu->write_word(request + CARD_REQ_DEVICE, port << 4);
+    cpu->write_word(request + CARD_REQ_BUFFER, buffer);
+    cpu->write_word(request + CARD_REQ_INVALID, 0);
+    cpu->write_word(request + CARD_REQ_BACKUP_INFO, 0);
+    cpu->write_word(request + CARD_REQ_FILE, file);
+    cpu->write_word(request + CARD_REQ_BYTES, bytes);
+    cpu->write_word(PSX_NATIVE_CARD_STATUS + port * 4,
+                    writing ? CARD_FILE_WRITE : CARD_FILE_READ);
+    return 0;
+}
+
 static int pattern_matches(const char *pattern, const uint8_t *name)
 {
     for (unsigned i = 0; i < 20; ++i) {
@@ -338,8 +373,12 @@ static int filesystem_service(CPUState *cpu, uint32_t vector, uint32_t fn)
         switch (fn) {
         case 0x65: result = (uint32_t)open_card_file(cpu, file, cpu->gpr[5], cpu->gpr[6]); break;
         case 0x66: case 0x67:
-            result = (uint32_t)transfer_file(cpu, file, cpu->gpr[5], cpu->gpr[6], fn == 0x67); break;
-        case 0x68: result = 0; break;
+            result = (uint32_t)transfer_or_enqueue_file(cpu, file, cpu->gpr[5], cpu->gpr[6], fn == 0x67); break;
+        case 0x68: {
+            unsigned port = file_word(cpu, file, 4) >> 4;
+            result = port > 1 || !(cpu->read_word(PSX_NATIVE_CARD_STATUS + port * 4) & 1u);
+            break;
+        }
         case 0x69: {
             char pattern[21] = {0};
             if (!guest_name(cpu, cpu->gpr[5], pattern)) { result = 0; break; }
@@ -361,7 +400,7 @@ static int filesystem_service(CPUState *cpu, uint32_t vector, uint32_t fn)
     if (fn == 0x32 || fn == 0x42 || fn == 0x41) {
         unsigned port;
         uint32_t name = card_path(cpu, a0, &port);
-        if (!name || (fn == 0x32 && (!a1 || (a1 & 0x8000)))) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        if (!name || (fn == 0x32 && !a1)) return PSX_NATIVE_BIOS_UNSUPPORTED;
         if (fn == 0x42) {
             file = cpu->read_word(PSX_NATIVE_CARD_FIND_FILE);
             if (!file) file = free_file(cpu);
@@ -394,7 +433,10 @@ static int filesystem_service(CPUState *cpu, uint32_t vector, uint32_t fn)
                 }
             } else {
                 result = device_call(cpu, fn == 0x34 ? 0x24 : fn == 0x35 ? 0x28 : 0x1c, file, a1, a2);
-                if (fn == 0x36) cpu->write_word(file, 0);
+                if (fn == 0x36) {
+                    if (!result) cpu->write_word(file, 0);
+                    else result = UINT32_MAX;
+                }
             }
         }
     } else if (fn == 0x43) {
@@ -435,6 +477,20 @@ static uint32_t complete_request(CPUState *cpu, unsigned port, uint32_t status)
         (device & 0xfu) || !memcard_is_present(port)) return CARD_ERROR;
     if ((sio_card_flag(port) & 8) &&
         !cpu->read_word(PSX_NATIVE_CARD_ALLOW_NEW)) return CARD_NEW;
+    if (status == CARD_FILE_READ || status == CARD_FILE_WRITE) {
+        uint32_t file = cpu->read_word(request + CARD_REQ_FILE);
+        if (!psx_ram_resolve(file, PSX_NATIVE_FILE_BYTES, NULL) ||
+            descriptor(cpu, file_word(cpu, file, 40)) != psx_ram_canonical_offset(file) ||
+            file_word(cpu, file, 4) != device || !(file_word(cpu, file, 0) & 0x8000u))
+            return CARD_ERROR;
+        /* The owning operation is completing now. Release its busy state
+         * before reusing the synchronous host sector transfer, then publish
+         * the normal backup/file/card events after its final result. */
+        cpu->write_word(PSX_NATIVE_CARD_STATUS + port * 4, 1);
+        int32_t transferred = transfer_file(cpu, file, buffer,
+            cpu->read_word(request + CARD_REQ_BYTES), status == CARD_FILE_WRITE);
+        return transferred < 0 ? CARD_ERROR : CARD_SUCCESS;
+    }
     if (status == 0) return CARD_SUCCESS;
     if (status == 6) {
         int valid = initialize_volume(port);
@@ -558,6 +614,10 @@ void psx_native_card_vblank(CPUState *cpu)
     if (status & 1u) return;
 
     uint32_t request = card_request(port);
+    int file_read = status == CARD_FILE_READ, file_write = status == CARD_FILE_WRITE;
+    uint32_t file = cpu->read_word(request + CARD_REQ_FILE);
+    uint32_t fd = (file_read || file_write) && psx_ram_resolve(file, PSX_NATIVE_FILE_BYTES, NULL)
+        ? file_word(cpu, file, 40) : 0;
     uint32_t spec = complete_request(cpu, port, status);
     int backup_info = cpu->read_word(request + CARD_REQ_BACKUP_INFO) != 0;
     cpu->write_word(PSX_NATIVE_CARD_LAST_DEVICE,
@@ -567,6 +627,11 @@ void psx_native_card_vblank(CPUState *cpu)
     cpu->write_word(request + CARD_REQ_BACKUP_INFO, 0);
     if (spec == CARD_NEW)
         cpu->write_word(PSX_NATIVE_CARD_VOLUME_VALID + port * 4, 0);
-    if (backup_info) psx_native_bios_event(cpu, BACKUP_EVENT, spec, 1);
+    if (file_write && spec == CARD_SUCCESS)
+        psx_native_bios_event(cpu, fd, CARD_SUCCESS, 1);
+    if (backup_info || file_read || file_write)
+        psx_native_bios_event(cpu, BACKUP_EVENT, spec, 1);
+    if (file_read && spec == CARD_SUCCESS)
+        psx_native_bios_event(cpu, fd, CARD_SUCCESS, 1);
     psx_native_bios_event(cpu, CARD_EVENT, spec, 1);
 }

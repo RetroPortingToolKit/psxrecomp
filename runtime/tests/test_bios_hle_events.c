@@ -24,6 +24,7 @@ enum {
     CALLBACK_OVERRIDE = 0x10014,
     CALLBACK_CARD_FIND = 0x10024,
     CALLBACK_CARD_COMPLETE = 0x10028,
+    CALLBACK_ASYNC_FILE = 0x1002c,
     IRQ_VERIFY_A = 0x10018,
     IRQ_VERIFY_B = 0x1001c,
     IRQ_HANDLER = 0x10020,
@@ -59,6 +60,8 @@ static int card_flush_result;
 static unsigned card_find_overrides;
 static unsigned card_file_completions;
 static uint32_t expected_card_device, expected_card_spec;
+static uint32_t async_events[4], expected_async_spec;
+static unsigned async_event_count;
 static void (*card_replaced_hook)(void);
 static jmp_buf irq_escape;
 static CPUState irq_cpu;
@@ -200,6 +203,15 @@ void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_address)
     const PsxNativeBiosTable *table = &psx_native_bios_tables[0];
     uint32_t first = psx_native_bios_stub(table, 0x65);
     uint32_t last = psx_native_bios_stub(table, 0x6d);
+    if (addr == CALLBACK_ASYNC_FILE) {
+        CHECK(return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
+        CHECK(cpu->gpr[5] == expected_async_spec && async_event_count < 4);
+        CHECK(read_word(PSX_NATIVE_CARD_LAST_DEVICE) == 0);
+        CHECK(read_word(PSX_NATIVE_CARD_STATUS) & 1u);
+        async_events[async_event_count++] = cpu->gpr[4];
+        cpu->gpr[4] = cpu->gpr[5] = cpu->gpr[6] = 0xffffffffu;
+        return;
+    }
     if (addr == CALLBACK_CARD_COMPLETE) {
         CHECK(return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
         if (cpu->gpr[4] != 0xf0000011u || cpu->gpr[5] != expected_card_spec)
@@ -777,6 +789,64 @@ static void check_native_wait_event(void)
     wait_delivery = 0;
 }
 
+static void check_native_async_file(CPUState *cpu)
+{
+    /* Missing save files remain an ordinary open failure in async mode. */
+    CHECK(native_call(cpu, 0xb0, 0x32, 0x1940, 0x8001, 0) == UINT32_MAX);
+    CHECK(native_call(cpu, 0xb0, 0x32, 0x1800, 0x8001, 0) == 3);
+    write_word(0x120, EVENT_BASE); write_word(0x124, EVENT_SIZE * 5);
+    const uint32_t classes[] = {0xf4000001u, 3, 0xf0000011u, 0xf4000001u, 0xf0000011u};
+    for (unsigned i = 0; i < 5; ++i) {
+        add_event(i, i < 3 ? 4 : 0x8000, MODE_CALLBACK, CALLBACK_ASYNC_FILE);
+        write_word(EVENT_BASE + EVENT_SIZE * i, classes[i]);
+    }
+    expected_async_spec = 4; async_event_count = 0;
+    for (unsigned i = 0; i < 128; ++i) write_byte(0x6000 + i, 0);
+    CHECK(native_call(cpu, 0xb0, 0x34, 3, 0x6000, 128) == 0);
+    CHECK(!async_event_count && read_word(PSX_NATIVE_CARD_STATUS) == 8);
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44 + 16) == 0 && read_byte(0x6000) == 0);
+    CHECK(native_call(cpu, 0xb0, 0x34, 3, 0x6000, 128) == UINT32_MAX);
+    CHECK(native_call(cpu, 0xb0, 0x36, 3, 0, 0) == UINT32_MAX);
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44) == 0x8001);
+    /* A pending transfer is completely represented by current CPU/RAM state. */
+    static uint32_t pending_ram[sizeof ram / sizeof ram[0]];
+    memcpy(pending_ram, ram, sizeof ram);
+    CPUState pending_cpu = *cpu;
+    psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
+    CHECK(async_event_count == 3 && async_events[0] == 0xf4000001u &&
+          async_events[1] == 3 && async_events[2] == 0xf0000011u);
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44 + 16) == 128);
+    for (unsigned i = 0; i < 128; ++i) CHECK(read_byte(0x6000 + i) == (uint8_t)(i ^ 0x5a));
+    memcpy(ram, pending_ram, sizeof ram); *cpu = pending_cpu; async_event_count = 0;
+    psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
+    CHECK(async_event_count == 3 && read_byte(0x6000) == 0x5a);
+    CHECK(native_call(cpu, 0xb0, 0x36, 3, 0, 0) == 0);
+    CHECK(native_call(cpu, 0xb0, 0x32, 0x1800, 0x8002, 0) == 3);
+    async_event_count = 0;
+    unsigned flushes = card_flushes;
+    CHECK(native_call(cpu, 0xb0, 0x35, 3, 0x4000, 128) == 0);
+    CHECK(card_flushes == flushes && !async_event_count);
+    psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
+    CHECK(card_flushes == flushes + 1 && test_card[0][64][1] == 3);
+    CHECK(async_event_count == 3 && async_events[0] == 3 &&
+          async_events[1] == 0xf4000001u && async_events[2] == 0xf0000011u);
+    CHECK(native_call(cpu, 0xb0, 0x36, 3, 0, 0) == 0);
+    CHECK(native_call(cpu, 0xb0, 0x32, 0x1800, 0x8001, 0) == 3);
+    async_event_count = 0;
+    CHECK(native_call(cpu, 0xb0, 0x34, 3, PSX_MAIN_RAM_WINDOW_BYTES, 128) == UINT32_MAX);
+    CHECK(!async_event_count && read_word(PSX_NATIVE_CARD_STATUS) == 1);
+    CHECK(native_call(cpu, 0xb0, 0x34, 3, 0x6000, 128) == 0);
+    expected_async_spec = 0x8000;
+    test_card_present[0] = 0;
+    psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
+    CHECK(async_event_count == 2 && async_events[0] == 0xf4000001u &&
+          async_events[1] == 0xf0000011u);
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44 + 16) == 0);
+    test_card_present[0] = 1;
+    CHECK(native_call(cpu, 0xb0, 0x36, 3, 0, 0) == 0);
+    write_word(0x124, 0);
+}
+
 static void check_native_files(void)
 {
     memset(ram, 0, sizeof ram);
@@ -866,6 +936,7 @@ static void check_native_files(void)
     CHECK(native_call(&cpu, 0xb0, 0x42, 0x1900, 0x3000, 0) == 0);
     CHECK(card_file_completions == 4);
     test_card[0][0][0] = 'M';
+    check_native_async_file(&cpu);
     CHECK(native_call(&cpu, 0xb0, 0x32, 0x1800, 1, 0) == 3);
     card_replaced_hook();
     CHECK(native_call(&cpu, 0xb0, 0x34, 3, 0x6000, 128) == UINT32_MAX);
