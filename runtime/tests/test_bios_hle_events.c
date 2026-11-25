@@ -43,6 +43,9 @@ uint32_t g_psx_ram_mask = sizeof ram - 1;
 static unsigned cache_resets;
 static int irq_active;
 static uint32_t test_istat, test_imask;
+static uint32_t test_gpu_status, test_gpu_data, test_gpu_control;
+static unsigned test_gpu_writes;
+uint32_t dma_cycles_to_internal_event(void) { return UINT32_MAX; }
 static uint16_t test_sio_mode, test_sio_ctrl, test_sio_baud;
 static uint8_t test_card[2][MEMCARD_SECTORS][MEMCARD_SECTOR_SIZE];
 static int test_card_present[2];
@@ -100,6 +103,8 @@ void psx_advance_cycles_slow(uint32_t cycles) { (void)cycles; CHECK(0); }
 
 static uint32_t read_word(uint32_t address)
 {
+    if (address == 0x1f801814u) return test_gpu_status;
+    if (address == 0x1f8010a8u) return 0;
     if (address == 0x1f801070u) return test_istat;
     if (address == 0x1f801074u) return test_imask;
     address &= 0x1fffffff;
@@ -109,6 +114,15 @@ static uint32_t read_word(uint32_t address)
 
 static void write_word(uint32_t address, uint32_t value)
 {
+    if (address == 0x1f801810u) {
+        test_gpu_data = value;
+        ++test_gpu_writes;
+        return;
+    }
+    if (address == 0x1f801814u) {
+        test_gpu_control = value;
+        return;
+    }
     if (address == 0x1f801070u) { test_istat &= value; return; }
     if (address == 0x1f801074u) { test_imask = value; return; }
     if (address == 0xfffe0130u) { CHECK(value == 0x0001e988u); return; }
@@ -401,6 +415,15 @@ static void check_native_calls(void)
     CHECK(native_call(&cpu, 0xb0, 0x4c, 0, 0, 0) == 1);
     CHECK(read_word(PSX_NATIVE_CARD_STARTED) == 0 &&
           read_word(PSX_NATIVE_TIMER_AUTO_ACK + 12) == 1);
+    test_gpu_status = 0x14000000u;
+    CHECK(native_call(&cpu, 0xa0, 0x49, 0xe1001234u, 0, 0) == 0);
+    CHECK(test_gpu_data == 0xe1001234u && test_gpu_writes == 1);
+    native_call(&cpu, 0xa0, 0x48, 0x03000000u, 0, 0);
+    CHECK(test_gpu_control == 0x03000000u);
+    CHECK(native_call(&cpu, 0xa0, 0x4d, 0, 0, 0) == 0x14000000u);
+    test_gpu_status = 0x54000000u;
+    CHECK(native_call(&cpu, 0xa0, 0x4e, 0, 0, 0) == 0);
+    CHECK(test_gpu_control == 0x04000000u);
     native_call(&cpu, 0xa0, 0x44, 0, 0, 0);
     CHECK(cache_resets == 1);
     CHECK(!g_psx_bios_hle_hook(&cpu, 0x80010000u & 0x1fffffffu));

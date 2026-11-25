@@ -3,6 +3,7 @@
 #include "psx_cycles.h"
 #include "psx_icache.h"
 #include "psx_memory.h"
+#include "dma.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -209,6 +210,111 @@ static int service_console(CPUState *cpu, uint32_t vector, uint32_t fn) {
     return PSX_NATIVE_BIOS_RETURN;
 }
 
+/* The GPU command provider uses the real runtime GPU/DMA registers. The
+ * GPU already handles commands natively; never replay the firmware's
+ * readiness polling loop or dispatch a second renderer. */
+enum {
+    GPU_DATA_REG = 0x1f801810u,
+    GPU_STATUS_REG = 0x1f801814u,
+    GPU_DMA_MADR = 0x1f8010a0u,
+    GPU_DMA_BCR = 0x1f8010a4u,
+    GPU_DMA_CHCR = 0x1f8010a8u,
+    DMA_DPCR = 0x1f8010f0u,
+    DMA_DICR = 0x1f8010f4u,
+};
+
+static int native_gpu_sync(CPUState *cpu)
+{
+    uint32_t status = cpu->read_word(GPU_STATUS_REG);
+    if (!(status & 0x60000000u))
+        return (status & 0x10000000u) != 0;
+    while (cpu->read_word(GPU_DMA_CHCR) & 0x01000000u) {
+        uint32_t cycles = dma_cycles_to_internal_event();
+        if (cycles == UINT32_MAX) return 0;
+        psx_advance_cycles(cycles ? cycles : 1);
+    }
+    if (!(cpu->read_word(GPU_STATUS_REG) & 0x04000000u)) return 0;
+    cpu->write_word(GPU_STATUS_REG, 0x04000000u);
+    return 1;
+}
+
+static int service_gpu(CPUState *cpu, uint32_t fn)
+{
+    uint32_t a0 = cpu->gpr[4], a1 = cpu->gpr[5];
+    switch (fn) {
+    case 0x46: case 0x47: { /* GPU_dw / GPU_mem2vram */
+        uint32_t width = cpu->gpr[6], height = cpu->gpr[7];
+        uint64_t words = (uint64_t)width * height / 2;
+        uint32_t source = cpu->read_word(cpu->gpr[29] + 16);
+        if (words > UINT32_MAX / 4 ||
+            (words && !psx_ram_resolve(source, (uint32_t)words * 4, NULL)))
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+        if (fn == 0x46) {
+            if (!(cpu->read_word(GPU_STATUS_REG) & 0x04000000u))
+                return PSX_NATIVE_BIOS_UNSUPPORTED;
+        } else if (!native_gpu_sync(cpu)) {
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+        }
+        cpu->write_word(GPU_DATA_REG, 0xa0000000u);
+        cpu->write_word(GPU_DATA_REG, (a1 << 16) | (a0 & 0xffffu));
+        cpu->write_word(GPU_DATA_REG, (height << 16) | (width & 0xffffu));
+        if (fn == 0x46) {
+            for (uint32_t i = 0; i < words; ++i)
+                cpu->write_word(GPU_DATA_REG, cpu->read_word(source + i * 4));
+        } else {
+            cpu->write_word(GPU_STATUS_REG, 0x04000002u);
+            cpu->write_word(DMA_DPCR, cpu->read_word(DMA_DPCR) | 0x800u);
+            cpu->write_word(GPU_DMA_MADR, source);
+            cpu->write_word(GPU_DMA_BCR, ((uint32_t)words >> 4) << 16 | 0x10u);
+            cpu->write_word(GPU_DMA_CHCR, 0x01000201u);
+        }
+        break;
+    }
+    case 0x48: /* GPU_send */
+        cpu->write_word(GPU_STATUS_REG, a0);
+        break;
+    case 0x49: /* GPU_cw */
+        if (!native_gpu_sync(cpu)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->write_word(GPU_DATA_REG, a0);
+        cpu->gpr[2] = 0;
+        break;
+    case 0x4a: /* GPU_cwb */
+        if (!native_gpu_sync(cpu)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        if (a1 > UINT32_MAX / 4 ||
+            (a1 && !psx_ram_resolve(a0, a1 * 4, NULL)))
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+        for (uint32_t i = 0; i < a1; ++i)
+            cpu->write_word(GPU_DATA_REG, cpu->read_word(a0 + i * 4));
+        break;
+    case 0x4b: /* GPU_sendPackets */
+        if (!native_gpu_sync(cpu)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->write_word(GPU_STATUS_REG, 0x04000002u);
+        cpu->write_word(DMA_DICR, 0);
+        cpu->write_word(DMA_DPCR, cpu->read_word(DMA_DPCR) | 0x800u);
+        cpu->write_word(GPU_DMA_MADR, a0);
+        cpu->write_word(GPU_DMA_BCR, 0);
+        cpu->write_word(GPU_DMA_CHCR, 0x01000401u);
+        break;
+    case 0x4c: /* GPU_abort */
+        cpu->write_word(GPU_DMA_CHCR, 0x401u);
+        cpu->write_word(GPU_STATUS_REG, 0x04000000u);
+        cpu->write_word(GPU_STATUS_REG, 0x02000000u);
+        cpu->write_word(GPU_STATUS_REG, 0x01000000u);
+        break;
+    case 0x4d: /* GPU_getStatus */
+        cpu->gpr[2] = cpu->read_word(GPU_STATUS_REG);
+        break;
+    case 0x4e: /* GPU_sync */
+        if (!native_gpu_sync(cpu)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->gpr[2] = 0;
+        break;
+    default:
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    }
+    psx_cpu_charge(32);
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
 static int service_a0(CPUState *cpu, uint32_t fn) {
     const uint32_t a0 = cpu->gpr[4], a1 = cpu->gpr[5], a2 = cpu->gpr[6];
     uint32_t result;
@@ -389,6 +495,8 @@ static int service_irq_chain(CPUState *cpu, uint32_t fn)
 int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
     if (vector == 0xc0 && (fn == 2 || fn == 3))
         return service_irq_chain(cpu, fn);
+    if (vector == 0xa0 && fn >= 0x46 && fn <= 0x4e)
+        return service_gpu(cpu, fn);
     int console = service_console(cpu, vector, fn);
     if (console) return console;
 
