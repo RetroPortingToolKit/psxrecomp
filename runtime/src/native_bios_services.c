@@ -4,6 +4,7 @@
 #include "psx_icache.h"
 #include "psx_memory.h"
 #include "dma.h"
+#include "psx_scheduler.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -658,7 +659,7 @@ static int free_tcb_slot(CPUState *cpu, uint32_t base, uint32_t count) {
 }
 
 static int service_thread(CPUState *cpu, uint32_t vector, uint32_t fn) {
-    if (!(vector == 0xb0 && (fn == 0x0e || fn == 0x0f)) &&
+    if (!(vector == 0xb0 && (fn == 0x0e || fn == 0x0f || fn == 0x10)) &&
         !(vector == 0xc0 && fn == 0x05)) return 0;
 
     uint32_t base = cpu->read_word(0x110);
@@ -681,11 +682,28 @@ static int service_thread(CPUState *cpu, uint32_t vector, uint32_t fn) {
             cpu->write_word(tcb + 8 + 32 * 4, cpu->gpr[4]);  /* return PC */
             cpu->gpr[2] = 0xff000000u | (uint32_t)slot;
         }
-    } else {
+    } else if (fn == 0x0f) {
         uint32_t slot = cpu->gpr[4] & 0xffffu;
         if (slot >= count) return 0;
         cpu->write_word(base + slot * TCB_BYTES, TCB_FREE);
         cpu->gpr[2] = 1;
+    } else {
+        /* ChangeThread already has a deterministic TCB scheduler. Use
+         * the caller's real return link as its resumption point, rather
+         * than simulating a BIOS syscall wrapper or a second scheduler. */
+        uint32_t slot = cpu->gpr[4] & 0xffffu;
+        cpu->gpr[2] = 0;
+        if (slot >= count) return PSX_NATIVE_BIOS_RETURN;
+        uint32_t target = base + slot * TCB_BYTES;
+        if (cpu->read_word(target) != TCB_USED) return PSX_NATIVE_BIOS_RETURN;
+        cpu->gpr[2] = 1;
+        psx_cpu_charge(36);
+        if (target == psx_sched_current_tcb(cpu)) return PSX_NATIVE_BIOS_RETURN;
+        cpu->gpr[4] = 3;
+        cpu->gpr[5] = target;
+        /* A real cooperative switch escapes to the outer scheduler. If a
+         * syscall returns normally, preserve the ordinary BIOS call ABI. */
+        return psx_syscall(cpu, 0) ? PSX_NATIVE_BIOS_TRANSFER : PSX_NATIVE_BIOS_RETURN;
     }
     psx_cpu_charge(36);
     return 1;

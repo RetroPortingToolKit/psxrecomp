@@ -42,7 +42,7 @@ uint32_t g_psx_ram_size = sizeof ram;
 uint32_t g_psx_ram_mask = sizeof ram - 1;
 static unsigned cache_resets;
 static int irq_active;
-static uint32_t expected_saved_v0;
+static uint32_t expected_saved_v0, last_thread_switch;
 static uint32_t test_istat, test_imask;
 static uint32_t test_gpu_status, test_gpu_data, test_gpu_control;
 static unsigned test_gpu_writes;
@@ -87,13 +87,21 @@ int fntrace_is_game_started(void) { return 1; }
 int psx_get_in_exception(void) { return irq_active; }
 void psx_restore_state_escape(void) { CHECK(irq_active); longjmp(irq_escape, 2); }
 void psx_scheduler_resume_at(uint32_t pc) { (void)pc; CHECK(0); }
-uint32_t psx_sched_current_tcb(CPUState *cpu) { CHECK(irq_active && cpu == &irq_cpu); return 0x1000; }
+uint32_t psx_sched_current_tcb(CPUState *cpu) {
+    if (irq_active) CHECK(cpu == &irq_cpu);
+    return 0x1000;
+}
 void psx_sched_save_context(CPUState *cpu, uint32_t tcb, uint32_t pc) {
     CHECK(irq_active && cpu == &irq_cpu && tcb == 0x1000 && pc == CALLER_RESUME);
     CHECK(cpu->cop0[12] == 0x40000401u);
     if (expected_saved_v0) CHECK(cpu->gpr[2] == expected_saved_v0);
 }
 int psx_syscall(CPUState *cpu, uint32_t code) {
+    if (!irq_active) {
+        CHECK(code == 0 && cpu->gpr[4] == 3 && cpu->gpr[31] == CALLER_RESUME);
+        last_thread_switch = cpu->gpr[5];
+        return 0;
+    }
     CHECK(irq_active && cpu == &irq_cpu && code == 0 &&
           cpu->gpr[4] == 3 && cpu->gpr[5] == 0x1000);
     longjmp(irq_escape, 1);
@@ -269,6 +277,11 @@ static void check_native_calls(void)
     CHECK(read_word(0x10c0 + 8 + 30 * 4) == 0x801f0000);
     CHECK(read_word(0x10c0 + 8 + 32 * 4) == 0x80012340);
     CHECK(native_call(&cpu, 0xb0, 0x0e, 0, 0, 0) == UINT32_MAX);
+    CHECK(native_call(&cpu, 0xb0, 0x10, 0xff000000, 0, 0) == 1);
+    CHECK(!last_thread_switch);
+    CHECK(native_call(&cpu, 0xb0, 0x10, 0xff000001, 0, 0) == 1);
+    CHECK(last_thread_switch == 0x10c0);
+    CHECK(native_call(&cpu, 0xb0, 0x10, 0xff000002, 0, 0) == 0);
     CHECK(native_call(&cpu, 0xb0, 0x0f, 0xff000001, 0, 0) == 1);
     CHECK(native_call(&cpu, 0xc0, 0x05, 0, 0, 0) == 1);
 
