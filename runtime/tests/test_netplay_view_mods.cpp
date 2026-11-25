@@ -66,6 +66,7 @@ int memcard_last_flush_result(int) { return -1; } /* No cards in this fixture. *
 uint64_t psx_cycle_count=0, psx_next_service_cycle=0;
 int psx_in_device_service=0, g_event_step_conservative=0, g_ls_replay_active=0;
 uint32_t g_psx_cyc_batch=0, g_psx_cyc_batch_limit=0;
+int g_psx_render_pass_active=0;   /* sio.c's snapshot read; no render pass here */
 void psx_devices_service_to_now(void) { std::abort(); }
 void psx_advance_cycles_slow(uint32_t) { std::abort(); }
 void psx_dispatch_call(CPUState*, uint32_t, uint32_t) { std::abort(); }
@@ -209,7 +210,7 @@ static void view_activate(void) { view_activations++; }
 static void sim_activate(void) { sim_activations++; }
 static void view_vblank(void) { vblanks++; }
 static int out_hits, out_activations, out_scope;
-static uint32_t out_peeks[5];
+static uint32_t out_peeks[7];
 extern "C" int psx_mod_host_output_scope(void);
 static void out_entry(CPUState* cpu, uint32_t) {
     out_hits++;
@@ -222,6 +223,9 @@ static void out_entry(CPUState* cpu, uint32_t) {
     out_peeks[2] = psx_mod_read_byte(0x80004000u);
     if (cpu->read_word) out_peeks[3] = cpu->read_word(0x1F801040u);
     if (cpu->read_half) out_peeks[4] = cpu->read_half(0x1F801044u);
+    /* Misaligned RAM observation reads, across the 0x4004 / 0x4008 words. */
+    out_peeks[5] = psx_mod_read_word(0x80004005u);
+    out_peeks[6] = psx_mod_read_half(0x80004007u);
     if (cpu->write_word) cpu->write_word(0x80004004u, 0xDEADBEEFu);
     if (cpu->write_half) cpu->write_half(0x1F80104Au, 0x0040u);  /* SIO reset */
     if (cpu->write_byte) cpu->write_byte(0x80004008u, 0x77u);
@@ -343,6 +347,8 @@ int main() {
           "MMIO observation reads return 0 (no device access)");
     check(out_peeks[2] == psx_read_byte(0x80004000u),
           "RAM observation reads still see guest RAM");
+    check(out_peeks[5] == 0x22111111u && out_peeks[6] == 0x2211u,
+          "misaligned observation reads take each byte at its own address");
     check(psx_read_byte(0x80004000u) == 0,
           "a host-output plugin's guest write is refused online");
     psx_mod_function_entry(&cpu, 0x80003000u);
