@@ -4,6 +4,7 @@
 // without its reference image.
 #include "disc_boot_image.h"
 #include "native_bios_boot.h"
+#include "native_bios_services.h"
 #include "cpu_state.h"
 #include "psx_memory.h"
 #include "iso_reader.h"
@@ -254,6 +255,10 @@ int main(int argc, char **argv) {
           launch_cpu.gpr[4] == 1 && launch_cpu.gpr[5] == 0 &&
           launch_cpu.gpr[31] == PSX_NATIVE_BOOT_RETURN,
           "native entry registers follow header and SYSTEM.CNF");
+    check(ram_word(PSX_NATIVE_C0_TABLE + 6 * 4) == (0x80000000u | PSX_NATIVE_EXCEPTION_ENTRY) &&
+          ram_word(PSX_NATIVE_A0_TABLE + 0x2a * 4) == psx_native_bios_stub(&psx_native_bios_tables[0], 0x2a) &&
+          ram_word(PSX_NATIVE_EXCEPTION_ENTRY) == PSX_NATIVE_EXCEPTION_MARKER,
+          "native launch publishes real guest vector tables and their dispatch entries");
     const uint32_t threads = ram_word(0x110);
     const uint32_t events = ram_word(0x120);
     check(ram_word(0x104) == 4 * 8 && ram_word(0x10c) == 4 &&

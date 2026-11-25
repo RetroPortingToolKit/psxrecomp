@@ -19,6 +19,7 @@ enum {
     CALLBACK_FIRST = 0x10000,
     CALLBACK_SECOND = 0x10004,
     CALLBACK_NESTED = 0x10008,
+    CALLBACK_OVERRIDE = 0x10014,
     CALLER_RESUME = 0x1000c,
     NESTED_RESUME = 0x10010,
     RETAIL_RESUME = 0x1bfc,
@@ -109,6 +110,12 @@ static int deliver(CPUState *cpu, uint32_t spec, uint32_t caller_resume)
 
 void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_address)
 {
+    if (addr == CALLBACK_OVERRIDE) {
+        CHECK(return_address == CALLER_RESUME && cpu->gpr[31] == CALLER_RESUME);
+        cpu->gpr[2] = 0x7bad;
+        return;
+    }
+
     CHECK(call_count < sizeof calls / sizeof calls[0]);
     calls[call_count++] = addr;
     uint32_t expected = addr == CALLBACK_NESTED ? NESTED_RESUME : CALLER_RESUME;
@@ -175,6 +182,7 @@ static void check_native_calls(void)
 {
     memset(ram, 0, sizeof ram);
     psx_bios_hle_configure_native();
+    psx_native_bios_init_tables(write_word);
     CHECK(strcmp(psx_bios_hle_backend_name(), "HLE (native kernel)") == 0);
     CPUState cpu = {0};
     cpu.read_word = read_word;
@@ -197,6 +205,23 @@ static void check_native_calls(void)
     CHECK(native_call(&cpu, 0xb0, 0x0f, 0xff000001, 0, 0) == 1);
     CHECK(native_call(&cpu, 0xc0, 0x05, 0, 0, 0) == 1);
 
+    CHECK(native_call(&cpu, 0xb0, 0x56, 0, 0, 0) == PSX_NATIVE_C0_TABLE);
+    CHECK(native_call(&cpu, 0xb0, 0x57, 0, 0, 0) == PSX_NATIVE_B0_TABLE);
+    CHECK(read_word(PSX_NATIVE_C0_TABLE + 6 * 4) == (0x80000000u | PSX_NATIVE_EXCEPTION_ENTRY));
+    const PsxNativeBiosTable *a0 = &psx_native_bios_tables[0];
+    const uint32_t fill_stub = psx_native_bios_stub(a0, 0x2b);
+    write_word(PSX_NATIVE_A0_TABLE + 0x2b * 4, CALLBACK_OVERRIDE);
+    CHECK(native_call(&cpu, 0xa0, 0x2b, 0x1801, 0x51, 9) == 0x7bad);
+    CHECK(read_byte(0x1801) == 0);
+    CHECK(g_psx_bios_hle_hook(&cpu, fill_stub & 0x1fffffffu));
+    CHECK(cpu.gpr[2] == 0x1801 && read_byte(0x1801) == 0x51);
+    write_word(PSX_NATIVE_A0_TABLE + 0x2b * 4, fill_stub);
+    write_word(fill_stub, 0x2409002au);
+    CHECK(!g_psx_bios_hle_hook(&cpu, fill_stub & 0x1fffffffu));
+    write_word(fill_stub, psx_native_bios_stub_word(a0, 0x2b, 0));
+    write_word(0xa0, 0);
+    CHECK(!g_psx_bios_hle_hook(&cpu, 0xa0));
+    write_word(0xa0, psx_native_bios_vector_word(a0, 0));
     CHECK(native_call(&cpu, 0xa0, 0x2b, 0x1801, 0x51, 9) == 0x1801);
     CHECK(read_byte(0x1800) == 0 && read_byte(0x180a) == 0);
     for (unsigned i = 1; i <= 9; ++i) CHECK(read_byte(0x1800 + i) == 0x51);
@@ -254,6 +279,7 @@ static void check_native_root_counter_irq(void)
     irq_cpu.cop0[12] = 0x40000404u;
     irq_cpu.cop0[14] = CALLER_RESUME;
     psx_bios_hle_configure_native();
+    psx_native_bios_init_tables(write_word);
 
     write_word(0x120, EVENT_BASE);
     write_word(0x124, 2 * EVENT_SIZE);

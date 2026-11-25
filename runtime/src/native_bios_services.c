@@ -169,6 +169,11 @@ static int service_thread(CPUState *cpu, uint32_t vector, uint32_t fn) {
 }
 
 int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
+    if (vector == 0xb0 && (fn == 0x56 || fn == 0x57)) {
+        cpu->gpr[2] = fn == 0x56 ? PSX_NATIVE_C0_TABLE : PSX_NATIVE_B0_TABLE;
+        psx_cpu_charge(24);
+        return PSX_NATIVE_BIOS_RETURN;
+    }
     if (vector == 0xa0 && (fn == 0x56 || fn == 0x72)) {
         const uint32_t events = cpu->read_word(0x120u);
         const uint32_t size = cpu->read_word(0x124u);

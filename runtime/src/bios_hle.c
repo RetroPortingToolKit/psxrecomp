@@ -430,35 +430,87 @@ static void native_exception_entry(CPUState *cpu)
 }
 #endif
 
+#if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
+static void native_bios_unavailable(CPUState *cpu, uint32_t vector, uint32_t fn)
+{
+    fprintf(stderr, "native BIOS service unavailable: %02x:%02x ra=%08x\n",
+            vector, fn, cpu->gpr[31]);
+    exit(1);
+}
+
+static int native_stub_unchanged(CPUState *cpu, const PsxNativeBiosTable *table, uint32_t fn)
+{
+    uint32_t stub = psx_native_bios_stub(table, fn);
+    for (uint32_t word = 0; word < 3; ++word) {
+        if (cpu->read_word(stub + word * 4) != psx_native_bios_stub_word(table, fn, word))
+            return 0;
+    }
+    return 1;
+}
+
+static int native_service_dispatch(CPUState *cpu, uint32_t vector, uint32_t fn)
+{
+    if (vector == 0xb0 && fn == 0x17 && psx_get_in_exception()) {
+        native_exception_return(cpu);
+        exit(1);
+    }
+    int handled = vector == 0xb0 && hle_service_b0(cpu, fn);
+    if (!handled) handled = psx_native_bios_service(cpu, vector, fn);
+    if (!handled) native_bios_unavailable(cpu, vector, fn);
+    hle_record(vector, fn, cpu, cpu->gpr[2], PSX_HLE_ROUTE_HLE);
+    if (handled == PSX_NATIVE_BIOS_TRANSFER) {
+        if (psx_get_in_exception()) psx_restore_state_escape();
+        else psx_scheduler_resume_at(cpu->pc);
+    }
+    return 1;
+}
+#endif
+
 static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
 {
 #if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
     if (s_native_kernel_on) {
         if (phys == PSX_NATIVE_EXCEPTION_ENTRY) {
+            if (cpu->read_word(phys) != PSX_NATIVE_EXCEPTION_MARKER) return 0;
             native_exception_entry(cpu);
             exit(1); /* exception escape must not return */
         }
-        if (phys == 0xB0u && cpu->gpr[9] == 0x17u && psx_get_in_exception()) {
-            native_exception_return(cpu);
-            exit(1);
-        }
-        if (phys == 0xA0u || phys == 0xB0u || phys == 0xC0u) {
-            uint32_t fn = cpu->gpr[9];
-            int handled = phys == 0xB0u && hle_service_b0(cpu, fn);
-            if (!handled) handled = psx_native_bios_service(cpu, phys, fn);
-            if (handled) {
-                hle_record(phys, fn, cpu, cpu->gpr[2], PSX_HLE_ROUTE_HLE);
-                if (handled == PSX_NATIVE_BIOS_TRANSFER) {
-                    if (psx_get_in_exception()) psx_restore_state_escape();
-                    else psx_scheduler_resume_at(cpu->pc);
+        for (unsigned i = 0; i < sizeof(psx_native_bios_tables) / sizeof(psx_native_bios_tables[0]); ++i) {
+            const PsxNativeBiosTable *table = &psx_native_bios_tables[i];
+            if (phys == table->token) {
+                if (cpu->read_word(phys) != PSX_NATIVE_EXCEPTION_MARKER) return 0;
+                uint32_t fn = cpu->gpr[9];
+                if (fn >= table->count) native_bios_unavailable(cpu, table->vector, fn);
+                return native_service_dispatch(cpu, table->vector, fn);
+            }
+            if (phys == table->vector) {
+                for (uint32_t word = 0; word < 4; ++word) {
+                    if (cpu->read_word(phys + word * 4) !=
+                        psx_native_bios_vector_word(table, word))
+                        return 0; /* guest-installed vector body owns the call */
                 }
+                uint32_t fn = cpu->gpr[9];
+                if (fn >= table->count) native_bios_unavailable(cpu, table->vector, fn);
+                uint32_t target = cpu->read_word(table->table + fn * 4);
+                if (target == psx_native_bios_stub(table, fn) &&
+                    native_stub_unchanged(cpu, table, fn))
+                    return native_service_dispatch(cpu, table->vector, fn);
+
+                /* A guest-modified table entry or thunk owns this call.
+                 * Keep ordinary nested dispatch and mod hooks active. */
+                if (!target) native_bios_unavailable(cpu, table->vector, fn);
+                psx_dispatch_call(cpu, target, cpu->gpr[31]);
                 return 1;
             }
-            fprintf(stderr, "native BIOS service unavailable: %02x:%02x ra=%08x\n",
-                    phys, fn, cpu->gpr[31]);
-            exit(1);
+            if (phys >= table->stubs && phys - table->stubs < table->count * 12u &&
+                (phys - table->stubs) % 12u == 0) {
+                uint32_t fn = (phys - table->stubs) / 12u;
+                if (!native_stub_unchanged(cpu, table, fn)) return 0;
+                cpu->gpr[9] = fn;
+                return native_service_dispatch(cpu, table->vector, fn);
+            }
         }
-        if (phys == 0x180u ||
+        if (phys == PSX_NATIVE_BOOT_RETURN_PHYS ||
             (phys >= 0x1fc00000u && phys < 0x1fc80000u)) {
             fprintf(stderr, "native BIOS entry unavailable: %08x ra=%08x\n",
                     phys, cpu->gpr[31]);
@@ -493,7 +545,8 @@ int psx_bios_hle_dispatch_quiet(uint32_t address) {
     if (g_psx_bios_hle_hook != bios_hle_dispatch) return 0;
     if (s_native_kernel_on)
         return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
-               phys != 0x180u && phys != PSX_NATIVE_EXCEPTION_ENTRY &&
+               phys != PSX_NATIVE_BOOT_RETURN_PHYS && phys != PSX_NATIVE_EXCEPTION_ENTRY &&
+               (phys < 0x8e00u || phys >= 0x9f00u) &&
                (phys < 0x1fc00000u || phys >= 0x1fc80000u);
     return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
         (!psx_bios_image.shell_entry_phys || phys != psx_bios_image.shell_entry_phys);

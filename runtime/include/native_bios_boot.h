@@ -1,5 +1,7 @@
 #pragma once
 
+#include "native_bios_services.h"
+
 #include <cstdint>
 #include <string>
 
@@ -13,4 +15,4 @@ struct CPUState;
 bool psx_prepare_native_bios_boot(CPUState &cpu, const std::string &disc,
                                  std::string &error);
 
-constexpr uint32_t PSX_NATIVE_BOOT_RETURN = 0x80000180u;
+constexpr uint32_t PSX_NATIVE_BOOT_RETURN = 0x80000000u | PSX_NATIVE_BOOT_RETURN_PHYS;

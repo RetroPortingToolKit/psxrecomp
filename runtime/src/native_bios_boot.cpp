@@ -92,10 +92,12 @@ bool psx_prepare_native_bios_boot(CPUState &cpu, const std::string &disc,
     psx_host_write_word(0x68, 0xff);
     // The standard vector points to a designated native entry. A title may
     // replace this vector, as it can with firmware boot.
-    psx_host_write_word(0x80, 0x3c1a8000u);  // lui k0, 0x8000
-    psx_host_write_word(0x84, 0x275a0190u);  // addiu k0, k0, 0x190
+    const uint32_t exception_pc = 0x80000000u | PSX_NATIVE_EXCEPTION_ENTRY;
+    psx_host_write_word(0x80, 0x3c1a0000u | ((exception_pc + 0x8000u) >> 16));
+    psx_host_write_word(0x84, 0x275a0000u | (exception_pc & 0xffffu));
     psx_host_write_word(0x88, 0x03400008u);  // jr k0
     psx_host_write_word(0x8c, 0);
+    psx_native_bios_init_tables(psx_host_write_word);
     psx_host_write_word(PSX_NATIVE_EXCEPTION_JUMP_PTR, 0);
     psx_host_write_word(PSX_NATIVE_SIO_AUTO_ACK, 0);
     for (uint32_t timer = 0; timer < 4; ++timer)
