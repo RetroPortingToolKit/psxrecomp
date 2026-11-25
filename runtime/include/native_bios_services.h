@@ -14,7 +14,16 @@ extern "C" {
 #define PSX_NATIVE_CD_HANDLERS_ACTIVE 0x0000b018u
 #define PSX_NATIVE_GENERIC_IRQ_ACK 0x0000b01cu
 #define PSX_NATIVE_BOOT_CD_EVENTS 5u
-#define PSX_NATIVE_EXCEPTION_STACK 0x8000dff0u
+/* The legacy SDK card fast-track compatibility region is guest-writable.
+ * Keep the native exception stack below 0xdf80..0xdffc. */
+#define PSX_NATIVE_EXCEPTION_STACK 0x8000df70u
+#define PSX_NATIVE_CARD_INIT 0x0000b100u
+#define PSX_NATIVE_CARD_STARTED 0x0000b104u
+#define PSX_NATIVE_CARD_PAD_STARTED 0x0000b108u
+#define PSX_NATIVE_CARD_PORT 0x0000b10cu
+#define PSX_NATIVE_CARD_ALLOW_NEW 0x0000b110u
+#define PSX_NATIVE_CARD_STATUS 0x0000b118u
+#define PSX_NATIVE_CARD_FASTTRACK_SCRATCH 0x0000ad00u
 #define PSX_NATIVE_IRQ_CALLBACK_LINK 0x8000a100u
 #define PSX_NATIVE_BOOT_RETURN_PHYS 0x0000a104u
 #define PSX_NATIVE_EXCEPTION_ENTRY 0x0000a000u
@@ -80,6 +89,15 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
     for (uint32_t word = 0; word < 0x100; word += 4)
         write_word(PSX_NATIVE_EXCEPTION_ENTRY + word, 0);
     write_word(PSX_NATIVE_EXCEPTION_ENTRY, PSX_NATIVE_EXCEPTION_MARKER);
+    /* Psy-Q's legacy card patch obtains a writable fast-track code address
+     * by decoding the two immediate fields at exception-handler +70/+74.
+     * Native card operations do not execute that serial loop. Expose its
+     * legitimate patch storage instead of letting the SDK write through a
+     * fabricated null address or denying its RAM writes. */
+    write_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x70, 0x3c1a0000u |
+               (PSX_NATIVE_CARD_FASTTRACK_SCRATCH >> 16));
+    write_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x74, 0x375a0000u |
+               (PSX_NATIVE_CARD_FASTTRACK_SCRATCH & 0xffffu));
 }
 
 enum {
@@ -88,6 +106,8 @@ enum {
     PSX_NATIVE_BIOS_TRANSFER = 2,
 };
 int psx_native_bios_service(struct CPUState *cpu, uint32_t vector, uint32_t fn);
+int psx_native_card_service(struct CPUState *cpu, uint32_t vector, uint32_t fn);
+void psx_native_card_vblank(struct CPUState *cpu);
 
 #ifdef __cplusplus
 }

@@ -392,6 +392,9 @@ static void native_exception_entry(CPUState *cpu)
             exit(1); /* exception escape must not return */
         }
     }
+    if (cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & (1u << IRQ_VBLANK))
+        psx_native_card_vblank(cpu);
+
     /* Generic IRQ events run last; the game-owned CD/DMA driver receives
      * these notifications and keeps control of its hardware IRQs. */
     const uint8_t irq_order[] = {IRQ_CDROM, IRQ_SPU, IRQ_GPU, IRQ_PIO,

@@ -38,6 +38,7 @@ uint32_t g_psx_ram_mask = sizeof ram - 1;
 static unsigned cache_resets;
 static int irq_active;
 static uint32_t test_istat, test_imask;
+static uint16_t test_sio_mode, test_sio_ctrl, test_sio_baud;
 static jmp_buf irq_escape;
 static CPUState irq_cpu;
 void psx_icache_reset(void) { ++cache_resets; }
@@ -82,6 +83,7 @@ static uint32_t read_word(uint32_t address)
 static void write_word(uint32_t address, uint32_t value)
 {
     if (address == 0x1f801070u) { test_istat &= value; return; }
+    if (address == 0x1f801074u) { test_imask = value; return; }
     if (address == 0xfffe0130u) { CHECK(value == 0x0001e988u); return; }
     address &= 0x1fffffff;
     CHECK(!(address & 3) && address < sizeof ram);
@@ -97,6 +99,15 @@ static void write_byte(uint32_t address, uint8_t value)
     const unsigned shift = (address & 3u) * 8;
     uint32_t word = read_word(address & ~3u);
     write_word(address & ~3u, (word & ~(0xffu << shift)) | ((uint32_t)value << shift));
+}
+
+static void write_half(uint32_t address, uint16_t value)
+{
+    if (address == 0x1f801048u) { test_sio_mode = value; return; }
+    if (address == 0x1f80104au) { test_sio_ctrl = value; return; }
+    if (address == 0x1f80104eu) { test_sio_baud = value; return; }
+    write_byte(address, (uint8_t)value);
+    write_byte(address + 1, (uint8_t)(value >> 8));
 }
 
 static int deliver(CPUState *cpu, uint32_t spec, uint32_t caller_resume)
@@ -189,6 +200,7 @@ static void check_native_calls(void)
     cpu.write_word = write_word;
     cpu.read_byte = read_byte;
     cpu.write_byte = write_byte;
+    cpu.write_half = write_half;
 
     write_word(0x110, 0x1000);
     write_word(0x114, 2 * 0xc0);
@@ -272,6 +284,23 @@ static void check_native_calls(void)
     write_word(0x3010, '!');
     CHECK(native_call(&cpu, 0xa0, 0x3f, 0x1a00, 0x2a, (uint32_t)-7) == 18);
     native_call(&cpu, 0xb0, 0x3f, 0x1a40, 0, 0);
+    write_word(PSX_NATIVE_CARD_FASTTRACK_SCRATCH + 0x28, 0x12345678);
+    write_word(0xdf80, 0x87654321);
+    CHECK(native_call(&cpu, 0xb0, 0x4a, 0, 0, 0) == 0);
+    CHECK(native_call(&cpu, 0xb0, 0x4a, 0, 0, 0) == 1);
+    CHECK(native_call(&cpu, 0xb0, 0x5c, 1, 0, 0) == 1);
+    CHECK(read_word(PSX_NATIVE_CARD_FASTTRACK_SCRATCH + 0x28) == 0x12345678 &&
+          read_word(0xdf80) == 0x87654321);
+    test_imask = 0;
+    CHECK(native_call(&cpu, 0xb0, 0x4b, 0, 0, 0) == 1);
+    CHECK(test_sio_mode == 13 && test_sio_baud == 136 && test_sio_ctrl == 0 &&
+          test_imask == 1 && read_word(PSX_NATIVE_TIMER_AUTO_ACK + 12) == 0);
+    test_istat = 1;
+    psx_native_card_vblank(&cpu);
+    CHECK(test_istat == 0 && read_word(PSX_NATIVE_CARD_PORT) == 1);
+    CHECK(native_call(&cpu, 0xb0, 0x4c, 0, 0, 0) == 1);
+    CHECK(read_word(PSX_NATIVE_CARD_STARTED) == 0 &&
+          read_word(PSX_NATIVE_TIMER_AUTO_ACK + 12) == 1);
     native_call(&cpu, 0xa0, 0x44, 0, 0, 0);
     CHECK(cache_resets == 1);
     CHECK(!g_psx_bios_hle_hook(&cpu, 0x80010000u & 0x1fffffffu));

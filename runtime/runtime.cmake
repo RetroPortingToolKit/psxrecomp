@@ -523,6 +523,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/disc_boot_image.cpp
     ${PSXRECOMP_ROOT}/runtime/src/native_bios_boot.cpp
     ${PSXRECOMP_ROOT}/runtime/src/native_bios_services.c
+    ${PSXRECOMP_ROOT}/runtime/src/native_bios_card.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_cycles.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_icache.c
     ${PSXRECOMP_ROOT}/runtime/src/starvation_ring.c

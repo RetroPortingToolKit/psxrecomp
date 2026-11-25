@@ -2086,7 +2086,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_executable(bios_hle_events_test
         tests/test_bios_hle_events.c
         src/bios_hle.c
-        src/native_bios_services.c)
+        src/native_bios_services.c
+        src/native_bios_card.c)
     target_compile_definitions(bios_hle_events_test PRIVATE PSX_NATIVE_KERNEL=1)
     target_include_directories(bios_hle_events_test PRIVATE include)
     add_test(NAME bios_hle_events_test COMMAND bios_hle_events_test)

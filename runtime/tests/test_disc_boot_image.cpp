@@ -259,6 +259,11 @@ int main(int argc, char **argv) {
           ram_word(PSX_NATIVE_A0_TABLE + 0x2a * 4) == psx_native_bios_stub(&psx_native_bios_tables[0], 0x2a) &&
           ram_word(PSX_NATIVE_EXCEPTION_ENTRY) == PSX_NATIVE_EXCEPTION_MARKER,
           "native launch publishes real guest vector tables and their dispatch entries");
+    check(((ram_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x70) & 0xffffu) << 16) +
+          (ram_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x74) & 0xffffu) ==
+          PSX_NATIVE_CARD_FASTTRACK_SCRATCH &&
+          (PSX_NATIVE_EXCEPTION_STACK & 0x1fffffffu) < 0xdf80,
+          "native card patch anchors resolve to writable storage outside the exception stack");
     const uint32_t threads = ram_word(0x110);
     const uint32_t events = ram_word(0x120);
     check(ram_word(0x104) == 4 * 8 && ram_word(0x10c) == 4 &&

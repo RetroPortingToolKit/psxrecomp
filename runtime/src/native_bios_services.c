@@ -360,6 +360,8 @@ int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
         psx_cpu_charge(24);
         return PSX_NATIVE_BIOS_RETURN;
     }
+    int card = psx_native_card_service(cpu, vector, fn);
+    if (card) return card;
     uint32_t ack = 0;
     uint32_t value = 0;
     if (vector == 0xb0 && fn == 0x5b) {
