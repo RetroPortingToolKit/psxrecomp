@@ -20499,7 +20499,8 @@ int main(int argc, char** argv) {
         g_overlay_settings_path = settings_path;
 #endif
         std::string preservation_error;
-        if (!PSXRecompV4::preserve_legacy_player_settings(settings_path,&preservation_error))
+        if (!PSXRecompV4::preserve_legacy_player_settings(settings_path,&preservation_error,
+                game_config_path ? std::filesystem::path(game_config_path) : std::filesystem::path{}))
             std::fprintf(stderr,"psxrecomp: legacy player settings were not preserved: %s\n",
                          preservation_error.c_str());
         PSXRecompV4::UserSettings us =
