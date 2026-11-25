@@ -1,5 +1,6 @@
 #include "native_bios_boot.h"
 #include "native_bios_services.h"
+#include "native_bios_cd_state.h"
 
 #include "cpu_state.h"
 #include "disc_boot_image.h"
@@ -134,6 +135,7 @@ bool psx_prepare_native_bios_boot(CPUState &cpu, const std::string &disc,
         psx_host_write_word(ev + 8, disc_specs[i]);
         psx_host_write_word(ev + 12, 0x2000u);
     }
+    psx_native_cd_seed_boot_handles(psx_host_write_word);
 
     write_payload(header->text_address, payload.get(), header->text_size);
     if (header->fill_size) clear_span(header->fill_address, header->fill_size);

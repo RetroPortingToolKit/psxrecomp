@@ -1,5 +1,8 @@
 #include "cpu_state.h"
 #include "native_bios_services.h"
+#include "native_bios_cd_state.h"
+#include "cdrom.h"
+#include "mod_plugins.h"
 #include "psx_cycles.h"
 #include "psx_icache.h"
 #include "psx_memory.h"
@@ -11,6 +14,7 @@
 #include <string.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 /* Native kernel call implementations. Guest stores use the ordinary memory
  * interface, so text-image tracking, dirty pages and runtime mods still see
@@ -934,7 +938,146 @@ static int service_system_info(CPUState *cpu)
     return PSX_NATIVE_BIOS_RETURN;
 }
 
+static int service_cd_lifecycle(CPUState *cpu, int initialize)
+{
+    const uint32_t base = cpu->read_word(0x120u);
+    const uint32_t size = cpu->read_word(0x124u);
+    if (!base || (base & 3u) || size % 0x1cu || size / 0x1cu > 0x10000u ||
+        !psx_ram_resolve(base, size, NULL))
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    const uint32_t count = size / 0x1cu;
+    uint32_t slots[PSX_NATIVE_BOOT_CD_EVENTS];
+    if (initialize) {
+        if (!cdrom_has_disc()) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        uint32_t found = 0;
+        for (uint32_t i = 0; i < count && found < PSX_NATIVE_BOOT_CD_EVENTS; ++i)
+            if (!cpu->read_word(base + i * 0x1cu + 4)) slots[found++] = i;
+        if (found != PSX_NATIVE_BOOT_CD_EVENTS) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        const uint32_t specs[] = {0x10, 0x20, 0x40, 0x80, 0x8000};
+        for (uint32_t i = 0; i < PSX_NATIVE_BOOT_CD_EVENTS; ++i) {
+            const uint32_t event = base + slots[i] * 0x1cu;
+            cpu->write_word(event, 0xf0000003u);
+            cpu->write_word(event + 4, 0x2000u);
+            cpu->write_word(event + 8, specs[i]);
+            cpu->write_word(event + 12, 0x2000u);
+            cpu->write_word(event + 16, 0);
+            cpu->write_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4u,
+                            0xf1000000u | slots[i]);
+        }
+        /* The mounted-disc host reader owns filesystem I/O. It avoids the
+         * firmware's init/seek/read/IRQ staging. Raw BIOS CD command services
+         * remain explicit coverage errors; there is no firmware fallback. */
+        cpu->write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 1);
+        cpu->cop0[12] |= 0x401u; /* initCDRom leaves its critical section */
+    } else {
+        for (uint32_t i = 0; i < PSX_NATIVE_BOOT_CD_EVENTS; ++i) {
+            const uint32_t handle = cpu->read_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4u);
+            if (handle && ((handle & 0xffff0000u) != 0xf1000000u ||
+                           (handle & 0xffffu) >= count))
+                return PSX_NATIVE_BIOS_UNSUPPORTED;
+            slots[i] = handle;
+        }
+        cpu->cop0[12] &= ~1u; /* deinitCDRom stays in its critical section */
+        for (uint32_t i = 0; i < PSX_NATIVE_BOOT_CD_EVENTS; ++i) {
+            if (slots[i]) cpu->write_word(base + (slots[i] & 0xffffu) * 0x1cu + 4, 0);
+        }
+        cpu->write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 0);
+    }
+    psx_cpu_charge(100);
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
+static uint32_t exe_word(const uint8_t *bytes)
+{
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+           ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+static int user_span(uint32_t address, uint32_t size)
+{
+    const uint32_t segment = address & 0xe0000000u;
+    uint32_t offset;
+    return (segment == 0 || segment == 0x80000000u || segment == 0xa0000000u) &&
+           psx_ram_resolve(address, size, &offset) && offset >= 0x10000u;
+}
+
+static int service_loadexec(CPUState *cpu)
+{
+    char filename[256];
+    uint32_t length = 0, address = cpu->gpr[4];
+    do {
+        if (length == sizeof filename || !psx_ram_resolve(address + length, 1, NULL))
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+        filename[length] = (char)cpu->read_byte(address + length);
+    } while (filename[length++]);
+    const char prefix[] = "cdrom:";
+    if (length < sizeof prefix) return PSX_NATIVE_BIOS_UNSUPPORTED;
+    for (uint32_t i = 0; i < sizeof prefix - 1; ++i) {
+        const unsigned char c = (unsigned char)filename[i];
+        if ((c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c) != prefix[i])
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+    }
+    char *path = filename + sizeof prefix - 1;
+    while (*path == '\\' || *path == '/') ++path;
+    if (!*path) return PSX_NATIVE_BIOS_UNSUPPORTED;
+    for (char *p = path; *p; ++p) if (*p == '\\') *p = '/';
+    char *version = strchr(path, ';');
+    if (version) {
+        if (strcmp(version, ";1")) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        *version = 0;
+    }
+    uint32_t bytes = 0;
+    if (!psx_mod_read_disc_file(path, NULL, 0, &bytes) || bytes < 2048u ||
+        bytes - 2048u > g_psx_ram_size) return PSX_NATIVE_BIOS_UNSUPPORTED;
+    uint8_t *image = malloc(bytes);
+    if (!image) return PSX_NATIVE_BIOS_UNSUPPORTED;
+    uint32_t got = 0;
+    if (!psx_mod_read_disc_file(path, image, bytes, &got) || got != bytes ||
+        memcmp(image, "PS-X EXE", 8)) {
+        free(image);
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    }
+    const uint32_t entry = exe_word(image + 0x10), gp = exe_word(image + 0x14);
+    const uint32_t text = exe_word(image + 0x18), text_size = exe_word(image + 0x1c);
+    const uint32_t bss = exe_word(image + 0x28), bss_size = exe_word(image + 0x2c);
+    const int use_stack = cpu->gpr[5] != 0;
+    const uint64_t stack = (uint64_t)cpu->gpr[5] + cpu->gpr[6];
+    const uint32_t entry_offset = entry & 0x1fffffffu, text_offset = text & 0x1fffffffu;
+    if ((entry & 3u) || (text & 3u) || text_size < 4 || text_size > bytes - 2048u ||
+        !user_span(text, text_size) || !user_span(entry, 4) ||
+        entry_offset < text_offset || entry_offset - text_offset > text_size - 4 ||
+        (bss_size && !user_span(bss, bss_size)) ||
+        (use_stack && (stack > UINT32_MAX || (stack & 3u) || stack < 4 ||
+                         !user_span((uint32_t)stack - 4, 4)))) {
+        free(image);
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    }
+    /* Commit only after the entire effective file and destination validate.
+     * Ordinary stores retain dirty-text tracking and writable mod overlays. */
+    uint32_t at = 0;
+    for (; at + 4 <= text_size; at += 4)
+        cpu->write_word(text + at, exe_word(image + 2048u + at));
+    for (; at < text_size; ++at) cpu->write_byte(text + at, image[2048u + at]);
+    free(image);
+    if (bss_size) fill_bytes(cpu, bss, 0, bss_size);
+    psx_icache_reset();
+    cpu->gpr[4] = 1; cpu->gpr[5] = 0;
+    cpu->gpr[28] = gp;
+    if (use_stack) {
+        cpu->gpr[29] = (uint32_t)stack;
+        cpu->gpr[30] = (uint32_t)stack;
+    }
+    cpu->gpr[31] = 0x80000000u | PSX_NATIVE_BOOT_RETURN_PHYS;
+    cpu->cop0[12] |= 0x401u;
+    cpu->pc = entry;
+    psx_cpu_charge(100);
+    return PSX_NATIVE_BIOS_TRANSFER;
+}
+
 int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
+    if (vector == 0xa0 && fn == 0x51) return service_loadexec(cpu);
+    if (vector == 0xa0 && (fn == 0x54 || fn == 0x71 || fn == 0x56 || fn == 0x72))
+        return service_cd_lifecycle(cpu, fn == 0x54 || fn == 0x71);
     if (vector == 0xb0 && fn >= 0x12 && fn <= 0x16) return service_pad(cpu, fn);
     if (vector == 0xc0 && fn == 8) {
         heap_init(cpu, &native_kernel_heap, cpu->gpr[4], cpu->gpr[5]);
@@ -961,18 +1104,6 @@ int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
     if (vector == 0xb0 && (fn == 0x56 || fn == 0x57)) {
         cpu->gpr[2] = fn == 0x56 ? PSX_NATIVE_C0_TABLE : PSX_NATIVE_B0_TABLE;
         psx_cpu_charge(24);
-        return PSX_NATIVE_BIOS_RETURN;
-    }
-    if (vector == 0xa0 && (fn == 0x56 || fn == 0x72)) {
-        const uint32_t events = cpu->read_word(0x120u);
-        const uint32_t size = cpu->read_word(0x124u);
-        if (size < PSX_NATIVE_BOOT_CD_EVENTS * 0x1cu ||
-            !psx_ram_resolve(events, size, NULL)) return PSX_NATIVE_BIOS_UNSUPPORTED;
-        cpu->cop0[12] &= ~1u;  /* deinitCDRom enters, and stays in, critical section */
-        for (uint32_t i = 0; i < PSX_NATIVE_BOOT_CD_EVENTS; ++i)
-            cpu->write_word(events + i * 0x1cu + 4, 0);
-        cpu->write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 0);
-        psx_cpu_charge(40);
         return PSX_NATIVE_BIOS_RETURN;
     }
     if (vector == 0xc0 && fn == 0x0d) {

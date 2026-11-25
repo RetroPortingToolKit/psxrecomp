@@ -1,5 +1,6 @@
 #include "bios_hle.h"
 #include "native_bios_services.h"
+#include "native_bios_cd_state.h"
 #include "cpu_state.h"
 #include "psx_bios_image.h"
 #include "psx_cycles.h"
@@ -38,7 +39,8 @@ enum {
     MODE_MARK = 0x2000,
 };
 
-static uint32_t ram[0x10000 / sizeof(uint32_t)];
+/* The native kernel owns the low64K; LoadExec needs a separate user span. */
+static uint32_t ram[0x20000 / sizeof(uint32_t)];
 static uint32_t calls[4];
 static size_t call_count;
 PsxBiosImageInfo psx_bios_image;
@@ -64,6 +66,21 @@ static uint32_t expected_card_device, expected_card_spec;
 static uint32_t async_events[4], expected_async_spec;
 static unsigned async_event_count;
 static unsigned timer_handler_calls;
+static int test_disc_present = 1, test_disc_read_failure;
+static uint8_t test_disc_exe[2048 + 32];
+static uint32_t test_disc_exe_size = sizeof test_disc_exe;
+static unsigned test_disc_reads;
+int cdrom_has_disc(void) { return test_disc_present; }
+int psx_mod_read_disc_file(const char *path, void *buffer, uint32_t capacity,
+                            uint32_t *size) {
+    ++test_disc_reads;
+    if (!test_disc_present || test_disc_read_failure || strcmp(path, "MAIN.EXE")) return 0;
+    *size = test_disc_exe_size;
+    if (!buffer) return capacity == 0;
+    if (capacity < test_disc_exe_size) return 0;
+    memcpy(buffer, test_disc_exe, test_disc_exe_size);
+    return 1;
+}
 static uint8_t test_pad_packets[2][34];
 static uint32_t test_pad_lengths[2], test_pad_reads[2];
 static void (*card_replaced_hook)(void);
@@ -427,6 +444,7 @@ static void check_native_calls(void)
     write_word(0x124, 6 * EVENT_SIZE);
     for (unsigned i = 0; i < 6; ++i) add_event(i, 2, MODE_MARK, 0);
     write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 1);
+    psx_native_cd_seed_boot_handles(write_word);
     cpu.cop0[12] = 0x40000401u;
     native_call(&cpu, 0xa0, 0x72, 0, 0, 0);
     CHECK(!(cpu.cop0[12] & 1u) && read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE) == 0);
@@ -1175,6 +1193,104 @@ static void check_native_pad(void)
     CHECK(native_call(&irq_cpu, 0xb0, 0x14, 0, 0, 0) == 1);
 }
 
+static void check_native_cd_and_loadexec(void)
+{
+    CPUState cpu = {0};
+    cpu.read_word = read_word; cpu.write_word = write_word;
+    cpu.read_byte = read_byte; cpu.write_byte = write_byte;
+    memset(ram, 0, sizeof ram);
+    write_word(0x120, EVENT_BASE); write_word(0x124, 13 * EVENT_SIZE);
+    const unsigned other_slots[] = {0, 2, 5};
+    for (unsigned i = 0; i < 3; ++i) add_event(other_slots[i], 0x1234, MODE_MARK, 0);
+    cpu.cop0[12] = 0x40000000u;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x71) == PSX_NATIVE_BIOS_RETURN);
+    CHECK((cpu.cop0[12] & 0x401u) == 0x401u && read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE));
+    const unsigned cd_slots[] = {1, 3, 4, 6, 7};
+    const unsigned specs[] = {0x10, 0x20, 0x40, 0x80, 0x8000};
+    for (unsigned i = 0; i < 5; ++i) {
+        const uint32_t event = EVENT_BASE + cd_slots[i] * EVENT_SIZE;
+        CHECK(read_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4) == (0xf1000000u | cd_slots[i]));
+        CHECK(read_word(event) == 0xf0000003u && read_word(event + 4) == ENABLED &&
+              read_word(event + 8) == specs[i] && read_word(event + 12) == MODE_MARK &&
+              !read_word(event + 16));
+    }
+    uint32_t handles[5];
+    for (unsigned i = 0; i < 5; ++i) handles[i] = read_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4);
+    /* The pinned initializer opens a new five, retaining old allocations;
+     * removal closes exactly the most recently stored handles. */
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x54) == PSX_NATIVE_BIOS_RETURN);
+    const unsigned latest[] = {8, 9, 10, 11, 12};
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x56) == PSX_NATIVE_BIOS_RETURN);
+    CHECK(!(cpu.cop0[12] & 1u) && !read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE));
+    for (unsigned i = 0; i < 3; ++i) CHECK(read_word(EVENT_BASE + other_slots[i] * EVENT_SIZE + 4) == ENABLED);
+    for (unsigned i = 0; i < 5; ++i) {
+        CHECK(read_word(EVENT_BASE + cd_slots[i] * EVENT_SIZE + 4) == ENABLED);
+        CHECK(!read_word(EVENT_BASE + latest[i] * EVENT_SIZE + 4));
+        CHECK(read_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4) == (0xf1000000u | latest[i]));
+    }
+    /* Restoring guest RAM also restores which events a later removal owns. */
+    for (unsigned i = 0; i < 5; ++i) {
+        write_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4, handles[i]);
+        write_word(EVENT_BASE + (handles[i] & 0xffffu) * EVENT_SIZE + 4, ENABLED);
+    }
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x72) == PSX_NATIVE_BIOS_RETURN);
+    for (unsigned i = 0; i < 3; ++i) CHECK(read_word(EVENT_BASE + other_slots[i] * EVENT_SIZE + 4) == ENABLED);
+    for (unsigned i = 0; i < 13; ++i) add_event(i, 0x1234, MODE_MARK, 0);
+    const uint32_t sr = cpu.cop0[12];
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x71) == PSX_NATIVE_BIOS_UNSUPPORTED);
+    CHECK(cpu.cop0[12] == sr && !read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE));
+    memset(ram + EVENT_BASE / 4, 0, 13 * EVENT_SIZE);
+    test_disc_present = 0;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x71) == PSX_NATIVE_BIOS_UNSUPPORTED);
+    CHECK(!read_word(EVENT_BASE + 4)); test_disc_present = 1;
+
+    memset(test_disc_exe, 0, sizeof test_disc_exe);
+    memcpy(test_disc_exe, "PS-X EXE", 8);
+    const uint32_t header[] = {0x80012000, 0x80014000, 0x80012000, 32, 0, 0, 0x80013000, 16};
+    for (unsigned i = 0; i < 8; ++i)
+        for (unsigned j = 0; j < 4; ++j) test_disc_exe[0x10 + i * 4 + j] = (uint8_t)(header[i] >> (j * 8));
+    for (unsigned i = 0; i < 32; ++i) test_disc_exe[2048 + i] = (uint8_t)(0x80 + i);
+    const char path[] = "cdrom:\\MAIN.EXE;1";
+    for (unsigned i = 0; i < sizeof path; ++i) write_byte(0x1800 + i, (uint8_t)path[i]);
+    memset(ram + 0x12000 / 4, 0x55, 32); memset(ram + 0x13000 / 4, 0xa5, 16);
+    cpu.gpr[4] = 0x1800; cpu.gpr[5] = 0x80018000; cpu.gpr[6] = 0x20;
+    cpu.gpr[29] = 0x8001f000; cpu.gpr[30] = 0x8001e000;
+    const unsigned resets = cache_resets;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x51) == PSX_NATIVE_BIOS_TRANSFER);
+    CHECK(cpu.pc == 0x80012000 && cpu.gpr[28] == 0x80014000 &&
+          cpu.gpr[29] == 0x80018020 && cpu.gpr[30] == 0x80018020 &&
+          cpu.gpr[4] == 1 && cpu.gpr[5] == 0 && cache_resets == resets + 1);
+    for (unsigned i = 0; i < 32; ++i) CHECK(read_byte(0x12000 + i) == (uint8_t)(0x80 + i));
+    for (unsigned i = 0; i < 16; ++i) CHECK(!read_byte(0x13000 + i));
+    cpu.gpr[4] = 0x1800; cpu.gpr[5] = 0x80018020; cpu.gpr[6] = 0;
+    cpu.gpr[30] = 0x8001e000; /* SP already matches, FP must still be assigned. */
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x51) == PSX_NATIVE_BIOS_TRANSFER);
+    CHECK(cpu.gpr[29] == 0x80018020 && cpu.gpr[30] == 0x80018020);
+    /* A zero stack base preserves both existing SP and FP even if size!=0. */
+    cpu.gpr[4] = 0x1800; cpu.gpr[5] = 0; cpu.gpr[6] = 0x20;
+    cpu.gpr[29] = 0x8001f000; cpu.gpr[30] = 0x8001e000;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x51) == PSX_NATIVE_BIOS_TRANSFER);
+    CHECK(cpu.gpr[29] == 0x8001f000 && cpu.gpr[30] == 0x8001e000);
+    /* Reject unreadable/invalid inputs before any text/BSS/register commit. */
+    for (unsigned fault = 0; fault < 5; ++fault) {
+        CPUState before = cpu;
+        cpu.gpr[4] = 0x1800; cpu.gpr[5] = 0x80018000; cpu.gpr[6] = 0;
+        if (fault == 0) test_disc_read_failure = 1;
+        if (fault == 1) test_disc_exe[0] = '!';
+        if (fault == 2) test_disc_exe[0x1c] = 0xff; /* truncated text */
+        if (fault == 3) test_disc_exe[0x1a] = 0;    /* reserved low RAM */
+        if (fault == 4) cpu.gpr[5] = 0xfffffffc;
+        const uint32_t old_text = read_word(0x12000), old_bss = read_word(0x13000);
+        const uint32_t old_pc = cpu.pc, old_sp = cpu.gpr[29];
+        CHECK(psx_native_bios_service(&cpu, 0xa0, 0x51) == PSX_NATIVE_BIOS_UNSUPPORTED);
+        CHECK(cpu.pc == old_pc && cpu.gpr[29] == old_sp && read_word(0x12000) == old_text &&
+              read_word(0x13000) == old_bss);
+        test_disc_read_failure = 0; test_disc_exe[0] = 'P'; test_disc_exe[0x1c] = 32;
+        test_disc_exe[0x1a] = 1; cpu = before;
+    }
+    CHECK(test_disc_reads > 0);
+}
+
 int main(void)
 {
     psx_bios_image.image_id = "OPENBIOS";
@@ -1195,6 +1311,7 @@ int main(void)
     check_native_root_counter_irq();
     check_native_hardware_event_classes();
     check_native_files();
+    check_native_cd_and_loadexec();
     puts("bios_hle_events_test: OK");
     return 0;
 }
