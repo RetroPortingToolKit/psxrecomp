@@ -32,7 +32,10 @@ static uint32_t card_request(unsigned port)
 
 static void cards_replaced(void)
 {
-    if (!bound_cpu) return;
+    /* Replay installs its sandbox backing before the first frame.
+     * Before InitCARD, zeroed status words are not pending requests and
+     * must not change the power-on guest RAM or replay digest. */
+    if (!bound_cpu || !bound_cpu->read_word(PSX_NATIVE_CARD_INIT)) return;
     for (unsigned port = 0; port < 2; ++port) {
         if (!(bound_cpu->read_word(PSX_NATIVE_CARD_STATUS + port * 4) & 1u))
             bound_cpu->write_word(card_request(port) + CARD_REQ_INVALID, 1);

@@ -368,6 +368,11 @@ static void check_native_calls(void)
     CHECK(native_call(&cpu, 0xa0, 0x03, 1, 0x1a40, 0) == 0);
     write_word(PSX_NATIVE_CARD_FASTTRACK_SCRATCH + 0x28, 0x12345678);
     write_word(0xdf80, 0x87654321);
+    psx_native_card_bind(&cpu);
+    CHECK(card_replaced_hook);
+    card_replaced_hook();
+    for (unsigned i = 0; i < 64; i += 4)
+        CHECK(read_word(PSX_NATIVE_CARD_REQUEST + i) == 0);
     CHECK(native_call(&cpu, 0xb0, 0x4a, 0, 0, 0) == 0);
     CHECK(native_call(&cpu, 0xb0, 0x4a, 0, 0, 0) == 1);
     CHECK(native_call(&cpu, 0xb0, 0x5c, 1, 0, 0) == 1);
