@@ -1,5 +1,6 @@
 #include "bios_hle.h"
 #include "native_bios_services.h"
+#include "native_bios_cd_state.h"
 #include "cpu_state.h"
 #include "psx_bios_image.h"
 #include "psx_cycles.h"
@@ -23,6 +24,9 @@ enum {
     CALLBACK_NESTED = 0x10008,
     CALLBACK_OVERRIDE = 0x10014,
     CALLBACK_CARD_FIND = 0x10024,
+    CALLBACK_CARD_COMPLETE = 0x10028,
+    CALLBACK_ASYNC_FILE = 0x1002c,
+    CALLBACK_TIMER_HANDLER = 0x10030,
     IRQ_VERIFY_A = 0x10018,
     IRQ_VERIFY_B = 0x1001c,
     IRQ_HANDLER = 0x10020,
@@ -35,7 +39,8 @@ enum {
     MODE_MARK = 0x2000,
 };
 
-static uint32_t ram[0x10000 / sizeof(uint32_t)];
+/* The native kernel owns the low64K; LoadExec needs a separate user span. */
+static uint32_t ram[0x20000 / sizeof(uint32_t)];
 static uint32_t calls[4];
 static size_t call_count;
 PsxBiosImageInfo psx_bios_image;
@@ -45,6 +50,7 @@ static unsigned cache_resets;
 static int irq_active;
 static uint32_t expected_saved_v0, last_thread_switch;
 static uint32_t test_istat, test_imask;
+static uint32_t test_timers[3][3];
 static uint32_t test_gpu_status, test_gpu_data, test_gpu_control;
 static unsigned test_gpu_writes;
 uint32_t dma_cycles_to_internal_event(void) { return UINT32_MAX; }
@@ -55,6 +61,28 @@ static uint8_t test_card_flag[2];
 static unsigned card_flushes;
 static int card_flush_result;
 static unsigned card_find_overrides;
+static unsigned card_file_completions;
+static uint32_t expected_card_device, expected_card_spec;
+static uint32_t async_events[4], expected_async_spec;
+static unsigned async_event_count;
+static unsigned timer_handler_calls;
+static int test_disc_present = 1, test_disc_read_failure;
+static uint8_t test_disc_exe[2048 + 32];
+static uint32_t test_disc_exe_size = sizeof test_disc_exe;
+static unsigned test_disc_reads;
+int cdrom_has_disc(void) { return test_disc_present; }
+int psx_mod_read_disc_file(const char *path, void *buffer, uint32_t capacity,
+                            uint32_t *size) {
+    ++test_disc_reads;
+    if (!test_disc_present || test_disc_read_failure || strcmp(path, "MAIN.EXE")) return 0;
+    *size = test_disc_exe_size;
+    if (!buffer) return capacity == 0;
+    if (capacity < test_disc_exe_size) return 0;
+    memcpy(buffer, test_disc_exe, test_disc_exe_size);
+    return 1;
+}
+static uint8_t test_pad_packets[2][34];
+static uint32_t test_pad_lengths[2], test_pad_reads[2];
 static void (*card_replaced_hook)(void);
 static jmp_buf irq_escape;
 static CPUState irq_cpu;
@@ -70,6 +98,13 @@ int g_exec_phase, g_event_step_conservative, g_ls_replay_active, psx_in_device_s
 #define CHECK(test) do { \
     if (!(test)) { fprintf(stderr, "B0 event fixture line %d: %s\n", __LINE__, #test); exit(1); } \
 } while (0)
+
+uint32_t sio_read_pad_packet(int port, uint8_t out[34]) {
+    CHECK(port >= 0 && port < 2 && test_pad_lengths[port] <= 34);
+    ++test_pad_reads[port];
+    memcpy(out, test_pad_packets[port], test_pad_lengths[port]);
+    return test_pad_lengths[port];
+}
 
 uint32_t psx_idle_cycles_to_next_observable_event(void) { return 64; }
 void psx_check_interrupts_at(CPUState *cpu, uint32_t pc) {
@@ -130,6 +165,9 @@ static uint32_t read_word(uint32_t address)
     if (address == 0x1f8010a8u) return 0;
     if (address == 0x1f801070u) return test_istat;
     if (address == 0x1f801074u) return test_imask;
+    if (address >= 0x1f801100u && address < 0x1f801130u &&
+        ((address - 0x1f801100u) & 15u) <= 8u)
+        return test_timers[(address - 0x1f801100u) / 16][(address & 15u) / 4];
     address &= 0x1fffffff;
     CHECK(!(address & 3) && address < sizeof ram);
     return ram[address / 4];
@@ -148,6 +186,11 @@ static void write_word(uint32_t address, uint32_t value)
     }
     if (address == 0x1f801070u) { test_istat &= value; return; }
     if (address == 0x1f801074u) { test_imask = value; return; }
+    if (address >= 0x1f801100u && address < 0x1f801130u &&
+        ((address - 0x1f801100u) & 15u) <= 8u) {
+        test_timers[(address - 0x1f801100u) / 16][(address & 15u) / 4] = value;
+        return;
+    }
     if (address == 0xfffe0130u) { CHECK(value == 0x0001e988u); return; }
     address &= 0x1fffffff;
     CHECK(!(address & 3) && address < sizeof ram);
@@ -188,6 +231,35 @@ void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_address)
     const PsxNativeBiosTable *table = &psx_native_bios_tables[0];
     uint32_t first = psx_native_bios_stub(table, 0x65);
     uint32_t last = psx_native_bios_stub(table, 0x6d);
+    if (addr == CALLBACK_TIMER_HANDLER) {
+        CHECK(irq_active && cpu == &irq_cpu && return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
+        CHECK(cpu->gpr[4] == 1 && read_word(EVENT_BASE + 4) == READY);
+        ++timer_handler_calls;
+        return;
+    }
+    if (addr == CALLBACK_ASYNC_FILE) {
+        CHECK(return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
+        CHECK(cpu->gpr[5] == expected_async_spec && async_event_count < 4);
+        CHECK(read_word(PSX_NATIVE_CARD_LAST_DEVICE) == 0);
+        CHECK(read_word(PSX_NATIVE_CARD_STATUS) & 1u);
+        async_events[async_event_count++] = cpu->gpr[4];
+        cpu->gpr[4] = cpu->gpr[5] = cpu->gpr[6] = 0xffffffffu;
+        return;
+    }
+    if (addr == CALLBACK_CARD_COMPLETE) {
+        CHECK(return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
+        if (cpu->gpr[4] != 0xf0000011u || cpu->gpr[5] != expected_card_spec)
+            fprintf(stderr, "card completion %u: class=%08x spec=%08x expected=%08x device=%08x\n",
+                    card_file_completions, cpu->gpr[4], cpu->gpr[5], expected_card_spec,
+                    read_word(PSX_NATIVE_CARD_LAST_DEVICE));
+        CHECK(cpu->gpr[4] == 0xf0000011u && cpu->gpr[5] == expected_card_spec);
+        CHECK(read_word(PSX_NATIVE_CARD_LAST_DEVICE) == expected_card_device);
+        CHECK(read_word(PSX_NATIVE_CARD_STATUS + (expected_card_device >> 4) * 4) & 1u);
+        ++card_file_completions;
+        /* A real guest callback can overwrite volatile argument registers. */
+        cpu->gpr[4] = cpu->gpr[5] = cpu->gpr[6] = 0xffffffffu;
+        return;
+    }
     if (addr == CALLBACK_CARD_FIND) {
         CHECK(return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
         CHECK(read_word(cpu->gpr[4]) == 1);
@@ -287,6 +359,7 @@ static void check_native_calls(void)
     memset(ram, 0, sizeof ram);
     psx_bios_hle_configure_native();
     psx_native_bios_init_tables(write_word);
+    write_word(0x100, 0x1700);
     CHECK(strcmp(psx_bios_hle_backend_name(), "HLE (native kernel)") == 0);
     CPUState cpu = {0};
     cpu.read_word = read_word;
@@ -371,6 +444,7 @@ static void check_native_calls(void)
     write_word(0x124, 6 * EVENT_SIZE);
     for (unsigned i = 0; i < 6; ++i) add_event(i, 2, MODE_MARK, 0);
     write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 1);
+    psx_native_cd_seed_boot_handles(write_word);
     cpu.cop0[12] = 0x40000401u;
     native_call(&cpu, 0xa0, 0x72, 0, 0, 0);
     CHECK(!(cpu.cop0[12] & 1u) && read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE) == 0);
@@ -496,6 +570,46 @@ static void check_native_calls(void)
     native_call(&cpu, 0xa0, 0x34, moved, 0, 0);
     CHECK(native_call(&cpu, 0xa0, 0x33, 0x1f0, 0, 0) == 0x4008);
     CHECK(native_call(&cpu, 0xa0, 0x33, 1, 0, 0) == 0);
+    /* C0 kernel storage is independent of the user's exhausted A0 heap.
+     * Restoring guest RAM alone must restore the allocator cursor/free list. */
+    native_call(&cpu, 0xc0, 8, 0xa000e800u, 0x1000, 0);
+    uint32_t kernel = native_call(&cpu, 0xb0, 0, 32, 0, 0);
+    CHECK(kernel == 0xa000e808u);
+    write_word(kernel, 0x12345678);
+    uint32_t kernel_snapshot[sizeof ram / sizeof ram[0]];
+    memcpy(kernel_snapshot, ram, sizeof ram);
+    uint32_t event_storage = native_call(&cpu, 0xb0, 0, 32 * EVENT_SIZE, 0, 0);
+    CHECK(event_storage && event_storage != kernel && read_word(kernel) == 0x12345678);
+    memcpy(ram, kernel_snapshot, sizeof ram);
+    CHECK(native_call(&cpu, 0xb0, 0, 32 * EVENT_SIZE, 0, 0) == event_storage);
+    native_call(&cpu, 0xb0, 1, event_storage, 0, 0);
+    CHECK(native_call(&cpu, 0xb0, 0, 32 * EVENT_SIZE, 0, 0) == event_storage);
+    CHECK(native_call(&cpu, 0xa0, 0x33, 1, 0, 0) == 0);
+    native_call(&cpu, 0xc0, 8, UINT32_MAX - 3, 32, 0);
+    CHECK(native_call(&cpu, 0xb0, 0, 1, 0, 0) == 0);
+
+    /* The real SDK reads these instruction immediates, then writes its
+     * thread/event/stack configuration through the resulting guest pointer. */
+    uint32_t info = read_word(0x474);
+    CHECK(info == (0x80000000u | PSX_NATIVE_INFO_STUB));
+    uint32_t configuration = (uint32_t)read_byte(info) | (uint32_t)read_byte(info + 1) << 8;
+    configuration = (configuration << 16) + (int16_t)read_word(info + 4) - 8;
+    CHECK(configuration == PSX_NATIVE_KERNEL_CONFIG);
+    write_word(configuration, 12); write_word(configuration + 4, 32);
+    write_word(configuration + 8, 0x801b6928);
+    CHECK(read_word(PSX_NATIVE_KERNEL_CONFIG) == 12 &&
+          read_word(PSX_NATIVE_KERNEL_CONFIG + 4) == 32);
+    CHECK(native_call(&cpu, 0xa0, 0x9d, 0, 0, 0) == 0x20260101u);
+    CHECK(native_call(&cpu, 0xa0, 0x9d, 2, 0, 0) == PSX_NATIVE_KERNEL_NAME);
+    CHECK(read_byte(PSX_NATIVE_KERNEL_NAME) == 'P');
+    cpu.gpr[4] = 7;
+    CHECK(g_psx_bios_hle_hook(&cpu, PSX_NATIVE_INFO_STUB) && cpu.gpr[2] == 1024);
+    CHECK(!psx_bios_hle_dispatch_quiet(PSX_NATIVE_INFO_STUB));
+    CHECK(!g_psx_bios_hle_hook(&cpu, psx_native_bios_tables[0].stubs + 0x9d * 12));
+    uint32_t info_word = read_word(info);
+    write_word(info, 0);
+    CHECK(!g_psx_bios_hle_hook(&cpu, PSX_NATIVE_INFO_STUB));
+    write_word(info, info_word);
     test_gpu_status = 0x14000000u;
     CHECK(native_call(&cpu, 0xa0, 0x49, 0xe1001234u, 0, 0) == 0);
     CHECK(test_gpu_data == 0xe1001234u && test_gpu_writes == 1);
@@ -508,6 +622,103 @@ static void check_native_calls(void)
     native_call(&cpu, 0xa0, 0x44, 0, 0, 0);
     CHECK(cache_resets == 1);
     CHECK(!g_psx_bios_hle_hook(&cpu, 0x80010000u & 0x1fffffffu));
+}
+
+static void check_native_kernel_registration(void)
+{
+    memset(ram, 0, sizeof ram);
+    CPUState cpu = {0};
+    cpu.read_word = read_word; cpu.write_word = write_word;
+    cpu.read_byte = read_byte; cpu.write_byte = write_byte;
+    psx_bios_hle_configure_native();
+    psx_native_bios_init_tables(write_word);
+    write_word(0x100, 0x1700);
+    test_imask = 0x7ff;
+    memset(test_timers, 0xff, sizeof test_timers);
+    CHECK(native_call(&cpu, 0xc0, 0, 2, 0, 0) == 0);
+    CHECK(read_word(0x1710) == PSX_NATIVE_IRQ_NODES + 3 * PSX_NATIVE_IRQ_NODE_BYTES);
+    for (unsigned i = 0; i < 4; ++i) {
+        const uint32_t node = PSX_NATIVE_IRQ_NODES + i * PSX_NATIVE_IRQ_NODE_BYTES;
+        CHECK(read_word(node) == (i ? node - PSX_NATIVE_IRQ_NODE_BYTES : 0));
+        CHECK(read_word(node + 4) == (0x80000000u | (PSX_NATIVE_IRQ_TOKENS + i * 8)));
+        /* A normal HandlerInfo includes a fourth padding word. Editing it
+         * must not overwrite the following record's next pointer. */
+        uint32_t next_record = read_word(node + 16);
+        CHECK(read_word(node + 12) == 0);
+        write_word(node + 12, 0x12345678);
+        CHECK(read_word(node + 16) == next_record);
+        write_word(node + 12, 0);
+        CHECK(read_word(PSX_NATIVE_TIMER_AUTO_ACK + i * 4) == 1);
+    }
+    CHECK(test_imask == (0x7ffu & ~0x71u));
+    for (unsigned i = 0; i < 3; ++i)
+        for (unsigned field = 0; field < 3; ++field) CHECK(test_timers[i][field] == 0);
+    CHECK(native_call(&cpu, 0xc0, 1, 0, 0, 0) == 0);
+    CHECK(read_word(0x1700) == PSX_NATIVE_IRQ_NODES + 5 * PSX_NATIVE_IRQ_NODE_BYTES);
+    write_word(PSX_NATIVE_GENERIC_IRQ_ACK, 1);
+    CHECK(native_call(&cpu, 0xc0, 0x0c, 3, 0, 0) == 0);
+    CHECK(read_word(0x1718) == PSX_NATIVE_IRQ_NODES + 4 * PSX_NATIVE_IRQ_NODE_BYTES);
+    CHECK(read_word(PSX_NATIVE_GENERIC_IRQ_ACK) == 0);
+    uint32_t before[sizeof ram / sizeof ram[0]];
+    memcpy(before, ram, sizeof ram);
+    cpu.gpr[4] = 4;
+    CHECK(psx_native_bios_service(&cpu, 0xc0, 0) == PSX_NATIVE_BIOS_UNSUPPORTED);
+    CHECK(memcmp(before, ram, sizeof ram) == 0);
+}
+
+static void check_native_hardware_event_classes(void)
+{
+    memset(ram, 0, sizeof ram);
+    memset(&irq_cpu, 0, sizeof irq_cpu);
+    irq_cpu.read_word = read_word; irq_cpu.write_word = write_word;
+    irq_cpu.read_byte = read_byte; irq_cpu.write_byte = write_byte;
+    psx_bios_hle_configure_native();
+    psx_native_bios_init_tables(write_word);
+    write_word(0x100, 0x1700);
+    psx_native_bios_boot_irq_handlers(write_word, 0x1700);
+    write_word(0x120, EVENT_BASE); write_word(0x124, EVENT_SIZE);
+    for (unsigned i = 0; i < 4; ++i) write_word(PSX_NATIVE_TIMER_AUTO_ACK + i * 4, 0);
+    const uint8_t classes[] = {1, 2, 3, 4, 5, 6, 6, 8, 11, 9, 10};
+    expected_saved_v0 = 0;
+    irq_active = 1;
+    for (unsigned irq = 0; irq < 11; ++irq) {
+        add_event(0, 0x1000, MODE_MARK, 0);
+        write_word(EVENT_BASE, 0xf0000000u + classes[irq]);
+        write_word(PSX_NATIVE_GENERIC_IRQ_ACK + irq * 4, 1);
+        irq_cpu.cop0[12] = 0x40000404u;
+        irq_cpu.cop0[14] = CALLER_RESUME;
+        test_istat = test_imask = 1u << irq;
+        int escaped = setjmp(irq_escape);
+        if (!escaped) {
+            g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_ENTRY);
+            CHECK(0);
+        }
+        CHECK(escaped == 1 && !test_istat && read_word(EVENT_BASE + 4) == READY);
+    }
+    /* Delivery is a verifier side effect. Removing the ack handler must not
+     * suppress it, and replacing that handler observes exactly verifier=1. */
+    const uint8_t timer_irqs[] = {4, 5, 6, 0};
+    for (unsigned timer = 0; timer < 4; ++timer) {
+        const uint32_t handler = PSX_NATIVE_IRQ_NODES + timer * PSX_NATIVE_IRQ_NODE_BYTES + 4;
+        const uint32_t original = read_word(handler);
+        for (unsigned patched = 0; patched < 2; ++patched) {
+            add_event(0, 2, MODE_MARK, 0);
+            write_word(EVENT_BASE, 0xf2000000u + timer);
+            write_word(handler, patched ? CALLBACK_TIMER_HANDLER : 0);
+            timer_handler_calls = 0;
+            irq_cpu.cop0[12] = 0x40000404u;
+            test_istat = test_imask = 1u << timer_irqs[timer];
+            int escaped = setjmp(irq_escape);
+            if (!escaped) {
+                g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_ENTRY);
+                CHECK(0);
+            }
+            CHECK(escaped == 1 && !test_istat && read_word(EVENT_BASE + 4) == READY);
+            CHECK(timer_handler_calls == patched);
+        }
+        write_word(handler, original);
+    }
+    irq_active = 0;
 }
 
 static void check_native_root_counter_irq(void)
@@ -524,6 +735,8 @@ static void check_native_root_counter_irq(void)
     psx_native_bios_init_tables(write_word);
 
     write_word(0x100, 0x1700);
+    psx_native_bios_boot_irq_handlers(write_word, 0x1700);
+    const uint32_t timer_head = PSX_NATIVE_IRQ_NODES + 3 * PSX_NATIVE_IRQ_NODE_BYTES;
     write_word(0x1744, IRQ_HANDLER);
     write_word(0x1748, IRQ_VERIFY_A);
     write_word(0x1754, IRQ_HANDLER);
@@ -532,7 +745,7 @@ static void check_native_root_counter_irq(void)
     CHECK(native_call(&irq_cpu, 0xc0, 2, 1, 0x1750, 0) == 0);
     CHECK(read_word(0x1708) == 0x1750 && read_word(0x1750) == 0x1740);
     CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1740, 0) == 0x1740);
-    CHECK(read_word(0x1750) == 0);
+    CHECK(read_word(0x1750) == timer_head);
     CHECK(native_call(&irq_cpu, 0xc0, 2, 1, 0x1740, 0) == 0);
     CHECK(read_word(0x1708) == 0x1740 && read_word(0x1740) == 0x1750);
     call_count = 0;
@@ -557,7 +770,7 @@ static void check_native_root_counter_irq(void)
           calls[1] == IRQ_HANDLER && calls[2] == IRQ_VERIFY_B);
     CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1740, 0) == 0x1740);
     CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1750, 0) == 0x1750);
-    CHECK(read_word(0x1708) == 0);
+    CHECK(read_word(0x1708) == timer_head);
     CHECK(read_word(EVENT_BASE + 4) == READY &&
           read_word(EVENT_BASE + EVENT_SIZE + 4) == ENABLED);
 
@@ -606,6 +819,15 @@ static void check_native_root_counter_irq(void)
         CHECK(0);
     }
     CHECK(escaped == 1);
+    CHECK(psx_native_bios_dispatch_marker(PSX_NATIVE_EXCEPTION_PATCH_RESUME));
+    CHECK(psx_native_bios_dispatch_marker(PSX_NATIVE_WAIT_EVENT_RESUME));
+    CHECK(!psx_bios_hle_dispatch_quiet(PSX_NATIVE_EXCEPTION_PATCH_RESUME));
+    CHECK(!psx_bios_hle_dispatch_quiet(PSX_NATIVE_WAIT_EVENT_RESUME));
+    /* A compiled prefix must return to the dispatcher at an intact marker.
+     * Editing that word relinquishes native ownership to ordinary guest code. */
+    write_word(PSX_NATIVE_EXCEPTION_PATCH_RESUME, 0x03e00008u);
+    CHECK(!g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_PATCH_RESUME));
+    write_word(PSX_NATIVE_EXCEPTION_PATCH_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
     expected_saved_v0 = 0;
     irq_active = 0;
 }
@@ -642,6 +864,70 @@ static void check_native_wait_event(void)
     wait_delivery = 0;
 }
 
+static void check_native_async_file(CPUState *cpu)
+{
+    /* Missing save files remain an ordinary open failure in async mode. */
+    CHECK(native_call(cpu, 0xb0, 0x32, 0x1940, 0x8001, 0) == UINT32_MAX);
+    CHECK(native_call(cpu, 0xb0, 0x32, 0x1800, 0x8001, 0) == 3);
+    write_word(0x120, EVENT_BASE); write_word(0x124, EVENT_SIZE * 5);
+    const uint32_t classes[] = {0xf4000001u, 3, 0xf0000011u, 0xf4000001u, 0xf0000011u};
+    for (unsigned i = 0; i < 5; ++i) {
+        add_event(i, i < 3 ? 4 : 0x8000, MODE_CALLBACK, CALLBACK_ASYNC_FILE);
+        write_word(EVENT_BASE + EVENT_SIZE * i, classes[i]);
+    }
+    expected_async_spec = 4; async_event_count = 0;
+    for (unsigned i = 0; i < 128; ++i) write_byte(0x6000 + i, 0);
+    CHECK(native_call(cpu, 0xb0, 0x34, 3, 0x6000, 128) == 0);
+    CHECK(!async_event_count && read_word(PSX_NATIVE_CARD_STATUS) == 8);
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44 + 16) == 0 && read_byte(0x6000) == 0);
+    CHECK(native_call(cpu, 0xb0, 0x34, 3, 0x6000, 128) == UINT32_MAX);
+    CHECK(native_call(cpu, 0xb0, 0x36, 3, 0, 0) == UINT32_MAX);
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44) == 0x8001);
+    CHECK(native_call(cpu, 0xb0, 0x33, 3, 128, 0) == 128);
+    /* A pending transfer is completely represented by current CPU/RAM state. */
+    static uint32_t pending_ram[sizeof ram / sizeof ram[0]];
+    memcpy(pending_ram, ram, sizeof ram);
+    CPUState pending_cpu = *cpu;
+    psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
+    CHECK(async_event_count == 3 && async_events[0] == 0xf4000001u &&
+          async_events[1] == 3 && async_events[2] == 0xf0000011u);
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44 + 16) == 256);
+    for (unsigned i = 0; i < 128; ++i) CHECK(read_byte(0x6000 + i) == (uint8_t)(i ^ 0x5a));
+    memcpy(ram, pending_ram, sizeof ram); *cpu = pending_cpu; async_event_count = 0;
+    psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
+    CHECK(async_event_count == 3 && read_byte(0x6000) == 0x5a);
+    CHECK(native_call(cpu, 0xb0, 0x36, 3, 0, 0) == 0);
+    CHECK(native_call(cpu, 0xb0, 0x32, 0x1800, 0x8002, 0) == 3);
+    async_event_count = 0;
+    unsigned flushes = card_flushes;
+    CHECK(native_call(cpu, 0xb0, 0x35, 3, 0x4000, 128) == 0);
+    uint8_t next_sector[128];
+    memcpy(next_sector, test_card[0][65], sizeof next_sector);
+    CHECK(native_call(cpu, 0xb0, 0x33, 3, 128, 0) == 128);
+    CHECK(card_flushes == flushes && !async_event_count);
+    psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
+    CHECK(card_flushes == flushes + 1 && test_card[0][64][1] == 3);
+    CHECK(!memcmp(next_sector, test_card[0][65], sizeof next_sector));
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44 + 16) == 256);
+    CHECK(async_event_count == 3 && async_events[0] == 3 &&
+          async_events[1] == 0xf4000001u && async_events[2] == 0xf0000011u);
+    CHECK(native_call(cpu, 0xb0, 0x36, 3, 0, 0) == 0);
+    CHECK(native_call(cpu, 0xb0, 0x32, 0x1800, 0x8001, 0) == 3);
+    async_event_count = 0;
+    CHECK(native_call(cpu, 0xb0, 0x34, 3, PSX_MAIN_RAM_WINDOW_BYTES, 128) == UINT32_MAX);
+    CHECK(!async_event_count && read_word(PSX_NATIVE_CARD_STATUS) == 1);
+    CHECK(native_call(cpu, 0xb0, 0x34, 3, 0x6000, 128) == 0);
+    expected_async_spec = 0x8000;
+    test_card_present[0] = 0;
+    psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
+    CHECK(async_event_count == 2 && async_events[0] == 0xf4000001u &&
+          async_events[1] == 0xf0000011u);
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44 + 16) == 0);
+    test_card_present[0] = 1;
+    CHECK(native_call(cpu, 0xb0, 0x36, 3, 0, 0) == 0);
+    write_word(0x124, 0);
+}
+
 static void check_native_files(void)
 {
     memset(ram, 0, sizeof ram);
@@ -651,6 +937,7 @@ static void check_native_files(void)
     test_card_flag[0] = 0;
     psx_bios_hle_configure_native();
     psx_native_bios_init_tables(write_word);
+    write_word(0x100, 0x1700);
     CPUState cpu = {0};
     cpu.read_word = read_word; cpu.write_word = write_word;
     cpu.read_byte = read_byte; cpu.write_byte = write_byte; cpu.write_half = write_half;
@@ -696,11 +983,42 @@ static void check_native_files(void)
     /* The original X6 SDK wraps the writable bu firstFile callback. */
     const char pattern[] = "bu00:BASLUS*";
     for (unsigned i = 0; i < sizeof pattern; ++i) write_byte(0x1900 + i, (uint8_t)pattern[i]);
+    write_word(0x120, EVENT_BASE); write_word(0x124, EVENT_SIZE * 2);
+    add_event(0, 4, MODE_CALLBACK, CALLBACK_CARD_COMPLETE);
+    add_event(1, 0x8000, MODE_CALLBACK, CALLBACK_CARD_COMPLETE);
+    write_word(EVENT_BASE, 0xf0000011u);
+    write_word(EVENT_BASE + EVENT_SIZE, 0xf0000011u);
+    expected_card_device = 0; expected_card_spec = 4;
+    card_file_completions = 0;
     write_word(PSX_NATIVE_DEVICE_TABLE + 0x34, CALLBACK_CARD_FIND);
     CHECK(native_call(&cpu, 0xb0, 0x42, 0x1900, 0x3000, 0) == 0x3000);
+    CHECK(card_file_completions == 1 && cpu.gpr[31] == CALLER_RESUME);
     CHECK(card_find_overrides == 1 && read_word(0x3018) == 8192 && read_word(0x3020) == 64);
     for (unsigned i = 0; i < sizeof path - 5; ++i) CHECK(read_byte(0x3000 + i) == (uint8_t)path[5 + i]);
     CHECK(native_call(&cpu, 0xb0, 0x43, 0x3000, 0, 0) == 0);
+    CHECK(card_file_completions == 1); /* NextFile does not start a header read. */
+    const char missing[] = "bu00:NO_MATCH";
+    for (unsigned i = 0; i < sizeof missing; ++i) write_byte(0x1940 + i, (uint8_t)missing[i]);
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1940, 0x3000, 0) == 0);
+    CHECK(card_file_completions == 2); /* Completion is observable even with no match. */
+    const char absent[] = "bu10:*";
+    for (unsigned i = 0; i < sizeof absent; ++i) write_byte(0x1980 + i, (uint8_t)absent[i]);
+    expected_card_device = 0x10; expected_card_spec = 0x8000;
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1980, 0x3000, 0) == 0);
+    CHECK(card_file_completions == 3);
+    /* Rejected requests do not manufacture a card completion. */
+    write_word(PSX_NATIVE_CARD_STATUS, 2);
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1900, 0x3000, 0) == 0);
+    write_word(PSX_NATIVE_CARD_STATUS, 1);
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1900, PSX_MAIN_RAM_WINDOW_BYTES, 0) == 0);
+    CHECK(card_file_completions == 3);
+    /* A readable, malformed volume still completed its raw header read. */
+    expected_card_device = 0; expected_card_spec = 4;
+    test_card[0][0][0] = 'X';
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1900, 0x3000, 0) == 0);
+    CHECK(card_file_completions == 4);
+    test_card[0][0][0] = 'M';
+    check_native_async_file(&cpu);
     CHECK(native_call(&cpu, 0xb0, 0x32, 0x1800, 1, 0) == 3);
     card_replaced_hook();
     CHECK(native_call(&cpu, 0xb0, 0x34, 3, 0x6000, 128) == UINT32_MAX);
@@ -712,6 +1030,265 @@ static void check_native_files(void)
     psx_native_card_vblank(&cpu); psx_native_card_vblank(&cpu);
     CHECK(read_word(EVENT_BASE + 4) == READY && read_word(PSX_NATIVE_CARD_VOLUME_VALID) == 1);
     psx_native_card_bind(NULL);
+}
+
+static void pad_vblank_irq(int acknowledge)
+{
+    irq_cpu.cop0[12] = 0x40000404u;
+    irq_cpu.cop0[14] = CALLER_RESUME;
+    test_istat = test_imask = 1u;
+    expected_saved_v0 = 0;
+    irq_active = 1;
+    int escaped = setjmp(irq_escape);
+    if (!escaped) {
+        g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_ENTRY);
+        CHECK(0);
+    }
+    CHECK(escaped == 1 && test_istat == (acknowledge ? 0u : 1u));
+    irq_active = 0;
+}
+
+static void check_native_pad(void)
+{
+    memset(ram, 0, sizeof ram);
+    memset(&irq_cpu, 0, sizeof irq_cpu);
+    memset(test_pad_reads, 0, sizeof test_pad_reads);
+    irq_cpu.read_word = read_word; irq_cpu.write_word = write_word;
+    irq_cpu.read_byte = read_byte; irq_cpu.write_byte = write_byte;
+    irq_cpu.write_half = write_half;
+    psx_bios_hle_configure_native();
+    psx_native_bios_init_tables(write_word);
+    write_word(0x100, 0x1700);
+    /* safeMemZero skips NULL, zero and negative signed sizes. Init must not
+     * dereference an unused pointer or apply the later IRQ packet extent. */
+    write_word(0, 0x55aa1234);
+    irq_cpu.gpr[7] = 0;
+    CHECK(native_call(&irq_cpu, 0xb0, 0x12, 0, 34, 0xffffffffu) == 1);
+    CHECK(read_word(0) == 0x55aa1234);
+    CHECK(read_word(PSX_NATIVE_PAD_BUFFERS + 4) == 0xffffffffu);
+    memset((uint8_t *)ram + 0x4000, 0xcc, 36);
+    memset((uint8_t *)ram + 0x4100, 0xcc, 36);
+    irq_cpu.gpr[7] = UINT32_MAX;
+    CHECK(native_call(&irq_cpu, 0xb0, 0x12, 0x4000, 2, 0x4100) == 1);
+    CHECK(read_byte(0x4000) == 0 && read_byte(0x4001) == 0 &&
+          read_byte(0x4002) == 0xcc && read_byte(0x4100) == 0xcc);
+    uint32_t before_init[sizeof ram / sizeof ram[0]];
+    memcpy(before_init, ram, sizeof ram);
+    irq_cpu.gpr[4] = 0xfffffff0u; irq_cpu.gpr[5] = 34;
+    irq_cpu.gpr[6] = 0x4100; irq_cpu.gpr[7] = 34;
+    CHECK(psx_native_bios_service(&irq_cpu, 0xb0, 0x12) == PSX_NATIVE_BIOS_UNSUPPORTED);
+    CHECK(!memcmp(before_init, ram, sizeof ram));
+    /* SDK _patch_pad derives start/stop callbacks from B0[ChangeClearPAD]. */
+    const uint32_t pad_base = read_word(PSX_NATIVE_B0_TABLE + 0x5b * 4);
+    const uint32_t pad_start = pad_base + 0x884u, pad_stop = pad_base + 0x894u;
+    CHECK(pad_start == psx_native_pad_patch_helper(1) &&
+          pad_stop == psx_native_pad_patch_helper(0));
+    CHECK(!psx_bios_hle_dispatch_quiet(pad_start));
+    CHECK(!psx_bios_hle_dispatch_quiet(pad_stop));
+    irq_cpu.gpr[2] = 0x12345678;
+    CHECK(g_psx_bios_hle_hook(&irq_cpu, pad_stop & 0x1fffffffu));
+    CHECK(!read_word(PSX_NATIVE_CARD_PAD_STARTED) && irq_cpu.gpr[2] == 0x12345678);
+    CHECK(g_psx_bios_hle_hook(&irq_cpu, pad_start & 0x1fffffffu));
+    CHECK(read_word(PSX_NATIVE_CARD_PAD_STARTED) == 1 && irq_cpu.gpr[2] == 0x12345678);
+    write_word(pad_start, 0x03e00008u);
+    CHECK(!g_psx_bios_hle_hook(&irq_cpu, pad_start & 0x1fffffffu));
+    write_word(pad_start, PSX_NATIVE_EXCEPTION_MARKER);
+    const uint32_t node = PSX_NATIVE_IRQ_NODES +
+        PSX_NATIVE_PAD_CARD_IRQ_NODE * PSX_NATIVE_IRQ_NODE_BYTES;
+    memset((uint8_t *)ram + 0x4000, 0xcc, 36);
+    memset((uint8_t *)ram + 0x4100, 0xcc, 36);
+    irq_cpu.gpr[7] = 34;
+    CHECK(native_call(&irq_cpu, 0xb0, 0x12, 0x4000, 34, 0x4100) == 1);
+    for (unsigned i = 0; i < 34; ++i) {
+        CHECK(read_byte(0x4000 + i) == 0 && read_byte(0x4100 + i) == 0);
+    }
+    CHECK(read_byte(0x4022) == 0xcc && read_byte(0x4122) == 0xcc);
+    CHECK(read_word(0x1710) == 0); /* Init alone does not enqueue. */
+    test_pad_packets[0][0] = 0; test_pad_packets[0][1] = 0x41;
+    test_pad_packets[0][2] = 0xbf; test_pad_packets[0][3] = 0xff;
+    test_pad_lengths[0] = 4;
+    test_pad_packets[1][0] = 0xff; test_pad_lengths[1] = 1;
+    pad_vblank_irq(0);
+    CHECK(test_pad_reads[0] == 0 && read_byte(0x4000) == 0);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x13, 0, 0, 0) == 1);
+    CHECK(read_word(0x1710) == node && read_word(node) == 0);
+    CHECK(test_sio_mode == 13 && test_sio_baud == 2073600 / 15200);
+    CHECK(read_word(PSX_NATIVE_TIMER_AUTO_ACK + 12) == 0);
+    pad_vblank_irq(1);
+    CHECK(test_pad_reads[0] == 1 && test_pad_reads[1] == 1);
+    CHECK(read_word(0x4000) == 0xffbf4100 && read_byte(0x4100) == 0xff);
+    CHECK(read_byte(0x4101) == 0); /* Timeout preserves old ID/data. */
+    uint32_t saved[sizeof ram / sizeof ram[0]];
+    memcpy(saved, ram, sizeof ram);
+    write_word(PSX_NATIVE_PAD_BUFFERS, 0x4200);
+    test_pad_packets[0][2] = 0x7f;
+    pad_vblank_irq(1);
+    CHECK(read_word(0x4200) == 0xff7f4100 && read_word(0x4000) == 0xffbf4100);
+    memcpy(ram, saved, sizeof ram);
+    pad_vblank_irq(1);
+    CHECK(read_word(0x4000) == 0xff7f4100); /* RAM restore owns pointers. */
+    const uint32_t handler = read_word(node + 4);
+    write_word(node + 4, 0);
+    unsigned reads = test_pad_reads[0];
+    pad_vblank_irq(0);
+    CHECK(test_pad_reads[0] == reads); /* No implicit second pad/card path. */
+    write_word(node + 4, handler);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x5b, 0, 0, 0) == 1);
+    pad_vblank_irq(0);
+    CHECK(test_pad_reads[0] == reads + 1);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x5b, 1, 0, 0) == 0);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x14, 0, 0, 0) == 1);
+    CHECK(read_word(0x1710) == 0 && read_word(PSX_NATIVE_CARD_PAD_STARTED) == 1);
+    reads = test_pad_reads[0];
+    pad_vblank_irq(0);
+    CHECK(test_pad_reads[0] == reads);
+
+    /* StartCARD re-enqueues the same node and retains active pad reads. */
+    CHECK(native_call(&irq_cpu, 0xb0, 0x4a, 1, 0, 0) == 0);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x4b, 0, 0, 0) == 1);
+    CHECK(read_word(0x1710) == node);
+    test_card_present[0] = 1; test_card_flag[0] = 0;
+    memset(test_card[0][3], 0x5a, MEMCARD_SECTOR_SIZE);
+    write_word(0x120, EVENT_BASE); write_word(0x124, EVENT_SIZE);
+    add_event(0, 4, MODE_MARK, 0); write_word(EVENT_BASE, 0xf0000011u);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x4f, 0, 3, 0x5000) == 1);
+    pad_vblank_irq(1); pad_vblank_irq(1);
+    CHECK(test_pad_reads[0] == reads + 2 && read_byte(0x5000) == 0x5a);
+    CHECK(read_word(EVENT_BASE + 4) == READY && (read_word(PSX_NATIVE_CARD_STATUS) & 1));
+    CHECK(native_call(&irq_cpu, 0xb0, 0x4c, 0, 0, 0) == 1);
+    CHECK(read_word(0x1710) == 0 && read_word(PSX_NATIVE_CARD_PAD_STARTED) == 1);
+
+    /* Legacy API used by callers with a packed 32-bit active-low word. */
+    irq_cpu.gpr[29] = 0x7000; irq_cpu.gpr[7] = 0x5678;
+    CHECK(native_call(&irq_cpu, 0xb0, 0x15, 0x20000001, 0x4300, 0x1234) == 2);
+    CHECK(read_word(0x7004) == 0x4300 && read_word(0x7008) == 0x1234 &&
+          read_word(0x700c) == 0x5678);
+    CHECK(read_word(PSX_NATIVE_PAD_LEGACY_DEST) == 0x4300);
+    test_pad_packets[0][2] = 0xbf;
+    test_pad_packets[1][0] = 0; test_pad_packets[1][1] = 0x41;
+    test_pad_packets[1][2] = 0xff; test_pad_packets[1][3] = 0x7f;
+    test_pad_lengths[1] = 4;
+    pad_vblank_irq(1);
+    CHECK(read_word(0x4300) == 0xff7fbfff);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x16, 0, 0, 0) == 0xff7fbfff);
+    write_byte(PSX_NATIVE_PAD_LEGACY_BUFFER0 + 1, 0x73);
+    write_byte(PSX_NATIVE_PAD_LEGACY_BUFFER1 + 1, 0x23);
+    write_byte(PSX_NATIVE_PAD_LEGACY_BUFFER1 + 2, 0xff);
+    write_byte(PSX_NATIVE_PAD_LEGACY_BUFFER1 + 3, 0xff);
+    write_byte(PSX_NATIVE_PAD_LEGACY_BUFFER1 + 5, 0x40);
+    write_byte(PSX_NATIVE_PAD_LEGACY_BUFFER1 + 6, 0x80);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x16, 0, 0, 0) == 0xff3fffff);
+    /* Bounds follow the bytes actually observed, including valid RAM-end
+     * digital packets; a rejected pointer does not partly publish a word. */
+    write_word(PSX_NATIVE_PAD_BUFFERS, sizeof ram - 4);
+    write_word(sizeof ram - 4, 0xffbf4100);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x16, 0, 0, 0) == 0xff3fbfff);
+    write_word(PSX_NATIVE_PAD_BUFFERS, sizeof ram - 2);
+    CHECK(psx_native_bios_service(&irq_cpu, 0xb0, 0x16) == PSX_NATIVE_BIOS_UNSUPPORTED);
+    CHECK(read_word(0x4300) == 0xff3fbfff);
+    write_word(PSX_NATIVE_PAD_BUFFERS, PSX_NATIVE_PAD_LEGACY_BUFFER0);
+    const uint32_t before = read_word(PSX_NATIVE_PAD_BUFFERS);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x15, 0x1234, 0x4300, 0) == 0);
+    CHECK(read_word(PSX_NATIVE_PAD_BUFFERS) == before);
+    CHECK(native_call(&irq_cpu, 0xb0, 0x14, 0, 0, 0) == 1);
+}
+
+static void check_native_cd_and_loadexec(void)
+{
+    CPUState cpu = {0};
+    cpu.read_word = read_word; cpu.write_word = write_word;
+    cpu.read_byte = read_byte; cpu.write_byte = write_byte;
+    memset(ram, 0, sizeof ram);
+    write_word(0x120, EVENT_BASE); write_word(0x124, 13 * EVENT_SIZE);
+    const unsigned other_slots[] = {0, 2, 5};
+    for (unsigned i = 0; i < 3; ++i) add_event(other_slots[i], 0x1234, MODE_MARK, 0);
+    cpu.cop0[12] = 0x40000000u;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x71) == PSX_NATIVE_BIOS_RETURN);
+    CHECK((cpu.cop0[12] & 0x401u) == 0x401u && read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE));
+    const unsigned cd_slots[] = {1, 3, 4, 6, 7};
+    const unsigned specs[] = {0x10, 0x20, 0x40, 0x80, 0x8000};
+    for (unsigned i = 0; i < 5; ++i) {
+        const uint32_t event = EVENT_BASE + cd_slots[i] * EVENT_SIZE;
+        CHECK(read_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4) == (0xf1000000u | cd_slots[i]));
+        CHECK(read_word(event) == 0xf0000003u && read_word(event + 4) == ENABLED &&
+              read_word(event + 8) == specs[i] && read_word(event + 12) == MODE_MARK &&
+              !read_word(event + 16));
+    }
+    uint32_t handles[5];
+    for (unsigned i = 0; i < 5; ++i) handles[i] = read_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4);
+    /* The pinned initializer opens a new five, retaining old allocations;
+     * removal closes exactly the most recently stored handles. */
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x54) == PSX_NATIVE_BIOS_RETURN);
+    const unsigned latest[] = {8, 9, 10, 11, 12};
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x56) == PSX_NATIVE_BIOS_RETURN);
+    CHECK(!(cpu.cop0[12] & 1u) && !read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE));
+    for (unsigned i = 0; i < 3; ++i) CHECK(read_word(EVENT_BASE + other_slots[i] * EVENT_SIZE + 4) == ENABLED);
+    for (unsigned i = 0; i < 5; ++i) {
+        CHECK(read_word(EVENT_BASE + cd_slots[i] * EVENT_SIZE + 4) == ENABLED);
+        CHECK(!read_word(EVENT_BASE + latest[i] * EVENT_SIZE + 4));
+        CHECK(read_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4) == (0xf1000000u | latest[i]));
+    }
+    /* Restoring guest RAM also restores which events a later removal owns. */
+    for (unsigned i = 0; i < 5; ++i) {
+        write_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4, handles[i]);
+        write_word(EVENT_BASE + (handles[i] & 0xffffu) * EVENT_SIZE + 4, ENABLED);
+    }
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x72) == PSX_NATIVE_BIOS_RETURN);
+    for (unsigned i = 0; i < 3; ++i) CHECK(read_word(EVENT_BASE + other_slots[i] * EVENT_SIZE + 4) == ENABLED);
+    for (unsigned i = 0; i < 13; ++i) add_event(i, 0x1234, MODE_MARK, 0);
+    const uint32_t sr = cpu.cop0[12];
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x71) == PSX_NATIVE_BIOS_UNSUPPORTED);
+    CHECK(cpu.cop0[12] == sr && !read_word(PSX_NATIVE_CD_HANDLERS_ACTIVE));
+    memset(ram + EVENT_BASE / 4, 0, 13 * EVENT_SIZE);
+    test_disc_present = 0;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x71) == PSX_NATIVE_BIOS_UNSUPPORTED);
+    CHECK(!read_word(EVENT_BASE + 4)); test_disc_present = 1;
+
+    memset(test_disc_exe, 0, sizeof test_disc_exe);
+    memcpy(test_disc_exe, "PS-X EXE", 8);
+    const uint32_t header[] = {0x80012000, 0x80014000, 0x80012000, 32, 0, 0, 0x80013000, 16};
+    for (unsigned i = 0; i < 8; ++i)
+        for (unsigned j = 0; j < 4; ++j) test_disc_exe[0x10 + i * 4 + j] = (uint8_t)(header[i] >> (j * 8));
+    for (unsigned i = 0; i < 32; ++i) test_disc_exe[2048 + i] = (uint8_t)(0x80 + i);
+    const char path[] = "cdrom:\\MAIN.EXE;1";
+    for (unsigned i = 0; i < sizeof path; ++i) write_byte(0x1800 + i, (uint8_t)path[i]);
+    memset(ram + 0x12000 / 4, 0x55, 32); memset(ram + 0x13000 / 4, 0xa5, 16);
+    cpu.gpr[4] = 0x1800; cpu.gpr[5] = 0x80018000; cpu.gpr[6] = 0x20;
+    cpu.gpr[29] = 0x8001f000; cpu.gpr[30] = 0x8001e000;
+    const unsigned resets = cache_resets;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x51) == PSX_NATIVE_BIOS_TRANSFER);
+    CHECK(cpu.pc == 0x80012000 && cpu.gpr[28] == 0x80014000 &&
+          cpu.gpr[29] == 0x80018020 && cpu.gpr[30] == 0x80018020 &&
+          cpu.gpr[4] == 1 && cpu.gpr[5] == 0 && cache_resets == resets + 1);
+    for (unsigned i = 0; i < 32; ++i) CHECK(read_byte(0x12000 + i) == (uint8_t)(0x80 + i));
+    for (unsigned i = 0; i < 16; ++i) CHECK(!read_byte(0x13000 + i));
+    cpu.gpr[4] = 0x1800; cpu.gpr[5] = 0x80018020; cpu.gpr[6] = 0;
+    cpu.gpr[30] = 0x8001e000; /* SP already matches, FP must still be assigned. */
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x51) == PSX_NATIVE_BIOS_TRANSFER);
+    CHECK(cpu.gpr[29] == 0x80018020 && cpu.gpr[30] == 0x80018020);
+    /* A zero stack base preserves both existing SP and FP even if size!=0. */
+    cpu.gpr[4] = 0x1800; cpu.gpr[5] = 0; cpu.gpr[6] = 0x20;
+    cpu.gpr[29] = 0x8001f000; cpu.gpr[30] = 0x8001e000;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x51) == PSX_NATIVE_BIOS_TRANSFER);
+    CHECK(cpu.gpr[29] == 0x8001f000 && cpu.gpr[30] == 0x8001e000);
+    /* Reject unreadable/invalid inputs before any text/BSS/register commit. */
+    for (unsigned fault = 0; fault < 5; ++fault) {
+        CPUState before = cpu;
+        cpu.gpr[4] = 0x1800; cpu.gpr[5] = 0x80018000; cpu.gpr[6] = 0;
+        if (fault == 0) test_disc_read_failure = 1;
+        if (fault == 1) test_disc_exe[0] = '!';
+        if (fault == 2) test_disc_exe[0x1c] = 0xff; /* truncated text */
+        if (fault == 3) test_disc_exe[0x1a] = 0;    /* reserved low RAM */
+        if (fault == 4) cpu.gpr[5] = 0xfffffffc;
+        const uint32_t old_text = read_word(0x12000), old_bss = read_word(0x13000);
+        const uint32_t old_pc = cpu.pc, old_sp = cpu.gpr[29];
+        CHECK(psx_native_bios_service(&cpu, 0xa0, 0x51) == PSX_NATIVE_BIOS_UNSUPPORTED);
+        CHECK(cpu.pc == old_pc && cpu.gpr[29] == old_sp && read_word(0x12000) == old_text &&
+              read_word(0x13000) == old_bss);
+        test_disc_read_failure = 0; test_disc_exe[0] = 'P'; test_disc_exe[0x1c] = 32;
+        test_disc_exe[0x1a] = 1; cpu = before;
+    }
+    CHECK(test_disc_reads > 0);
 }
 
 int main(void)
@@ -728,9 +1305,13 @@ int main(void)
     psx_bios_image.image_sha256 = NULL;
     check_delivery(RETAIL_RESUME);
     check_native_calls();
+    check_native_pad();
     check_native_wait_event();
+    check_native_kernel_registration();
     check_native_root_counter_irq();
+    check_native_hardware_event_classes();
     check_native_files();
+    check_native_cd_and_loadexec();
     puts("bios_hle_events_test: OK");
     return 0;
 }

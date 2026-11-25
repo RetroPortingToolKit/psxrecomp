@@ -1,5 +1,8 @@
 #include "cpu_state.h"
 #include "native_bios_services.h"
+#include "native_bios_cd_state.h"
+#include "cdrom.h"
+#include "mod_plugins.h"
 #include "psx_cycles.h"
 #include "psx_icache.h"
 #include "psx_memory.h"
@@ -11,6 +14,7 @@
 #include <string.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 /* Native kernel call implementations. Guest stores use the ordinary memory
  * interface, so text-image tracking, dirty pages and runtime mods still see
@@ -335,7 +339,17 @@ static int service_gpu(CPUState *cpu, uint32_t fn)
     return PSX_NATIVE_BIOS_RETURN;
 }
 
-/* The user heap is entirely in guest RAM, including its sorted free list
+typedef struct { uint32_t head, begin, end, marker; } NativeHeap;
+static const NativeHeap native_user_heap = {
+    PSX_NATIVE_USER_HEAP_HEAD, PSX_NATIVE_USER_HEAP_BEGIN,
+    PSX_NATIVE_USER_HEAP_END, PSX_NATIVE_USER_HEAP_MARKER
+};
+static const NativeHeap native_kernel_heap = {
+    PSX_NATIVE_KERNEL_HEAP_HEAD, PSX_NATIVE_KERNEL_HEAP_BEGIN,
+    PSX_NATIVE_KERNEL_HEAP_END, PSX_NATIVE_KERNEL_HEAP_MARKER
+};
+
+/* Each heap is entirely in guest RAM, including its sorted free list
  * and 8-byte block headers. This keeps ordinary guest pointers, snapshots
  * and writes coherent; host pointers and an extra host allocator are never
  * visible to the game. Match the SDK's best-fit and 8-byte alignment. */
@@ -347,47 +361,47 @@ static uint32_t heap_total(uint32_t payload)
     return (payload + 15u) & ~7u;
 }
 
-static int heap_valid_block(CPUState *cpu, uint32_t block, uint32_t size)
+static int heap_valid_block(CPUState *cpu, const NativeHeap *heap, uint32_t block, uint32_t size)
 {
-    uint32_t begin = cpu->read_word(PSX_NATIVE_USER_HEAP_BEGIN);
-    uint32_t end = cpu->read_word(PSX_NATIVE_USER_HEAP_END);
+    uint32_t begin = cpu->read_word(heap->begin);
+    uint32_t end = cpu->read_word(heap->end);
     return begin && end > begin && block >= begin && block < end &&
            !(block & 7u) && size >= NATIVE_HEAP_HEADER_SIZE &&
            !(size & 7u) && size <= end - block &&
            psx_ram_resolve(block, size, NULL);
 }
 
-static void heap_init(CPUState *cpu, uint32_t base, uint32_t size)
+static void heap_init(CPUState *cpu, const NativeHeap *heap, uint32_t base, uint32_t size)
 {
-    cpu->write_word(PSX_NATIVE_USER_HEAP_HEAD, PSX_NATIVE_USER_HEAP_MARKER);
-    cpu->write_word(PSX_NATIVE_USER_HEAP_BEGIN, 0);
-    cpu->write_word(PSX_NATIVE_USER_HEAP_END, 0);
-    cpu->write_word(PSX_NATIVE_USER_HEAP_MARKER, 0);
-    cpu->write_word(PSX_NATIVE_USER_HEAP_MARKER + 4, 0);
+    cpu->write_word(heap->head, heap->marker);
+    cpu->write_word(heap->begin, 0);
+    cpu->write_word(heap->end, 0);
+    cpu->write_word(heap->marker, 0);
+    cpu->write_word(heap->marker + 4, 0);
     if (size < 16 || base > UINT32_MAX - 7u ||
         !psx_ram_resolve(base, size, NULL)) return;
     uint32_t aligned = (base + 7u) & ~7u;
     uint32_t available = size - (aligned - base);
     uint32_t span = (available - NATIVE_HEAP_HEADER_SIZE) & ~7u;
     if (span < NATIVE_HEAP_HEADER_SIZE) return;
-    cpu->write_word(PSX_NATIVE_USER_HEAP_BEGIN, aligned);
-    cpu->write_word(PSX_NATIVE_USER_HEAP_END, aligned + span);
-    cpu->write_word(PSX_NATIVE_USER_HEAP_HEAD, aligned);
-    cpu->write_word(aligned, PSX_NATIVE_USER_HEAP_MARKER);
+    cpu->write_word(heap->begin, aligned);
+    cpu->write_word(heap->end, aligned + span);
+    cpu->write_word(heap->head, aligned);
+    cpu->write_word(aligned, heap->marker);
     cpu->write_word(aligned + 4, span);
 }
 
-static uint32_t heap_malloc(CPUState *cpu, uint32_t payload)
+static uint32_t heap_malloc(CPUState *cpu, const NativeHeap *heap, uint32_t payload)
 {
     uint32_t need = heap_total(payload);
     if (!need) return 0;
-    uint32_t link = PSX_NATIVE_USER_HEAP_HEAD;
+    uint32_t link = heap->head;
     uint32_t best_link = 0, best = 0, best_size = UINT32_MAX;
     uint32_t node = cpu->read_word(link);
-    while (node && node != PSX_NATIVE_USER_HEAP_MARKER) {
-        if (!heap_valid_block(cpu, node, NATIVE_HEAP_HEADER_SIZE)) return 0;
+    while (node && node != heap->marker) {
+        if (!heap_valid_block(cpu, heap, node, NATIVE_HEAP_HEADER_SIZE)) return 0;
         uint32_t size = cpu->read_word(node + 4);
-        if (!heap_valid_block(cpu, node, size)) return 0;
+        if (!heap_valid_block(cpu, heap, node, size)) return 0;
         if (size >= need && size < best_size) {
             best_link = link;
             best = node;
@@ -395,7 +409,7 @@ static uint32_t heap_malloc(CPUState *cpu, uint32_t payload)
             if (size == need) break;
         }
         uint32_t next = cpu->read_word(node);
-        if (next != PSX_NATIVE_USER_HEAP_MARKER && next < node + size) return 0;
+        if (next != heap->marker && next < node + size) return 0;
         link = node;
         node = next;
     }
@@ -415,33 +429,33 @@ static uint32_t heap_malloc(CPUState *cpu, uint32_t payload)
 
 /* Locate the adjacent free blocks without trusting host pointers or walking
  * malformed guest links. The same insertion handles split/realloc tails. */
-static void heap_free(CPUState *cpu, uint32_t pointer)
+static void heap_free(CPUState *cpu, const NativeHeap *heap, uint32_t pointer)
 {
     if (pointer < NATIVE_HEAP_HEADER_SIZE) return;
     uint32_t block = pointer - NATIVE_HEAP_HEADER_SIZE;
-    if (!heap_valid_block(cpu, block, NATIVE_HEAP_HEADER_SIZE)) return;
+    if (!heap_valid_block(cpu, heap, block, NATIVE_HEAP_HEADER_SIZE)) return;
     uint32_t size = cpu->read_word(block + 4);
-    if (!heap_valid_block(cpu, block, size)) return;
-    uint32_t link = PSX_NATIVE_USER_HEAP_HEAD;
+    if (!heap_valid_block(cpu, heap, block, size)) return;
+    uint32_t link = heap->head;
     uint32_t previous = 0, previous_size = 0;
     uint32_t node = cpu->read_word(link);
-    while (node && node != PSX_NATIVE_USER_HEAP_MARKER && node < block) {
-        if (!heap_valid_block(cpu, node, NATIVE_HEAP_HEADER_SIZE)) return;
+    while (node && node != heap->marker && node < block) {
+        if (!heap_valid_block(cpu, heap, node, NATIVE_HEAP_HEADER_SIZE)) return;
         uint32_t node_size = cpu->read_word(node + 4);
-        if (!heap_valid_block(cpu, node, node_size)) return;
+        if (!heap_valid_block(cpu, heap, node, node_size)) return;
         uint32_t next = cpu->read_word(node);
-        if (next != PSX_NATIVE_USER_HEAP_MARKER && next < node + node_size) return;
+        if (next != heap->marker && next < node + node_size) return;
         previous = node;
         previous_size = node_size;
         link = node;
         node = next;
     }
     if (!node || (previous && previous + previous_size > block)) return;
-    if (node != PSX_NATIVE_USER_HEAP_MARKER) {
-        if (!heap_valid_block(cpu, node, NATIVE_HEAP_HEADER_SIZE) ||
+    if (node != heap->marker) {
+        if (!heap_valid_block(cpu, heap, node, NATIVE_HEAP_HEADER_SIZE) ||
             node < block + size) return;
         uint32_t node_size = cpu->read_word(node + 4);
-        if (!heap_valid_block(cpu, node, node_size)) return;
+        if (!heap_valid_block(cpu, heap, node, node_size)) return;
         if (node == block + size) {
             size += node_size;
             node = cpu->read_word(node);
@@ -457,42 +471,42 @@ static void heap_free(CPUState *cpu, uint32_t pointer)
     }
 }
 
-static uint32_t heap_realloc(CPUState *cpu, uint32_t pointer, uint32_t payload)
+static uint32_t heap_realloc(CPUState *cpu, const NativeHeap *heap, uint32_t pointer, uint32_t payload)
 {
-    if (!pointer) return heap_malloc(cpu, payload);
+    if (!pointer) return heap_malloc(cpu, heap, payload);
     if (!payload) {
-        heap_free(cpu, pointer);
+        heap_free(cpu, heap, pointer);
         return 0;
     }
     uint32_t need = heap_total(payload);
     if (!need || pointer < NATIVE_HEAP_HEADER_SIZE) return 0;
     uint32_t block = pointer - NATIVE_HEAP_HEADER_SIZE;
-    if (!heap_valid_block(cpu, block, NATIVE_HEAP_HEADER_SIZE)) return 0;
+    if (!heap_valid_block(cpu, heap, block, NATIVE_HEAP_HEADER_SIZE)) return 0;
     uint32_t old_size = cpu->read_word(block + 4);
-    if (!heap_valid_block(cpu, block, old_size)) return 0;
+    if (!heap_valid_block(cpu, heap, block, old_size)) return 0;
     if (need <= old_size) {
         if (need != old_size) {
             uint32_t rest = block + need;
             cpu->write_word(block + 4, need);
             cpu->write_word(rest + 4, old_size - need);
-            heap_free(cpu, rest + NATIVE_HEAP_HEADER_SIZE);
+            heap_free(cpu, heap, rest + NATIVE_HEAP_HEADER_SIZE);
         }
         return pointer;
     }
-    uint32_t link = PSX_NATIVE_USER_HEAP_HEAD;
+    uint32_t link = heap->head;
     uint32_t node = cpu->read_word(link);
-    while (node && node != PSX_NATIVE_USER_HEAP_MARKER && node < block + old_size) {
-        if (!heap_valid_block(cpu, node, NATIVE_HEAP_HEADER_SIZE)) return 0;
+    while (node && node != heap->marker && node < block + old_size) {
+        if (!heap_valid_block(cpu, heap, node, NATIVE_HEAP_HEADER_SIZE)) return 0;
         uint32_t size = cpu->read_word(node + 4);
         uint32_t next = cpu->read_word(node);
-        if (!heap_valid_block(cpu, node, size) ||
-            (next != PSX_NATIVE_USER_HEAP_MARKER && next < node + size)) return 0;
+        if (!heap_valid_block(cpu, heap, node, size) ||
+            (next != heap->marker && next < node + size)) return 0;
         link = node;
         node = next;
     }
-    if (node == block + old_size && heap_valid_block(cpu, node, NATIVE_HEAP_HEADER_SIZE)) {
+    if (node == block + old_size && heap_valid_block(cpu, heap, node, NATIVE_HEAP_HEADER_SIZE)) {
         uint32_t size = cpu->read_word(node + 4);
-        if (heap_valid_block(cpu, node, size) && size >= need - old_size) {
+        if (heap_valid_block(cpu, heap, node, size) && size >= need - old_size) {
             uint32_t next = cpu->read_word(node);
             uint32_t remaining = size - (need - old_size);
             if (remaining) {
@@ -507,10 +521,10 @@ static uint32_t heap_realloc(CPUState *cpu, uint32_t pointer, uint32_t payload)
             return pointer;
         }
     }
-    uint32_t replacement = heap_malloc(cpu, payload);
+    uint32_t replacement = heap_malloc(cpu, heap, payload);
     if (replacement) {
         copy_bytes(cpu, replacement, pointer, old_size - NATIVE_HEAP_HEADER_SIZE, 0);
-        heap_free(cpu, pointer);
+        heap_free(cpu, heap, pointer);
     }
     return replacement;
 }
@@ -616,23 +630,23 @@ static int service_a0(CPUState *cpu, uint32_t fn) {
         psx_cpu_charge(24);
         return PSX_NATIVE_BIOS_RETURN;
     case 0x33: /* malloc */
-        result = heap_malloc(cpu, a0);
+        result = heap_malloc(cpu, &native_user_heap, a0);
         break;
     case 0x34: /* free */
-        heap_free(cpu, a0);
+        heap_free(cpu, &native_user_heap, a0);
         psx_cpu_charge(32);
         return PSX_NATIVE_BIOS_RETURN;
     case 0x37: { /* calloc */
         uint64_t bytes = (uint64_t)a0 * a1;
-        result = bytes <= UINT32_MAX ? heap_malloc(cpu, (uint32_t)bytes) : 0;
+        result = bytes <= UINT32_MAX ? heap_malloc(cpu, &native_user_heap, (uint32_t)bytes) : 0;
         if (result) fill_bytes(cpu, result, 0, (uint32_t)bytes);
         break;
     }
     case 0x38: /* realloc */
-        result = heap_realloc(cpu, a0, a1);
+        result = heap_realloc(cpu, &native_user_heap, a0, a1);
         break;
     case 0x39: /* InitHeap */
-        heap_init(cpu, a0, a1);
+        heap_init(cpu, &native_user_heap, a0, a1);
         psx_cpu_charge(32);
         return PSX_NATIVE_BIOS_RETURN;
     case 0x44:  /* FlushCache: invalidate the host cache model directly */
@@ -740,7 +754,346 @@ static int service_irq_chain(CPUState *cpu, uint32_t fn)
     return PSX_NATIVE_BIOS_RETURN;
 }
 
+void psx_native_padcard_init(CPUState *cpu)
+{
+    const uint32_t node = PSX_NATIVE_IRQ_NODES +
+        PSX_NATIVE_PAD_CARD_IRQ_NODE * PSX_NATIVE_IRQ_NODE_BYTES;
+    const uint32_t token = PSX_NATIVE_IRQ_TOKENS + PSX_NATIVE_PAD_CARD_IRQ_NODE * 8;
+    cpu->write_word(node, 0);
+    cpu->write_word(node + 4, 0x80000000u | token);
+    cpu->write_word(node + 8, 0x80000000u | (token + 4));
+    cpu->write_word(node + 12, 0);
+}
+
+int psx_native_padcard_set_active(CPUState *cpu, int active)
+{
+    const uint32_t a0 = cpu->gpr[4], a1 = cpu->gpr[5], v0 = cpu->gpr[2];
+    cpu->gpr[4] = 2;
+    cpu->gpr[5] = PSX_NATIVE_IRQ_NODES +
+        PSX_NATIVE_PAD_CARD_IRQ_NODE * PSX_NATIVE_IRQ_NODE_BYTES;
+    int result = service_irq_chain(cpu, 3);
+    if (result && active) result = service_irq_chain(cpu, 2);
+    cpu->gpr[4] = a0; cpu->gpr[5] = a1; cpu->gpr[2] = v0;
+    return result;
+}
+
+static int init_pad(CPUState *cpu, const uint32_t buffers[2], const uint32_t sizes[2])
+{
+    /* InitPAD uses safeMemZero: NULL and non-positive signed lengths do not
+     * initialize memory. IRQ writes later follow the actual packet length,
+     * independently of these initialization sizes. */
+    for (unsigned port = 0; port < 2; ++port) {
+        if (buffers[port] && sizes[port] && sizes[port] <= INT32_MAX &&
+            !psx_ram_resolve(buffers[port], sizes[port], NULL))
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+    }
+    for (unsigned port = 0; port < 2; ++port) {
+        if (buffers[port] && sizes[port] && sizes[port] <= INT32_MAX)
+            fill_bytes(cpu, buffers[port], 0, sizes[port]);
+        cpu->write_word(PSX_NATIVE_PAD_BUFFERS + port * 4, buffers[port]);
+    }
+    cpu->write_word(PSX_NATIVE_PAD_INITIALIZED, 1);
+    cpu->write_word(PSX_NATIVE_PAD_LEGACY_DEST, 0);
+    cpu->write_word(PSX_NATIVE_CARD_PAD_STARTED, 1);
+    psx_native_padcard_init(cpu);
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
+static int start_pad(CPUState *cpu)
+{
+    if (!cpu->read_word(PSX_NATIVE_PAD_INITIALIZED) ||
+        !psx_native_padcard_set_active(cpu, 1))
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    cpu->write_half(0x1f80104au, 0x40);
+    cpu->write_half(0x1f80104eu, 2073600 / 15200);
+    cpu->write_half(0x1f801048u, 13);
+    cpu->write_half(0x1f80104au, 0);
+    cpu->write_word(0x1f801070u, ~(1u << 0));
+    cpu->write_word(0x1f801074u, cpu->read_word(0x1f801074u) | (1u << 0));
+    cpu->write_word(PSX_NATIVE_SIO_AUTO_ACK, 1);
+    cpu->write_word(PSX_NATIVE_TIMER_AUTO_ACK + 3 * 4, 0);
+    cpu->cop0[12] |= 0x401u;
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
+/* The legacy ABI swaps the button bytes within each port's halfword and
+ * accepts only digital/NeGcon packets. Other devices remain released. */
+int psx_native_pad_read_legacy(CPUState *cpu, uint32_t *result)
+{
+    const uint32_t destination = cpu->read_word(PSX_NATIVE_PAD_LEGACY_DEST);
+    if (!cpu->read_word(PSX_NATIVE_PAD_INITIALIZED) ||
+        (destination & 3u) || !psx_ram_resolve(destination, 4, NULL)) return 0;
+    uint32_t packed = UINT32_MAX;
+    for (unsigned port = 0; port < 2; ++port) {
+        const uint32_t buffer = cpu->read_word(PSX_NATIVE_PAD_BUFFERS + port * 4);
+        if (!psx_ram_resolve(buffer, 4, NULL)) return 0;
+        const uint8_t status = cpu->read_byte(buffer), id = cpu->read_byte(buffer + 1);
+        if (status || (id != 0x41 && id != 0x23)) continue;
+        uint32_t buttons = ((uint32_t)cpu->read_byte(buffer + 2) << 8) |
+                            cpu->read_byte(buffer + 3);
+        if (id == 0x23) {
+            if (!psx_ram_resolve(buffer, 7, NULL)) return 0;
+            buttons |= 0x07c7u;
+            if (cpu->read_byte(buffer + 5) > 0x10) buttons &= ~0x40u;
+            if (cpu->read_byte(buffer + 6) > 0x10) buttons &= ~0x80u;
+        }
+        const uint32_t shift = port * 16;
+        packed = (packed & ~(0xffffu << shift)) | (buttons << shift);
+    }
+    cpu->write_word(destination, packed);
+    if (result) *result = packed;
+    return 1;
+}
+
+static int service_pad(CPUState *cpu, uint32_t fn)
+{
+    if (fn == 0x12) {
+        const uint32_t buffers[] = {cpu->gpr[4], cpu->gpr[6]};
+        const uint32_t sizes[] = {cpu->gpr[5], cpu->gpr[7]};
+        if (!init_pad(cpu, buffers, sizes)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->gpr[2] = 1;
+    } else if (fn == 0x13) {
+        if (!start_pad(cpu)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->gpr[2] = 1;
+    } else if (fn == 0x14) {
+        if (!psx_native_padcard_set_active(cpu, 0))
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->write_word(PSX_NATIVE_TIMER_AUTO_ACK + 3 * 4, 1);
+        cpu->cop0[12] |= 0x401u;
+        cpu->gpr[2] = 1;
+    } else if (fn == 0x15) {
+        const uint32_t stack = cpu->gpr[29];
+        if ((stack & 3u) || !psx_ram_resolve(stack, 16, NULL)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        for (unsigned arg = 1; arg < 4; ++arg)
+            cpu->write_word(stack + arg * 4, cpu->gpr[4 + arg]);
+        if (cpu->gpr[4] != 0x20000000u && cpu->gpr[4] != 0x20000001u) {
+            cpu->gpr[2] = 0;
+        } else {
+            const uint32_t destination = cpu->gpr[5];
+            if ((destination & 3u) || !psx_ram_resolve(destination, 4, NULL)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+            const uint32_t buffers[] = {PSX_NATIVE_PAD_LEGACY_BUFFER0,
+                                       PSX_NATIVE_PAD_LEGACY_BUFFER1};
+            const uint32_t sizes[] = {34, 34};
+            if (!init_pad(cpu, buffers, sizes)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+            cpu->write_word(PSX_NATIVE_PAD_LEGACY_DEST, destination);
+            if (!start_pad(cpu)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+            cpu->gpr[2] = 2;
+        }
+    } else if (fn == 0x16) {
+        uint32_t result;
+        if (!psx_native_pad_read_legacy(cpu, &result)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->gpr[2] = result;
+    } else return PSX_NATIVE_BIOS_UNSUPPORTED;
+    psx_cpu_charge(32);
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
+static int service_enqueue_native_irqs(CPUState *cpu, uint32_t fn)
+{
+    uint32_t priority = cpu->gpr[4];
+    uint32_t table = cpu->read_word(0x100u);
+    if (priority >= 4 || !table || !psx_ram_resolve(table, 32, NULL))
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    uint32_t first = fn == 0 ? 0 : fn == 0x0c ? 4 : 5;
+    uint32_t count = fn == 0 ? 4 : 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t node = PSX_NATIVE_IRQ_NODES + (first + i) * PSX_NATIVE_IRQ_NODE_BYTES;
+        cpu->write_word(node, cpu->read_word(table + priority * 8));
+        cpu->write_word(table + priority * 8, node);
+    }
+    if (fn == 0) {
+        const uint32_t timer_irqs = (1u << 0) | (1u << 4) | (1u << 5) | (1u << 6);
+        cpu->write_word(0x1f801074u, cpu->read_word(0x1f801074u) & ~timer_irqs);
+        for (uint32_t i = 0; i < 3; ++i) {
+            const uint32_t timer = 0x1f801100u + i * 16;
+            cpu->write_word(timer, 0);
+            cpu->write_word(timer + 4, 0);
+            cpu->write_word(timer + 8, 0);
+        }
+        for (uint32_t i = 0; i < 4; ++i)
+            cpu->write_word(PSX_NATIVE_TIMER_AUTO_ACK + i * 4, 1);
+    } else if (fn == 0x0c) {
+        for (uint32_t i = 0; i < 11; ++i)
+            cpu->write_word(PSX_NATIVE_GENERIC_IRQ_ACK + i * 4, 0);
+    }
+    cpu->gpr[2] = 0;
+    psx_cpu_charge(36);
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
+static int service_system_info(CPUState *cpu)
+{
+    switch (cpu->gpr[4]) {
+    case 0: cpu->gpr[2] = 0x20260101u; break; /* pinned OpenBIOS compatibility */
+    case 1: cpu->gpr[2] = 3; break; /* retail console family */
+    case 2: cpu->gpr[2] = PSX_NATIVE_KERNEL_NAME; break;
+    case 3: cpu->gpr[2] = cpu->cop0[15]; break;
+    case 5: cpu->gpr[2] = cpu->read_word(0x60u) << 10; break;
+    case 7: cpu->gpr[2] = 1024; break;
+    case 9: cpu->gpr[2] = 512; break;
+    case 14: cpu->gpr[2] = 1; break; /* not an arcade board */
+    default: cpu->gpr[2] = 0; break;
+    }
+    psx_cpu_charge(24);
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
+static int service_cd_lifecycle(CPUState *cpu, int initialize)
+{
+    const uint32_t base = cpu->read_word(0x120u);
+    const uint32_t size = cpu->read_word(0x124u);
+    if (!base || (base & 3u) || size % 0x1cu || size / 0x1cu > 0x10000u ||
+        !psx_ram_resolve(base, size, NULL))
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    const uint32_t count = size / 0x1cu;
+    uint32_t slots[PSX_NATIVE_BOOT_CD_EVENTS];
+    if (initialize) {
+        if (!cdrom_has_disc()) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        uint32_t found = 0;
+        for (uint32_t i = 0; i < count && found < PSX_NATIVE_BOOT_CD_EVENTS; ++i)
+            if (!cpu->read_word(base + i * 0x1cu + 4)) slots[found++] = i;
+        if (found != PSX_NATIVE_BOOT_CD_EVENTS) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        const uint32_t specs[] = {0x10, 0x20, 0x40, 0x80, 0x8000};
+        for (uint32_t i = 0; i < PSX_NATIVE_BOOT_CD_EVENTS; ++i) {
+            const uint32_t event = base + slots[i] * 0x1cu;
+            cpu->write_word(event, 0xf0000003u);
+            cpu->write_word(event + 4, 0x2000u);
+            cpu->write_word(event + 8, specs[i]);
+            cpu->write_word(event + 12, 0x2000u);
+            cpu->write_word(event + 16, 0);
+            cpu->write_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4u,
+                            0xf1000000u | slots[i]);
+        }
+        /* The mounted-disc host reader owns filesystem I/O. It avoids the
+         * firmware's init/seek/read/IRQ staging. Raw BIOS CD command services
+         * remain explicit coverage errors; there is no firmware fallback. */
+        cpu->write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 1);
+        cpu->cop0[12] |= 0x401u; /* initCDRom leaves its critical section */
+    } else {
+        for (uint32_t i = 0; i < PSX_NATIVE_BOOT_CD_EVENTS; ++i) {
+            const uint32_t handle = cpu->read_word(PSX_NATIVE_CD_EVENT_HANDLES + i * 4u);
+            if (handle && ((handle & 0xffff0000u) != 0xf1000000u ||
+                           (handle & 0xffffu) >= count))
+                return PSX_NATIVE_BIOS_UNSUPPORTED;
+            slots[i] = handle;
+        }
+        cpu->cop0[12] &= ~1u; /* deinitCDRom stays in its critical section */
+        for (uint32_t i = 0; i < PSX_NATIVE_BOOT_CD_EVENTS; ++i) {
+            if (slots[i]) cpu->write_word(base + (slots[i] & 0xffffu) * 0x1cu + 4, 0);
+        }
+        cpu->write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 0);
+    }
+    psx_cpu_charge(100);
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
+static uint32_t exe_word(const uint8_t *bytes)
+{
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+           ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+static int user_span(uint32_t address, uint32_t size)
+{
+    const uint32_t segment = address & 0xe0000000u;
+    uint32_t offset;
+    return (segment == 0 || segment == 0x80000000u || segment == 0xa0000000u) &&
+           psx_ram_resolve(address, size, &offset) && offset >= 0x10000u;
+}
+
+static int service_loadexec(CPUState *cpu)
+{
+    char filename[256];
+    uint32_t length = 0, address = cpu->gpr[4];
+    do {
+        if (length == sizeof filename || !psx_ram_resolve(address + length, 1, NULL))
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+        filename[length] = (char)cpu->read_byte(address + length);
+    } while (filename[length++]);
+    const char prefix[] = "cdrom:";
+    if (length < sizeof prefix) return PSX_NATIVE_BIOS_UNSUPPORTED;
+    for (uint32_t i = 0; i < sizeof prefix - 1; ++i) {
+        const unsigned char c = (unsigned char)filename[i];
+        if ((c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c) != prefix[i])
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+    }
+    char *path = filename + sizeof prefix - 1;
+    while (*path == '\\' || *path == '/') ++path;
+    if (!*path) return PSX_NATIVE_BIOS_UNSUPPORTED;
+    for (char *p = path; *p; ++p) if (*p == '\\') *p = '/';
+    char *version = strchr(path, ';');
+    if (version) {
+        if (strcmp(version, ";1")) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        *version = 0;
+    }
+    uint32_t bytes = 0;
+    if (!psx_mod_read_disc_file(path, NULL, 0, &bytes) || bytes < 2048u ||
+        bytes - 2048u > g_psx_ram_size) return PSX_NATIVE_BIOS_UNSUPPORTED;
+    uint8_t *image = malloc(bytes);
+    if (!image) return PSX_NATIVE_BIOS_UNSUPPORTED;
+    uint32_t got = 0;
+    if (!psx_mod_read_disc_file(path, image, bytes, &got) || got != bytes ||
+        memcmp(image, "PS-X EXE", 8)) {
+        free(image);
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    }
+    const uint32_t entry = exe_word(image + 0x10), gp = exe_word(image + 0x14);
+    const uint32_t text = exe_word(image + 0x18), text_size = exe_word(image + 0x1c);
+    const uint32_t bss = exe_word(image + 0x28), bss_size = exe_word(image + 0x2c);
+    const int use_stack = cpu->gpr[5] != 0;
+    const uint64_t stack = (uint64_t)cpu->gpr[5] + cpu->gpr[6];
+    const uint32_t entry_offset = entry & 0x1fffffffu, text_offset = text & 0x1fffffffu;
+    if ((entry & 3u) || (text & 3u) || text_size < 4 || text_size > bytes - 2048u ||
+        !user_span(text, text_size) || !user_span(entry, 4) ||
+        entry_offset < text_offset || entry_offset - text_offset > text_size - 4 ||
+        (bss_size && !user_span(bss, bss_size)) ||
+        (use_stack && (stack > UINT32_MAX || (stack & 3u) || stack < 4 ||
+                         !user_span((uint32_t)stack - 4, 4)))) {
+        free(image);
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    }
+    /* Commit only after the entire effective file and destination validate.
+     * Ordinary stores retain dirty-text tracking and writable mod overlays. */
+    uint32_t at = 0;
+    for (; at + 4 <= text_size; at += 4)
+        cpu->write_word(text + at, exe_word(image + 2048u + at));
+    for (; at < text_size; ++at) cpu->write_byte(text + at, image[2048u + at]);
+    free(image);
+    if (bss_size) fill_bytes(cpu, bss, 0, bss_size);
+    psx_icache_reset();
+    cpu->gpr[4] = 1; cpu->gpr[5] = 0;
+    cpu->gpr[28] = gp;
+    if (use_stack) {
+        cpu->gpr[29] = (uint32_t)stack;
+        cpu->gpr[30] = (uint32_t)stack;
+    }
+    cpu->gpr[31] = 0x80000000u | PSX_NATIVE_BOOT_RETURN_PHYS;
+    cpu->cop0[12] |= 0x401u;
+    cpu->pc = entry;
+    psx_cpu_charge(100);
+    return PSX_NATIVE_BIOS_TRANSFER;
+}
+
 int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
+    if (vector == 0xa0 && fn == 0x51) return service_loadexec(cpu);
+    if (vector == 0xa0 && (fn == 0x54 || fn == 0x71 || fn == 0x56 || fn == 0x72))
+        return service_cd_lifecycle(cpu, fn == 0x54 || fn == 0x71);
+    if (vector == 0xb0 && fn >= 0x12 && fn <= 0x16) return service_pad(cpu, fn);
+    if (vector == 0xc0 && fn == 8) {
+        heap_init(cpu, &native_kernel_heap, cpu->gpr[4], cpu->gpr[5]);
+        psx_cpu_charge(32);
+        return PSX_NATIVE_BIOS_RETURN;
+    }
+    if (vector == 0xb0 && (fn == 0 || fn == 1)) {
+        if (fn == 0) cpu->gpr[2] = heap_malloc(cpu, &native_kernel_heap, cpu->gpr[4]);
+        else heap_free(cpu, &native_kernel_heap, cpu->gpr[4]);
+        psx_cpu_charge(32);
+        return PSX_NATIVE_BIOS_RETURN;
+    }
+    if (vector == 0xc0 && (fn == 0 || fn == 1 || fn == 0x0c))
+        return service_enqueue_native_irqs(cpu, fn);
+    if (vector == 0xa0 && fn == 0x9d)
+        return service_system_info(cpu);
     if (vector == 0xc0 && (fn == 2 || fn == 3))
         return service_irq_chain(cpu, fn);
     if (vector == 0xa0 && fn >= 0x46 && fn <= 0x4e)
@@ -751,18 +1104,6 @@ int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
     if (vector == 0xb0 && (fn == 0x56 || fn == 0x57)) {
         cpu->gpr[2] = fn == 0x56 ? PSX_NATIVE_C0_TABLE : PSX_NATIVE_B0_TABLE;
         psx_cpu_charge(24);
-        return PSX_NATIVE_BIOS_RETURN;
-    }
-    if (vector == 0xa0 && (fn == 0x56 || fn == 0x72)) {
-        const uint32_t events = cpu->read_word(0x120u);
-        const uint32_t size = cpu->read_word(0x124u);
-        if (size < PSX_NATIVE_BOOT_CD_EVENTS * 0x1cu ||
-            !psx_ram_resolve(events, size, NULL)) return PSX_NATIVE_BIOS_UNSUPPORTED;
-        cpu->cop0[12] &= ~1u;  /* deinitCDRom enters, and stays in, critical section */
-        for (uint32_t i = 0; i < PSX_NATIVE_BOOT_CD_EVENTS; ++i)
-            cpu->write_word(events + i * 0x1cu + 4, 0);
-        cpu->write_word(PSX_NATIVE_CD_HANDLERS_ACTIVE, 0);
-        psx_cpu_charge(40);
         return PSX_NATIVE_BIOS_RETURN;
     }
     if (vector == 0xc0 && fn == 0x0d) {

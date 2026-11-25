@@ -22,6 +22,7 @@ function(psxrecomp_native_kernel target)
                        "${PSXRECOMP_ROOT}/runtime/include/bios_hle.h"
                        "${PSXRECOMP_ROOT}/runtime/include/native_bios_boot.h"
                        "${PSXRECOMP_ROOT}/runtime/include/native_bios_services.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/native_bios_cd_state.h"
                        "${PSXRECOMP_ROOT}/runtime/src/main.cpp"
                        "${PSXRECOMP_ROOT}/runtime/src/traps.c"
                        "${PSXRECOMP_ROOT}/runtime/src/interrupts.c"

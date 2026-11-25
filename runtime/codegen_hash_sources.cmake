@@ -86,6 +86,9 @@ set(PSXRECOMP_CODEGEN_HASH_SRCS
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_direct_memory.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_native_span.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/overlay_api.h
+    # These shared contracts now decide native-entry tails and their cache flavor.
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/native_bios_services.h
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/overlay_flavor.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/cpu_state.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_block_edge.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_observation_view.h

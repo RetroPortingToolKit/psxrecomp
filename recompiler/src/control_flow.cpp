@@ -1,10 +1,13 @@
 #include "control_flow.h"
+#include "../../runtime/include/native_bios_services.h"
 #include <algorithm>
 #include <fmt/format.h>
 
 namespace PSXRecomp {
 
-ControlFlowAnalyzer::ControlFlowAnalyzer(const PS1Executable& exe) : exe_(exe) {}
+ControlFlowAnalyzer::ControlFlowAnalyzer(const PS1Executable& exe,
+                                         bool native_kernel_boundaries)
+    : exe_(exe), native_kernel_boundaries_(native_kernel_boundaries) {}
 
 bool ControlFlowAnalyzer::is_control_flow(uint32_t instr) {
     uint32_t opcode = (instr >> 26) & 0x3F;
@@ -513,6 +516,14 @@ ControlFlowGraph ControlFlowAnalyzer::analyze_function(const Function& func) {
         auto instr_opt = exe_.read_word(addr);
         if (!instr_opt) continue;
         uint32_t instr = *instr_opt;
+
+        // A guest prefix may fall through, rather than jump, into a native
+        // entry. Split before its intact marker so the preceding block never
+        // charges or executes marker/data instructions. The emitter publishes
+        // the PC for the ordinary runtime ownership guard at this block.
+        if (native_kernel_boundaries_ && instr == PSX_NATIVE_EXCEPTION_MARKER &&
+            psx_native_bios_dispatch_marker(addr))
+            add_boundary(addr);
 
         if (is_control_flow(instr)) {
             ControlFlowInstr cf = analyze_instruction(addr, instr);
