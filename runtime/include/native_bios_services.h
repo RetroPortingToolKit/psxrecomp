@@ -31,6 +31,12 @@ extern "C" {
 #define PSX_NATIVE_CARD_STATUS 0x0000b118u
 #define PSX_NATIVE_CARD_REQUEST 0x0000b120u
 #define PSX_NATIVE_CARD_VOLUME_VALID 0x0000b160u
+#define PSX_NATIVE_FILE_TABLE 0x0000b180u
+#define PSX_NATIVE_FILE_BYTES 44u
+#define PSX_NATIVE_DEVICE_TABLE 0x0000b440u
+#define PSX_NATIVE_DEVICE_NAME 0x0000b498u
+#define PSX_NATIVE_CARD_FIND_FILE 0x0000b4a0u
+#define PSX_NATIVE_CARD_FIND_PATTERN 0x0000b4b0u
 #define PSX_NATIVE_CARD_FASTTRACK_SCRATCH 0x0000ad00u
 #define PSX_NATIVE_IRQ_CALLBACK_LINK 0x8000a100u
 #define PSX_NATIVE_BOOT_RETURN_PHYS 0x0000a104u
@@ -109,6 +115,24 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
     write_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x3c, 0);
     write_word(PSX_NATIVE_EXCEPTION_PATCH_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
     write_word(PSX_NATIVE_WAIT_EVENT_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
+    /* Published File/Device ABI: SDKs inspect and patch these ordinary RAM
+     * records. Device methods use the same guarded native A0 thunks. */
+    for (uint32_t at = PSX_NATIVE_FILE_TABLE; at < PSX_NATIVE_CARD_FIND_PATTERN + 24; at += 4)
+        write_word(at, 0);
+    write_word(0x140, PSX_NATIVE_FILE_TABLE);
+    write_word(0x144, 16 * PSX_NATIVE_FILE_BYTES);
+    write_word(0x150, PSX_NATIVE_DEVICE_TABLE);
+    write_word(0x154, 0x50);
+    write_word(PSX_NATIVE_DEVICE_NAME, 0x00007562u); /* bu */
+    write_word(PSX_NATIVE_DEVICE_TABLE, PSX_NATIVE_DEVICE_NAME);
+    write_word(PSX_NATIVE_DEVICE_TABLE + 8, 128);
+    const uint32_t offsets[] = {0x14, 0x24, 0x28, 0x1c, 0x34, 0x38, 0x3c};
+    const uint32_t functions[] = {0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x6d};
+    for (uint32_t i = 0; i < sizeof offsets / sizeof offsets[0]; ++i)
+        write_word(PSX_NATIVE_DEVICE_TABLE + offsets[i],
+                   psx_native_bios_stub(&psx_native_bios_tables[0], functions[i]));
+    write_word(PSX_NATIVE_FILE_TABLE, 1);
+    write_word(PSX_NATIVE_FILE_TABLE + PSX_NATIVE_FILE_BYTES, 1);
     /* Psy-Q's legacy card patch obtains a writable fast-track code address
      * by decoding the two immediate fields at exception-handler +70/+74.
      * Native card operations do not execute that serial loop. Expose its

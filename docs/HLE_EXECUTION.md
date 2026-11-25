@@ -25,6 +25,14 @@ resume a waiting call. Native service coverage is qualified by title and route;
 an executive identity alone does not establish gameplay, native saves or a
 cross-build netplay profile.
 
+The native backup-unit provider publishes writable File/Device records and
+honors device callback overrides. It supports synchronous memory-card file
+open, seek, read, write, close, directory iteration and format, plus deferred
+directory loading. Descriptor and cursor state lives in guest RAM; original
+directory checksums, block chains and the shared atomic card-file publisher
+remain authoritative. Asynchronous file-transfer flags remain an explicit
+coverage gap rather than selecting firmware execution.
+
 Configure separate output directories with `-DPSX_EXECUTION_PROFILE=ENHANCED`
 (default) or `-DPSX_EXECUTION_PROFILE=REFERENCE`. Oracle runtime targets always
 select REFERENCE. The setting selects only declared implementation families;

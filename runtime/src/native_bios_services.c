@@ -199,7 +199,7 @@ static int service_console(CPUState *cpu, uint32_t vector, uint32_t fn) {
         cpu->gpr[2] = (uint32_t)written;
     } else if (((vector == 0xb0 && fn == 0x35) ||
                 (vector == 0xa0 && fn == 0x03)) &&
-               (cpu->gpr[4] == 1 || cpu->gpr[4] == 2)) {
+               cpu->gpr[4] == 1) {
         uint32_t address = cpu->gpr[5], bytes = cpu->gpr[6], written = 0;
         if (bytes && !psx_ram_resolve(address, bytes, NULL))
             return PSX_NATIVE_BIOS_UNSUPPORTED;

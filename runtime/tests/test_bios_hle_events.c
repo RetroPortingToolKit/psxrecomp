@@ -22,6 +22,7 @@ enum {
     CALLBACK_SECOND = 0x10004,
     CALLBACK_NESTED = 0x10008,
     CALLBACK_OVERRIDE = 0x10014,
+    CALLBACK_CARD_FIND = 0x10024,
     IRQ_VERIFY_A = 0x10018,
     IRQ_VERIFY_B = 0x1001c,
     IRQ_HANDLER = 0x10020,
@@ -52,6 +53,8 @@ static uint8_t test_card[2][MEMCARD_SECTORS][MEMCARD_SECTOR_SIZE];
 static int test_card_present[2];
 static uint8_t test_card_flag[2];
 static unsigned card_flushes;
+static int card_flush_result;
+static unsigned card_find_overrides;
 static void (*card_replaced_hook)(void);
 static jmp_buf irq_escape;
 static CPUState irq_cpu;
@@ -91,7 +94,7 @@ int memcard_write_sector(int port, int sector, const uint8_t *buffer) {
     return 0;
 }
 void memcard_flush(int port) { CHECK(test_card_present[port]); ++card_flushes; }
-int memcard_last_flush_result(int port) { CHECK(test_card_present[port]); return 0; }
+int memcard_last_flush_result(int port) { CHECK(test_card_present[port]); return card_flush_result; }
 
 int fntrace_is_game_started(void) { return 1; }
 int psx_get_in_exception(void) { return irq_active; }
@@ -182,6 +185,23 @@ static int deliver(CPUState *cpu, uint32_t spec, uint32_t caller_resume)
 
 void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_address)
 {
+    const PsxNativeBiosTable *table = &psx_native_bios_tables[0];
+    uint32_t first = psx_native_bios_stub(table, 0x65);
+    uint32_t last = psx_native_bios_stub(table, 0x6d);
+    if (addr == CALLBACK_CARD_FIND) {
+        CHECK(return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
+        CHECK(read_word(cpu->gpr[4]) == 1);
+        ++card_find_overrides;
+        uint32_t original = psx_native_bios_stub(table, 0x69);
+        write_word(PSX_NATIVE_DEVICE_TABLE + 0x34, original);
+        CHECK(psx_native_card_service(cpu, 0xa0, 0x69));
+        return;
+    }
+    if (addr >= first && addr <= last && (addr - first) % 12 == 0) {
+        CHECK(return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
+        CHECK(g_psx_bios_hle_hook(cpu, addr & 0x1fffffffu));
+        return;
+    }
     if (addr == IRQ_VERIFY_A || addr == IRQ_VERIFY_B || addr == IRQ_HANDLER) {
         CHECK(irq_active && cpu == &irq_cpu && return_address == PSX_NATIVE_IRQ_CALLBACK_LINK &&
               cpu->gpr[31] == PSX_NATIVE_IRQ_CALLBACK_LINK);
@@ -622,6 +642,78 @@ static void check_native_wait_event(void)
     wait_delivery = 0;
 }
 
+static void check_native_files(void)
+{
+    memset(ram, 0, sizeof ram);
+    memset(test_card, 0xff, sizeof test_card);
+    test_card_present[0] = 1;
+    test_card_present[1] = 0;
+    test_card_flag[0] = 0;
+    psx_bios_hle_configure_native();
+    psx_native_bios_init_tables(write_word);
+    CPUState cpu = {0};
+    cpu.read_word = read_word; cpu.write_word = write_word;
+    cpu.read_byte = read_byte; cpu.write_byte = write_byte; cpu.write_half = write_half;
+    psx_native_card_bind(&cpu);
+    native_call(&cpu, 0xb0, 0x4a, 0, 0, 0);
+    native_call(&cpu, 0xb0, 0x4b, 0, 0, 0);
+    const char path[] = "bu00:BASLUS-01395";
+    for (unsigned i = 0; i < sizeof path; ++i) write_byte(0x1800 + i, (uint8_t)path[i]);
+    CHECK(native_call(&cpu, 0xb0, 0x41, 0x1800, 0, 0) == 1);
+    CHECK(!memcmp(test_card[0][0], test_card[0][63], 128));
+    CHECK(read_word(0x140) == PSX_NATIVE_FILE_TABLE && read_word(0x144) == 16 * 44);
+    CHECK(read_word(0x150) == PSX_NATIVE_DEVICE_TABLE && read_word(0x154) == 80);
+    CHECK(native_call(&cpu, 0xb0, 0x32, 0x1800, 0x10200, 0) == 2);
+    CHECK(test_card[0][1][0] == 0x51 && test_card[0][1][8] == 0xff);
+    CHECK(native_call(&cpu, 0xb0, 0x36, 2, 0, 0) == 0);
+    CHECK(native_call(&cpu, 0xa0, 0, 0x1800, 2, 0) == 2);
+    for (unsigned i = 0; i < 8192; ++i) write_byte(0x4000 + i, (uint8_t)(i ^ 0x5a));
+    unsigned flushes = card_flushes;
+    CHECK(native_call(&cpu, 0xb0, 0x35, 2, 0x4000, 8192) == 8192);
+    CHECK(card_flushes == flushes + 1); /* One persistent publication, not 64. */
+    CHECK(test_card[0][64][0] == 0x5a && test_card[0][127][127] == (uint8_t)(8191 ^ 0x5a));
+    CHECK(native_call(&cpu, 0xb0, 0x33, 2, 0, 0) == 0);
+    CHECK(native_call(&cpu, 0xb0, 0x34, 2, 0x6000, 8192) == 8192);
+    for (unsigned i = 0; i < 8192; ++i) CHECK(read_byte(0x6000 + i) == (uint8_t)(i ^ 0x5a));
+    CHECK(native_call(&cpu, 0xb0, 0x34, 2, 0x6000, 128) == 0);
+    CHECK(native_call(&cpu, 0xb0, 0x33, 2, 0, 0) == 0);
+    card_flush_result = -1;
+    CHECK(native_call(&cpu, 0xb0, 0x35, 2, 0x4000, 128) == UINT32_MAX);
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 2 * 44 + 16) == 0);
+    card_flush_result = 0;
+    CHECK(native_call(&cpu, 0xb0, 0x36, 2, 0, 0) == 0);
+    CHECK(native_call(&cpu, 0xb0, 0x35, 2, 0x4000, 128) == UINT32_MAX);
+    const char large_path[] = "bu00:TWO_BLOCKS";
+    for (unsigned i = 0; i < sizeof large_path; ++i) write_byte(0x1a00 + i, (uint8_t)large_path[i]);
+    CHECK(native_call(&cpu, 0xb0, 0x32, 0x1a00, 0x20200, 0) == 2);
+    CHECK(test_card[0][2][0] == 0x51 && test_card[0][2][8] == 2 && test_card[0][3][0] == 0x53);
+    for (unsigned i = 0; i < 16384; ++i) write_byte(0x4000 + i, (uint8_t)(i * 3));
+    CHECK(native_call(&cpu, 0xb0, 0x35, 2, 0x4000, 16384) == 16384);
+    CHECK(native_call(&cpu, 0xb0, 0x33, 2, 8192 - 64, 0) == 8192 - 64);
+    CHECK(native_call(&cpu, 0xb0, 0x34, 2, 0x8000, 128) == 128);
+    for (unsigned i = 0; i < 128; ++i) CHECK(read_byte(0x8000 + i) == (uint8_t)((8192 - 64 + i) * 3));
+    CHECK(native_call(&cpu, 0xb0, 0x36, 2, 0, 0) == 0);
+    /* The original X6 SDK wraps the writable bu firstFile callback. */
+    const char pattern[] = "bu00:BASLUS*";
+    for (unsigned i = 0; i < sizeof pattern; ++i) write_byte(0x1900 + i, (uint8_t)pattern[i]);
+    write_word(PSX_NATIVE_DEVICE_TABLE + 0x34, CALLBACK_CARD_FIND);
+    CHECK(native_call(&cpu, 0xb0, 0x42, 0x1900, 0x3000, 0) == 0x3000);
+    CHECK(card_find_overrides == 1 && read_word(0x3018) == 8192 && read_word(0x3020) == 64);
+    for (unsigned i = 0; i < sizeof path - 5; ++i) CHECK(read_byte(0x3000 + i) == (uint8_t)path[5 + i]);
+    CHECK(native_call(&cpu, 0xb0, 0x43, 0x3000, 0, 0) == 0);
+    CHECK(native_call(&cpu, 0xb0, 0x32, 0x1800, 1, 0) == 3);
+    card_replaced_hook();
+    CHECK(native_call(&cpu, 0xb0, 0x34, 3, 0x6000, 128) == UINT32_MAX);
+    CHECK(read_word(PSX_NATIVE_CARD_FIND_FILE) == 0);
+    /* _card_load completes its directory scan at the real card VBlank. */
+    write_word(0x120, EVENT_BASE); write_word(0x124, EVENT_SIZE);
+    add_event(0, 4, MODE_MARK, 0); write_word(EVENT_BASE, 0xf4000001u);
+    CHECK(native_call(&cpu, 0xa0, 0xac, 0, 0, 0) == 1);
+    psx_native_card_vblank(&cpu); psx_native_card_vblank(&cpu);
+    CHECK(read_word(EVENT_BASE + 4) == READY && read_word(PSX_NATIVE_CARD_VOLUME_VALID) == 1);
+    psx_native_card_bind(NULL);
+}
+
 int main(void)
 {
     psx_bios_image.image_id = "OPENBIOS";
@@ -638,6 +730,7 @@ int main(void)
     check_native_calls();
     check_native_wait_event();
     check_native_root_counter_irq();
+    check_native_files();
     puts("bios_hle_events_test: OK");
     return 0;
 }
