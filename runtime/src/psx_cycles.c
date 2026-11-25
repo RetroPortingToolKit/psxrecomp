@@ -813,6 +813,11 @@ enum { IDLE_EDGES_MAX = 8, IDLE_SITES_MAX = 16 };
 static uint32_t s_idle_sites[IDLE_SITES_MAX];
 static int      s_idle_site_count = 0;
 static int      s_idle_audited_only = 0;
+static int      s_idle_hw_countdown_timing = 0;
+
+void psx_idle_skip_set_hw_countdown_timing(int enabled) {
+    s_idle_hw_countdown_timing = enabled != 0;
+}
 void psx_idle_skip_set_store_counter_sites(const uint32_t *pcs, int n) {
     if (n < 0 || !pcs) n = 0;
     if (n > IDLE_SITES_MAX) n = IDLE_SITES_MAX;
@@ -1011,6 +1016,15 @@ void psx_idle_note_check(CPUState *cpu, uint32_t check_pc) {
      * (frame 192, cyc +3857), so they keep running for real. */
     if (s_idle_iter_edges && !s_idle_mem_progress) return;
     uint32_t q = s_idle_quantum;
+    /* A declared SDK VSync countdown protects a real hardware wait, not
+     * active guest work. Native HLE removes the old firmware work that
+     * previously advanced time between these waits. At an enhanced CPU
+     * scale, skipping the countdown with the scaled quantum would expire
+     * the watchdog before the next legitimate VBlank. Use its hardware
+     * quantum for whole elided iterations, still stop before device events
+     * and the real timeout branch, and retain the actual guest counter. */
+    if (s_idle_hw_countdown_timing && s_idle_audited_only && s_idle_mem_progress)
+        q *= psx_guest_cycle_scale();
     uint32_t dist = devices_cycles_to_next_idle_event();
     /* The devices report distances from where they were last serviced
      * (s_devices_synced_cycle), which can trail psx_cycle_count by a few

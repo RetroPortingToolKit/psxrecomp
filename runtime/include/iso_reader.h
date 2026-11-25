@@ -212,6 +212,10 @@ public:
      */
     size_t ReadFile(const std::string& path, uint8_t* buffer, size_t max_size);
 
+    // Read a byte range from an entry already resolved on this disc.
+    // On a read error, the returned count covers the successfully read sectors.
+    size_t ReadFile(const ISOFileEntry& entry, uint32_t offset, uint8_t* buffer, size_t max_size);
+
     /**
      * Get file size without reading data
      * @param path Filename to query

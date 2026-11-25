@@ -987,42 +987,33 @@ bool ISOReader::FindFile(const std::string& path, ISOFileEntry& entry) {
 }
 
 size_t ISOReader::ReadFile(const std::string& path, uint8_t* buffer, size_t max_size) {
-    // Validate buffer pointer
-    if (!buffer) {
-        return 0;
-    }
-
-    // Find the file
     ISOFileEntry entry;
-    if (!FindFile(path, entry)) {
-        return 0;  // File not found
-    }
+    if (!buffer || !FindFile(path, entry)) return 0;
+    return ReadFile(entry, 0, buffer, max_size);
+}
 
-    // Calculate how many bytes to read (min of file size and max_size)
-    size_t bytes_to_read = std::min(static_cast<size_t>(entry.size), max_size);
+size_t ISOReader::ReadFile(const ISOFileEntry& entry, uint32_t offset, uint8_t* buffer,
+                           size_t max_size) {
+    if (!buffer || entry.is_directory || offset >= entry.size) return 0;
 
-    // Calculate number of sectors to read
-    uint32_t sectors_to_read = (bytes_to_read + SECTOR_SIZE - 1) / SECTOR_SIZE;
-
-    // Read sectors sequentially
-    size_t bytes_read = 0;
-    for (uint32_t i = 0; i < sectors_to_read; i++) {
-        // Calculate how many bytes to read from this sector
-        size_t bytes_remaining = bytes_to_read - bytes_read;
-        size_t sector_bytes = std::min(bytes_remaining, SECTOR_SIZE);
-
-        // Read sector into temporary buffer
-        uint8_t sector_buffer[SECTOR_SIZE];
-        if (!ReadSector(entry.lba + i, sector_buffer)) {
-            return bytes_read;  // Error - return what we've read so far
+    const size_t size = std::min(static_cast<size_t>(entry.size - offset), max_size);
+    uint64_t lba = static_cast<uint64_t>(entry.lba) + offset / SECTOR_SIZE;
+    size_t sector_offset = offset % SECTOR_SIZE;
+    size_t done = 0;
+    uint8_t sector[SECTOR_SIZE];
+    while (done < size && lba <= std::numeric_limits<uint32_t>::max()) {
+        const size_t count = std::min(size - done, SECTOR_SIZE - sector_offset);
+        if (sector_offset == 0 && count == SECTOR_SIZE) {
+            if (!ReadSector(static_cast<uint32_t>(lba), buffer + done)) break;
+        } else {
+            if (!ReadSector(static_cast<uint32_t>(lba), sector)) break;
+            std::memcpy(buffer + done, sector + sector_offset, count);
         }
-
-        // Copy data to output buffer
-        std::memcpy(buffer + bytes_read, sector_buffer, sector_bytes);
-        bytes_read += sector_bytes;
+        done += count;
+        ++lba;
+        sector_offset = 0;
     }
-
-    return bytes_read;
+    return done;
 }
 
 size_t ISOReader::GetFileSize(const std::string& path) {
