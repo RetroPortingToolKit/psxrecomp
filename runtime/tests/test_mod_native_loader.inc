@@ -105,6 +105,87 @@ check(psx_mod_netplay_content_identity("", disabled_identity) &&
       std::strcmp(enabled_identity, disabled_identity), "loader policies cannot handshake as equal");
 PSXRecompV4::mod_runtime_end_netplay();
 check(!fs::exists(loader_root / "state.toml"), "loader negotiation never rewrites offline preferences");
+
+// The declared loading feature uses the ordinary guarded plan capabilities.
+// These synthetic imports and RAM/disc edits never alter the source image.
+// initialize() migrated the legacy packages tree to installed/.
+const auto manifest_path = loader_root / "installed/runtime.loading/1.0.0/manifest.toml";
+std::ifstream manifest_input(manifest_path);
+std::string capable_manifest(std::istreambuf_iterator<char>(manifest_input), {});
+manifest_input.close();
+capable_manifest.replace(0, std::string("format_version = 5").size(), "format_version = 10");
+const std::vector<uint8_t> imported = {0x91, 0x92, 0x93, 0x94};
+const auto imported_path = manifest_path.parent_path() / "assets/import.bin";
+write_bytes(imported_path, imported);
+capable_manifest +=
+    "[[patch]]\nfeature=\"resident\"\ntarget=\"main_exe\"\naddress=2147487744\nexpected=\"31\"\nreplace=\"a5\"\n"
+    "[[patch]]\nfeature=\"resident\"\ntarget=\"main_exe\"\naddress=2147487745\nexpected=\"32\"\nreplace=\"a6\"\n"
+    "[[resource]]\nfeature=\"resident\"\nid=\"import\"\nlabel=\"Import\"\nformat=\"file\"\n"
+    "default=\"assets/import.bin\"\nhidden=true\nrequired=true\nsize=4\nsha256=\"" + sha256_hex(imported) + "\"\n"
+    "[[overlay]]\nfeature=\"resident\"\ntarget=\"disc_user\"\noffset=45056\n"
+    "resource=\"import\"\nsize=4\nsha256=\"" + sha256_hex(imported) + "\"\n"
+    "expected_sha256=\"" + sha256_hex(std::vector<uint8_t>(4, 0)) + "\"\n";
+write_text(manifest_path, capable_manifest);
+PSXRecompV4::ModPackage capable_package;
+check(PSXRecompV4::ModPackageManager::read_manifest(manifest_path, capable_package, &error),
+      error.c_str());
+check(capable_package.patches.size() == 2 && capable_package.resources.size() == 1 &&
+      capable_package.overlays.size() == 1, "synthetic loading manifest contains each guarded operation");
+test_match_caps = {};
+ram[0x1000] = 0x31; ram[0x1001] = 0x32;
+check(PSXRecompV4::mod_runtime_initialize(loader_root, "SLUS-RUNTIME", 0x80002000, {}, &error),
+      "initialize loading feature with guarded RAM and verified imported overlay");
+const auto imported_offer = PSXRecompV4::mod_runtime_plan_fingerprint_portable(iso_path, &error);
+check(imported_offer.size() == 64 && imported_offer != direct_fingerprint,
+      "loading offer binds verified import and guarded operations");
+check(PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error), error.c_str());
+mod_runtime_on_dispatch(0x80002000);
+check(ram[0x1000] == 0xa5 && ram[0x1001] == 0xa6,
+      "loading profile applies guarded guest RAM writes");
+std::array<uint8_t, 2048> imported_sector{};
+mod_runtime_enable_disc_patches();
+mod_runtime_patch_disc_sector(22, 0, imported_sector.data(), (uint32_t)imported_sector.size());
+check(std::equal(imported.begin(), imported.end(), imported_sector.begin()),
+      "loading profile installs imported effective-disc overlay");
+std::ifstream image_input(iso_path, std::ios::binary);
+const std::vector<uint8_t> image_after(std::istreambuf_iterator<char>(image_input), {});
+image_input.close();
+check(image_after == iso, "loading operations preserve original image bytes");
+PSXRecompV4::mod_runtime_end_netplay();
+
+// A later expected-byte failure cannot leave the earlier write applied.
+ram[0x1000] = 0x31; ram[0x1001] = 0x99;
+check(PSXRecompV4::mod_runtime_initialize(loader_root, "SLUS-RUNTIME", 0x80002000, {}, &error) &&
+      PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error), "prepare expected-byte negative");
+mod_runtime_on_dispatch(0x80002000);
+check(ram[0x1000] == 0x31 && ram[0x1001] == 0x99,
+      "all RAM guards precede writes; failed plan leaves no partial mutation");
+PSXRecompV4::mod_runtime_end_netplay();
+
+auto wrong_overlay = capable_manifest;
+const auto expected_hash = sha256_hex(std::vector<uint8_t>(4, 0));
+const auto expected_at = wrong_overlay.find("expected_sha256=\"" + expected_hash);
+check(expected_at != std::string::npos, "find synthetic overlay guard");
+wrong_overlay.replace(expected_at + std::string("expected_sha256=\"").size(), 64, std::string(64, '0'));
+write_text(manifest_path, wrong_overlay);
+check(PSXRecompV4::mod_runtime_initialize(loader_root, "SLUS-RUNTIME", 0x80002000, {}, &error) &&
+      !PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error) &&
+      !psx_mod_netplay_is_active() && !psx_mod_netplay_loading(),
+      "loading activation retains original-overlay checksum guard and clears failed policy");
+
+write_text(manifest_path, capable_manifest +
+    "[[patch]]\nfeature=\"resident\"\ntarget=\"main_exe\"\naddress=2147487744\nexpected=\"31\"\nreplace=\"ff\"\n");
+check(PSXRecompV4::mod_runtime_initialize(loader_root, "SLUS-RUNTIME", 0x80002000, {}, &error) &&
+      !PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error) && !psx_mod_netplay_is_active(),
+      "loading activation retains conflicting-write refusal");
+
+write_text(manifest_path, capable_manifest);
+auto corrupted_import = imported; corrupted_import[0] ^= 1;
+write_bytes(imported_path, corrupted_import);
+check(PSXRecompV4::mod_runtime_initialize(loader_root, "SLUS-RUNTIME", 0x80002000, {}, &error) &&
+      !PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error) && !psx_mod_netplay_is_active(),
+      "loading activation retains verified import hash guard");
+check(!fs::exists(loader_root / "state.toml"), "guarded loading plans never rewrite offline preferences");
 fs::remove_all(root, ec);
 if (failures) return 1;
 std::cout << "native loader bridge tests passed\n";

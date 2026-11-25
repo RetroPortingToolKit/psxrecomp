@@ -1996,7 +1996,11 @@ static bool prepare_profile_settings(const PSXModNetplayProfile* profile,
     return true;
 }
 
-/* Loader-only profiles use the existing lobby's one optional package offer.
+static bool prepare_resources(const std::filesystem::path& disc_path, std::string* error,
+                              bool require_disc_identity, ModPackageManager* selection);
+static bool netplay_resources_verified(const ModResolution& plan, std::string* error);
+
+/* Loading profiles use the existing lobby's one optional package offer.
  * Settings-only profiles below retain their established canonical codec. */
 static bool prepare_profile_loader(const PSXModNetplayProfile* profile,
                                     const PsxLobbyMatchCaps* caps,
@@ -2021,15 +2025,19 @@ static bool prepare_profile_loader(const PSXModNetplayProfile* profile,
     }
     loading = selected.feature_enabled(profile->loading_package_id, profile->loading_feature_id);
     if (!verify_title_loading_disc(s, disc_path, error)) return false;
+    if (!prepare_resources(disc_path, error, true, &selected)) return false;
     plan = selected.resolve(s.game_id, s.exe_sha256, s.disc_sha256);
-    if (!plan.ok || !plan.writes.empty() || !plan.overlays.empty() ||
-        !plan.derived_discs.empty() || !plan.resources.empty() ||
-        plan.plugins.size() != (loading ? 1u : 0u) ||
-        (loading && (plan.plugins[0].id != profile->loading_plugin_id ||
-                     !mod_plugin_registered(profile->loading_plugin_id)))) {
-        if (error) *error = "Title loading option must resolve to its native plugin";
+    if (!plan.ok) {
+        if (error) *error = plan.errors.empty() ? "Invalid title loading plan" : plan.errors.front();
         return false;
     }
+    if (plan.plugins.size() != (loading ? 1u : 0u) ||
+        (loading && (plan.plugins[0].id != profile->loading_plugin_id ||
+                     !mod_plugin_registered(profile->loading_plugin_id)))) {
+        if (error) *error = "Title loading provider is unavailable or differs from the profile";
+        return false;
+    }
+    if (!netplay_resources_verified(plan, error)) return false;
     if (caps && caps->valid && caps->mod_count == 1 && plan.fingerprint != caps->mod_plan_fp) {
         if (error) *error = "Title loading option differs from the host's verified plan";
         return false;
@@ -2058,6 +2066,10 @@ static bool prepare_profile_content(const PSXModNetplayProfile* profile,
                                     std::string& offer_identity,
                                     std::optional<ModPackageManager>& selection,
                                     std::string* error);
+struct PreparedPlanInputs;
+static bool install_plan(RuntimeMods& s, ModResolution plan,
+                         bool save_selection, bool verify_netplay,
+                         std::string* error, const PreparedPlanInputs* inputs);
 
 bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path,
                                 std::string* error) {
@@ -2124,9 +2136,18 @@ bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path,
         profile->settings_feature_id ? profile->settings_feature_id : ""});
     if (renderer) plan.plugins.push_back({renderer, "", ""});
     s.disc_path = disc_path;
-    s.plan = std::move(plan);
-    s.plan_committed = true;
-    reset_live_option_overrides();  /* a new plan ends the last session's live values */
+    // Use the normal guarded installer for writes, overlays, imported media
+    // and derived discs; profile ownership does not change those capabilities.
+    if (!install_plan(s, std::move(plan), false, true, error, nullptr)) {
+        // The failed temporary selection owns plan.ordered. Keep the error,
+        // not pointers into that selection after it leaves this scope.
+        const std::string why = error ? *error : s.error;
+        s.validation = {};
+        if (!why.empty()) s.validation.errors.push_back(why);
+        psx_mod_netplay_set_options_identity("");
+        psx_mod_netplay_set_loading(0);
+        return false;
+    }
     if (profile->loading_plugin_id) {
         if (!offline_manager_before_netplay) offline_manager_before_netplay = s.manager;
         s.manager = std::move(loader_selection);
@@ -2551,7 +2572,9 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
     }
     for(const auto& plugin:plan.plugins) {
         if(plugin.id!="psx.hd-textures")continue;
-        const auto* package=s.manager.selected_package(plugin.package_id);
+        const auto selected=std::find_if(plan.ordered.begin(),plan.ordered.end(),
+            [&](const ModPackage* package) { return package && package->id==plugin.package_id; });
+        const auto* package=selected==plan.ordered.end()?nullptr:*selected;
         if(package&&!texture_install_check(*package,plugin.feature_id,s.error,true)) {
             if(error)*error=s.error;return false;
         }
@@ -2794,6 +2817,7 @@ std::string mod_runtime_plan_fingerprint_portable(const std::filesystem::path& d
         s.disc_sha256 = std::move(digest);
     }
     auto manager = title_loading ? title_loading_selection(s.manager) : s.manager;
+    if (title_loading && !prepare_resources(disc_path, error, true, &manager)) return {};
     ModResolution plan = manager.resolve(s.game_id, s.exe_sha256,
                                          s.disc_sha256);
     if (!plan.ok || !netplay_resources_verified(plan)) return {};
