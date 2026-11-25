@@ -196,6 +196,25 @@ static int service_console(CPUState *cpu, uint32_t vector, uint32_t fn) {
         int written = console_printf(cpu);
         if (written < 0) return PSX_NATIVE_BIOS_UNSUPPORTED;
         cpu->gpr[2] = (uint32_t)written;
+    } else if (((vector == 0xb0 && fn == 0x35) ||
+                (vector == 0xa0 && fn == 0x03)) &&
+               (cpu->gpr[4] == 1 || cpu->gpr[4] == 2)) {
+        uint32_t address = cpu->gpr[5], bytes = cpu->gpr[6], written = 0;
+        if (bytes && !psx_ram_resolve(address, bytes, NULL))
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+        FILE *stream = cpu->gpr[4] == 1 ? stdout : stderr;
+        uint8_t chunk[256];
+        while (written < bytes) {
+            uint32_t count = bytes - written;
+            if (count > sizeof chunk) count = sizeof chunk;
+            for (uint32_t i = 0; i < count; ++i)
+                chunk[i] = cpu->read_byte(address + written + i);
+            size_t done = fwrite(chunk, 1, count, stream);
+            written += (uint32_t)done;
+            if (done != count) break;
+        }
+        fflush(stream);
+        cpu->gpr[2] = !written && bytes && ferror(stream) ? UINT32_MAX : written;
     } else if (vector == 0xb0 && fn == 0x3f) {
         if (console_string(cpu, cpu->gpr[4], 0, -1, 0) < 0)
             return PSX_NATIVE_BIOS_UNSUPPORTED;

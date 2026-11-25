@@ -346,6 +346,8 @@ static void check_native_calls(void)
     write_word(0x3010, '!');
     CHECK(native_call(&cpu, 0xa0, 0x3f, 0x1a00, 0x2a, (uint32_t)-7) == 18);
     native_call(&cpu, 0xb0, 0x3f, 0x1a40, 0, 0);
+    CHECK(native_call(&cpu, 0xb0, 0x35, 1, 0x1a40, 2) == 2);
+    CHECK(native_call(&cpu, 0xa0, 0x03, 1, 0x1a40, 0) == 0);
     write_word(PSX_NATIVE_CARD_FASTTRACK_SCRATCH + 0x28, 0x12345678);
     write_word(0xdf80, 0x87654321);
     CHECK(native_call(&cpu, 0xb0, 0x4a, 0, 0, 0) == 0);
