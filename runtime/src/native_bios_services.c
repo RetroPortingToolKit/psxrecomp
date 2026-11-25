@@ -750,6 +750,136 @@ static int service_irq_chain(CPUState *cpu, uint32_t fn)
     return PSX_NATIVE_BIOS_RETURN;
 }
 
+void psx_native_padcard_init(CPUState *cpu)
+{
+    const uint32_t node = PSX_NATIVE_IRQ_NODES +
+        PSX_NATIVE_PAD_CARD_IRQ_NODE * PSX_NATIVE_IRQ_NODE_BYTES;
+    const uint32_t token = PSX_NATIVE_IRQ_TOKENS + PSX_NATIVE_PAD_CARD_IRQ_NODE * 8;
+    cpu->write_word(node, 0);
+    cpu->write_word(node + 4, 0x80000000u | token);
+    cpu->write_word(node + 8, 0x80000000u | (token + 4));
+    cpu->write_word(node + 12, 0);
+}
+
+int psx_native_padcard_set_active(CPUState *cpu, int active)
+{
+    const uint32_t a0 = cpu->gpr[4], a1 = cpu->gpr[5], v0 = cpu->gpr[2];
+    cpu->gpr[4] = 2;
+    cpu->gpr[5] = PSX_NATIVE_IRQ_NODES +
+        PSX_NATIVE_PAD_CARD_IRQ_NODE * PSX_NATIVE_IRQ_NODE_BYTES;
+    int result = service_irq_chain(cpu, 3);
+    if (result && active) result = service_irq_chain(cpu, 2);
+    cpu->gpr[4] = a0; cpu->gpr[5] = a1; cpu->gpr[2] = v0;
+    return result;
+}
+
+static int init_pad(CPUState *cpu, const uint32_t buffers[2], const uint32_t sizes[2])
+{
+    for (unsigned port = 0; port < 2; ++port) {
+        const uint32_t extent = sizes[port] > 34 ? sizes[port] : 34;
+        if (!psx_ram_resolve(buffers[port], extent, NULL))
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+    }
+    for (unsigned port = 0; port < 2; ++port) {
+        fill_bytes(cpu, buffers[port], 0, sizes[port]);
+        cpu->write_word(PSX_NATIVE_PAD_BUFFERS + port * 4, buffers[port]);
+    }
+    cpu->write_word(PSX_NATIVE_PAD_INITIALIZED, 1);
+    cpu->write_word(PSX_NATIVE_PAD_LEGACY_DEST, 0);
+    cpu->write_word(PSX_NATIVE_CARD_PAD_STARTED, 1);
+    psx_native_padcard_init(cpu);
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
+static int start_pad(CPUState *cpu)
+{
+    if (!cpu->read_word(PSX_NATIVE_PAD_INITIALIZED) ||
+        !psx_native_padcard_set_active(cpu, 1))
+        return PSX_NATIVE_BIOS_UNSUPPORTED;
+    cpu->write_half(0x1f80104au, 0x40);
+    cpu->write_half(0x1f80104eu, 2073600 / 15200);
+    cpu->write_half(0x1f801048u, 13);
+    cpu->write_half(0x1f80104au, 0);
+    cpu->write_word(0x1f801070u, ~(1u << 0));
+    cpu->write_word(0x1f801074u, cpu->read_word(0x1f801074u) | (1u << 0));
+    cpu->write_word(PSX_NATIVE_SIO_AUTO_ACK, 1);
+    cpu->write_word(PSX_NATIVE_TIMER_AUTO_ACK + 3 * 4, 0);
+    cpu->cop0[12] |= 0x401u;
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
+/* The legacy ABI swaps the button bytes within each port's halfword and
+ * accepts only digital/NeGcon packets. Other devices remain released. */
+int psx_native_pad_read_legacy(CPUState *cpu, uint32_t *result)
+{
+    const uint32_t destination = cpu->read_word(PSX_NATIVE_PAD_LEGACY_DEST);
+    if (!cpu->read_word(PSX_NATIVE_PAD_INITIALIZED) ||
+        (destination & 3u) || !psx_ram_resolve(destination, 4, NULL)) return 0;
+    uint32_t packed = UINT32_MAX;
+    for (unsigned port = 0; port < 2; ++port) {
+        const uint32_t buffer = cpu->read_word(PSX_NATIVE_PAD_BUFFERS + port * 4);
+        if (!psx_ram_resolve(buffer, 4, NULL)) return 0;
+        const uint8_t status = cpu->read_byte(buffer), id = cpu->read_byte(buffer + 1);
+        if (status || (id != 0x41 && id != 0x23)) continue;
+        uint32_t buttons = ((uint32_t)cpu->read_byte(buffer + 2) << 8) |
+                            cpu->read_byte(buffer + 3);
+        if (id == 0x23) {
+            if (!psx_ram_resolve(buffer, 7, NULL)) return 0;
+            buttons |= 0x07c7u;
+            if (cpu->read_byte(buffer + 5) > 0x10) buttons &= ~0x40u;
+            if (cpu->read_byte(buffer + 6) > 0x10) buttons &= ~0x80u;
+        }
+        const uint32_t shift = port * 16;
+        packed = (packed & ~(0xffffu << shift)) | (buttons << shift);
+    }
+    cpu->write_word(destination, packed);
+    if (result) *result = packed;
+    return 1;
+}
+
+static int service_pad(CPUState *cpu, uint32_t fn)
+{
+    if (fn == 0x12) {
+        const uint32_t buffers[] = {cpu->gpr[4], cpu->gpr[6]};
+        const uint32_t sizes[] = {cpu->gpr[5], cpu->gpr[7]};
+        if (!init_pad(cpu, buffers, sizes)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->gpr[2] = 1;
+    } else if (fn == 0x13) {
+        if (!start_pad(cpu)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->gpr[2] = 1;
+    } else if (fn == 0x14) {
+        if (!psx_native_padcard_set_active(cpu, 0))
+            return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->write_word(PSX_NATIVE_TIMER_AUTO_ACK + 3 * 4, 1);
+        cpu->cop0[12] |= 0x401u;
+        cpu->gpr[2] = 1;
+    } else if (fn == 0x15) {
+        const uint32_t stack = cpu->gpr[29];
+        if ((stack & 3u) || !psx_ram_resolve(stack, 16, NULL)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        for (unsigned arg = 1; arg < 4; ++arg)
+            cpu->write_word(stack + arg * 4, cpu->gpr[4 + arg]);
+        if (cpu->gpr[4] != 0x20000000u && cpu->gpr[4] != 0x20000001u) {
+            cpu->gpr[2] = 0;
+        } else {
+            const uint32_t destination = cpu->gpr[5];
+            if ((destination & 3u) || !psx_ram_resolve(destination, 4, NULL)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+            const uint32_t buffers[] = {PSX_NATIVE_PAD_LEGACY_BUFFER0,
+                                       PSX_NATIVE_PAD_LEGACY_BUFFER1};
+            const uint32_t sizes[] = {34, 34};
+            if (!init_pad(cpu, buffers, sizes)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+            cpu->write_word(PSX_NATIVE_PAD_LEGACY_DEST, destination);
+            if (!start_pad(cpu)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+            cpu->gpr[2] = 2;
+        }
+    } else if (fn == 0x16) {
+        uint32_t result;
+        if (!psx_native_pad_read_legacy(cpu, &result)) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        cpu->gpr[2] = result;
+    } else return PSX_NATIVE_BIOS_UNSUPPORTED;
+    psx_cpu_charge(32);
+    return PSX_NATIVE_BIOS_RETURN;
+}
+
 static int service_enqueue_native_irqs(CPUState *cpu, uint32_t fn)
 {
     uint32_t priority = cpu->gpr[4];
@@ -801,6 +931,7 @@ static int service_system_info(CPUState *cpu)
 }
 
 int psx_native_bios_service(CPUState *cpu, uint32_t vector, uint32_t fn) {
+    if (vector == 0xb0 && fn >= 0x12 && fn <= 0x16) return service_pad(cpu, fn);
     if (vector == 0xc0 && fn == 8) {
         heap_init(cpu, &native_kernel_heap, cpu->gpr[4], cpu->gpr[5]);
         psx_cpu_charge(32);

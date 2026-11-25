@@ -28,7 +28,14 @@ extern "C" {
 #define PSX_NATIVE_INFO_STUB 0x0000a180u
 #define PSX_NATIVE_IRQ_NODES 0x0000b500u
 #define PSX_NATIVE_IRQ_TOKENS 0x0000a120u
-#define PSX_NATIVE_IRQ_NODE_COUNT 6u
+#define PSX_NATIVE_BOOT_IRQ_NODE_COUNT 6u
+#define PSX_NATIVE_PAD_CARD_IRQ_NODE 6u
+#define PSX_NATIVE_IRQ_NODE_COUNT 7u
+#define PSX_NATIVE_PAD_BUFFERS 0x0000b0e0u
+#define PSX_NATIVE_PAD_INITIALIZED 0x0000b0e8u
+#define PSX_NATIVE_PAD_LEGACY_DEST 0x0000b0ecu
+#define PSX_NATIVE_PAD_LEGACY_BUFFER0 0x0000b600u
+#define PSX_NATIVE_PAD_LEGACY_BUFFER1 0x0000b640u
 #define PSX_NATIVE_IRQ_NODE_BYTES 16u
 /* The legacy SDK card fast-track compatibility region is guest-writable.
  * Keep the native exception stack below 0xdf80..0xdffc. */
@@ -149,12 +156,17 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
         const uint32_t address = PSX_NATIVE_IRQ_NODES + node * PSX_NATIVE_IRQ_NODE_BYTES;
         const uint32_t token = PSX_NATIVE_IRQ_TOKENS + node * 8;
         write_word(address, 0);
-        write_word(address + 4, node < 4 ? 0x80000000u | token : 0);
+        write_word(address + 4, node < 4 || node == PSX_NATIVE_PAD_CARD_IRQ_NODE
+                                  ? 0x80000000u | token : 0);
         write_word(address + 8, 0x80000000u | (token + 4));
         write_word(address + 12, 0);
         write_word(token, PSX_NATIVE_EXCEPTION_MARKER);
         write_word(token + 4, PSX_NATIVE_EXCEPTION_MARKER);
     }
+    write_word(PSX_NATIVE_PAD_BUFFERS, 0);
+    write_word(PSX_NATIVE_PAD_BUFFERS + 4, 0);
+    write_word(PSX_NATIVE_PAD_INITIALIZED, 0);
+    write_word(PSX_NATIVE_PAD_LEGACY_DEST, 0);
     const char native_name[32] = "PSXRecomp native kernel";
     for (uint32_t offset = 0; offset < sizeof native_name; offset += 4) {
         uint32_t word = 0;
@@ -197,7 +209,7 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
 static inline void psx_native_bios_boot_irq_handlers(
     void (*write_word)(uint32_t, uint32_t), uint32_t handlers) {
     uint32_t heads[4] = {0, 0, 0, 0};
-    for (uint32_t node = 0; node < PSX_NATIVE_IRQ_NODE_COUNT; ++node) {
+    for (uint32_t node = 0; node < PSX_NATIVE_BOOT_IRQ_NODE_COUNT; ++node) {
         const uint32_t priority = node < 4 ? 1 : node == 4 ? 3 : 0;
         const uint32_t address = PSX_NATIVE_IRQ_NODES + node * PSX_NATIVE_IRQ_NODE_BYTES;
         write_word(address, heads[priority]);
@@ -215,6 +227,9 @@ enum {
 int psx_native_bios_service(struct CPUState *cpu, uint32_t vector, uint32_t fn);
 int psx_native_card_service(struct CPUState *cpu, uint32_t vector, uint32_t fn);
 void psx_native_card_vblank(struct CPUState *cpu);
+void psx_native_padcard_init(struct CPUState *cpu);
+int psx_native_padcard_set_active(struct CPUState *cpu, int active);
+int psx_native_pad_read_legacy(struct CPUState *cpu, uint32_t *result);
 void psx_native_card_bind(struct CPUState *cpu);
 void psx_native_bios_event(struct CPUState *cpu, uint32_t cls, uint32_t spec, int deliver);
 

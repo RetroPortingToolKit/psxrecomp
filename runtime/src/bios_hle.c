@@ -414,6 +414,11 @@ static uint32_t native_builtin_irq_call(CPUState *cpu, uint32_t node,
             native_exception_return(cpu);
             exit(1);
         }
+    } else if (node == PSX_NATIVE_PAD_CARD_IRQ_NODE) {
+        if (verifier)
+            return (cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) &
+                    (1u << IRQ_VBLANK)) != 0;
+        psx_native_card_vblank(cpu);
     } else if (node == 4 && verifier) {
         const uint8_t order[] = {IRQ_CDROM, IRQ_SPU, IRQ_GPU, IRQ_PIO,
             IRQ_SIO1, IRQ_VBLANK, IRQ_TIMER0, IRQ_TIMER1, IRQ_TIMER2, IRQ_SIO0, IRQ_DMA};
@@ -533,9 +538,6 @@ static void native_exception_entry(CPUState *cpu)
      * priority walk; no second implicit delivery follows the registered chain. */
     for (unsigned priority = 0; priority < 4; ++priority) {
         native_irq_chain(cpu, priority);
-        if (priority == 2 &&
-            (cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & (1u << IRQ_VBLANK)))
-            psx_native_card_vblank(cpu);
     }
     const uint32_t jump = cpu->read_word(PSX_NATIVE_EXCEPTION_JUMP_PTR);
     if (!jump) {
@@ -561,8 +563,9 @@ static void native_exception_entry(CPUState *cpu)
 #if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
 static void native_bios_unavailable(CPUState *cpu, uint32_t vector, uint32_t fn)
 {
-    fprintf(stderr, "native BIOS service unavailable: %02x:%02x ra=%08x\n",
-            vector, fn, cpu->gpr[31]);
+    fprintf(stderr, "native BIOS service unavailable: %02x:%02x ra=%08x "
+            "args=%08x,%08x,%08x,%08x\n", vector, fn, cpu->gpr[31],
+            cpu->gpr[4], cpu->gpr[5], cpu->gpr[6], cpu->gpr[7]);
     exit(1);
 }
 

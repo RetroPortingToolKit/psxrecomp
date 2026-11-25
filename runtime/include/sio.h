@@ -228,6 +228,9 @@ void sio_get_pad_jogcon_motor(int slot, uint8_t *command, uint8_t *strength);
  * pad 0 .. PSX_MAX_PLAYERS-1. */
 uint16_t sio_get_pad_buttons(void);
 uint16_t sio_get_pad_buttons_slot(int slot);
+/* Native BIOS packet: status, device ID, then the existing SIO poll payload.
+ * A disconnected device updates only status. Caller provides 34 bytes. */
+uint32_t sio_read_pad_packet(int physical_port, uint8_t out[34]);
 struct PSXResolvedDigitalPad;
 int sio_get_resolved_digital_pad(int slot, struct PSXResolvedDigitalPad *out);
 

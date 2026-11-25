@@ -220,3 +220,18 @@ prove that a normal GTE call after HLE still arms its own latency.
 Title promotion additionally needs isolated HLE/LLE caller-result comparisons,
 measured useful gameplay throughput/load time, clean audio, and owner playtest
 acceptance. Preserve the LLE floor even when it is slower than real time.
+
+
+The native BIOS PAD provider owns `InitPAD2`/`StartPAD2`/`StopPAD2` and
+`PAD_init2`/`PAD_dr`. It publishes the existing SIO device packets directly
+into writable guest buffers instead of executing firmware serial polling.
+PAD and card work share one writable priority-2 `HandlerInfo`; removing or
+patching that node affects the actual delivery path. Buffer pointers, enable
+state and the legacy packed-button destination live in guest RAM, so current
+snapshots and replay state retain them. The legacy API keeps its two
+byte-swapped active-low port halfwords and its digital/NeGcon filtering.
+Unknown services and invalid packet/buffer contracts still fail explicitly.
+
+The ABI and shared handler order follow the primary OpenBIOS
+[driver](https://github.com/pcsx-redux/nugget/blob/main/openbios/sio0/driver.c)
+and [legacy PAD routines](https://github.com/pcsx-redux/nugget/blob/main/openbios/sio0/pad.c).

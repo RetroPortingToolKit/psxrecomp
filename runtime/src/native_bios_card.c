@@ -551,6 +551,7 @@ int psx_native_card_service(CPUState *cpu, uint32_t vector, uint32_t fn)
     if (vector != 0xb0) return PSX_NATIVE_BIOS_UNSUPPORTED;
     switch (fn) {
     case 0x4a: /* InitCARD */
+        psx_native_padcard_init(cpu);
         cpu->gpr[2] = cpu->read_word(PSX_NATIVE_CARD_INIT);
         cpu->write_word(PSX_NATIVE_CARD_INIT, 1);
         cpu->write_word(PSX_NATIVE_CARD_PAD_STARTED, cpu->gpr[4]);
@@ -559,6 +560,7 @@ int psx_native_card_service(CPUState *cpu, uint32_t vector, uint32_t fn)
         cpu->write_word(PSX_NATIVE_CARD_STATUS + 4, 1);
         break;
     case 0x4b: /* StartCARD */
+        if (!psx_native_padcard_set_active(cpu, 1)) return PSX_NATIVE_BIOS_UNSUPPORTED;
         /* Preserve device register state without the old select/delay loop. */
         cpu->write_half(0x1f80104au, 0x40);
         cpu->write_half(0x1f80104eu, 2073600 / 15200);
@@ -573,6 +575,7 @@ int psx_native_card_service(CPUState *cpu, uint32_t vector, uint32_t fn)
         cpu->gpr[2] = 1;
         break;
     case 0x4c: /* StopCARD */
+        if (!psx_native_padcard_set_active(cpu, 0)) return PSX_NATIVE_BIOS_UNSUPPORTED;
         cpu->write_word(PSX_NATIVE_CARD_STARTED, 0);
         cpu->write_word(PSX_NATIVE_TIMER_AUTO_ACK + 3 * 4, 1);
         cpu->cop0[12] |= 0x401u;
@@ -606,13 +609,32 @@ int psx_native_card_service(CPUState *cpu, uint32_t vector, uint32_t fn)
 
 void psx_native_card_vblank(CPUState *cpu)
 {
-    if (!cpu->read_word(PSX_NATIVE_CARD_STARTED)) return;
-    if (cpu->read_word(PSX_NATIVE_CARD_PAD_STARTED)) {
-        fprintf(stderr, "native BIOS SIO provider gap: card VBlank requires active pad driver\n");
-        exit(1);
+    const int pads = cpu->read_word(PSX_NATIVE_CARD_PAD_STARTED) != 0;
+    if (!pads && !cpu->read_word(PSX_NATIVE_CARD_STARTED)) return;
+    if (pads) {
+        if (!cpu->read_word(PSX_NATIVE_PAD_INITIALIZED)) {
+            fprintf(stderr, "native BIOS PAD provider gap: active driver has no InitPAD buffers\n");
+            exit(1);
+        }
+        for (unsigned port = 0; port < 2; ++port) {
+            uint8_t packet[34];
+            uint32_t buffer = cpu->read_word(PSX_NATIVE_PAD_BUFFERS + port * 4);
+            uint32_t bytes = sio_read_pad_packet((int)port, packet);
+            if (!bytes || bytes > sizeof packet || !psx_ram_resolve(buffer, bytes, NULL)) {
+                fprintf(stderr, "native BIOS PAD provider gap: invalid packet/buffer on port %u\n", port);
+                exit(1);
+            }
+            for (uint32_t i = 0; i < bytes; ++i) cpu->write_byte(buffer + i, packet[i]);
+        }
+        if (cpu->read_word(PSX_NATIVE_PAD_LEGACY_DEST) &&
+            !psx_native_pad_read_legacy(cpu, NULL)) {
+            fprintf(stderr, "native BIOS PAD provider gap: invalid legacy button buffer\n");
+            exit(1);
+        }
     }
     if (cpu->read_word(PSX_NATIVE_SIO_AUTO_ACK))
         cpu->write_word(0x1f801070u, ~(1u << IRQ_VBLANK));
+    if (!cpu->read_word(PSX_NATIVE_CARD_STARTED)) return;
     static const uint32_t specs[] = {CARD_SUCCESS, CARD_ERROR, 0x100, 0x200, CARD_NEW};
     for (unsigned i = 0; i < sizeof specs / sizeof specs[0]; ++i)
         psx_native_bios_event(cpu, CARD_EVENT, specs[i], 0);
