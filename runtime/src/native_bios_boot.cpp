@@ -115,6 +115,10 @@ bool psx_prepare_native_bios_boot(CPUState &cpu, const std::string &disc,
     psx_host_write_word(0x114, config->threads * kThreadBytes);
     psx_host_write_word(0x120, events);
     psx_host_write_word(0x124, config->events * kEventBytes);
+    psx_host_write_word(PSX_NATIVE_KERNEL_CONFIG, config->threads);
+    psx_host_write_word(PSX_NATIVE_KERNEL_CONFIG + 4, config->events);
+    psx_host_write_word(PSX_NATIVE_KERNEL_CONFIG + 8, config->stack);
+    psx_native_bios_boot_irq_handlers(psx_host_write_word, handlers);
     psx_host_write_word(process, threads);
     for (uint32_t i = 0; i < config->threads; ++i)
         psx_host_write_word(threads + i * kThreadBytes, i ? 0x1000u : 0x4000u);

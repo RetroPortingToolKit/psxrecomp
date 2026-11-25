@@ -45,6 +45,7 @@ static unsigned cache_resets;
 static int irq_active;
 static uint32_t expected_saved_v0, last_thread_switch;
 static uint32_t test_istat, test_imask;
+static uint32_t test_timers[3][3];
 static uint32_t test_gpu_status, test_gpu_data, test_gpu_control;
 static unsigned test_gpu_writes;
 uint32_t dma_cycles_to_internal_event(void) { return UINT32_MAX; }
@@ -130,6 +131,9 @@ static uint32_t read_word(uint32_t address)
     if (address == 0x1f8010a8u) return 0;
     if (address == 0x1f801070u) return test_istat;
     if (address == 0x1f801074u) return test_imask;
+    if (address >= 0x1f801100u && address < 0x1f801130u &&
+        ((address - 0x1f801100u) & 15u) <= 8u)
+        return test_timers[(address - 0x1f801100u) / 16][(address & 15u) / 4];
     address &= 0x1fffffff;
     CHECK(!(address & 3) && address < sizeof ram);
     return ram[address / 4];
@@ -148,6 +152,11 @@ static void write_word(uint32_t address, uint32_t value)
     }
     if (address == 0x1f801070u) { test_istat &= value; return; }
     if (address == 0x1f801074u) { test_imask = value; return; }
+    if (address >= 0x1f801100u && address < 0x1f801130u &&
+        ((address - 0x1f801100u) & 15u) <= 8u) {
+        test_timers[(address - 0x1f801100u) / 16][(address & 15u) / 4] = value;
+        return;
+    }
     if (address == 0xfffe0130u) { CHECK(value == 0x0001e988u); return; }
     address &= 0x1fffffff;
     CHECK(!(address & 3) && address < sizeof ram);
@@ -496,6 +505,46 @@ static void check_native_calls(void)
     native_call(&cpu, 0xa0, 0x34, moved, 0, 0);
     CHECK(native_call(&cpu, 0xa0, 0x33, 0x1f0, 0, 0) == 0x4008);
     CHECK(native_call(&cpu, 0xa0, 0x33, 1, 0, 0) == 0);
+    /* C0 kernel storage is independent of the user's exhausted A0 heap.
+     * Restoring guest RAM alone must restore the allocator cursor/free list. */
+    native_call(&cpu, 0xc0, 8, 0xa000e800u, 0x1000, 0);
+    uint32_t kernel = native_call(&cpu, 0xb0, 0, 32, 0, 0);
+    CHECK(kernel == 0xa000e808u);
+    write_word(kernel, 0x12345678);
+    uint32_t kernel_snapshot[sizeof ram / sizeof ram[0]];
+    memcpy(kernel_snapshot, ram, sizeof ram);
+    uint32_t event_storage = native_call(&cpu, 0xb0, 0, 32 * EVENT_SIZE, 0, 0);
+    CHECK(event_storage && event_storage != kernel && read_word(kernel) == 0x12345678);
+    memcpy(ram, kernel_snapshot, sizeof ram);
+    CHECK(native_call(&cpu, 0xb0, 0, 32 * EVENT_SIZE, 0, 0) == event_storage);
+    native_call(&cpu, 0xb0, 1, event_storage, 0, 0);
+    CHECK(native_call(&cpu, 0xb0, 0, 32 * EVENT_SIZE, 0, 0) == event_storage);
+    CHECK(native_call(&cpu, 0xa0, 0x33, 1, 0, 0) == 0);
+    native_call(&cpu, 0xc0, 8, UINT32_MAX - 3, 32, 0);
+    CHECK(native_call(&cpu, 0xb0, 0, 1, 0, 0) == 0);
+
+    /* The real SDK reads these instruction immediates, then writes its
+     * thread/event/stack configuration through the resulting guest pointer. */
+    uint32_t info = read_word(0x474);
+    CHECK(info == (0x80000000u | PSX_NATIVE_INFO_STUB));
+    uint32_t configuration = (uint32_t)read_byte(info) | (uint32_t)read_byte(info + 1) << 8;
+    configuration = (configuration << 16) + (int16_t)read_word(info + 4) - 8;
+    CHECK(configuration == PSX_NATIVE_KERNEL_CONFIG);
+    write_word(configuration, 12); write_word(configuration + 4, 32);
+    write_word(configuration + 8, 0x801b6928);
+    CHECK(read_word(PSX_NATIVE_KERNEL_CONFIG) == 12 &&
+          read_word(PSX_NATIVE_KERNEL_CONFIG + 4) == 32);
+    CHECK(native_call(&cpu, 0xa0, 0x9d, 0, 0, 0) == 0x20260101u);
+    CHECK(native_call(&cpu, 0xa0, 0x9d, 2, 0, 0) == PSX_NATIVE_KERNEL_NAME);
+    CHECK(read_byte(PSX_NATIVE_KERNEL_NAME) == 'P');
+    cpu.gpr[4] = 7;
+    CHECK(g_psx_bios_hle_hook(&cpu, PSX_NATIVE_INFO_STUB) && cpu.gpr[2] == 1024);
+    CHECK(!psx_bios_hle_dispatch_quiet(PSX_NATIVE_INFO_STUB));
+    CHECK(!g_psx_bios_hle_hook(&cpu, psx_native_bios_tables[0].stubs + 0x9d * 12));
+    uint32_t info_word = read_word(info);
+    write_word(info, 0);
+    CHECK(!g_psx_bios_hle_hook(&cpu, PSX_NATIVE_INFO_STUB));
+    write_word(info, info_word);
     test_gpu_status = 0x14000000u;
     CHECK(native_call(&cpu, 0xa0, 0x49, 0xe1001234u, 0, 0) == 0);
     CHECK(test_gpu_data == 0xe1001234u && test_gpu_writes == 1);
@@ -508,6 +557,73 @@ static void check_native_calls(void)
     native_call(&cpu, 0xa0, 0x44, 0, 0, 0);
     CHECK(cache_resets == 1);
     CHECK(!g_psx_bios_hle_hook(&cpu, 0x80010000u & 0x1fffffffu));
+}
+
+static void check_native_kernel_registration(void)
+{
+    memset(ram, 0, sizeof ram);
+    CPUState cpu = {0};
+    cpu.read_word = read_word; cpu.write_word = write_word;
+    cpu.read_byte = read_byte; cpu.write_byte = write_byte;
+    psx_bios_hle_configure_native();
+    psx_native_bios_init_tables(write_word);
+    write_word(0x100, 0x1700);
+    test_imask = 0x7ff;
+    memset(test_timers, 0xff, sizeof test_timers);
+    CHECK(native_call(&cpu, 0xc0, 0, 2, 0, 0) == 0);
+    CHECK(read_word(0x1710) == PSX_NATIVE_IRQ_NODES + 3 * 12);
+    for (unsigned i = 0; i < 4; ++i) {
+        const uint32_t node = PSX_NATIVE_IRQ_NODES + i * 12;
+        CHECK(read_word(node) == (i ? node - 12 : 0));
+        CHECK(read_word(node + 4) == (0x80000000u | (PSX_NATIVE_IRQ_TOKENS + i * 8)));
+        CHECK(read_word(PSX_NATIVE_TIMER_AUTO_ACK + i * 4) == 1);
+    }
+    CHECK(test_imask == (0x7ffu & ~0x71u));
+    for (unsigned i = 0; i < 3; ++i)
+        for (unsigned field = 0; field < 3; ++field) CHECK(test_timers[i][field] == 0);
+    CHECK(native_call(&cpu, 0xc0, 1, 0, 0, 0) == 0);
+    CHECK(read_word(0x1700) == PSX_NATIVE_IRQ_NODES + 5 * 12);
+    write_word(PSX_NATIVE_GENERIC_IRQ_ACK, 1);
+    CHECK(native_call(&cpu, 0xc0, 0x0c, 3, 0, 0) == 0);
+    CHECK(read_word(0x1718) == PSX_NATIVE_IRQ_NODES + 4 * 12);
+    CHECK(read_word(PSX_NATIVE_GENERIC_IRQ_ACK) == 0);
+    uint32_t before[sizeof ram / sizeof ram[0]];
+    memcpy(before, ram, sizeof ram);
+    cpu.gpr[4] = 4;
+    CHECK(psx_native_bios_service(&cpu, 0xc0, 0) == PSX_NATIVE_BIOS_UNSUPPORTED);
+    CHECK(memcmp(before, ram, sizeof ram) == 0);
+}
+
+static void check_native_hardware_event_classes(void)
+{
+    memset(ram, 0, sizeof ram);
+    memset(&irq_cpu, 0, sizeof irq_cpu);
+    irq_cpu.read_word = read_word; irq_cpu.write_word = write_word;
+    irq_cpu.read_byte = read_byte; irq_cpu.write_byte = write_byte;
+    psx_bios_hle_configure_native();
+    psx_native_bios_init_tables(write_word);
+    write_word(0x100, 0x1700);
+    psx_native_bios_boot_irq_handlers(write_word, 0x1700);
+    write_word(0x120, EVENT_BASE); write_word(0x124, EVENT_SIZE);
+    for (unsigned i = 0; i < 4; ++i) write_word(PSX_NATIVE_TIMER_AUTO_ACK + i * 4, 0);
+    const uint8_t classes[] = {1, 2, 3, 4, 5, 6, 6, 8, 11, 9, 10};
+    expected_saved_v0 = 0;
+    irq_active = 1;
+    for (unsigned irq = 0; irq < 11; ++irq) {
+        add_event(0, 0x1000, MODE_MARK, 0);
+        write_word(EVENT_BASE, 0xf0000000u + classes[irq]);
+        write_word(PSX_NATIVE_GENERIC_IRQ_ACK + irq * 4, 1);
+        irq_cpu.cop0[12] = 0x40000404u;
+        irq_cpu.cop0[14] = CALLER_RESUME;
+        test_istat = test_imask = 1u << irq;
+        int escaped = setjmp(irq_escape);
+        if (!escaped) {
+            g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_ENTRY);
+            CHECK(0);
+        }
+        CHECK(escaped == 1 && !test_istat && read_word(EVENT_BASE + 4) == READY);
+    }
+    irq_active = 0;
 }
 
 static void check_native_root_counter_irq(void)
@@ -524,6 +640,8 @@ static void check_native_root_counter_irq(void)
     psx_native_bios_init_tables(write_word);
 
     write_word(0x100, 0x1700);
+    psx_native_bios_boot_irq_handlers(write_word, 0x1700);
+    const uint32_t timer_head = PSX_NATIVE_IRQ_NODES + 3 * 12;
     write_word(0x1744, IRQ_HANDLER);
     write_word(0x1748, IRQ_VERIFY_A);
     write_word(0x1754, IRQ_HANDLER);
@@ -532,7 +650,7 @@ static void check_native_root_counter_irq(void)
     CHECK(native_call(&irq_cpu, 0xc0, 2, 1, 0x1750, 0) == 0);
     CHECK(read_word(0x1708) == 0x1750 && read_word(0x1750) == 0x1740);
     CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1740, 0) == 0x1740);
-    CHECK(read_word(0x1750) == 0);
+    CHECK(read_word(0x1750) == timer_head);
     CHECK(native_call(&irq_cpu, 0xc0, 2, 1, 0x1740, 0) == 0);
     CHECK(read_word(0x1708) == 0x1740 && read_word(0x1740) == 0x1750);
     call_count = 0;
@@ -557,7 +675,7 @@ static void check_native_root_counter_irq(void)
           calls[1] == IRQ_HANDLER && calls[2] == IRQ_VERIFY_B);
     CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1740, 0) == 0x1740);
     CHECK(native_call(&irq_cpu, 0xc0, 3, 1, 0x1750, 0) == 0x1750);
-    CHECK(read_word(0x1708) == 0);
+    CHECK(read_word(0x1708) == timer_head);
     CHECK(read_word(EVENT_BASE + 4) == READY &&
           read_word(EVENT_BASE + EVENT_SIZE + 4) == ENABLED);
 
@@ -729,7 +847,9 @@ int main(void)
     check_delivery(RETAIL_RESUME);
     check_native_calls();
     check_native_wait_event();
+    check_native_kernel_registration();
     check_native_root_counter_irq();
+    check_native_hardware_event_classes();
     check_native_files();
     puts("bios_hle_events_test: OK");
     return 0;

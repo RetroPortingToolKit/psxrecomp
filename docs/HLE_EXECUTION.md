@@ -25,6 +25,15 @@ resume a waiting call. Native service coverage is qualified by title and route;
 an executive identity alone does not establish gameplay, native saves or a
 cross-build netplay profile.
 
+SDK kernel reinitialization uses a separate guest-resident kernel heap and
+publishes its own event, process and thread tables through the ordinary kernel
+globals. Native C0 interrupt registration publishes writable HandlerInfo nodes
+into that same priority chain, so guest prepend, unlink and callback patches
+remain effective. GetSystemInfo's guarded native thunk also retains the two
+instruction immediates that SDK initialization reads to locate its writable
+thread/event/stack configuration. None of these operations copies or executes
+firmware instructions.
+
 The native backup-unit provider publishes writable File/Device records and
 honors device callback overrides. It supports synchronous memory-card file
 open, seek, read, write, close, directory iteration and format, plus deferred

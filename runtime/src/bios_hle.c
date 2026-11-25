@@ -369,8 +369,17 @@ static void native_exception_return(CPUState *cpu)
     (void)psx_syscall(cpu, 0);
 }
 
+static uint32_t native_builtin_irq_call(CPUState *cpu, uint32_t node,
+                                        int verifier);
+
 static uint32_t native_irq_call(CPUState *cpu, uint32_t function)
 {
+    const uint32_t phys = function & 0x1fffffffu;
+    if (phys >= PSX_NATIVE_IRQ_TOKENS &&
+        phys - PSX_NATIVE_IRQ_TOKENS < PSX_NATIVE_IRQ_NODE_COUNT * 8 &&
+        !(phys & 3u) && cpu->read_word(phys) == PSX_NATIVE_EXCEPTION_MARKER)
+        return native_builtin_irq_call(cpu, (phys - PSX_NATIVE_IRQ_TOKENS) / 8,
+                                       (phys & 4u) != 0);
     cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
     extern int g_exec_phase;
     int previous_phase = g_exec_phase;
@@ -378,6 +387,84 @@ static uint32_t native_irq_call(CPUState *cpu, uint32_t function)
     psx_dispatch_call(cpu, function, PSX_NATIVE_IRQ_CALLBACK_LINK);
     g_exec_phase = previous_phase;
     return cpu->gpr[2];
+}
+
+static uint32_t native_builtin_irq_call(CPUState *cpu, uint32_t node,
+                                        int verifier)
+{
+    const uint32_t events = cpu->read_word(KADDR_EVCB_BASE);
+    const uint32_t count = cpu->read_word(KADDR_EVCB_SIZE) / EVCB_STRIDE;
+    if (node < 4) {
+        const uint32_t bits[] = {1u << IRQ_TIMER0, 1u << IRQ_TIMER1,
+                                  1u << IRQ_TIMER2, 1u << IRQ_VBLANK};
+        const uint32_t bit = bits[node];
+        if (verifier)
+            return cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & bit;
+        cpu->gpr[4] = 0xf2000000u + node;
+        cpu->gpr[5] = 2;
+        cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
+        hle_deliver_event(cpu, events, count, PSX_NATIVE_IRQ_CALLBACK_LINK);
+        if (cpu->read_word(PSX_NATIVE_TIMER_AUTO_ACK + node * 4u)) {
+            cpu->write_word(0x1f801070u, ~bit);
+            native_exception_return(cpu);
+            exit(1);
+        }
+    } else if (node == 4 && verifier) {
+        const uint8_t order[] = {IRQ_CDROM, IRQ_SPU, IRQ_GPU, IRQ_PIO,
+            IRQ_SIO1, IRQ_VBLANK, IRQ_TIMER0, IRQ_TIMER1, IRQ_TIMER2, IRQ_SIO0, IRQ_DMA};
+        /* BIOS event classes are not the traversal index. Timer 2 shares
+         * timer 1's generic event class, as in the pinned kernel. */
+        const uint8_t classes[] = {3, 9, 2, 10, 11, 1, 5, 6, 6, 8, 4};
+        for (unsigned i = 0; i < sizeof order; ++i) {
+            const uint32_t irq = order[i], bit = 1u << irq;
+            if (!(cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & bit))
+                continue;
+            cpu->gpr[4] = 0xf0000000u + classes[i];
+            cpu->gpr[5] = 0x1000;
+            cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
+            hle_deliver_event(cpu, events, count, PSX_NATIVE_IRQ_CALLBACK_LINK);
+            if (cpu->read_word(PSX_NATIVE_GENERIC_IRQ_ACK + irq * 4))
+                cpu->write_word(0x1f801070u, ~bit);
+        }
+    } else if (node == 5 && verifier) {
+        const uint32_t tcb = psx_sched_current_tcb(cpu);
+        if (!tcb || !psx_ram_resolve(tcb, 0xc0, NULL)) {
+            fprintf(stderr, "native syscall verifier: invalid current thread\n");
+            exit(1);
+        }
+        const uint32_t cause = cpu->read_word(tcb + 0x98u) & 0x3cu;
+        if (!cause) return 0; /* hardware IRQ */
+        if (cause != 0x20u) {
+            fprintf(stderr, "native syscall verifier: unsupported exception %02x\n", cause);
+            exit(1);
+        }
+        cpu->write_word(tcb + 0x88u, cpu->read_word(tcb + 0x88u) + 4);
+        const uint32_t fn = cpu->read_word(tcb + 8 + 4 * 4);
+        uint32_t sr = cpu->read_word(tcb + 0x94u);
+        if (fn == 1) {
+            cpu->write_word(tcb + 0x10u, (sr & 0x404u) == 0x404u);
+            cpu->write_word(tcb + 0x94u, sr & ~0x404u);
+        } else if (fn == 2) {
+            cpu->write_word(tcb + 0x94u, sr | 0x404u);
+        } else if (fn == 3) {
+            const uint32_t target = cpu->read_word(tcb + 8 + 5 * 4);
+            const uint32_t process = cpu->read_word(0x108u);
+            if (!psx_ram_resolve(target, 0xc0, NULL) || !psx_ram_resolve(process, 4, NULL)) {
+                fprintf(stderr, "native syscall verifier: invalid thread target\n");
+                exit(1);
+            }
+            cpu->write_word(process, target);
+            cpu->write_word(tcb + 0x10u, 1);
+        } else if (fn != 0) {
+            cpu->gpr[4] = 0xf0000010u;
+            cpu->gpr[5] = 0x4000;
+            cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
+            hle_deliver_event(cpu, events, count, PSX_NATIVE_IRQ_CALLBACK_LINK);
+        }
+        native_exception_return(cpu);
+        exit(1);
+    }
+    return 0;
 }
 
 static void native_irq_chain(CPUState *cpu, unsigned priority)
@@ -436,55 +523,14 @@ static void native_exception_entry(CPUState *cpu)
     cpu->gpr[30] = PSX_NATIVE_EXCEPTION_STACK;
     cpu->gpr[28] = 0;
 
-    /* Boot installs its native root/SIO/generic providers first. Later
-     * title registrations prepend to each priority, so they run before
-     * the corresponding built-in provider. */
-    native_irq_chain(cpu, 0);
-    native_irq_chain(cpu, 1);
-
-    /* Boot's root-counter handlers run in priority 1, reverse insertion
-     * order: VBlank, timer 2, timer 1, timer 0. Deliver the real event before
-     * acknowledging and returning, and leave disabled auto-ack to later
-     * handlers (including the game's registered exception continuation). */
-    const uint32_t timer_bits[] = {1u << IRQ_TIMER0, 1u << IRQ_TIMER1,
-                                  1u << IRQ_TIMER2, 1u << IRQ_VBLANK};
-    const uint32_t events = cpu->read_word(KADDR_EVCB_BASE);
-    const uint32_t count = cpu->read_word(KADDR_EVCB_SIZE) / EVCB_STRIDE;
-    for (int timer = 3; timer >= 0; --timer) {
-        const uint32_t bit = timer_bits[timer];
-        if (!(cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & bit))
-            continue;
-        cpu->gpr[4] = 0xf2000000u + (uint32_t)timer;
-        cpu->gpr[5] = 2;
-        cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
-        hle_deliver_event(cpu, events, count, PSX_NATIVE_IRQ_CALLBACK_LINK);
-        if (cpu->read_word(PSX_NATIVE_TIMER_AUTO_ACK + (uint32_t)timer * 4u)) {
-            cpu->write_word(0x1f801070u, ~bit);
-            native_exception_return(cpu);
-            exit(1); /* exception escape must not return */
-        }
-    }
-    native_irq_chain(cpu, 2);
-    if (cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & (1u << IRQ_VBLANK))
-        psx_native_card_vblank(cpu);
-    native_irq_chain(cpu, 3);
-
-    /* Generic IRQ events run last; the game-owned CD/DMA driver receives
-     * these notifications and keeps control of its hardware IRQs. */
-    const uint8_t irq_order[] = {IRQ_CDROM, IRQ_SPU, IRQ_GPU, IRQ_PIO,
-        IRQ_SIO1, IRQ_VBLANK, IRQ_TIMER0, IRQ_TIMER1, IRQ_TIMER2, IRQ_SIO0, IRQ_DMA};
-    const uint8_t irq_class[] = {1, 2, 3, 4, 5, 6, 6, 8, 11, 9, 10};
-    for (unsigned i = 0; i < sizeof(irq_order); ++i) {
-        uint32_t irq = irq_order[i];
-        uint32_t bit = 1u << irq;
-        if (!(cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & bit))
-            continue;
-        cpu->gpr[4] = 0xf0000000u + irq_class[irq];
-        cpu->gpr[5] = 0x1000;
-        cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
-        hle_deliver_event(cpu, events, count, PSX_NATIVE_IRQ_CALLBACK_LINK);
-        if (cpu->read_word(PSX_NATIVE_GENERIC_IRQ_ACK + irq * 4))
-            cpu->write_word(0x1f801070u, ~bit);
+    /* Native providers are ordinary writable HandlerInfo nodes. C0 enqueue,
+     * guest prepend/unlink and patched callback pointers all affect this same
+     * priority walk; no second implicit delivery follows the registered chain. */
+    for (unsigned priority = 0; priority < 4; ++priority) {
+        native_irq_chain(cpu, priority);
+        if (priority == 2 &&
+            (cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & (1u << IRQ_VBLANK)))
+            psx_native_card_vblank(cpu);
     }
     const uint32_t jump = cpu->read_word(PSX_NATIVE_EXCEPTION_JUMP_PTR);
     if (!jump) {
@@ -550,7 +596,7 @@ static void native_wait_event(CPUState *cpu, int resume)
 static int native_stub_unchanged(CPUState *cpu, const PsxNativeBiosTable *table, uint32_t fn)
 {
     uint32_t stub = psx_native_bios_stub(table, fn);
-    for (uint32_t word = 0; word < 3; ++word) {
+    for (uint32_t word = 0; word < psx_native_bios_stub_words(table, fn); ++word) {
         if (cpu->read_word(stub + word * 4) != psx_native_bios_stub_word(table, fn, word))
             return 0;
     }
@@ -605,6 +651,12 @@ static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
             native_exception_entry(cpu);
             exit(1); /* exception escape must not return */
         }
+        if (phys == PSX_NATIVE_INFO_STUB) {
+            const PsxNativeBiosTable *table = &psx_native_bios_tables[0];
+            if (!native_stub_unchanged(cpu, table, 0x9d)) return 0;
+            cpu->gpr[9] = 0x9d;
+            return native_service_dispatch(cpu, 0xa0, 0x9d);
+        }
         for (unsigned i = 0; i < sizeof(psx_native_bios_tables) / sizeof(psx_native_bios_tables[0]); ++i) {
             const PsxNativeBiosTable *table = &psx_native_bios_tables[i];
             if (phys == table->token) {
@@ -635,6 +687,7 @@ static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
             if (phys >= table->stubs && phys - table->stubs < table->count * 12u &&
                 (phys - table->stubs) % 12u == 0) {
                 uint32_t fn = (phys - table->stubs) / 12u;
+                if (phys != (psx_native_bios_stub(table, fn) & 0x1fffffffu)) return 0;
                 if (!native_stub_unchanged(cpu, table, fn)) return 0;
                 cpu->gpr[9] = fn;
                 return native_service_dispatch(cpu, table->vector, fn);
@@ -676,7 +729,7 @@ int psx_bios_hle_dispatch_quiet(uint32_t address) {
     if (s_native_kernel_on)
         return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
                phys != PSX_NATIVE_BOOT_RETURN_PHYS && phys != PSX_NATIVE_EXCEPTION_ENTRY &&
-               phys != PSX_NATIVE_EXCEPTION_PATCH_RESUME &&
+               phys != PSX_NATIVE_EXCEPTION_PATCH_RESUME && phys != PSX_NATIVE_INFO_STUB &&
                (phys < 0x8e00u || phys >= 0x9f00u) &&
                (phys < 0x1fc00000u || phys >= 0x1fc80000u);
     return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&

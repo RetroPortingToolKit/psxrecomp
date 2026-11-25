@@ -19,6 +19,16 @@ extern "C" {
 #define PSX_NATIVE_USER_HEAP_BEGIN 0x0000b058u
 #define PSX_NATIVE_USER_HEAP_END 0x0000b05cu
 #define PSX_NATIVE_USER_HEAP_MARKER 0x0000b060u
+#define PSX_NATIVE_KERNEL_HEAP_HEAD 0x0000b070u
+#define PSX_NATIVE_KERNEL_HEAP_BEGIN 0x0000b074u
+#define PSX_NATIVE_KERNEL_HEAP_END 0x0000b078u
+#define PSX_NATIVE_KERNEL_HEAP_MARKER 0x0000b080u
+#define PSX_NATIVE_KERNEL_CONFIG 0x0000b090u
+#define PSX_NATIVE_KERNEL_NAME 0x0000b0b0u
+#define PSX_NATIVE_INFO_STUB 0x0000a180u
+#define PSX_NATIVE_IRQ_NODES 0x0000b500u
+#define PSX_NATIVE_IRQ_TOKENS 0x0000a120u
+#define PSX_NATIVE_IRQ_NODE_COUNT 6u
 /* The legacy SDK card fast-track compatibility region is guest-writable.
  * Keep the native exception stack below 0xdf80..0xdffc. */
 #define PSX_NATIVE_EXCEPTION_STACK 0x8000df70u
@@ -65,7 +75,14 @@ static const PsxNativeBiosTable psx_native_bios_tables[] = {
 
 static inline uint32_t psx_native_bios_stub(const PsxNativeBiosTable *table,
                                            uint32_t fn) {
+    if (table->vector == 0xa0 && fn == 0x9d)
+        return 0x80000000u | PSX_NATIVE_INFO_STUB;
     return 0x80000000u + table->stubs + fn * 12u;
+}
+
+static inline uint32_t psx_native_bios_stub_words(const PsxNativeBiosTable *table,
+                                                 uint32_t fn) {
+    return table->vector == 0xa0 && fn == 0x9d ? 5u : 3u;
 }
 
 /* Guest-visible ordinary vector and per-entry thunks. The native dispatcher
@@ -78,6 +95,18 @@ static inline uint32_t psx_native_bios_vector_word(const PsxNativeBiosTable *tab
 }
 static inline uint32_t psx_native_bios_stub_word(const PsxNativeBiosTable *table,
                                                 uint32_t fn, uint32_t word) {
+    if (table->vector == 0xa0 && fn == 0x9d) {
+        /* SDK kernel initialization locates the writable TCB/EvCB/stack
+         * configuration from GetSystemInfo's first two instructions. Retain
+         * that observed ABI while the actual call remains a native service. */
+        const uint32_t address = PSX_NATIVE_KERNEL_CONFIG + 8;
+        const uint32_t info[] = {
+            0x3c020000u | ((address + 0x8000u) >> 16),
+            0x8c420000u | (address & 0xffffu),
+            0x2409009du, 0x08000000u | (table->token >> 2), 0
+        };
+        return info[word];
+    }
     const uint32_t words[] = { 0x24090000u | fn, 0x08000000u | (table->token >> 2), 0 };
     return words[word];
 }
@@ -97,7 +126,7 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
         for (uint32_t fn = 0; fn < table->count; ++fn) {
             const uint32_t stub = psx_native_bios_stub(table, fn);
             write_word(table->table + fn * 4, stub);
-            for (uint32_t word = 0; word < 3; ++word)
+            for (uint32_t word = 0; word < psx_native_bios_stub_words(table, fn); ++word)
                 write_word(stub + word * 4, psx_native_bios_stub_word(table, fn, word));
         }
     }
@@ -115,6 +144,22 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
     write_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x3c, 0);
     write_word(PSX_NATIVE_EXCEPTION_PATCH_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
     write_word(PSX_NATIVE_WAIT_EVENT_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
+    for (uint32_t node = 0; node < PSX_NATIVE_IRQ_NODE_COUNT; ++node) {
+        const uint32_t address = PSX_NATIVE_IRQ_NODES + node * 12;
+        const uint32_t token = PSX_NATIVE_IRQ_TOKENS + node * 8;
+        write_word(address, 0);
+        write_word(address + 4, node < 4 ? 0x80000000u | token : 0);
+        write_word(address + 8, 0x80000000u | (token + 4));
+        write_word(token, PSX_NATIVE_EXCEPTION_MARKER);
+        write_word(token + 4, PSX_NATIVE_EXCEPTION_MARKER);
+    }
+    const char native_name[32] = "PSXRecomp native kernel";
+    for (uint32_t offset = 0; offset < sizeof native_name; offset += 4) {
+        uint32_t word = 0;
+        for (uint32_t byte = 0; byte < 4; ++byte)
+            word |= (uint32_t)(uint8_t)native_name[offset + byte] << (byte * 8);
+        write_word(PSX_NATIVE_KERNEL_NAME + offset, word);
+    }
     /* Published File/Device ABI: SDKs inspect and patch these ordinary RAM
      * records. Device methods use the same guarded native A0 thunks. */
     for (uint32_t at = PSX_NATIVE_FILE_TABLE; at < PSX_NATIVE_CARD_FIND_PATTERN + 24; at += 4)
@@ -142,6 +187,22 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
                (PSX_NATIVE_CARD_FASTTRACK_SCRATCH >> 16));
     write_word(PSX_NATIVE_EXCEPTION_ENTRY + 0x74, 0x375a0000u |
                (PSX_NATIVE_CARD_FASTTRACK_SCRATCH & 0xffffu));
+}
+
+/* The same writable HandlerInfo nodes are used by boot and C0 enqueue calls.
+ * Later guest registrations prepend; unlinking or editing a native node has
+ * the ordinary effect on the actual interrupt chain. */
+static inline void psx_native_bios_boot_irq_handlers(
+    void (*write_word)(uint32_t, uint32_t), uint32_t handlers) {
+    uint32_t heads[4] = {0, 0, 0, 0};
+    for (uint32_t node = 0; node < PSX_NATIVE_IRQ_NODE_COUNT; ++node) {
+        const uint32_t priority = node < 4 ? 1 : node == 4 ? 3 : 0;
+        const uint32_t address = PSX_NATIVE_IRQ_NODES + node * 12;
+        write_word(address, heads[priority]);
+        heads[priority] = address;
+    }
+    for (uint32_t priority = 0; priority < 4; ++priority)
+        write_word(handlers + priority * 8, heads[priority]);
 }
 
 enum {
