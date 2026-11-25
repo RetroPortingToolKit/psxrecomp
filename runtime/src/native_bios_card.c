@@ -211,10 +211,11 @@ static int open_card_file(CPUState *cpu, uint32_t file, uint32_t path, uint32_t 
     return 0;
 }
 
-static int32_t transfer_file(CPUState *cpu, uint32_t file, uint32_t buffer, uint32_t bytes, int writing)
+static int32_t transfer_file_at(CPUState *cpu, uint32_t file, uint32_t buffer,
+                                uint32_t bytes, int writing, uint32_t offset)
 {
     unsigned port = file_word(cpu, file, 4) >> 4;
-    uint32_t offset = file_word(cpu, file, 16), length = file_word(cpu, file, 32);
+    uint32_t cursor = file_word(cpu, file, 16), length = file_word(cpu, file, 32);
     unsigned block = file_word(cpu, file, 36) / 64;
     if (port > 1 || !card_ready(cpu, port) || offset > length || bytes > INT32_MAX ||
         (bytes && !psx_ram_resolve(buffer, bytes, NULL))) return -1;
@@ -248,8 +249,13 @@ static int32_t transfer_file(CPUState *cpu, uint32_t file, uint32_t buffer, uint
         done += take;
     }
     if (writing && bytes && !commit_card(port)) return -1;
-    cpu->write_word(file + 16, offset + bytes);
+    cpu->write_word(file + 16, cursor + bytes);
     return (int32_t)bytes;
+}
+
+static int32_t transfer_file(CPUState *cpu, uint32_t file, uint32_t buffer, uint32_t bytes, int writing)
+{
+    return transfer_file_at(cpu, file, buffer, bytes, writing, file_word(cpu, file, 16));
 }
 
 static int32_t transfer_or_enqueue_file(CPUState *cpu, uint32_t file, uint32_t buffer,
@@ -273,6 +279,7 @@ static int32_t transfer_or_enqueue_file(CPUState *cpu, uint32_t file, uint32_t b
     }
     uint32_t request = card_request(port);
     cpu->write_word(request + CARD_REQ_DEVICE, port << 4);
+    cpu->write_word(request + CARD_REQ_SECTOR, offset / MEMCARD_SECTOR_SIZE);
     cpu->write_word(request + CARD_REQ_BUFFER, buffer);
     cpu->write_word(request + CARD_REQ_INVALID, 0);
     cpu->write_word(request + CARD_REQ_BACKUP_INFO, 0);
@@ -487,8 +494,10 @@ static uint32_t complete_request(CPUState *cpu, unsigned port, uint32_t status)
          * before reusing the synchronous host sector transfer, then publish
          * the normal backup/file/card events after its final result. */
         cpu->write_word(PSX_NATIVE_CARD_STATUS + port * 4, 1);
-        int32_t transferred = transfer_file(cpu, file, buffer,
-            cpu->read_word(request + CARD_REQ_BYTES), status == CARD_FILE_WRITE);
+        if (sector > UINT32_MAX / MEMCARD_SECTOR_SIZE) return CARD_ERROR;
+        int32_t transferred = transfer_file_at(cpu, file, buffer,
+            cpu->read_word(request + CARD_REQ_BYTES), status == CARD_FILE_WRITE,
+            sector * MEMCARD_SECTOR_SIZE);
         return transferred < 0 ? CARD_ERROR : CARD_SUCCESS;
     }
     if (status == 0) return CARD_SUCCESS;

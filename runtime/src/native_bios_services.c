@@ -759,7 +759,7 @@ static int service_enqueue_native_irqs(CPUState *cpu, uint32_t fn)
     uint32_t first = fn == 0 ? 0 : fn == 0x0c ? 4 : 5;
     uint32_t count = fn == 0 ? 4 : 1;
     for (uint32_t i = 0; i < count; ++i) {
-        uint32_t node = PSX_NATIVE_IRQ_NODES + (first + i) * 12;
+        uint32_t node = PSX_NATIVE_IRQ_NODES + (first + i) * PSX_NATIVE_IRQ_NODE_BYTES;
         cpu->write_word(node, cpu->read_word(table + priority * 8));
         cpu->write_word(table + priority * 8, node);
     }

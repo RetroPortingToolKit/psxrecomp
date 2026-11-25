@@ -398,12 +398,17 @@ static uint32_t native_builtin_irq_call(CPUState *cpu, uint32_t node,
         const uint32_t bits[] = {1u << IRQ_TIMER0, 1u << IRQ_TIMER1,
                                   1u << IRQ_TIMER2, 1u << IRQ_VBLANK};
         const uint32_t bit = bits[node];
-        if (verifier)
-            return cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & bit;
-        cpu->gpr[4] = 0xf2000000u + node;
-        cpu->gpr[5] = 2;
-        cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
-        hle_deliver_event(cpu, events, count, PSX_NATIVE_IRQ_CALLBACK_LINK);
+        if (verifier) {
+            if (!(cpu->read_word(0x1f801070u) & cpu->read_word(0x1f801074u) & bit))
+                return 0;
+            /* Event delivery belongs to the verifier even if a game replaces
+             * or removes the HandlerInfo's acknowledgement callback. */
+            cpu->gpr[4] = 0xf2000000u + node;
+            cpu->gpr[5] = 2;
+            cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
+            hle_deliver_event(cpu, events, count, PSX_NATIVE_IRQ_CALLBACK_LINK);
+            return 1;
+        }
         if (cpu->read_word(PSX_NATIVE_TIMER_AUTO_ACK + node * 4u)) {
             cpu->write_word(0x1f801070u, ~bit);
             native_exception_return(cpu);

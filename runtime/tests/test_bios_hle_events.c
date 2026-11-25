@@ -25,6 +25,7 @@ enum {
     CALLBACK_CARD_FIND = 0x10024,
     CALLBACK_CARD_COMPLETE = 0x10028,
     CALLBACK_ASYNC_FILE = 0x1002c,
+    CALLBACK_TIMER_HANDLER = 0x10030,
     IRQ_VERIFY_A = 0x10018,
     IRQ_VERIFY_B = 0x1001c,
     IRQ_HANDLER = 0x10020,
@@ -62,6 +63,7 @@ static unsigned card_file_completions;
 static uint32_t expected_card_device, expected_card_spec;
 static uint32_t async_events[4], expected_async_spec;
 static unsigned async_event_count;
+static unsigned timer_handler_calls;
 static void (*card_replaced_hook)(void);
 static jmp_buf irq_escape;
 static CPUState irq_cpu;
@@ -203,6 +205,12 @@ void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_address)
     const PsxNativeBiosTable *table = &psx_native_bios_tables[0];
     uint32_t first = psx_native_bios_stub(table, 0x65);
     uint32_t last = psx_native_bios_stub(table, 0x6d);
+    if (addr == CALLBACK_TIMER_HANDLER) {
+        CHECK(irq_active && cpu == &irq_cpu && return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
+        CHECK(cpu->gpr[4] == 1 && read_word(EVENT_BASE + 4) == READY);
+        ++timer_handler_calls;
+        return;
+    }
     if (addr == CALLBACK_ASYNC_FILE) {
         CHECK(return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
         CHECK(cpu->gpr[5] == expected_async_spec && async_event_count < 4);
@@ -600,21 +608,28 @@ static void check_native_kernel_registration(void)
     test_imask = 0x7ff;
     memset(test_timers, 0xff, sizeof test_timers);
     CHECK(native_call(&cpu, 0xc0, 0, 2, 0, 0) == 0);
-    CHECK(read_word(0x1710) == PSX_NATIVE_IRQ_NODES + 3 * 12);
+    CHECK(read_word(0x1710) == PSX_NATIVE_IRQ_NODES + 3 * PSX_NATIVE_IRQ_NODE_BYTES);
     for (unsigned i = 0; i < 4; ++i) {
-        const uint32_t node = PSX_NATIVE_IRQ_NODES + i * 12;
-        CHECK(read_word(node) == (i ? node - 12 : 0));
+        const uint32_t node = PSX_NATIVE_IRQ_NODES + i * PSX_NATIVE_IRQ_NODE_BYTES;
+        CHECK(read_word(node) == (i ? node - PSX_NATIVE_IRQ_NODE_BYTES : 0));
         CHECK(read_word(node + 4) == (0x80000000u | (PSX_NATIVE_IRQ_TOKENS + i * 8)));
+        /* A normal HandlerInfo includes a fourth padding word. Editing it
+         * must not overwrite the following record's next pointer. */
+        uint32_t next_record = read_word(node + 16);
+        CHECK(read_word(node + 12) == 0);
+        write_word(node + 12, 0x12345678);
+        CHECK(read_word(node + 16) == next_record);
+        write_word(node + 12, 0);
         CHECK(read_word(PSX_NATIVE_TIMER_AUTO_ACK + i * 4) == 1);
     }
     CHECK(test_imask == (0x7ffu & ~0x71u));
     for (unsigned i = 0; i < 3; ++i)
         for (unsigned field = 0; field < 3; ++field) CHECK(test_timers[i][field] == 0);
     CHECK(native_call(&cpu, 0xc0, 1, 0, 0, 0) == 0);
-    CHECK(read_word(0x1700) == PSX_NATIVE_IRQ_NODES + 5 * 12);
+    CHECK(read_word(0x1700) == PSX_NATIVE_IRQ_NODES + 5 * PSX_NATIVE_IRQ_NODE_BYTES);
     write_word(PSX_NATIVE_GENERIC_IRQ_ACK, 1);
     CHECK(native_call(&cpu, 0xc0, 0x0c, 3, 0, 0) == 0);
-    CHECK(read_word(0x1718) == PSX_NATIVE_IRQ_NODES + 4 * 12);
+    CHECK(read_word(0x1718) == PSX_NATIVE_IRQ_NODES + 4 * PSX_NATIVE_IRQ_NODE_BYTES);
     CHECK(read_word(PSX_NATIVE_GENERIC_IRQ_ACK) == 0);
     uint32_t before[sizeof ram / sizeof ram[0]];
     memcpy(before, ram, sizeof ram);
@@ -652,6 +667,29 @@ static void check_native_hardware_event_classes(void)
         }
         CHECK(escaped == 1 && !test_istat && read_word(EVENT_BASE + 4) == READY);
     }
+    /* Delivery is a verifier side effect. Removing the ack handler must not
+     * suppress it, and replacing that handler observes exactly verifier=1. */
+    const uint8_t timer_irqs[] = {4, 5, 6, 0};
+    for (unsigned timer = 0; timer < 4; ++timer) {
+        const uint32_t handler = PSX_NATIVE_IRQ_NODES + timer * PSX_NATIVE_IRQ_NODE_BYTES + 4;
+        const uint32_t original = read_word(handler);
+        for (unsigned patched = 0; patched < 2; ++patched) {
+            add_event(0, 2, MODE_MARK, 0);
+            write_word(EVENT_BASE, 0xf2000000u + timer);
+            write_word(handler, patched ? CALLBACK_TIMER_HANDLER : 0);
+            timer_handler_calls = 0;
+            irq_cpu.cop0[12] = 0x40000404u;
+            test_istat = test_imask = 1u << timer_irqs[timer];
+            int escaped = setjmp(irq_escape);
+            if (!escaped) {
+                g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_ENTRY);
+                CHECK(0);
+            }
+            CHECK(escaped == 1 && !test_istat && read_word(EVENT_BASE + 4) == READY);
+            CHECK(timer_handler_calls == patched);
+        }
+        write_word(handler, original);
+    }
     irq_active = 0;
 }
 
@@ -670,7 +708,7 @@ static void check_native_root_counter_irq(void)
 
     write_word(0x100, 0x1700);
     psx_native_bios_boot_irq_handlers(write_word, 0x1700);
-    const uint32_t timer_head = PSX_NATIVE_IRQ_NODES + 3 * 12;
+    const uint32_t timer_head = PSX_NATIVE_IRQ_NODES + 3 * PSX_NATIVE_IRQ_NODE_BYTES;
     write_word(0x1744, IRQ_HANDLER);
     write_word(0x1748, IRQ_VERIFY_A);
     write_word(0x1754, IRQ_HANDLER);
@@ -808,6 +846,7 @@ static void check_native_async_file(CPUState *cpu)
     CHECK(native_call(cpu, 0xb0, 0x34, 3, 0x6000, 128) == UINT32_MAX);
     CHECK(native_call(cpu, 0xb0, 0x36, 3, 0, 0) == UINT32_MAX);
     CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44) == 0x8001);
+    CHECK(native_call(cpu, 0xb0, 0x33, 3, 128, 0) == 128);
     /* A pending transfer is completely represented by current CPU/RAM state. */
     static uint32_t pending_ram[sizeof ram / sizeof ram[0]];
     memcpy(pending_ram, ram, sizeof ram);
@@ -815,7 +854,7 @@ static void check_native_async_file(CPUState *cpu)
     psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
     CHECK(async_event_count == 3 && async_events[0] == 0xf4000001u &&
           async_events[1] == 3 && async_events[2] == 0xf0000011u);
-    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44 + 16) == 128);
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44 + 16) == 256);
     for (unsigned i = 0; i < 128; ++i) CHECK(read_byte(0x6000 + i) == (uint8_t)(i ^ 0x5a));
     memcpy(ram, pending_ram, sizeof ram); *cpu = pending_cpu; async_event_count = 0;
     psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
@@ -825,9 +864,14 @@ static void check_native_async_file(CPUState *cpu)
     async_event_count = 0;
     unsigned flushes = card_flushes;
     CHECK(native_call(cpu, 0xb0, 0x35, 3, 0x4000, 128) == 0);
+    uint8_t next_sector[128];
+    memcpy(next_sector, test_card[0][65], sizeof next_sector);
+    CHECK(native_call(cpu, 0xb0, 0x33, 3, 128, 0) == 128);
     CHECK(card_flushes == flushes && !async_event_count);
     psx_native_card_vblank(cpu); psx_native_card_vblank(cpu);
     CHECK(card_flushes == flushes + 1 && test_card[0][64][1] == 3);
+    CHECK(!memcmp(next_sector, test_card[0][65], sizeof next_sector));
+    CHECK(read_word(PSX_NATIVE_FILE_TABLE + 3 * 44 + 16) == 256);
     CHECK(async_event_count == 3 && async_events[0] == 3 &&
           async_events[1] == 0xf4000001u && async_events[2] == 0xf0000011u);
     CHECK(native_call(cpu, 0xb0, 0x36, 3, 0, 0) == 0);

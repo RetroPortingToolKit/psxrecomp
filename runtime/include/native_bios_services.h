@@ -29,6 +29,7 @@ extern "C" {
 #define PSX_NATIVE_IRQ_NODES 0x0000b500u
 #define PSX_NATIVE_IRQ_TOKENS 0x0000a120u
 #define PSX_NATIVE_IRQ_NODE_COUNT 6u
+#define PSX_NATIVE_IRQ_NODE_BYTES 16u
 /* The legacy SDK card fast-track compatibility region is guest-writable.
  * Keep the native exception stack below 0xdf80..0xdffc. */
 #define PSX_NATIVE_EXCEPTION_STACK 0x8000df70u
@@ -145,11 +146,12 @@ static inline void psx_native_bios_init_tables(void (*write_word)(uint32_t, uint
     write_word(PSX_NATIVE_EXCEPTION_PATCH_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
     write_word(PSX_NATIVE_WAIT_EVENT_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
     for (uint32_t node = 0; node < PSX_NATIVE_IRQ_NODE_COUNT; ++node) {
-        const uint32_t address = PSX_NATIVE_IRQ_NODES + node * 12;
+        const uint32_t address = PSX_NATIVE_IRQ_NODES + node * PSX_NATIVE_IRQ_NODE_BYTES;
         const uint32_t token = PSX_NATIVE_IRQ_TOKENS + node * 8;
         write_word(address, 0);
         write_word(address + 4, node < 4 ? 0x80000000u | token : 0);
         write_word(address + 8, 0x80000000u | (token + 4));
+        write_word(address + 12, 0);
         write_word(token, PSX_NATIVE_EXCEPTION_MARKER);
         write_word(token + 4, PSX_NATIVE_EXCEPTION_MARKER);
     }
@@ -197,7 +199,7 @@ static inline void psx_native_bios_boot_irq_handlers(
     uint32_t heads[4] = {0, 0, 0, 0};
     for (uint32_t node = 0; node < PSX_NATIVE_IRQ_NODE_COUNT; ++node) {
         const uint32_t priority = node < 4 ? 1 : node == 4 ? 3 : 0;
-        const uint32_t address = PSX_NATIVE_IRQ_NODES + node * 12;
+        const uint32_t address = PSX_NATIVE_IRQ_NODES + node * PSX_NATIVE_IRQ_NODE_BYTES;
         write_word(address, heads[priority]);
         heads[priority] = address;
     }
