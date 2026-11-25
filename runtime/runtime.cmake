@@ -2348,6 +2348,12 @@ function(psxrecomp_add_runtime_target target)
     set_property(SOURCE
         "${PSXRECOMP_ROOT}/runtime/src/main.cpp"
         "${PSXRECOMP_ROOT}/runtime/src/bios_hle.c"
+        # Cache identity and compiler children must observe the same selected
+        # provider as boot/dispatch. This remains source-local: no guest objects
+        # need rebuilding just to publish the host's native marker contract.
+        "${PSXRECOMP_ROOT}/runtime/src/overlay_loader.c"
+        "${PSXRECOMP_ROOT}/runtime/src/autocompile.c"
+        "${PSXRECOMP_ROOT}/runtime/src/psx_bios_module.c"
         APPEND PROPERTY COMPILE_DEFINITIONS
         "$<$<BOOL:$<TARGET_PROPERTY:PSX_USE_NATIVE_KERNEL>>:PSX_NATIVE_KERNEL=1>")
     if(PSX_GL_BATCH_IMPL STREQUAL "HLE")
