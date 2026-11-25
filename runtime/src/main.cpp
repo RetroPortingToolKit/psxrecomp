@@ -57,6 +57,7 @@ static bool s_replay_terminal_boundary;
 #include "psx_rewind.h"
 #include "psx_savestate_menu.h"
 #include "host_osd.h"
+#include "psx_capture.h"
 #include "local_mouse_sdl.h"
 #include "pad_external_input.h"
 #include "host_keymap.h"
@@ -4123,6 +4124,7 @@ extern "C" int psx_present_vsync_owns_cadence(void) {
 }
 
 static int present_effective_swap_interval(void) {
+    if (psx_capture_requested()) return 0;   /* unattended capture: never wait on a display */
     const int blocked = g_netplay_vsync_forced_off || psx_netplay_active() ||
         g_frame_interpolation || psx_present_vsync_disabled() ||
         host_driver_vsync_unreliable();
@@ -4153,6 +4155,7 @@ extern "C" void psx_display_timing_json(char *out, int cap) {
 }
 
 static int present_should_wall_pace(void) {
+    if (psx_capture_requested()) return 0;   /* unpaced: as fast as the host can step */
     /* The single-context temporal-blend path subdivides this same stock frame
      * interval. Do not run the outer pacer as well or guest timing doubles. */
     if (g_frame_interpolation && g_gl_active &&
@@ -4433,6 +4436,7 @@ static const char* netplay_start_failure(int nrc, const PsxNetplayConfig& cfg) {
 }
 
 static void shutdown_runtime(void) {
+    psx_capture_finish();
     if (s_replay_terminal_boundary)
         replay_session_checkpoint_at_boundary();
     replay_frontend_shutdown();   /* puts the player's settings and cards back */
@@ -4619,6 +4623,7 @@ static void sdl_audio_pump(bool discard_output = false) {
     audio_trace_event(AUDIO_EV_RENDER, (uint32_t)frames, queued);
 
     const int host_frames = (int)spu_output_pop(sdl_audio_buf, (uint32_t)frames);
+    psx_capture_audio(sdl_audio_buf, (uint32_t)host_frames);
     if (discard_output) {
         g_turbo_audio_sink_frames += (uint64_t)host_frames;
         audio_trace_event(AUDIO_EV_SINK_DROP, (uint32_t)host_frames, 0);
@@ -6945,8 +6950,18 @@ static void apply_input_override_to_sio(int override_word) {
     /* Prefer the configured seat mode (incl. game.toml lock_mode / settings
      * p1_mode). Falling back to DIGITAL when kind==0 made DualShock-locked
      * titles (Ape Escape) ignore debug-server injection in headless runs. */
+    /* A local DualShock seat powers on digital and flips to analog only when
+     * the game sends the config/set-mode command (real hardware). Injected
+     * pads follow the live-controller contract: the SIO type stays game-owned,
+     * so scripted input never presents ID 0x73 before the game asked for it
+     * (the BIOS shell ignores such a pad). */
+    bool game_owned_type = live_pad_mode(0);
+#ifndef PSX_NO_DEBUG_TOOLS
+    game_owned_type = game_owned_type && debug_server_get_pad_type_override() < 0;
+#endif
     int mode;
-    if (p.kind != 0)                  mode = effective_player_mode(p);
+    if (game_owned_type)              mode = sampled_pad_mode(0);
+    else if (p.kind != 0)             mode = effective_player_mode(p);
     else if (dev_any_input_enabled()) mode = (int)PSXRecompV4::PAD_MODE_ANALOG;
     else                              mode = p.mode;
 
@@ -6987,7 +7002,7 @@ static void apply_input_override_to_sio(int override_word) {
         sio_set_pad_config_capable(0, injected_type != SIO_PAD_DIGITAL);
     }
 #endif
-    sio_request_pad_type(0, injected_type);
+    if (!game_owned_type) sio_request_pad_type(0, injected_type);
 #ifndef PSX_NO_DEBUG_TOOLS
     const int debug_connected = debug_server_get_pad_connected_override(0);
     if (debug_connected >= 0) sio_set_pad_connected(0, debug_connected);
@@ -10278,6 +10293,11 @@ static void replay_live_p1(int override, uint16_t *buttons, uint8_t sticks[4]) {
 }
 
 static void replay_exit(int status, const char *origin) {
+    psx_capture_finish();
+    if (!status && psx_capture_failed()) {
+        status = 2;
+        origin = "capture-output-failed";
+    }
     std::fflush(stdout);
     psx_crash_trace_set_exit_origin(origin);
     std::exit(status);
@@ -10328,8 +10348,22 @@ static void replay_record_sampled_input(void) {
     replay_frontend_observe(sio_get_pad_buttons_slot(0), sticks);
 }
 
+static bool s_capture_load_pending;
+
 static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     NetplayVblankEpilogue ep{};
+    if (s_capture_load_pending) {
+        if (savestate_take_load_failed())
+            replay_exit(2, "capture-state-load-failed");
+        if (savestate_take_load_completed()) {
+            s_capture_load_pending = false;
+            psx_capture_begin();
+        }
+    }
+    if (psx_capture_vblank()) {
+        /* Capture range finished (--capture-to / --exit-at-frame). */
+        replay_exit(0, "capture-complete");
+    }
     /* The guest just finished the previous input frame. A clean quit during
      * this host boundary can keep its exact terminal state until new input. */
     struct ReplayTerminalBoundary {
@@ -10378,8 +10412,16 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     debug_server_history_frame();
     /* TCP input commands are available in lean builds too. Consume each
      * port once per guest frame so acknowledged presses reach the pads. */
-    int override = debug_server_get_input_override();
-    int override_p2 = debug_server_get_input_override_port2();
+    const bool capture_input_only = psx_capture_requested();
+    int override = 0xFFFF;
+    int override_p2 = 0xFFFF;
+    if (capture_input_only) {
+        psx_capture_input(&override, &override_p2);
+        if (override_p2 < 0) override_p2 = 0xFFFF;
+    } else {
+        override = debug_server_get_input_override();
+        override_p2 = debug_server_get_input_override_port2();
+    }
     s_digital_pad_injected_frame = override >= 0;
     /* Always-on wall-time stamp for this guest frame (host_span_ring.h). */
     extern uint64_t s_frame_count;
@@ -10393,7 +10435,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 #endif
     host_frame_stamp((uint32_t)s_frame_count, (uint32_t)g_dirty_ram_insns_run, stamp_static_checks);
 
-    psx_local_mouse_begin(sdl_window, !mouse_seat_configured() && local_mouse_live(override));
+    psx_local_mouse_begin(sdl_window, !capture_input_only &&
+                         !mouse_seat_configured() && local_mouse_live(override));
     {
         /* Outside every debug guard on purpose: production must be measurable. */
         extern uint64_t s_frame_count;
@@ -10550,7 +10593,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     /* Direct-shortcut claims are settled before any shortcut poll or pad
      * sample this frame (no-op unless a title allowed a direct shortcut). */
     direct_shortcut_claim_update();
-    if (!g_headless) {
+    if (!g_headless && !capture_input_only) {
         /* Pump SDL events to prevent window freeze. */
         psx_local_mouse_begin(sdl_window, !mouse_seat_configured() && local_mouse_live(override));
         if (!drain_host_events()) return ep;
@@ -10570,7 +10613,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             rewind_host_pause_loop();
         if (psx_host_pause_depth() > 0)
             host_pause_loop();
-    } else if (host_pad_layer(nullptr, nullptr, nullptr, nullptr)) {
+    } else if (g_headless && host_pad_layer(nullptr, nullptr, nullptr, nullptr)) {
         /* Headless with the debug host layer: the host shortcuts that need no
          * window (Rewind capture/open, fast-forward latch) poll as they would
          * windowed, so scripted runs can drive them. */
@@ -19519,6 +19562,10 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--hidden-window") == 0) {
             g_hidden_window = 1;
             force_no_launcher = true;
+        } else if (psx_capture_parse_arg(argc, argv, &i)) {
+            /* --capture-out/-size/-from/-to/-every/-format/-wav,
+             * --input-script, --load-state, --exit-at-frame: unattended
+             * presented-frame capture (psx_capture.h). */
         } else if (std::strcmp(argv[i], "--netplay") == 0) {
             net_cfg.enabled = 1;
         } else if (std::strcmp(argv[i], "--net-slot") == 0 && i + 1 < argc) {
@@ -19560,6 +19607,12 @@ int main(int argc, char** argv) {
             g_headless = 1;
             force_no_launcher = true;
         }
+    }
+    /* Unattended capture: hidden presenter, no launcher (psx_capture.h). */
+    if (psx_capture_requested()) {
+        g_hidden_window = 1;
+        force_no_launcher = true;
+        if (cli_renderer < 0) cli_renderer = 1;
     }
     /* The settings file is not read yet; its skip_launcher is added below. */
     s_start_interactive =
@@ -22270,6 +22323,16 @@ int main(int argc, char** argv) {
      * including BIOS instances that have no [game]-block config. */
     if (cli_debug_port >= 0) debug_port      = (uint16_t)cli_debug_port;
     if (cli_renderer   >= 0) g_video_renderer = cli_renderer;
+    if (psx_capture_requested()) {
+        /* Deterministic single-thread presentation, driver vsync off. */
+        g_video_renderer = 1;
+        g_render_thread = 0;
+        g_present_thread = 0;
+        g_present_thread_pref = 0;
+        g_low_latency_input = 0;
+        g_video_vsync = 0;
+        host_volume_set(100);
+    }
     if (cli_window_title)    window_title     = cli_window_title;
     if (cli_memcard_dir) {
         memcard_dir = std::filesystem::path(cli_memcard_dir);
@@ -23079,7 +23142,9 @@ session_reboot:
 #ifdef SDL_HINT_WINDOWS_DPI_SCALING
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "0");
 #endif
-        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
+        const Uint32 flags = psx_capture_requested() ? SDL_INIT_VIDEO
+            : SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER;
+        if (SDL_Init(flags) != 0) {
             std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
             return refuse_start("video_init", "Game window could not be opened",
                 std::string("The video system could not be started, so the game "
@@ -23101,10 +23166,12 @@ session_reboot:
             g_players[s].deadzone = controller_deadzone;
     }
     controller_deadzone = g_players[0].deadzone;
-    refresh_player_devices();  /* open SDL handles to match the player config */
+    if (!psx_capture_requested())
+        refresh_player_devices();  /* open SDL handles to match the player config */
 #ifndef PSX_SDL_NO_AUDIO
     audio_trace_init();
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
+    /* Unattended capture opens no host audio device; the SPU mix is tapped. */
+    if (!psx_capture_requested() && SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
         PsxSdlAudioSpec want = {};
         PsxSdlAudioSpec have = {};
         want.freq = g_audio_freq;
@@ -23160,6 +23227,12 @@ session_reboot:
         win_flags |= SDL_WINDOW_HIDDEN;
         g_fullscreen = 0;
     }
+    if (psx_capture_requested()) {
+        /* The drawable must be exactly the requested size: fixed, no HiDPI. */
+        win_flags &= ~(Uint32)SDL_WINDOW_RESIZABLE;
+        win_flags &= ~(Uint32)PSX_SDL_WINDOW_HIGH_DENSITY;
+        g_video_hidpi_window = 0;
+    }
     /* Fullscreen on launch (launcher's tri-state Fullscreen control): 1 =
      * borderless desktop fullscreen (keeps the desktop resolution, letterboxes
      * the image), 2 = exclusive fullscreen (real display-mode change), 0 =
@@ -23171,6 +23244,11 @@ session_reboot:
      * the image scales to fill the larger window with no further distortion. */
     int game_w = g_video_win_w, game_h = 0;
     clamp_window_aspect(&game_w, &game_h, g_video_aspect_num, g_video_aspect_den);
+    if (psx_capture_requested()) {
+        int cw = 0, ch = 0;
+        psx_capture_size(&cw, &ch);
+        if (cw > 0 && ch > 0) { game_w = cw; game_h = ch; }
+    }
     sdl_window = SDL_CreateWindow(
         window_title.c_str(),
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -23184,6 +23262,11 @@ session_reboot:
                         "cannot start.\n\nSDL_CreateWindow: ") + SDL_GetError());
     }
     psx_apply_window_icon(sdl_window, argv[0]);
+    s_capture_load_pending = false;
+    if (!psx_capture_load_state_path()) {
+        psx_capture_begin();
+        if (psx_capture_failed()) return 2;
+    }
     s_window_fullscreen = {};
     if (psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, g_fullscreen) != 0)
         std::fprintf(stderr, "Fullscreen setup failed: %s\n", SDL_GetError());
@@ -23690,6 +23773,10 @@ session_reboot:
     /* User save states: slots live under
      * <memcard>/<openbios|scph1001>/, keyed by entry_pc + boot_state integrity
      * (codegen hash/abi/ver). Memory cards stay in the memcard root. */
+    if (!game_entry_pc && psx_capture_load_state_path()) {
+        std::fprintf(stderr, "psxrecomp capture: --load-state requires a game save-state context\n");
+        return 2;
+    }
     if (game_entry_pc != 0) {
         const char* bios_token =
             psx_bios_image.image_bundled ? "openbios" : "scph1001";
@@ -23722,9 +23809,20 @@ session_reboot:
         psx_rewind_set_depth((uint32_t)g_rewind_depth);
         psx_rewind_set_interval((uint32_t)g_rewind_interval);
         psx_rewind_configure(memory_get_bios_checksum(), game_entry_pc);
-        /* Headless load: PSX_LOAD_SLOT=N stages slot load (0..11)
-         * at the next safe block boundary after boot. */
-        if (const char *ls = std::getenv("PSX_LOAD_SLOT"); ls && *ls) {
+        /* Capture starts at the first guest vblank after a successful restore. */
+        if (const char *lp = psx_capture_load_state_path()) {
+            const char *replay_env = std::getenv("PSX_REPLAY_FILE");
+            if (g_replay_cli_path || (replay_env && *replay_env)) {
+                std::fprintf(stderr, "psxrecomp capture: the replay supplies its own initial state\n");
+                return 2;
+            }
+            if (!savestate_request_load_file_quiet(lp)) {
+                std::fprintf(stderr, "psxrecomp capture: cannot stage --load-state '%s'\n", lp);
+                return 2;
+            }
+            s_capture_load_pending = true;
+        } else if (const char *ls = std::getenv("PSX_LOAD_SLOT"); ls && *ls) {
+            /* Headless slot loads still use the next safe block boundary. */
             char *end = nullptr;
             const long parsed = std::strtol(ls, &end, 10);
             if (!end || *end != '\0' || parsed < 0 || parsed >= SAVESTATE_SLOTS) {

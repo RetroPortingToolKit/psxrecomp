@@ -154,6 +154,8 @@ int savestate_request_load_protocol(int slot);
 int savestate_request_load_blob_protocol(const void* data, size_t size);
 /* The same, for a replay anchor: no load toast and no input guard. */
 int savestate_request_load_blob_quiet(const void* data, size_t size);
+/* Read a state in place and stage a quiet load, with no slot file writes. */
+int savestate_request_load_file_quiet(const char* path);
 /* Replay anchor: save the machine to memory at the next safe boundary and
  * reload it quietly. take: 1 = *data (malloc'd; the caller frees it) holds
  * the state and the reload is done, -1 = failed, 0 = pending. */
