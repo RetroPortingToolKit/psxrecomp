@@ -13,6 +13,7 @@
  */
 
 #include "cpu_state.h"
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -159,6 +160,12 @@ void overlay_loader_admit_rescan(void);
 int  overlay_loader_unit_present(const char *unit);
 /* Loads the unit now: 1 loaded (or already), 0 no file yet, -1 failed. */
 int  overlay_loader_load_unit(const char *unit);
+/* A recorded unit name as this build spells it. The recording host's
+ * arch-abi segment ("gcc/win-x64/...") and library extension (".dll")
+ * become this build's (PSX_OVERLAY_ARCH_ABI, ".so"); the tier, codegen
+ * tag, segment folder, address and hash stay. The admit, present and load
+ * calls above apply it. 0 when out does not hold the result. */
+int  overlay_loader_unit_local(const char *unit, char *out, size_t cap);
 
 /* Two-phase live publication: the compile-output watcher maps a freshly
  * published image off the emulation thread, then the emulation thread performs

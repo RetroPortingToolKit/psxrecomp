@@ -578,6 +578,15 @@ if(BUILD_TESTING)
         target_link_options(static_match_cache_test PRIVATE -flto -Wl,--gc-sections)
         add_test(NAME static_match_cache_test COMMAND static_match_cache_test)
 
+        add_executable(overlay_unit_local_test tests/test_overlay_unit_local.c
+            src/overlay_loader.c src/host_span_ring.c src/crc32.c)
+        target_include_directories(overlay_unit_local_test PRIVATE include)
+        target_compile_definitions(overlay_unit_local_test PRIVATE
+            PSX_HAS_OVERLAY_DISPATCH PSX_NO_DEBUG_TOOLS)
+        target_compile_options(overlay_unit_local_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections -UNDEBUG)
+        target_link_options(overlay_unit_local_test PRIVATE -flto -Wl,--gc-sections)
+        add_test(NAME overlay_unit_local_test COMMAND overlay_unit_local_test)
+
         add_executable(mod_memory_snapshot_test tests/test_mod_memory_snapshot.c
             src/psx_ram_geometry.c)
         target_include_directories(mod_memory_snapshot_test PRIVATE include src)
