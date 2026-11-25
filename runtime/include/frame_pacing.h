@@ -20,14 +20,13 @@
 #define FRAME_PACING_H
 
 #include <stdint.h>
+#include <retro_presentation/pacing.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct FramePacer {
-    uint64_t next_deadline;   /* perf-counter ticks; 0 = not started */
-} FramePacer;
+typedef RetroCatchupPacer FramePacer;
 
 /* Pure decision function (unit-testable, no SDL).
  * Given a single counter sample `now`, the current deadline, the counter

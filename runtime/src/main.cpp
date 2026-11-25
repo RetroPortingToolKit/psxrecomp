@@ -1,3 +1,4 @@
+#include <recomp_input.h>
 #include "audio_sync.h"
 #include "audio_catchup.h"
 /* main.cpp — Phase 3 runtime entry point.
@@ -228,6 +229,7 @@ extern "C" void psx_game_codegen_relaunch_or_exit(const char* disc_path);
 extern "C" void psx_game_codegen_forward_if_built(int argc, char** argv);
 #endif
 #include "psx_sdl.h"
+#include "controller_binding_snapshot.h"
 #include "window_fullscreen.h"
 #if defined(PSX_SDL3)
 /*
@@ -6346,21 +6348,15 @@ static bool controller_source_pressed_h(SDL_GameController* h, const ControllerS
     if (!h) return false;
     const int dz = deadzone_raw > 0 ? deadzone_raw : controller_deadzone;
 
-    switch (source.kind) {
-    case ControllerSource::Kind::Button:
-        return SDL_GameControllerGetButton(
-            h, (SDL_GameControllerButton)source.id) != 0;
-    case ControllerSource::Kind::AxisPositive:
-    case ControllerSource::Kind::AxisNegative: {
-        const int16_t v = SDL_GameControllerGetAxis(h, (SDL_GameControllerAxis)source.id);
-        if (source.kind == ControllerSource::Kind::AxisPositive)
-            return v > dz;
-        return v < -dz;
+    uint32_t binding = 0;
+    if (source.kind == ControllerSource::Kind::Button && (unsigned)source.id < 32) {
+        binding = RI_BUTTON(source.id);
+    } else if ((source.kind == ControllerSource::Kind::AxisPositive ||
+                source.kind == ControllerSource::Kind::AxisNegative) &&
+               (unsigned)source.id < RI_MAX_AXES) {
+        binding = RI_AXIS(source.id, source.kind == ControllerSource::Kind::AxisPositive);
     }
-    case ControllerSource::Kind::None:
-    default:
-        return false;
-    }
+    return psx_controller_binding_pressed(h, binding, dz);
 }
 
 /* Keyboard -> PSX button word for `player` (1 or 2), via the configurable

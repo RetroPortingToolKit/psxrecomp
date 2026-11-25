@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--sdl-library", help="Explicit SDL3 library (e.g. a system DLL import library)")
     parser.add_argument("--output", required=True)
     parser.add_argument("--gl-source")
+    parser.add_argument("--presentation-include",type=pathlib.Path)
     parser.add_argument("--fixture", type=pathlib.Path)
     parser.add_argument("--expect-unbounded", action="store_true")
     args = parser.parse_args()
@@ -71,6 +72,8 @@ def main():
     fixture = args.fixture or framework / "runtime/tests/test_gl_readback_region.c"
     # The renderer's render-pass paths call the journal and VRAM policy in
     # render_pass_plan.c (self-contained: no other runtime symbols).
+    if args.presentation_include:
+        includes += ["-I", str(args.presentation_include.resolve(strict=True))]
     sources = [("probe", fixture), ("sw", framework / "runtime/src/gpu_sw_renderer.c"),
                ("rp", framework / "runtime/src/render_pass_plan.c"),
                ("xr", framework / "runtime/src/psx_openxr.c")]

@@ -2,7 +2,7 @@
  *
  * Always-on ring of the last 16K SIO/MMIO events with full SIO state
  * snapshot at each event. Watchdog flushes the ring to a file and
- * aborts cleanly when host wall-clock since the last
+ * reports when host wall-clock since the last
  * debug_server_poll exceeds the threshold (TCP listener has stopped
  * draining the connection — symptom of dispatch-loop starvation).
  *
@@ -265,15 +265,12 @@ void starvation_watchdog_check(void) {
     uint64_t now = host_us_now();
     if (starvation_watchdog_stale(last, now, timeout)) {
         starvation_ring_dump(NULL);
-        /* Abort cleanly so the dump file is preserved and the user knows
-         * the runtime starved. Tag the exit so psx_last_run_report.json
-         * says "starvation_watchdog" instead of atexit/unknown. */
-        fprintf(stderr, "starvation_watchdog: %llu us without heartbeat — "
-                "ring dumped to starvation_dump.jsonl, aborting\n",
+        /* A stale heartbeat is diagnostic evidence, never an elapsed-time
+         * termination condition. The first dump is retained until reset. */
+        fprintf(stderr, "starvation_watchdog: %llu us without heartbeat; "
+                "ring dumped to starvation_dump.jsonl; runtime continues\n",
                 (unsigned long long)(now - last));
         fflush(stderr);
-        psx_crash_trace_set_exit_origin("starvation_watchdog");
-        exit(2);
     }
 }
 
