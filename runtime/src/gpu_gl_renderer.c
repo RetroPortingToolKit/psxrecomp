@@ -7951,6 +7951,7 @@ static StereoPair s_stereo_pair[2];
 static StereoPair s_stereo_parked;
 static uint64_t s_stereo_parked_lease,s_stereo_parked_next=1;
 static int s_stereo_current, s_stereo_valid, s_stereo_mode;
+static int s_local_pair_wide;
 static _Atomic int s_local_pair_canvas;
 static GLuint s_local_shared_tex;
 static int s_local_shared_w, s_local_shared_h;
@@ -8542,23 +8543,29 @@ static void stereo_invalidate(void) {
 }
 void gl_renderer_stereo_reset(void) {
     GL_RT_SYNC("stereo_reset");
-    stereo_invalidate(); s_stereo_mode = 0; atomic_store(&s_local_pair_canvas,0);s_stereo_dump_left = 0;
+    stereo_invalidate(); s_stereo_mode = 0; s_local_pair_wide = 0;
+    atomic_store(&s_local_pair_canvas,0);s_stereo_dump_left = 0;
     s_stereo_capture_count = 0;
     s_stereo_presents = 0;
 }
 int gl_renderer_stereo_set_presentation(uint32_t mode) {
     GL_RT_SYNC("stereo_set_presentation");
     if (mode > 1u) return 0;
+    if (s_local_pair_wide) stereo_invalidate();
+    s_local_pair_wide = 0;
     s_stereo_mode = (int)mode;
     atomic_store(&s_local_pair_canvas,0);
     return 1;
 }
-int gl_renderer_local_pair_set_presentation(int enabled) {
+int gl_renderer_local_pair_set_presentation(int layout) {
     GL_RT_SYNC("local_pair_set_presentation");
-    int mode = enabled ? 2 : 0;
-    if (s_stereo_mode != mode) stereo_invalidate();
+    if (layout < GL_LOCAL_PAIR_OFF || layout > GL_LOCAL_PAIR_WIDE) return 0;
+    const int mode = layout == GL_LOCAL_PAIR_OFF ? 0 : 2;
+    const int wide = layout == GL_LOCAL_PAIR_WIDE;
+    if (s_stereo_mode != mode || s_local_pair_wide != wide) stereo_invalidate();
     s_stereo_mode = mode;
-    atomic_store(&s_local_pair_canvas,enabled!=0);
+    s_local_pair_wide = wide;
+    atomic_store(&s_local_pair_canvas,mode!=0);
     return 1;
 }
 int gl_renderer_local_pair_presentation_active(void) {return atomic_load(&s_local_pair_canvas);}
@@ -8587,7 +8594,8 @@ int gl_renderer_stereo_end(uint32_t eye, int keep) {
     /* Capture the SAME native-wide image the ordinary compositor presents.
      * The transaction already journals/restores its wide band. Do not flatten
      * a real wider private view back into its canonical VRAM rectangle. */
-    if(s_pass_kind==3 && g_wide_w>s_pass_w) {
+    if(s_pass_kind==3 && s_local_pair_wide &&
+       (int64_t)s_aspect_num*3 > (int64_t)s_aspect_den*4 && g_wide_w>s_pass_w) {
         const GLuint wide=pass_wide_fbo_for(s_pass_x);
         if(wide){
             /* Same canonical-centre rule as ordinary wide presentation, but

@@ -7,7 +7,7 @@
 #include "gl_batch_policy_lle.c"
 #include "gl_batch_policy_hle.c"
 /* Both textured-batch tiers in one binary: the fixture selects per scene. */
-static int test_batch_hle;
+static int test_batch_hle=1;
 GlBatchClass gl_batch_classify(int semi,int mask_check,int bank_batch){
  return test_batch_hle?gl_batch_policy_hle(semi,mask_check,bank_batch):gl_batch_policy_lle(semi,mask_check,bank_batch);}
 const char *gl_batch_policy_name(void){return test_batch_hle?"HLE":"LLE";}
@@ -60,6 +60,13 @@ float psx_rewind_slide(void){return 0;}
 int present_shot_take(char *out,int n){(void)out;(void)n;return 0;}
 void present_shot_done(int ok){(void)ok;}
 void latency_ring_mark(LatencyStage stage){(void)stage;}
+static uint64_t test_latency_frame=UINT64_MAX;
+uint64_t latency_ring_current_frame(void){return test_latency_frame;}
+void latency_ring_replay_frame(uint64_t frame){test_latency_frame=frame;}
+int psx_capture_active(void){return 0;}
+int psx_capture_wants_readback(void){return 0;}
+void psx_capture_store_frame(const uint8_t *rgb,int w,int h){(void)rgb;(void)w;(void)h;}
+uint64_t psx_get_cycle_count(void){return psx_cycle_count;}
 void psx_video_telemetry_compose(int r,int s,int sw,int sh,int dw,int dh,int vw,int vh){
     (void)r;(void)s;(void)sw;(void)sh;(void)dw;(void)dh;(void)vw;(void)vh;
 }
@@ -540,6 +547,97 @@ static void coop_wide_held_pixels(void) {
  free(pixels);
 }
 
+static void verify_local_pair_aspects(void) {
+ const int S=s_hr_scale;
+ const int previous_batch=test_batch_hle;test_batch_hle=1;
+ const size_t wide_words=(size_t)426*512*S*S;
+ uint32_t *wide_before=malloc(wide_words*sizeof *wide_before);
+ uint32_t *wide_after=malloc(wide_words*sizeof *wide_after);
+ uint16_t *native_before=malloc(320*240*sizeof *native_before);
+ uint16_t *native_after=malloc(320*240*sizeof *native_after);
+ check(wide_before && wide_after && native_before && native_after,"local pair snapshot allocations");
+ if(!wide_before || !wide_after || !native_before || !native_after)goto cleanup;
+ SDL_SetWindowSize(s_win,1280,360);
+ glb_set_draw_area(0,0,319,239);glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+ glb_wide_configure(426,53);glb_wide_set_target(0);glb_wide_set_view(1,0,0,0);
+ glb_fill_rect(0,0,320,240,0x0421);glb_wide_clear(0,0,512,0x0421);
+ int ow=0,oh=0;
+ check(glb_wide_dump_full(wide_before,wide_words,&ow,&oh,0)>0,"local pair baseline sidecar");
+ check(gl_renderer_fbo_peek(0,0,320,240,native_before),"local pair baseline native raster");
+ const int32_t views[2][3]={{0}};
+ const uint64_t cycle_before=psx_cycle_count;
+ for(int layout=0;layout<3;++layout){
+  const int wide=layout==2;
+  gl_renderer_local_pair_set_presentation(wide?GL_LOCAL_PAIR_WIDE:GL_LOCAL_PAIR_NATIVE);
+  gl_renderer_set_display_aspect(layout?16:4,layout?9:3);
+  gl_renderer_stereo_stage_reset();
+  for(uint32_t eye=0;eye<2;++eye){
+   check(gl_renderer_local_pair_begin(0,0,320,240,eye!=0),"local own-view transaction begins");
+   glb_draw_flat_rect(-106,0,532,240,eye?0x7c00:0x001f);
+   glb_draw_flat_rect(20,16,8,60,0x03e0);
+   check(gl_renderer_stereo_end(eye,1),"local own-view transaction captures and restores");
+  }
+  check(gl_renderer_stereo_publish(81+layout,psx_cycle_count,views),"complete local pair publishes");
+  check(gl_renderer_fbo_peek(0,0,320,240,native_after) &&
+        !memcmp(native_before,native_after,320*240*sizeof *native_before),"local pair restores native raster");
+  check(glb_wide_dump_full(wide_after,wide_words,&ow,&oh,0)>0 &&
+        !memcmp(wide_before,wide_after,wide_words*sizeof *wide_before),"local pair restores sidecar");
+  GLRenderStereoDiag diag;
+  gl_renderer_stereo_diag(&diag);
+  check(diag.width==(wide?426:320)*S && diag.height==240*S,
+        wide?"16:9 panes retain their expanded raster":
+        layout?"ordinary paired menus keep their stock raster at 16:9":"4:3 panes retain their stock raster");
+  if(wide){
+   check(gl_renderer_present_wide_fbo(0,0,240,0),"native wide presentation accepts local pair");
+   StereoPair *pair=&s_stereo_pair[s_stereo_current];
+   for(int eye=0;eye<2;++eye){
+    uint8_t margin[4],hud[4];
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,pair->fbo[eye]);
+    glReadPixels(4*S,100*S,1,1,GL_RGBA,GL_UNSIGNED_BYTE,margin);
+    glReadPixels(77*S,40*S,1,1,GL_RGBA,GL_UNSIGNED_BYTE,hud);
+    check(margin[eye?2:0]>200 && margin[eye?0:2]==0,"wide pane has its own margin pixels");
+    check(hud[0]==0 && hud[1]>200 && hud[2]==0,"wide pane has its original HUD pixels");
+   }
+   p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,0);
+  }else{
+   gl_renderer_present_vram(0,0,320,240,0,0);
+  }
+  GlPresEvent e;
+  check(s_last_present_path==GL_PRES_STEREO &&
+        gl_renderer_pres_get(gl_renderer_pres_total()-1,&e) &&
+        e.lx==(wide?0:160) && e.lw==(wide?1280:960) && e.ly==0 && e.lh==360,
+        wide?"32:9 local pair fills the combined drawable":"8:3 local pair keeps its letterbox");
+ }
+ psx_cycle_count+=(uint64_t)(RENDER_PASS_STEREO_MAX_AGE_VBLANKS+1u)*g_psx_vblank_cycles;
+ /* Replay the actual queued payload: current CPU progress cannot age out
+  * a pair belonging to the frame that the render thread is presenting. */
+ RthOvHdr queued={0};queued.guest_cycle=cycle_before;queued.latency_frame=123;
+ queued.nargs=4;queued.args[2]=240;
+ const uint64_t previous_present_cycle=s_presentation_present_cycle;
+ rth_present_payload(RTH_PRESENT_WIDE,(const uint8_t *)&queued);
+ GlPresEvent queued_present;
+ check(s_last_present_path==GL_PRES_STEREO &&
+       gl_renderer_pres_get(gl_renderer_pres_total()-1,&queued_present) &&
+       queued_present.lx==0 && queued_present.lw==1280,
+       "queued local pair uses its published frame cycle");
+ check(s_presentation_present_cycle==previous_present_cycle &&
+       test_latency_frame==UINT64_MAX,"queued presentation restores host contexts");
+ GlPresEvent fallback;
+ check(gl_renderer_present_wide_fbo(0,0,240,0) && s_last_present_path==GL_PRES_WIDE &&
+       gl_renderer_pres_get(gl_renderer_pres_total()-1,&fallback) &&
+       fallback.lx==160 && fallback.lw==960,
+       "stale local pair returns to the ordinary wide presentation");
+ psx_cycle_count=cycle_before;
+ check(glGetError()==GL_NO_ERROR,"local pair aspects GL error");
+ gl_renderer_stereo_reset();gl_renderer_set_display_aspect(4,3);
+ glb_wide_set_view(0,0,0,0);glb_wide_disable_target();glb_wide_configure(0,0);
+ glb_set_draw_area(0,0,1023,511);
+ SDL_SetWindowSize(s_win,128,128);
+cleanup:
+ test_batch_hle=previous_batch;
+ free(wide_before);free(wide_after);free(native_before);free(native_after);
+}
+
 static void verify_wide_coop_hud(void) {
  const int S=s_hr_scale;const size_t n=(size_t)426*512*S*S;
  uint32_t *wide_before=malloc(n*4),*wide_after=malloc(n*4);
@@ -547,7 +645,7 @@ static void verify_wide_coop_hud(void) {
  check(wide_before && wide_after && native_before && native_after,"wide pair snapshot allocations");
  if(!wide_before || !wide_after || !native_before || !native_after)goto cleanup;
  SDL_SetWindowSize(s_win,1280,360);gl_renderer_set_display_aspect(16,9);
- gl_renderer_local_pair_set_presentation(1);
+ gl_renderer_local_pair_set_presentation(GL_LOCAL_PAIR_WIDE);
  check(gl_renderer_local_pair_presentation_active(),"per-view adaptive layout query follows active local pair");
  glb_set_draw_area(0,0,319,239);glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
  glb_wide_configure(426,53);glb_wide_set_target(0);glb_wide_set_view(1,0,0,0);
@@ -588,9 +686,9 @@ int main(int argc,char **argv){
  for(int i=0;i<1024*512;i++)image[i]=(uint16_t)((i*17)&0x7fff);
  glb_init(image);glb_set_scale(scale);gl_renderer_set_swap_interval(0);
  if(!gl_renderer_init_context(win))return 2;
- printf("driver=%s renderer=%s scale=%d\n",glGetString(GL_VERSION),glGetString(GL_RENDERER),scale);
+ printf("driver=%s renderer=%s scale=%d batch=%s\n",glGetString(GL_VERSION),glGetString(GL_RENDERER),scale,gl_batch_policy_name());
  if(getenv("PSX_STOCK_PAIR_ONLY")){
-  verify_stereo_transactions();verify_wide_coop_hud();
+  verify_stereo_transactions();verify_local_pair_aspects();verify_wide_coop_hud();
   printf("checks=%d failures=%d\n",checks,failures);
   gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
  }
@@ -704,6 +802,7 @@ int main(int argc,char **argv){
  verify_bank_batching();
  verify_tier_batching();
  verify_stereo_transactions();
+ verify_local_pair_aspects();
  verify_oversize_wide_geometry(scale);
  verify_camera_plane_clip(scale);
  /* World and UI use different origins in an anchored wide frame. Keep the

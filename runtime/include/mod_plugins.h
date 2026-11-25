@@ -891,7 +891,7 @@ int psx_mod_render_stereo(struct CPUState *cpu, const PSXModStereoFrame *frame,
 /* Offline local multiplayer: draw views0/1 from one checkpoint, using the
  * reversible local-view sandbox. Both must succeed before publication.
  * Callbacks run with psx_mod_local_view_scope()==1. This never advances the
- * world or enables stereo/VR. Presentation uses two native4:3 views (8:3).
+ * world or enables stereo/VR. Presentation defaults to two native 4:3 views (8:3).
  * Unsupported backends refuse and leave ordinary presentation available. */
 int psx_mod_render_local_pair(struct CPUState *cpu, const PSXModStereoFrame *frame,
                               PSXModStereoFn fn, void *user);
@@ -899,6 +899,9 @@ int psx_mod_render_local_pair(struct CPUState *cpu, const PSXModStereoFrame *fra
  * its two views; canonical menu, movie and unavailable-pair frames are shown
  * in both 4:3 panes. Does not change the guest's aspect or retain stale views. */
 int psx_mod_set_local_pair_presentation(int enabled);
+/* Opt into native-wide local views with the current per-view display aspect.
+ * A complete expanded pair uses double that aspect. Shared fallback remains 8:3. */
+int psx_mod_set_local_pair_wide_presentation(void);
 uint32_t psx_mod_render_stereo_status(void);
 /* Annotate the current frame's trace record with a short tag (scene transition,
  * state change). Only meaningful while PSX_FRAME_TRACE is on and a traced frame

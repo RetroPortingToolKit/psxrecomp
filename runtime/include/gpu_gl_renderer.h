@@ -152,7 +152,9 @@ int gl_renderer_stereo_publish(uint64_t pair_id, uint64_t guest_cycle,
                                 const int32_t eye_view[2][3]);
 void gl_renderer_stereo_reset(void);
 int gl_renderer_stereo_set_presentation(uint32_t mode);
-int gl_renderer_local_pair_set_presentation(int enabled);
+enum { GL_LOCAL_PAIR_OFF, GL_LOCAL_PAIR_NATIVE, GL_LOCAL_PAIR_WIDE };
+/* Native keeps two 4:3 panes; wide captures each view at the selected aspect. */
+int gl_renderer_local_pair_set_presentation(int layout);
 /* Stable presentation layout query; no context acquisition or guest state. */
 int gl_renderer_local_pair_presentation_active(void);
 void gl_renderer_stereo_dump_arm(const char *dir, int pairs);
