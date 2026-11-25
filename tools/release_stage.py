@@ -172,7 +172,8 @@ def _forbidden_reason(name):
 # PSX_OVERLAY_FLAVOR is a CODEGEN flavor, not a platform: overlay_api.h defines
 # it as 0 (base) unless the runtime target is compiled with a flavor define,
 # and runtime/runtime.cmake sets PSX_OVERLAY_FLAVOR=2 (PSX_OVERLAY_FLAVOR_PGXP)
-# for a PGXP target. Windows and Linux builds of the SAME target therefore have
+# for a PGXP target. The selected native BIOS provider adds bit 4, producing
+# flavor 4 or 6. Windows and Linux builds of the SAME target therefore have
 # the SAME flavor. There is deliberately no default here: a packager that
 # guesses 0 for a PGXP runtime writes a tag the shipped binary never reads, and
 # ships a cache that silently does nothing. Pass --flavor explicitly, or better,
