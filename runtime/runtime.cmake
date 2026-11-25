@@ -1916,6 +1916,11 @@ function(psxrecomp_add_runtime_target target)
     endif()
     set_target_properties(${target} PROPERTIES OUTPUT_NAME "${_psxrt_exe_name}")
 
+    get_target_property(_psxrt_native_kernel ${target} PSX_USE_NATIVE_KERNEL)
+    if(_psxrt_native_kernel)
+        math(EXPR _psxrt_overlay_flavor "${_psxrt_overlay_flavor} | 4")
+    endif()
+
     # Publish the OVERLAY CODEGEN FLAVOR this target links with, for the same
     # reason the exe name is published just below: so nothing downstream has to
     # re-derive it.

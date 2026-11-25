@@ -261,6 +261,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
     const char*           extra_funcs_path = nullptr;
     bool                  inspect_mode = false;
     bool                  overlay_mode = false;
+    bool                  native_kernel_boundaries = false;
     bool                  reachable_discovery = false;
     std::set<uint32_t>    ws_tag_funcs;         // [widescreen] sprite_tag_funcs
     std::set<uint32_t>    ds_funcs;             // [data_shards] funcs
@@ -446,6 +447,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
                  * in-parent labels. Set unconditionally by compile_overlays.py for
                  * every overlay input — never a human toggle. */
                 overlay_mode = true;
+            } else if (arg == "--native-kernel-boundaries") {
+                native_kernel_boundaries = true;
             }
         }
     }
@@ -1607,6 +1610,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
     codegen_config.emit_line_numbers = true;
     codegen_config.split_mid_function_targets = !overlay_mode;
     codegen_config.overlay_mode = overlay_mode;
+    codegen_config.native_kernel_boundaries = native_kernel_boundaries;
     codegen_config.ws_signed_x_bound_sites = ws_signed_x_bound_sites;
     codegen_config.ws_sprite_tag_funcs = ws_tag_funcs;
     codegen_config.data_shard_funcs = ds_funcs;

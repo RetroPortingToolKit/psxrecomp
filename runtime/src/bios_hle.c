@@ -744,10 +744,7 @@ int psx_bios_hle_dispatch_quiet(uint32_t address) {
     if (g_psx_bios_hle_hook != bios_hle_dispatch) return 0;
     if (s_native_kernel_on)
         return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&
-               phys != PSX_NATIVE_BOOT_RETURN_PHYS && phys != PSX_NATIVE_EXCEPTION_ENTRY &&
-               phys != PSX_NATIVE_EXCEPTION_PATCH_RESUME && phys != PSX_NATIVE_INFO_STUB &&
-               phys != (psx_native_pad_patch_helper(1) & 0x1fffffffu) &&
-               phys != (psx_native_pad_patch_helper(0) & 0x1fffffffu) &&
+               !psx_native_bios_dispatch_marker(phys) && phys != PSX_NATIVE_INFO_STUB &&
                (phys < 0x8e00u || phys >= 0x9f00u) &&
                (phys < 0x1fc00000u || phys >= 0x1fc80000u);
     return phys != 0xA0u && phys != 0xB0u && phys != 0xC0u &&

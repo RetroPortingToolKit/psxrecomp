@@ -801,6 +801,15 @@ static void check_native_root_counter_irq(void)
         CHECK(0);
     }
     CHECK(escaped == 1);
+    CHECK(psx_native_bios_dispatch_marker(PSX_NATIVE_EXCEPTION_PATCH_RESUME));
+    CHECK(psx_native_bios_dispatch_marker(PSX_NATIVE_WAIT_EVENT_RESUME));
+    CHECK(!psx_bios_hle_dispatch_quiet(PSX_NATIVE_EXCEPTION_PATCH_RESUME));
+    CHECK(!psx_bios_hle_dispatch_quiet(PSX_NATIVE_WAIT_EVENT_RESUME));
+    /* A compiled prefix must return to the dispatcher at an intact marker.
+     * Editing that word relinquishes native ownership to ordinary guest code. */
+    write_word(PSX_NATIVE_EXCEPTION_PATCH_RESUME, 0x03e00008u);
+    CHECK(!g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_PATCH_RESUME));
+    write_word(PSX_NATIVE_EXCEPTION_PATCH_RESUME, PSX_NATIVE_EXCEPTION_MARKER);
     expected_saved_v0 = 0;
     irq_active = 0;
 }

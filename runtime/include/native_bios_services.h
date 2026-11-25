@@ -95,6 +95,22 @@ static inline uint32_t psx_native_pad_patch_helper(int started) {
            (started ? 0x884u : 0x894u);
 }
 
+/* Intact BREAK markers at these addresses belong to the native dispatcher.
+ * A copied guest exception prefix may branch here inside one compiled unit;
+ * it must leave that unit so the runtime can check the live marker first. */
+static inline int psx_native_bios_dispatch_marker(uint32_t address) {
+    const uint32_t phys = address & 0x1fffffffu;
+    if (phys == PSX_NATIVE_EXCEPTION_ENTRY ||
+        phys == PSX_NATIVE_EXCEPTION_PATCH_RESUME ||
+        phys == PSX_NATIVE_WAIT_EVENT_RESUME ||
+        phys == PSX_NATIVE_BOOT_RETURN_PHYS ||
+        phys == (psx_native_pad_patch_helper(1) & 0x1fffffffu) ||
+        phys == (psx_native_pad_patch_helper(0) & 0x1fffffffu)) return 1;
+    for (unsigned i = 0; i < sizeof(psx_native_bios_tables) / sizeof(psx_native_bios_tables[0]); ++i)
+        if (phys == psx_native_bios_tables[i].token) return 1;
+    return 0;
+}
+
 static inline uint32_t psx_native_bios_stub_words(const PsxNativeBiosTable *table,
                                                  uint32_t fn) {
     return table->vector == 0xa0 && fn == 0x9d ? 5u : 3u;
