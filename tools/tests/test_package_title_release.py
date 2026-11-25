@@ -688,6 +688,25 @@ class DiagnosticsTests(unittest.TestCase):
                         ptr.verify_payload(stage, None, self.fixture.config(),
                                            channel, 'windows', 'v1.2.3')
 
+    def test_recording_only_catalog_preserves_legacy_control_and_required_default(self):
+        for channel in ptr.CHANNELS:
+            for name in ('recording', 'input-recording'):
+                with self.subTest(channel=channel, feature=name):
+                    stage = Path(self.tmp.name) / (channel + '-' + name)
+                    write_stage(stage, channel)
+                    manifest = stage / 'mods/bundled/fixture.diagnostics/1.0.0/manifest.toml'
+                    text = DIAG.format(recording='true', osd='false')
+                    text = text.replace('[[feature]]\nid = "osd"\ndefault_enabled = false\n', '')
+                    text = text.replace('[[plugin]]\nfeature = "osd"\nid = "fixture.diagnostics.osd"\n', '')
+                    text = text.replace('"recording"', '"' + name + '"')
+                    manifest.write_text(text)
+                    ptr.check_diagnostics(self.ctx(channel), stage)
+                    refresh_manifest(stage)
+                    ptr.verify_payload(stage, None, self.fixture.config(), channel, 'windows', 'v1.2.3')
+                    manifest.write_text(text.replace('default_enabled = true', 'default_enabled = false'))
+                    with self.assertRaisesRegex(ptr.PackagingError, 'default_enabled'):
+                        ptr.check_diagnostics(self.ctx(channel), stage)
+
     def test_undeclared_diagnostics_package_fails(self):
         (self.fixture.root / 'release.toml').write_text(
             CONFIG.format(extra='').replace(

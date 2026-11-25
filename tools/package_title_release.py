@@ -1019,6 +1019,8 @@ def check_public_mod_packages(payload, package_ids):
 
 def diagnostics_features(data):
     features = {f.get('id'): f for f in data.get('feature', [])}
+    if 'recording' not in features and 'input-recording' in features:
+        features['recording'] = features['input-recording']
     # X4's maintained recording control predates the shared feature spelling.
     # Normalize only this known package; preserve its public ID and bindings.
     if (data.get('id') == 'mmx4.diagnostics' and
@@ -1027,12 +1029,18 @@ def diagnostics_features(data):
     return features
 
 
+def diagnostics_defaults(features):
+    # NO_OSD catalogs deliberately provide only their recording control.
+    return {name: default for name, default in DIAGNOSTICS_DEFAULTS.items()
+            if name == 'recording' or name in features}
+
+
 def diagnostics_manifests(mods_root):
     found = {}
     for manifest in sorted(Path(mods_root).glob('*/*/manifest.toml')):
         data = tomllib.loads(read_text(manifest))
         features = set(diagnostics_features(data))
-        if {'recording', 'osd'} <= features and str(data.get('id', '')).endswith('.diagnostics'):
+        if 'recording' in features and str(data.get('id', '')).endswith('.diagnostics'):
             found.setdefault(data['id'], []).append((manifest, data))
     return found
 
@@ -1054,7 +1062,7 @@ def check_diagnostics(ctx, stage):
         if data.get('channel') == 'developer':
             fail('%s must stay player-selectable' % manifest)
         features = diagnostics_features(data)
-        for feature, want in DIAGNOSTICS_DEFAULTS.items():
+        for feature, want in diagnostics_defaults(features).items():
             got = features[feature].get('default_enabled')
             if got is not want or features[feature].get('channel') == 'developer':
                 fail('%s: %s default_enabled=%r, a %s package needs %r'
@@ -1321,7 +1329,7 @@ def verify_payload(payload, exe_path, config, channel, plat, version):
             problems.append('diagnostics package missing')
         for manifest_file, data in entries:
             features = diagnostics_features(data)
-            for feature, want in DIAGNOSTICS_DEFAULTS.items():
+            for feature, want in diagnostics_defaults(features).items():
                 if features[feature].get('default_enabled') is not want:
                     problems.append('%s %s default_enabled is not %r' % (manifest_file, feature, want))
     elif found:
@@ -1569,7 +1577,7 @@ def check_diagnostics_dir(args):
     for package, entries in sorted(found.items()):
         for manifest, data in entries:
             features = diagnostics_features(data)
-            for feature, want in DIAGNOSTICS_DEFAULTS.items():
+            for feature, want in diagnostics_defaults(features).items():
                 got = features[feature].get('default_enabled')
                 if got is not want or features[feature].get('channel') == 'developer':
                     fail('%s: %s default_enabled=%r, a %s package needs %r'
