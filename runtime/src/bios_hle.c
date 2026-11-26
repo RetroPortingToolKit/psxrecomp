@@ -285,7 +285,8 @@ static void hle_undeliver_event(CPUState *cpu, uint32_t base, uint32_t count,
     }
 }
 
-#if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
+/* The native card provider is compiled into every runtime target, including
+ * REFERENCE and PSX_NATIVE_KERNEL=OFF builds, so its event publisher is too. */
 void psx_native_bios_event(CPUState *cpu, uint32_t cls, uint32_t spec, int deliver)
 {
     uint32_t base = cpu->read_word(KADDR_EVCB_BASE);
@@ -301,7 +302,6 @@ void psx_native_bios_event(CPUState *cpu, uint32_t cls, uint32_t spec, int deliv
         hle_undeliver_event(cpu, base, count, cls, spec);
     }
 }
-#endif
 
 /* B0 vector service. Returns 1 iff serviced in HLE. */
 static int hle_service_b0(CPUState* cpu, uint32_t fn)

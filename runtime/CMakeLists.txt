@@ -2140,6 +2140,16 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_include_directories(bios_hle_events_test PRIVATE include)
     add_test(NAME bios_hle_events_test COMMAND bios_hle_events_test)
 
+    # REFERENCE and PSX_NATIVE_KERNEL=OFF targets compile the same native BIOS
+    # sources without the native kernel; they must still link and deliver.
+    add_executable(bios_hle_reference_test
+        tests/test_bios_hle_reference.c
+        src/bios_hle.c
+        src/native_bios_services.c
+        src/native_bios_card.c)
+    target_include_directories(bios_hle_reference_test PRIVATE include)
+    add_test(NAME bios_hle_reference_test COMMAND bios_hle_reference_test)
+
     # Every func_override failure mode is silent at runtime: a registration
     # that is never consulted, a package override that survives clear-mods
     # (a netplay divergence), a residency guard that corrupts instead of
