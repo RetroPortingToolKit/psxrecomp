@@ -53,6 +53,7 @@ def main():
         helpers += function(source, name)
     if lineage:
         helpers += function(source, "np_flush_confirmed_frame_commits")
+        helpers += function(source, "np_omit_frame_commit")
     helpers += function(source, "np_emit_frame_commit") + function(source, "note_sim_pad")
     if lineage:
         helpers += function(source, "np_rb_apply_frame_slot")
@@ -71,13 +72,13 @@ def main():
 static struct { CPUState *cpu; void *session; int slot_count,rollback; NetplayHashConfirm hc; NetplayInputHist ih; } g_np;
 static PsxNetplaySimPadCache s_sim_pad_cache;
 static uint32_t wanted_core;
-static int sent,boot_gate,transfer,abort_calls,recovery_calls,media_depth24,media_hot;
+static int sent,boot_gate,transfer,abort_calls,recovery_calls,media_depth24,media_hot,tip_holding;
 static uint32_t last_sent_tick,last_sent_core;
 static RNetRbSession *g_rb;
 int psx_netplay_collective_transfer_active(void) { return transfer; }
 int psx_netplay_rb_boot_dig0_gate(void) { return boot_gate; }
 void psx_netplay_rb_boot_dig0_note_local(uint32_t core) { (void)core; }
-int psx_netplay_rb_tip_holding(void) { return 0; }
+int psx_netplay_rb_tip_holding(void) { return tip_holding; }
 int psx_netplay_rb_is_resimulating(void) {
     return g_rb && rnet_rb_is_active(g_rb) && rnet_rb_get_phase(g_rb)==nRNetRbPhaseReplay;
 }
@@ -137,7 +138,7 @@ static void reset(void) {
     static CPUState cpu;
     memset(&g_np,0,sizeof(g_np));g_np.cpu=&cpu;g_np.session=&g_np;g_np.slot_count=2;g_np.rollback=1;
     netplay_hc_reset(&g_np.hc);netplay_ih_reset(&g_np.ih,2);np_part_ring_reset();
-    psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);sent=0;boot_gate=0;transfer=0;abort_calls=0;recovery_calls=0;media_depth24=0;media_hot=0;
+    psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);sent=0;boot_gate=0;transfer=0;abort_calls=0;recovery_calls=0;media_depth24=0;media_hot=0;tip_holding=0;
     if(g_rb){rnet_rb_destroy(g_rb);g_rb=NULL;}
 }
 int main(void) {
@@ -212,8 +213,59 @@ int main(void) {
     media_depth24=media_hot=1;
     publish(0,1,0xffff,0);publish(1,1,0xffff,0);finish(1,0x1111);
     assert(sent==1&&!np_part_ring_get(1));
-    make_episode(nRNetRbPhaseReplay);finish(1,0x1111);
+    psx_netplay_execution_anchor(0);make_episode(nRNetRbPhaseReplay);
+    np_rb_apply_frame_slot(0,1,0xffff,0,0,1,0x80,0x80,1);np_rb_apply_frame_slot(1,1,0xffff,0,0,1,0x80,0x80,1);
+    finish(1,0x1111);
     assert(sent==2&&last_sent_tick==1&&last_sent_core==0x1111);
+    /* Rollback executes live hot 24-bit movie ticks without a digest. The
+     * producer is contiguous: it used to wait on the first such tick forever
+     * (even after its ring slot wrapped), so no later FRAME_COMMIT was sent
+     * and resolved_through only moved when something primed it. */
+    reset();
+    {
+        int want=0;
+        for(uint32_t tick=0;tick<256;++tick) {
+            int omitted=tick>=51&&tick<60;
+            media_depth24=media_hot=omitted;
+            publish(0,tick,0xffff,0);publish(1,tick,0xffff,0);
+            finish(tick,0x1000+tick);
+            if(omitted)assert(!np_part_ring_get(tick));
+            else ++want;
+            if(sent!=want) {
+                fprintf(stderr,"FAIL: rollback movie stopped FRAME_COMMIT at tick %u (sent %d of %d)\n",
+                        tick,sent,want);
+                return 4;
+            }
+            if(!omitted)netplay_hc_note_peer(&g_np.hc,tick,0x1000+tick);
+        }
+        assert(sent==256-9&&s_commit_next_tick==256);
+        /* Both peers left 51..59 undigested; the watermark heals over that
+         * gap from later matched commits, without a movie-exit prime. */
+        np_flush_confirmed_frame_commits();
+        assert(netplay_hc_resolved_through(&g_np.hc)==255);
+        /* Replay still digests the states it reconstructs, mid-movie too. */
+        assert(!np_part_ring_get(55));
+        psx_netplay_execution_anchor(54);
+        media_depth24=media_hot=1;
+        make_episode(nRNetRbPhaseReplay);
+        np_rb_apply_frame_slot(0,55,0xffff,0,0,1,0x80,0x80,1);
+        np_rb_apply_frame_slot(1,55,0xffff,0,0,1,0x80,0x80,1);
+        finish(55,0x1055);
+        assert(sent==256-9+1&&last_sent_tick==55&&last_sent_core==0x1055);
+    }
+    /* A TipHold invent is likewise undigested; once its input is confirmed
+     * its descendants publish. A wrong invent still blocks its lineage. */
+    reset();finish(0,0x1234);netplay_hc_note_peer(&g_np.hc,0,0x1234);
+    tip_holding=1;publish(0,1,0xffff,0);publish(1,1,0xbfff,1);finish(1,0x1111);
+    tip_holding=0;publish(0,2,0xffff,0);publish(1,2,0xffff,0);finish(2,0x2222);
+    assert(sent==1);
+    promote(1,1,0xbfff);np_flush_confirmed_frame_commits();
+    assert(sent==2&&last_sent_tick==2&&last_sent_core==0x2222);
+    reset();finish(0,0x1234);netplay_hc_note_peer(&g_np.hc,0,0x1234);
+    tip_holding=1;publish(0,1,0xffff,0);publish(1,1,0xbfff,1);finish(1,0x1111);
+    tip_holding=0;publish(0,2,0xffff,0);publish(1,2,0xffff,0);finish(2,0x2222);
+    /* The real row cannot rewrite the undigested execution either. */
+    publish(1,1,0xffff,0);np_flush_confirmed_frame_commits();assert(sent==1);
     puts("confirmed ancestry / promotion / replay / real mismatch controls PASS");
 #endif
     return 0;

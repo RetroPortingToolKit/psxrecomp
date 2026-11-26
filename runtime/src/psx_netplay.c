@@ -712,6 +712,9 @@ typedef struct NpPartSlot {
     uint32_t executed_mask;
     uint32_t authoritative_mask;
     uint8_t  valid;
+    /* Executed, but deliberately left without a digest (live hot movie,
+     * TipHold invent). Never compared; it must not stop the producer. */
+    uint8_t  omitted;
 } NpPartSlot;
 static NpPartSlot s_part_ring[NP_PART_RING];
 static uint32_t s_commit_next_tick;
@@ -783,7 +786,7 @@ static void np_note_executed_pad(int slot, uint32_t tick,
     part = np_part_ring_execution(tick);
     /* A later publication cannot rewrite a completed execution. An accepted
      * load retires its provisional descendants before republishing them. */
-    if (part->valid) return;
+    if (part->valid || part->omitted) return;
     bit = 1u << slot;
     part->executed[slot] = *pad;
     part->executed_mask |= bit;
@@ -834,6 +837,7 @@ static void np_part_ring_put(uint32_t tick, const NetplayCoreParts *parts,
     s->mdec = mdec;
     s->aux = aux;
     s->valid = 1u;
+    s->omitted = 0u;
 }
 
 static const NpPartSlot *np_part_ring_get(uint32_t tick)
@@ -1254,7 +1258,7 @@ static void np_flush_confirmed_frame_commits(void)
     for (count = 0; count < NP_PART_RING; ++count) {
         uint32_t tick = s_commit_next_tick;
         NpPartSlot *part = &s_part_ring[tick % NP_PART_RING];
-        if (!part->valid || part->tick != tick) break;
+        if (!(part->valid || part->omitted) || part->tick != tick) break;
         /* Preserve boot-dig0. Later executions inherit it only once both
          * peers have actually accepted that initial state. */
         if (tick != 0u && !s_commit_anchor_ready) {
@@ -1262,6 +1266,13 @@ static void np_flush_confirmed_frame_commits(void)
             s_commit_anchor_ready = 1;
         }
         if (tick != 0u && !np_execution_inputs_confirmed(part)) break;
+        /* Confirmed but undigested: nothing to publish, and its descendants
+         * still have a confirmed lineage. Waiting here for a digest that is
+         * never coming froze FRAME_COMMIT for the rest of the session. */
+        if (part->omitted) {
+            s_commit_next_tick = tick + 1u;
+            continue;
+        }
         netplay_hc_note_local(&g_np.hc, tick, part->parts.core);
         if (tick == 0u) psx_netplay_rb_boot_dig0_note_local(part->parts.core);
         (void)rnet_session_send_rb_frame_commit(g_np.session, tick,
@@ -1270,6 +1281,16 @@ static void np_flush_confirmed_frame_commits(void)
     }
     (void)netplay_hc_heal_stale_gap(&g_np.hc);
     np_check_core_diverge();
+}
+
+/* The commit producer is contiguous, so a tick executed without a digest
+ * still has to be recorded as completed for it to move past. */
+static void np_omit_frame_commit(uint32_t tick)
+{
+    NpPartSlot *part = np_part_ring_execution(tick);
+    if (!part->valid)
+        part->omitted = 1u;
+    np_flush_confirmed_frame_commits();
 }
 
 static void np_emit_frame_commit(uint32_t tick)
@@ -1286,18 +1307,22 @@ static void np_emit_frame_commit(uint32_t tick)
     /* TipHold Live invents are not sealed-input truth — emitting them poisoned
      * tip-extend Replay (stale peer digests → false resim core diverge). */
     if (g_np.rollback && psx_netplay_rb_tip_holding() &&
-        !psx_netplay_rb_is_resimulating())
+        !psx_netplay_rb_is_resimulating()) {
+        np_omit_frame_commit(tick);
         return;
+    }
     /* Rollback live depth24 + hot MDEC: skip full-RAM FRAME_COMMIT (rewind already
      * deferred). Resim still commits every tick. MDEC-idle cutover still
      * commits so FMV1→FMV2 forks are visible (digs used to go dark for the
-     * whole movie). Leaving FMV primes hash_confirm so the watermark is not
-     * stuck on missing movie slots. Delay-sync has no movie-exit re-prime:
-     * commit each real executed state so its contiguous producer cannot stop
-     * forever at an omitted movie tick. */
+     * whole movie). The skipped tick is marked omitted, so the contiguous
+     * producer passes it once its inputs are confirmed. Delay-sync has no
+     * movie-exit re-prime: commit each real executed state so its contiguous
+     * producer cannot stop forever at an omitted movie tick. */
     if (g_np.rollback && gpu_display_is_depth24() && mdec_recently_active(8) &&
-        !(g_np.rollback && psx_netplay_rb_is_resimulating()))
+        !psx_netplay_rb_is_resimulating()) {
+        np_omit_frame_commit(tick);
         return;
+    }
     /* Present-edge: clear PC so parked-0 vs live-BB does not fork FRAME_COMMIT
      * while GPRs/RAM/clk match (was aborting good Replay on dig_cpu alone). */
     psx_netplay_rb_cpu_for_present_digest(&dig_cpu, g_np.cpu);
