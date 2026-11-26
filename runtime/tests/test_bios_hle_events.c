@@ -27,6 +27,7 @@ enum {
     CALLBACK_CARD_COMPLETE = 0x10028,
     CALLBACK_ASYNC_FILE = 0x1002c,
     CALLBACK_TIMER_HANDLER = 0x10030,
+    CALLBACK_TIMER_VERIFY = 0x10034,
     IRQ_VERIFY_A = 0x10018,
     IRQ_VERIFY_B = 0x1001c,
     IRQ_HANDLER = 0x10020,
@@ -66,6 +67,7 @@ static uint32_t expected_card_device, expected_card_spec;
 static uint32_t async_events[4], expected_async_spec;
 static unsigned async_event_count;
 static unsigned timer_handler_calls;
+static unsigned timer_verifier_calls, timer_wrapper_node;
 static int test_disc_present = 1, test_disc_read_failure;
 static uint8_t test_disc_exe[2048 + 32];
 static uint32_t test_disc_exe_size = sizeof test_disc_exe;
@@ -231,6 +233,22 @@ void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_address)
     const PsxNativeBiosTable *table = &psx_native_bios_tables[0];
     uint32_t first = psx_native_bios_stub(table, 0x65);
     uint32_t last = psx_native_bios_stub(table, 0x6d);
+    if (addr == CALLBACK_TIMER_VERIFY) {
+        CHECK(irq_active && cpu == &irq_cpu && return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
+        const uint32_t original = PSX_NATIVE_IRQ_TOKENS + timer_wrapper_node * 8 + 4;
+        ++timer_verifier_calls;
+        /* A writable guest wrapper can call the original native verifier.
+         * It must reach the real event provider through ordinary dispatch. */
+        const uint32_t wrapper_return = cpu->gpr[31];
+        const uint32_t verifier_return = 0x80010038u;
+        cpu->gpr[31] = verifier_return;
+        CHECK(g_psx_bios_hle_hook(cpu, original));
+        CHECK(!psx_bios_hle_dispatch_quiet(original));
+        CHECK(cpu->gpr[2] == 1 && read_word(EVENT_BASE + 4) == READY);
+        CHECK(cpu->gpr[31] == verifier_return);
+        cpu->gpr[31] = wrapper_return;
+        return;
+    }
     if (addr == CALLBACK_TIMER_HANDLER) {
         CHECK(irq_active && cpu == &irq_cpu && return_address == PSX_NATIVE_IRQ_CALLBACK_LINK);
         CHECK(cpu->gpr[4] == 1 && read_word(EVENT_BASE + 4) == READY);
@@ -716,8 +734,44 @@ static void check_native_hardware_event_classes(void)
             CHECK(escaped == 1 && !test_istat && read_word(EVENT_BASE + 4) == READY);
             CHECK(timer_handler_calls == patched);
         }
+        const uint32_t verifier = handler + 4;
+        const uint32_t original_verifier = read_word(verifier);
+        write_word(verifier, CALLBACK_TIMER_VERIFY);
+        write_word(handler, CALLBACK_TIMER_HANDLER);
+        timer_wrapper_node = timer;
+        timer_verifier_calls = timer_handler_calls = 0;
+        add_event(0, 2, MODE_MARK, 0);
+        write_word(EVENT_BASE, 0xf2000000u + timer);
+        irq_cpu.cop0[12] = 0x40000404u;
+        test_istat = test_imask = 1u << timer_irqs[timer];
+        int escaped = setjmp(irq_escape);
+        if (!escaped) {
+            g_psx_bios_hle_hook(&irq_cpu, PSX_NATIVE_EXCEPTION_ENTRY);
+            CHECK(0);
+        }
+        CHECK(escaped == 1 && !test_istat && read_word(EVENT_BASE + 4) == READY);
+        CHECK(timer_verifier_calls == 1 && timer_handler_calls == 1);
+        write_word(verifier, original_verifier);
         write_word(handler, original);
     }
+    /* Every published handler/verifier token has ordinary guest ownership
+     * after its marker is edited, including all RAM address aliases. */
+    for (unsigned offset = 0; offset < PSX_NATIVE_IRQ_NODE_COUNT * 8; offset += 4) {
+        const uint32_t token = PSX_NATIVE_IRQ_TOKENS + offset;
+        CHECK(psx_native_bios_dispatch_marker(token));
+        CHECK(psx_native_bios_dispatch_marker(0x80000000u | token));
+        CHECK(psx_native_bios_dispatch_marker(0xa0000000u | token));
+        CHECK(!psx_bios_hle_dispatch_quiet(token));
+        write_word(token, 0x03e00008u);
+        CPUState before = irq_cpu;
+        CHECK(!g_psx_bios_hle_hook(&irq_cpu, token));
+        CHECK(!memcmp(&irq_cpu, &before, sizeof irq_cpu));
+        write_word(token, PSX_NATIVE_EXCEPTION_MARKER);
+        CHECK(!psx_native_bios_dispatch_marker(token + 1));
+        CHECK(!g_psx_bios_hle_hook(&irq_cpu, token + 1));
+    }
+    CHECK(!psx_native_bios_dispatch_marker(PSX_NATIVE_IRQ_TOKENS - 4));
+    CHECK(!psx_native_bios_dispatch_marker(PSX_NATIVE_IRQ_TOKENS + PSX_NATIVE_IRQ_NODE_COUNT * 8));
     irq_active = 0;
 }
 
