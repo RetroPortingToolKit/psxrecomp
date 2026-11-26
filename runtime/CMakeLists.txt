@@ -778,6 +778,11 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
                 --output "${CMAKE_CURRENT_BINARY_DIR}/openbios-read-contract"
                 --cc "${CMAKE_C_COMPILER}" --cxx "${CMAKE_CXX_COMPILER}")
             set_tests_properties(openbios_read_contract_test PROPERTIES RUN_SERIAL TRUE)
+            add_test(NAME native_bios_strings_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_bios_strings.py"
+                --generated "${PSXRECOMP_ROOT}/generated/OpenBIOS_full.c"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/native-bios-strings"
+                --cc "${CMAKE_C_COMPILER}")
         endif()
         add_test(NAME host_launch_timings_protocol_test COMMAND ${CMAKE_COMMAND} -E env
             "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "${Python3_EXECUTABLE}"

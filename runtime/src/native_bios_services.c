@@ -550,14 +550,27 @@ static int service_a0(CPUState *cpu, uint32_t fn) {
         }
         return PSX_NATIVE_BIOS_RETURN;
     }
+    case 0x15: { /* strcat: append src and its terminator, return dst */
+        uint32_t end = a0;
+        while (cpu->read_byte(end)) ++end;
+        for (uint32_t i = 0;; ++i) {
+            uint8_t value = cpu->read_byte(a1 + i);
+            cpu->write_byte(end + i, value);
+            if (!value) break;
+        }
+        result = a0;
+        break;
+    }
     case 0x17: case 0x18: { /* strcmp, strncmp */
+        /* The BIOS loads both bytes sign-extended and returns their 32-bit
+         * difference (psx-spx, BIOS String Functions). */
         uint32_t count = fn == 0x18 ? a2 : UINT32_MAX;
         result = 0;
         for (uint32_t i = 0; i < count; ++i) {
-            uint8_t left = cpu->read_byte(a0 + i);
-            uint8_t right = cpu->read_byte(a1 + i);
+            int8_t left = (int8_t)cpu->read_byte(a0 + i);
+            int8_t right = (int8_t)cpu->read_byte(a1 + i);
             if (left != right) {
-                result = (uint32_t)((int)left - (int)right);
+                result = (uint32_t)((int32_t)left - (int32_t)right);
                 break;
             }
             if (!left) break;
@@ -581,6 +594,25 @@ static int service_a0(CPUState *cpu, uint32_t fn) {
         result = 0;
         while (cpu->read_byte(a0 + result)) ++result;
         break;
+    case 0x1c: case 0x1e:  /* index, strchr: one BIOS entry */
+        /* As in the bundled OpenBIOS: the string byte is sign-extended and
+         * compared with the whole 32-bit argument, and the terminator ends
+         * the scan before it is compared, so searching for 00h returns zero. */
+        result = 0;
+        for (uint32_t i = 0;; ++i) {
+            int8_t value = (int8_t)cpu->read_byte(a0 + i);
+            if (!value) break;
+            if ((uint32_t)(int32_t)value == a1) {
+                result = a0 + i;
+                break;
+            }
+        }
+        break;
+    case 0x25: case 0x26:  /* toupper, tolower */
+        /* The whole 32-bit argument, as in the bundled OpenBIOS. */
+        if (fn == 0x25) result = a0 - 'a' < 26u ? a0 & ~0x20u : a0;
+        else result = a0 - 'A' < 26u ? a0 | 0x20u : a0;
+        break;
     case 0x27:  /* bcopy: source first, return source */
         result = a0;
         if (a0 && (int32_t)a2 > 0) copy_bytes(cpu, a1, a0, a2, 0);
@@ -596,8 +628,9 @@ static int service_a0(CPUState *cpu, uint32_t fn) {
         result = 0;
         if (a0 && a1) {
             for (uint32_t i = 0; i < a2; ++i) {
-                int difference = (int)cpu->read_byte(a0 + i) - (int)cpu->read_byte(a1 + i);
-                if (difference) { result = (uint32_t)difference; break; }
+                uint8_t left = cpu->read_byte(a0 + i), right = cpu->read_byte(a1 + i);
+                /* As the bundled OpenBIOS: unsigned bytes, result -1 or 1. */
+                if (left != right) { result = left < right ? UINT32_MAX : 1u; break; }
             }
         }
         break;
@@ -612,7 +645,7 @@ static int service_a0(CPUState *cpu, uint32_t fn) {
     case 0x2e:  /* memchr */
         result = 0;
         for (uint32_t i = 0; i < a2; ++i) {
-            if (cpu->read_byte(a0 + i) == (uint8_t)a1) {
+            if ((uint32_t)cpu->read_byte(a0 + i) == a1) {  /* whole a1, as OpenBIOS */
                 result = a0 + i;
                 break;
             }
