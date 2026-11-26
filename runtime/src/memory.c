@@ -1554,7 +1554,10 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
     if (addr == 0x1F801820u || addr == 0x1F801824u) return mdec_read(addr);
     /* SPU: 0x1F801C00..0x1F801FFF */
     if (addr >= 0x1F801C00u && addr <= 0x1F801FFFu) {
-        return spu_read(addr);
+        /* The SPU bus is 16-bit; CPU words visit the adjacent registers. */
+        uint32_t lo = spu_read(addr) & 0xFFFFu;
+        uint32_t hi = spu_read(addr + 2u) & 0xFFFFu;
+        return lo | (hi << 16);
     }
     /* Expansion 2 / POST: 0x1F802000..0x1F802FFF */
     if (addr >= 0x1F802000u && addr <= 0x1F802FFFu) {
@@ -1632,7 +1635,8 @@ static void mmio_write32(uint32_t addr, uint32_t val) {
     if (addr == 0x1F801820u || addr == 0x1F801824u) { mdec_write(addr, val); return; }
     /* SPU: 0x1F801C00..0x1F801FFF */
     if (addr >= 0x1F801C00u && addr <= 0x1F801FFFu) {
-        spu_write(addr, val);
+        spu_write(addr, val & 0xFFFFu);
+        spu_write(addr + 2u, val >> 16);
         return;
     }
     /* Expansion 2 / POST: 0x1F802000..0x1F802FFF */

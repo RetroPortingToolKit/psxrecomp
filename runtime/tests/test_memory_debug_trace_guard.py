@@ -85,8 +85,8 @@ void gpu_write_gp0(uint32_t val);
 void gpu_write_gp1(uint32_t val);
 uint32_t mdec_read(uint32_t addr);
 void mdec_write(uint32_t addr, uint32_t val);
-uint16_t spu_read(uint32_t addr);
-void spu_write(uint32_t addr, uint16_t val);
+uint32_t spu_read(uint32_t addr);
+void spu_write(uint32_t addr, uint32_t val);
 void debug_server_trace_mmio_write(uint32_t addr, uint32_t val, uint8_t width);
 void debug_server_trace_mmio_read(uint32_t addr, uint32_t val, uint8_t width);
 void debug_server_trace_ram_read_watch(uint32_t phys, uint32_t val);
@@ -198,8 +198,8 @@ void gpu_write_gp0(uint32_t val) { (void)val; }
 void gpu_write_gp1(uint32_t val) { (void)val; }
 uint32_t mdec_read(uint32_t addr) { (void)addr; return 0; }
 void mdec_write(uint32_t addr, uint32_t val) { (void)addr; (void)val; }
-uint16_t spu_read(uint32_t addr) { (void)addr; return 0; }
-void spu_write(uint32_t addr, uint16_t val) { (void)addr; (void)val; }
+uint32_t spu_read(uint32_t addr) { (void)addr; return 0; }
+void spu_write(uint32_t addr, uint32_t val) { (void)addr; (void)val; }
 void debug_server_trace_mmio_write(uint32_t addr, uint32_t val, uint8_t width) {
     (void)addr; (void)val; (void)width;
 }
