@@ -71,7 +71,7 @@ def main():
 static struct { CPUState *cpu; void *session; int slot_count,rollback; NetplayHashConfirm hc; NetplayInputHist ih; } g_np;
 static PsxNetplaySimPadCache s_sim_pad_cache;
 static uint32_t wanted_core;
-static int sent,boot_gate,transfer,abort_calls,recovery_calls;
+static int sent,boot_gate,transfer,abort_calls,recovery_calls,media_depth24,media_hot;
 static uint32_t last_sent_tick,last_sent_core;
 static RNetRbSession *g_rb;
 int psx_netplay_collective_transfer_active(void) { return transfer; }
@@ -89,8 +89,8 @@ static void np_try_hc_fork_recovery(uint32_t tick) { (void)tick;++recovery_calls
 int rnet_session_send_rb_frame_commit(void *session,uint32_t tick,uint32_t core) {
     (void)session;++sent;last_sent_tick=tick;last_sent_core=core;return 1;
 }
-int gpu_display_is_depth24(void) { return 0; }
-int mdec_recently_active(unsigned n) { (void)n;return 0; }
+int gpu_display_is_depth24(void) { return media_depth24; }
+int mdec_recently_active(unsigned n) { (void)n;return media_hot; }
 void psx_netplay_rb_cpu_for_present_digest(CPUState *out,const CPUState *in) { *out=*in; }
 void netplay_core_digest_parts(const CPUState *cpu,NetplayCoreParts *parts) {
     (void)cpu;memset(parts,0,sizeof(*parts));parts->core=wanted_core;
@@ -137,7 +137,7 @@ static void reset(void) {
     static CPUState cpu;
     memset(&g_np,0,sizeof(g_np));g_np.cpu=&cpu;g_np.session=&g_np;g_np.slot_count=2;g_np.rollback=1;
     netplay_hc_reset(&g_np.hc);netplay_ih_reset(&g_np.ih,2);np_part_ring_reset();
-    psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);sent=0;boot_gate=0;transfer=0;abort_calls=0;recovery_calls=0;
+    psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);sent=0;boot_gate=0;transfer=0;abort_calls=0;recovery_calls=0;media_depth24=0;media_hot=0;
     if(g_rb){rnet_rb_destroy(g_rb);g_rb=NULL;}
 }
 int main(void) {
@@ -190,6 +190,30 @@ int main(void) {
     transfer=0;np_flush_confirmed_frame_commits();assert(sent==2);
     /* Session/user-load cleanup retires host-only lineage as well. */
     np_part_ring_reset();assert(s_commit_next_tick==0&&!s_commit_anchor_ready);
+    /* Delay-sync has no rollback movie-exit re-prime. Every actual executed
+     * state must be committed, including a short hot24-bit movie interval;
+     * otherwise one absent slot stalls the producer forever after wrapping. */
+    reset();g_np.rollback=0;
+    for(uint32_t tick=0;tick<256;++tick) {
+        media_depth24=media_hot=(tick>=51&&tick<60);
+        publish(0,tick,0xffff,0);publish(1,tick,0xffff,0);
+        finish(tick,0x1000+tick);
+        if(sent!=(int)tick+1) {
+            fprintf(stderr,"FAIL: delay movie dropped actual FRAME_COMMIT tick %u\n",tick);
+            return 4;
+        }
+        netplay_hc_note_peer(&g_np.hc,tick,0x1000+tick);
+        assert(netplay_hc_confirm_through(&g_np.hc,tick));
+    }
+    assert(s_commit_next_tick==256&&netplay_hc_resolved_through(&g_np.hc)==255);
+    /* The existing rollback owner still defers live hot-movie work and
+     * continues to emit the real states reconstructed during Replay. */
+    reset();finish(0,0x1234);netplay_hc_note_peer(&g_np.hc,0,0x1234);
+    media_depth24=media_hot=1;
+    publish(0,1,0xffff,0);publish(1,1,0xffff,0);finish(1,0x1111);
+    assert(sent==1&&!np_part_ring_get(1));
+    make_episode(nRNetRbPhaseReplay);finish(1,0x1111);
+    assert(sent==2&&last_sent_tick==1&&last_sent_core==0x1111);
     puts("confirmed ancestry / promotion / replay / real mismatch controls PASS");
 #endif
     return 0;

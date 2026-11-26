@@ -1288,12 +1288,14 @@ static void np_emit_frame_commit(uint32_t tick)
     if (g_np.rollback && psx_netplay_rb_tip_holding() &&
         !psx_netplay_rb_is_resimulating())
         return;
-    /* Live depth24 + hot MDEC: skip full-RAM FRAME_COMMIT (rewind already
+    /* Rollback live depth24 + hot MDEC: skip full-RAM FRAME_COMMIT (rewind already
      * deferred). Resim still commits every tick. MDEC-idle cutover still
      * commits so FMV1→FMV2 forks are visible (digs used to go dark for the
      * whole movie). Leaving FMV primes hash_confirm so the watermark is not
-     * stuck on missing movie slots. */
-    if (gpu_display_is_depth24() && mdec_recently_active(8) &&
+     * stuck on missing movie slots. Delay-sync has no movie-exit re-prime:
+     * commit each real executed state so its contiguous producer cannot stop
+     * forever at an omitted movie tick. */
+    if (g_np.rollback && gpu_display_is_depth24() && mdec_recently_active(8) &&
         !(g_np.rollback && psx_netplay_rb_is_resimulating()))
         return;
     /* Present-edge: clear PC so parked-0 vs live-BB does not fork FRAME_COMMIT
@@ -1404,7 +1406,6 @@ static uint32_t np_mono_ms(void)
 static void np_enter_load_ready(int slot);
 static void np_commit_load_sync(void);
 static void np_begin_load_apply(int slot);
-static void np_starv_reset(void);
 static void np_maybe_stage_target_save(void);
 static void np_note_save_complete(void);
 
@@ -2180,9 +2181,7 @@ static void np_prime_after_hard_resync(void)
  * Ready probe must also leave INPUT unstalled (recomp-net size==0 LOAD). */
 static void np_begin_load_apply(int slot)
 {
-    /* Transfer admit failures (state_xfer) often latch starvation; lead can sit
-     * at D-1 after ICE xfer and would block the only frame savestate_poll needs. */
-    np_starv_reset();
+    /* The staged restore owns admission until savestate_poll applies it. */
     g_np.xfer = NP_XFER_LOAD_APPLYING;
     g_np.load_applied_local = 0;
     g_np.load_sync_done = 0;
@@ -4878,29 +4877,8 @@ void psx_netplay_bind_guest_saves(void)
     np_enter_guest_sandbox();
 }
 
-/* Delay-sync starvation hold (lockstep-safe; mirrors snes_host_barrier_admit). */
-#define PSX_STARVATION_ENTER_DEFAULT 4
-#define PSX_STARVATION_EXIT_DEFAULT 3
-#define PSX_STARVATION_EXIT_HR_LEAD_DEFAULT 0
-#define PSX_STARVATION_GRACE_TICKS 60
-/* Default 0: after starvation clears, resume ~1 sim/wall frame and let
- * remote_lead rebuild toward D instead of a turbo recovery burst.
- * Override: PSX_NET_STARVATION_RECOVERY_BURST / PSX_NET_CATCHUP_CAP. */
-#define PSX_STARVATION_RECOVERY_BURST_DEFAULT 0
+/* Explicit optional catch-up only; ordinary admission belongs to RNet. */
 #define PSX_CATCHUP_CAP_DEFAULT 0
-
-static struct {
-    int latched;
-    int enter_run;
-    int exit_run;
-    int recovery_amount;
-    int latch_logged;
-    int just_cleared;
-} g_starv;
-
-/* Defined below poll_admit; used by the starvation runway check. */
-int psx_netplay_remote_lead(void);
-int psx_netplay_input_delay(void);
 
 static int np_starv_env_int(const char *name, int def)
 {
@@ -4913,22 +4891,6 @@ static int np_starv_env_int(const char *name, int def)
     if (end == v || *end != '\0' || n < 0 || n > 64)
         return def;
     return (int)n;
-}
-
-static void np_starv_reset(void)
-{
-    memset(&g_starv, 0, sizeof(g_starv));
-}
-
-static int np_starv_runway_ok(void)
-{
-    int lead = psx_netplay_remote_lead();
-    int delay = psx_netplay_input_delay();
-    int hr_lead = np_starv_env_int("PSX_NET_STARVATION_EXIT_HR_LEAD",
-                                   PSX_STARVATION_EXIT_HR_LEAD_DEFAULT);
-    if (delay < 0)
-        delay = 0;
-    return lead >= delay + hr_lead;
 }
 
 void psx_netplay_cold_reset(void)
@@ -4967,7 +4929,6 @@ void psx_netplay_cold_reset(void)
     s_cd_bisect_arm_until = 0;
     s_cd_bisect_last_tick = 0xffffffffu;
     np_part_ring_reset();
-    np_starv_reset();
     psx_netplay_rb_cold_reset();
     overlay_loader_clear_lazy_miss();
     psx_irq_clear_resume_latches();
@@ -5004,7 +4965,6 @@ void psx_netplay_shutdown(void)
         netplay_hc_reset(&g_np.hc);
         np_part_ring_reset();
     }
-    np_starv_reset();
     /* Lobby idle + rematch: wipe pad/CD/overlay residue a cold peer lacks. */
     psx_netplay_cold_reset();
 }
@@ -5110,21 +5070,6 @@ static int np_diag_enabled(void)
     static int cached = -1;
     if (cached < 0) {
         const char *v = getenv("PSX_NET_DIAG");
-        cached = (v && v[0] && v[0] != '0') ? 1 : 0;
-    }
-    return cached;
-}
-
-/* Verbose delay-sync starvation latch/clear spam. Off by default — the latch
- * can toggle every few frames under jitter and floods stderr. Enable with
- * PSX_NET_DELAY_SYNC_DIAG=1 (alias: PSX_NET_STARVATION_DIAG=1). */
-static int np_delay_sync_diag_enabled(void)
-{
-    static int cached = -1;
-    if (cached < 0) {
-        const char *v = getenv("PSX_NET_DELAY_SYNC_DIAG");
-        if (!v || !v[0])
-            v = getenv("PSX_NET_STARVATION_DIAG");
         cached = (v && v[0] && v[0] != '0') ? 1 : 0;
     }
     return cached;
@@ -5594,8 +5539,6 @@ int psx_netplay_live_realign_admit(void)
 int psx_netplay_poll_admit(void)
 {
     rnet_u32 sim;
-    int enter_need;
-    int exit_need;
 
     if (!psx_netplay_active()) return 1;
 
@@ -5603,7 +5546,6 @@ int psx_netplay_poll_admit(void)
 
     if (!rnet_session_is_running(g_np.session)) {
         psx_netplay_release_pads();
-        np_starv_reset();
         psx_netplay_diag_tick();
         return 0;
     }
@@ -5626,10 +5568,8 @@ int psx_netplay_poll_admit(void)
     if (g_np.xfer == NP_XFER_LOAD_APPLYING && !savestate_pending())
         return 0;
 
-    /* Staged load must run guest cycles — bypass starvation latch. ICE xfer
-     * often leaves lead=D-1 and would otherwise block try_admit forever.
-     * Neither netplay mode can wait for confirmation from an already-frozen
-     * peer during the apply barrier. */
+    /* Staged load must run guest cycles. Neither netplay mode can wait for
+     * confirmation from an already-frozen peer during the apply barrier. */
     if (g_np.xfer == NP_XFER_LOAD_APPLYING && savestate_pending()) {
         if (g_np.needs_advance)
             return 1;
@@ -5692,20 +5632,10 @@ int psx_netplay_poll_admit(void)
     if (g_np.rollback && g_np.xfer == NP_XFER_NONE)
         return np_try_admit_rollback();
 
-    sim = rnet_session_sim_tick(g_np.session);
-    enter_need = np_starv_env_int("PSX_NET_STARVATION_ENTER_FRAMES",
-                                  PSX_STARVATION_ENTER_DEFAULT);
-    exit_need = np_starv_env_int("PSX_NET_STARVATION_EXIT_FRAMES",
-                                 PSX_STARVATION_EXIT_DEFAULT);
-
     /* SAVE coord: run admit until both reach save_target_tick and flush the
      * staged write. After the local .pst exists, freeze (host also freezes
      * unless the guest tip is behind and still needs catch-up admits). */
     if (g_np.xfer == NP_XFER_SAVE_COORD) {
-        g_starv.enter_run = 0;
-        g_starv.exit_run = 0;
-        g_starv.latched = 0;
-        g_starv.just_cleared = 0;
         np_maybe_stage_target_save();
         if (!g_np.local_save_staged || savestate_pending())
             return np_try_admit_gameplay();
@@ -5722,83 +5652,14 @@ int psx_netplay_poll_admit(void)
         g_np.xfer == NP_XFER_SAVE_PROBE || g_np.xfer == NP_XFER_SAVE_SEND ||
         g_np.xfer == NP_XFER_MC_PROBE || g_np.xfer == NP_XFER_MC_SEND ||
         g_np.xfer == NP_XFER_MC_UPLOAD) {
-        g_starv.enter_run = 0;
-        g_starv.exit_run = 0;
-        g_starv.latched = 0;
-        g_starv.just_cleared = 0;
         return np_try_admit_gameplay();
     }
 
-    /* Startup grace: do not latch before the delay rings warm up. */
-    if (sim < (rnet_u32)PSX_STARVATION_GRACE_TICKS) {
-        g_starv.enter_run = 0;
-        g_starv.exit_run = 0;
-        g_starv.latched = 0;
-        g_starv.just_cleared = 0;
-        return np_try_admit_gameplay();
-    }
-
-    if (g_starv.latched) {
-        /* Pump already ran; hold try_admit until remote tip refills. */
-        if (np_starv_runway_ok()) {
-            g_starv.exit_run++;
-            if (g_starv.exit_run >= exit_need) {
-                g_starv.latched = 0;
-                g_starv.exit_run = 0;
-                g_starv.latch_logged = 0;
-                g_starv.just_cleared = 1;
-            } else {
-                return 0;
-            }
-        } else {
-            g_starv.exit_run = 0;
-            return 0;
-        }
-    }
-
-    if (np_try_admit_gameplay()) {
-        g_starv.enter_run = 0;
-        if (g_starv.just_cleared) {
-            int burst = np_starv_env_int("PSX_NET_STARVATION_RECOVERY_BURST",
-                                         PSX_STARVATION_RECOVERY_BURST_DEFAULT);
-            g_starv.just_cleared = 0;
-            g_starv.recovery_amount = burst;
-            if (np_delay_sync_diag_enabled()) {
-                if (burst > 0) {
-                    fprintf(stderr,
-                            "psxrecomp: delay_sync_starvation cleared sim=%u lead=%d "
-                            "D=%d — recovery burst %d\n",
-                            (unsigned)psx_netplay_sim_tick(), psx_netplay_remote_lead(),
-                            psx_netplay_input_delay(), burst);
-                } else {
-                    fprintf(stderr,
-                            "psxrecomp: delay_sync_starvation cleared sim=%u lead=%d "
-                            "D=%d — resume 1:1 (rebuild input buffer)\n",
-                            (unsigned)psx_netplay_sim_tick(), psx_netplay_remote_lead(),
-                            psx_netplay_input_delay());
-                }
-            }
-        }
-        return 1;
-    }
-
-    g_starv.just_cleared = 0;
-    g_starv.enter_run++;
-    if (g_starv.enter_run >= enter_need) {
-        g_starv.latched = 1;
-        g_starv.enter_run = 0;
-        if (!g_starv.latch_logged) {
-            if (np_delay_sync_diag_enabled()) {
-                fprintf(stderr,
-                        "psxrecomp: delay_sync_starvation latched sim=%u lead=%d "
-                        "D=%d (enter=%d)\n",
-                        (unsigned)psx_netplay_sim_tick(), psx_netplay_remote_lead(),
-                        psx_netplay_input_delay(), enter_need);
-            }
-            g_starv.latch_logged = 1;
-        }
-    }
-    return 0;
+    /* RNet samples T+D, refreshes future confirmations, and admits T only
+     * after its actual inputs and peer INPUT_CONFIRM agree. Retrying it must
+     * remain possible while remote lead is below D: a separate full-runway
+     * hold also suppresses those confirmations and drains the pipeline. */
+    return np_try_admit_gameplay();
 }
 
 /* The resume PC a tick snapshot is saved with. Live finish_frame and the
@@ -5946,7 +5807,7 @@ int psx_netplay_catchup_budget(void)
     if (psx_netplay_rb_fmv_desync_hold() || psx_netplay_rb_post_fmv_heal_sticky())
         return 0;
     cap = np_starv_env_int("PSX_NET_CATCHUP_CAP", PSX_CATCHUP_CAP_DEFAULT);
-    if (cap <= 0 && g_starv.recovery_amount <= 0)
+    if (cap <= 0)
         return 0;
     lead = psx_netplay_remote_lead();
     delay = psx_netplay_input_delay();
@@ -5957,8 +5818,6 @@ int psx_netplay_catchup_budget(void)
     if (extra < 0)
         extra = 0;
     budget = extra;
-    if (g_starv.recovery_amount > budget)
-        budget = g_starv.recovery_amount;
     if (budget > cap)
         budget = cap;
     return budget;
@@ -5966,8 +5825,8 @@ int psx_netplay_catchup_budget(void)
 
 void psx_netplay_catchup_consume_frame(void)
 {
-    if (g_starv.recovery_amount > 0)
-        g_starv.recovery_amount--;
+    /* Kept for existing callers; the optional budget is derived from the
+     * remaining remote lead rather than a separate recovery counter. */
 }
 
 void psx_netplay_wait_recv(int timeout_ms)
@@ -6059,10 +5918,7 @@ void psx_netplay_admit_wait_info(char *stall_out, size_t stall_cap,
             break;
         case NP_XFER_LOAD_APPLYING:
             if (savestate_pending()) {
-                if (g_starv.latched)
-                    snprintf(phase, sizeof(phase), "load_applying+starv_%s", name);
-                else
-                    snprintf(phase, sizeof(phase), "load_applying+%s", name);
+                snprintf(phase, sizeof(phase), "load_applying+%s", name);
             } else {
                 snprintf(phase, sizeof(phase), "load_apply_done+%s", name);
             }

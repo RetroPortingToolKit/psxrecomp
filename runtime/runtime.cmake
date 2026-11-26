@@ -7,6 +7,7 @@
 if(NOT DEFINED PSXRECOMP_ROOT)
     get_filename_component(PSXRECOMP_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
+file(TO_CMAKE_PATH "${PSXRECOMP_ROOT}" PSXRECOMP_ROOT)
 
 # The rebuild CLI configures this as `generate` for its instrumented pass and
 # `use` after it has merged the collected profile.  Keep the switch here,

@@ -352,6 +352,9 @@ if(BUILD_TESTING)
     add_executable(lobby_launch_transport_test tests/test_lobby_launch_transport.c)
     target_include_directories(lobby_launch_transport_test PRIVATE include)
     add_test(NAME lobby_launch_transport_test COMMAND lobby_launch_transport_test)
+    add_executable(netplay_lan_rtt_test tests/test_netplay_lan_rtt.c)
+    target_include_directories(netplay_lan_rtt_test PRIVATE include)
+    add_test(NAME netplay_lan_rtt_test COMMAND netplay_lan_rtt_test)
     add_executable(netplay_fmv_confirm_test tests/test_netplay_fmv_confirm.c)
     target_include_directories(netplay_fmv_confirm_test PRIVATE include)
     add_test(NAME netplay_fmv_confirm_test COMMAND netplay_fmv_confirm_test)
@@ -3298,11 +3301,23 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
                              --compiler ${CMAKE_CXX_COMPILER})
         endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+              add_test(NAME netplay_lan_rtt_wiring_test
+                       COMMAND ${Python3_EXECUTABLE}
+                               ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_lan_rtt_wiring.py
+                               --compiler ${CMAKE_CXX_COMPILER})
             add_test(NAME netplay_rb_session_reset_test
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_rb_session_reset.py
                              --compiler ${CMAKE_C_COMPILER})
             if(PSXRECOMP_TEST_HAS_RBENGINE)
+                if(TARGET recomp_net)
+                    add_test(NAME netplay_delay_admit_test
+                             COMMAND ${Python3_EXECUTABLE}
+                                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_delay_admit.py
+                                     --compiler ${CMAKE_C_COMPILER}
+                                     --recomp-net ${_RNET_ROOT}
+                                     --library $<TARGET_FILE:recomp_net>)
+                endif()
                 add_test(NAME netplay_commit_lineage_test
                          COMMAND ${Python3_EXECUTABLE}
                                  ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_commit_lineage.py
