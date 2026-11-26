@@ -358,10 +358,10 @@ def source_text(path: pathlib.Path) -> str:
 
 
 def assert_guarded(memory: str) -> None:
-    # One extern and seven real pre-write sites. The descriptor's bare callback
+    # One extern and eight real pre-write sites. The descriptor's bare callback
     # address is not an additional write. Runtime regression proves both builds.
-    if memory.count(TRACE_CALL + "(") != 8:
-        fail("memory.c needs one extern and seven shared history write sites")
+    if memory.count(TRACE_CALL + "(") != 9:
+        fail("memory.c needs one extern and eight shared history write sites")
 
 
 def assert_observers_preserved(memory: str) -> None:
