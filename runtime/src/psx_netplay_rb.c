@@ -8986,6 +8986,30 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
         }
         return;
     }
+    /* Reject retired BEGINs before either owner can yield. A delayed BEGIN
+     * from the last committed epoch (or behind the agreed execution tip)
+     * must not destroy a newer active episode merely because its initiator
+     * has the lower seat. Numeric epoch order alone proves nothing. */
+    if (!g_rb)
+        return;
+    {
+        const int current = rnet_rb_is_active(g_rb) &&
+                            epoch == rnet_rb_get_epoch_id(g_rb);
+        if (!current && epoch == g_last_commit_epoch) {
+            follow_refuse_nack(epoch, mismatch, load, target, slot,
+                               "already committed (zombie epoch)");
+            return;
+        }
+        if (!joint && !current && g_agreed_valid && load < g_agreed_through &&
+            !g_joining) {
+            char detail[96];
+            snprintf(detail, sizeof(detail),
+                     "behind agreed tip=%u (zombie load)",
+                     (unsigned)g_agreed_through);
+            follow_refuse_nack(epoch, mismatch, load, target, slot, detail);
+            return;
+        }
+    }
     /* New epoch while TipHold: initiator span-cap committed and reopened —
      * yield tip-hold so we can follow (was silently dropping SYNC). */
     if (g_rb && rnet_rb_is_tip_holding(g_rb) &&
@@ -9065,31 +9089,6 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
             }
             return;
         }
-    }
-    if (!g_rb)
-        return;
-    /* §87/§101: never reopen an epoch we already committed (tip-hold /
-     * ownership). NACK so the initiator aborts Seal instead of waiting 4s.
-     * Soak: tie-break follow of zombie epoch=8 after tip-hold commit →
-     * rb_baseline hang while peer already left → peer pcap_freeze. */
-    if (!rnet_rb_is_active(g_rb) && epoch == g_last_commit_epoch) {
-        char detail[96];
-        snprintf(detail, sizeof(detail), "already committed (zombie epoch)");
-        follow_refuse_nack(epoch, mismatch, load, target, slot, detail);
-        return;
-    }
-    /* §87/§101: load strictly behind agreed tip rewinds into a dead timeline
-     * (soak: follow load=1808 after commit tip=1852; session-136 load=3184
-     * vs agreed tip=3200 → silent REFUSED ×100 + seal timeout). load==agreed
-     * is the ownership-chain skip-snap continue and stays legal. */
-    if (!joint && !rnet_rb_is_active(g_rb) && g_agreed_valid && load < g_agreed_through &&
-        !g_joining) {
-        char detail[96];
-        snprintf(detail, sizeof(detail),
-                 "behind agreed tip=%u (zombie load)",
-                 (unsigned)g_agreed_through);
-        follow_refuse_nack(epoch, mismatch, load, target, slot, detail);
-        return;
     }
     if (rnet_rb_is_active(g_rb)) {
         /* §60/§61: tip-extend same-epoch is handled above. Same-epoch BEGIN
