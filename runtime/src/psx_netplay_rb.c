@@ -432,6 +432,9 @@ static uint32_t g_stash_begin_target;
 static int g_stash_begin_slot;
 static uint8_t g_stash_begin_flags;
 static int g_stash_begin_logged;
+/* Newest BEGIN per initiator and our refusals: a dead epoch is never
+ * followed or stashed (netplay_rb_begin_dead). */
+static NetplayRbBeginSeen g_begin_seen;
 static uint64_t g_last_begin_rexmit_ms;
 static int g_begin_rexmit_logged;
 static uint64_t g_baseline_handshake_ms; /* when local baseline first sent */
@@ -4263,6 +4266,8 @@ static void send_follow_nack(uint32_t epoch, uint32_t mismatch, uint32_t load,
     RNetSession *s = sess();
     uint32_t frontier = follower_frontier_hint();
     rnet_u8 flags = 0u;
+    /* The initiator aborts the epoch this answers; it must stay dead here. */
+    netplay_rb_begin_seen_note(&g_begin_seen, epoch, RB_EPOCH_SLOT_MASK, 1);
     if (joint_recovery_enabled()) {
         joint_recovery_hold(mismatch, target, slot);
         mismatch = g_joint_mismatch;
@@ -6736,6 +6741,7 @@ static void rb_start(int clear_guest_resume)
     g_stash_begin_valid = 0;
     g_stash_begin_logged = 0;
     g_last_commit_epoch = 0xffffffffu;
+    netplay_rb_begin_seen_reset(&g_begin_seen);
     g_peer_commit_epoch = 0xffffffffu;
     g_peer_commit_tick = 0;
     g_fork_streak = 0u;
@@ -6903,6 +6909,7 @@ static void rb_shutdown(int clear_guest_resume)
     g_last_begin_rexmit_ms = 0;
     g_begin_rexmit_logged = 0;
     g_last_commit_epoch = 0xffffffffu;
+    netplay_rb_begin_seen_reset(&g_begin_seen);
     g_peer_commit_epoch = 0xffffffffu;
     g_peer_commit_tick = 0;
     g_fork_streak = 0u;
@@ -8755,6 +8762,13 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
     int transfer = joint && joint_two_peer_session() &&
                    (wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) && rb_media_kf_enabled();
     int transfer_guest = transfer && g_b.local_slot && *g_b.local_slot == 1;
+    /* A retransmit can arrive long after its episode died: superseded by a
+     * newer epoch from the same initiator, or refused by us. Stashing it
+     * while another episode runs and following it afterwards left this peer
+     * waiting for a baseline nobody sends. */
+    if (netplay_rb_begin_dead(&g_begin_seen, epoch, RB_EPOCH_SLOT_MASK))
+        return;
+    netplay_rb_begin_seen_note(&g_begin_seen, epoch, RB_EPOCH_SLOT_MASK, 0);
     /* A delayed duplicate of a completed BEGIN is not a new recovery. */
     if (g_rb && !rnet_rb_is_active(g_rb) && epoch == g_last_commit_epoch &&
         joint_two_peer_session())
