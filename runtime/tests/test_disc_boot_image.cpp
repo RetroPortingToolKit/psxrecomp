@@ -24,6 +24,7 @@ uint32_t g_psx_ram_size = PSX_MAIN_RAM_RETAIL_BYTES;
 uint32_t g_psx_ram_mask = PSX_MAIN_RAM_RETAIL_BYTES - 1;
 static std::vector<uint8_t> guest_ram(PSX_MAIN_RAM_RETAIL_BYTES, 0x5a);
 static size_t guest_writes;
+static uint32_t dram_control;
 
 extern "C" void psx_host_write_byte(uint32_t address, uint8_t value) {
     guest_ram.at(psx_ram_canonical_offset(address)) = value;
@@ -31,6 +32,11 @@ extern "C" void psx_host_write_byte(uint32_t address, uint8_t value) {
 }
 
 extern "C" void psx_host_write_word(uint32_t address, uint32_t value) {
+    if (address == 0x1f801060u) {
+        dram_control = value;
+        ++guest_writes;
+        return;
+    }
     for (unsigned i = 0; i < 4; ++i)
         psx_host_write_byte(address + i, static_cast<uint8_t>(value >> (i * 8)));
 }
@@ -248,8 +254,11 @@ int main(int argc, char **argv) {
         {"", "GAME.EXE", launch_image}});
     CPUState launch_cpu{};
     std::string boot_error;
+    dram_control = 0xdeadbeefu;
     check(psx_prepare_native_bios_boot(launch_cpu, native.string(), boot_error),
           "native boot prepares the original executable and kernel tables");
+    check(dram_control == 0x00000b88u,
+          "native boot initializes the retail DRAM controller before SetMem");
     check(launch_cpu.pc == 0xa0010020 && launch_cpu.gpr[28] == 0x80011004 &&
           launch_cpu.gpr[29] == 0x801fef80 && launch_cpu.gpr[30] == 0x801fef80 &&
           launch_cpu.gpr[4] == 1 && launch_cpu.gpr[5] == 0 &&

@@ -654,6 +654,17 @@ static int service_a0(CPUState *cpu, uint32_t fn) {
         cpu->write_word(0xfffe0130u, 0x0001e988u);
         psx_cpu_charge(40);
         return 1;  /* void function */
+    case 0x9f: { /* SetMem: retail single-bank 2MB or 8MB address window. */
+        if (a0 != 2 && a0 != 8) return PSX_NATIVE_BIOS_UNSUPPORTED;
+        /* Preserve refresh, wiring and bank-size bit 11; only the bank
+         * selection field changes. This does not resize physical RAM. */
+        uint32_t control = cpu->read_word(0x1f801060u) & ~0x700u;
+        if (a0 == 8) control |= 0x300u;
+        cpu->write_word(0x1f801060u, control);
+        cpu->write_word(0x60u, a0);
+        psx_cpu_charge(24);
+        return PSX_NATIVE_BIOS_RETURN; /* void function */
+    }
     default:
         return 0;
     }
