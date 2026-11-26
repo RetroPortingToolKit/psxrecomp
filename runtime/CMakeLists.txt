@@ -178,6 +178,10 @@ if(BUILD_TESTING)
     if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
         find_package(Python3 COMPONENTS Interpreter)
         if(Python3_Interpreter_FOUND)
+            add_test(NAME spu_word_mmio
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_spu_word_mmio.py
+                    --cc ${CMAKE_C_COMPILER})
             add_test(NAME direct_guest_memory
                 COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_direct_guest_memory.py

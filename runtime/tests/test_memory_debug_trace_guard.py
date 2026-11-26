@@ -85,8 +85,8 @@ void gpu_write_gp0(uint32_t val);
 void gpu_write_gp1(uint32_t val);
 uint32_t mdec_read(uint32_t addr);
 void mdec_write(uint32_t addr, uint32_t val);
-uint16_t spu_read(uint32_t addr);
-void spu_write(uint32_t addr, uint16_t val);
+uint32_t spu_read(uint32_t addr);
+void spu_write(uint32_t addr, uint32_t val);
 void debug_server_trace_mmio_write(uint32_t addr, uint32_t val, uint8_t width);
 void debug_server_trace_mmio_read(uint32_t addr, uint32_t val, uint8_t width);
 void debug_server_trace_ram_read_watch(uint32_t phys, uint32_t val);
@@ -198,8 +198,8 @@ void gpu_write_gp0(uint32_t val) { (void)val; }
 void gpu_write_gp1(uint32_t val) { (void)val; }
 uint32_t mdec_read(uint32_t addr) { (void)addr; return 0; }
 void mdec_write(uint32_t addr, uint32_t val) { (void)addr; (void)val; }
-uint16_t spu_read(uint32_t addr) { (void)addr; return 0; }
-void spu_write(uint32_t addr, uint16_t val) { (void)addr; (void)val; }
+uint32_t spu_read(uint32_t addr) { (void)addr; return 0; }
+void spu_write(uint32_t addr, uint32_t val) { (void)addr; (void)val; }
 void debug_server_trace_mmio_write(uint32_t addr, uint32_t val, uint8_t width) {
     (void)addr; (void)val; (void)width;
 }
@@ -358,10 +358,10 @@ def source_text(path: pathlib.Path) -> str:
 
 
 def assert_guarded(memory: str) -> None:
-    # One extern and seven real pre-write sites. The descriptor's bare callback
+    # One extern and eight real pre-write sites. The descriptor's bare callback
     # address is not an additional write. Runtime regression proves both builds.
-    if memory.count(TRACE_CALL + "(") != 8:
-        fail("memory.c needs one extern and seven shared history write sites")
+    if memory.count(TRACE_CALL + "(") != 9:
+        fail("memory.c needs one extern and eight shared history write sites")
 
 
 def assert_observers_preserved(memory: str) -> None:
