@@ -125,6 +125,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "psx_selfcheck.h"
 #include "psx_lobby_client.h"
 #include "netplay_bios_settle.h"
+#include "netplay_lan_rtt.h"
 #include "netplay_exit_reason.h"
 #include "netplay_lan_version.h"
 #include "start_refusal.h"
@@ -13190,6 +13191,10 @@ namespace {
     AeLanSock g_lnch_lan_udp = kAeLanSockInvalid;
     sockaddr_in g_lnch_lan_peers[kAeLanMaxSlots]{};
     bool g_lnch_lan_peer_ok[kAeLanMaxSlots]{};
+    NetplayLanRtt g_lnch_lan_rtt[kAeLanMaxSlots]{};
+    static uint64_t ae_np_lan_rtt_key(const sockaddr_in& address) {
+        return ((uint64_t)address.sin_addr.s_addr << 16) | address.sin_port;
+    }
     uint32_t g_lnch_lan_join_pulse_ms = 0;
     /* LAN list latency from last Refresh probe; -1 unknown. */
     int g_lnch_lan_latency_ms = -1;
@@ -13533,8 +13538,10 @@ namespace {
             std::fprintf(stderr, "LAN trace: close socket (host=%d guest=%d)\n",
                          g_lnch_hosting_lan, g_lnch_joined_lan);
         ae_np_lan_sock_close(&g_lnch_lan_udp);
-        for (int i = 0; i < kAeLanMaxSlots; ++i)
+        for (int i = 0; i < kAeLanMaxSlots; ++i) {
             g_lnch_lan_peer_ok[i] = false;
+            netplay_lan_rtt_bind(&g_lnch_lan_rtt[i], 0);
+        }
     }
 
     static void ae_np_lan_sync_legacy_names(AeLanLobbyState& state) {
@@ -13671,12 +13678,14 @@ namespace {
     static void ae_np_lan_clear_peer_slot(int slot) {
         if (slot < 0 || slot >= kAeLanMaxSlots) return;
         g_lnch_lan_peer_ok[slot] = false;
+        netplay_lan_rtt_bind(&g_lnch_lan_rtt[slot], 0);
     }
 
     static void ae_np_lan_set_peer_slot(int slot, const sockaddr_in& addr) {
         if (slot < 0 || slot >= kAeLanMaxSlots) return;
         g_lnch_lan_peers[slot] = addr;
         g_lnch_lan_peer_ok[slot] = true;
+        netplay_lan_rtt_bind(&g_lnch_lan_rtt[slot], ae_np_lan_rtt_key(addr));
     }
 
     static int ae_np_lan_endpoint_port(const std::string& endpoint) {
@@ -13789,6 +13798,17 @@ namespace {
 #else
         sendto(g_lnch_lan_udp, msg, (size_t)n, 0, (const sockaddr*)&to, sizeof(to));
 #endif
+    }
+
+    static void ae_np_lan_rtt_probe(int slot, const sockaddr_in& to, uint32_t now) {
+        if (slot < 0 || slot >= kAeLanMaxSlots) return;
+        NetplayLanRtt& sample = g_lnch_lan_rtt[slot];
+        netplay_lan_rtt_bind(&sample, ae_np_lan_rtt_key(to));
+        if (!netplay_lan_rtt_due(&sample, now)) return;
+        netplay_lan_rtt_sent(&sample, now);
+        char ping[48];
+        std::snprintf(ping, sizeof(ping), "MOTK7 PING\n%u\n", (unsigned)now);
+        ae_np_lan_udp_sendto(to, ping);
     }
 
     bool ae_np_read_lan_state(AeLanLobbyState* state) {
@@ -14684,6 +14704,7 @@ namespace {
         if (a < kAeLanMaxSlots && b < kAeLanMaxSlots) {
             std::swap(g_lnch_lan_peers[a], g_lnch_lan_peers[b]);
             std::swap(g_lnch_lan_peer_ok[a], g_lnch_lan_peer_ok[b]);
+            std::swap(g_lnch_lan_rtt[a], g_lnch_lan_rtt[b]);
             std::swap(g_lnch_lan_slot_bios[a], g_lnch_lan_slot_bios[b]);
             std::swap(g_lnch_lan_slot_memcard[a], g_lnch_lan_slot_memcard[b]);
         }
@@ -16049,6 +16070,9 @@ namespace {
              * unicast target (and for guests that listen between browses). */
             if (g_lnch_lan_udp != kAeLanSockInvalid && !st.started) {
                 const uint32_t now = SDL_GetTicks();
+                for (int slot = 0; slot < st.max_slots; ++slot)
+                    if (slot != st.host_slot && g_lnch_lan_peer_ok[slot])
+                        ae_np_lan_rtt_probe(slot, g_lnch_lan_peers[slot], now);
                 if (g_lnch_lan_beacon_announce_ms == 0u ||
                     now - g_lnch_lan_beacon_announce_ms >= 2000u) {
                     g_lnch_lan_beacon_announce_ms = now;
@@ -16071,6 +16095,8 @@ namespace {
                     to.sin_family = AF_INET;
                     to.sin_port = htons((uint16_t)ae_np_lan_endpoint_port(g_lnch_lan_endpoint));
                     if (inet_pton(AF_INET, host, &to.sin_addr) == 1) {
+                        if (!g_lnch_remote_lan_state.started)
+                            ae_np_lan_rtt_probe(g_lnch_remote_lan_state.host_slot, to, now);
                         std::string me = psx_lobby_display_name();
                         if (me.empty()) me = "Player";
                         char msg[640];
@@ -16114,6 +16140,41 @@ namespace {
                     inet_pton(AF_INET, host, &expected) != 1 ||
                     from.sin_addr.s_addr != expected.s_addr ||
                     ntohs(from.sin_port) != ae_np_lan_endpoint_port(g_lnch_lan_endpoint)) continue;
+            }
+            if (std::strncmp(buf, "MOTK7 PING\n", 11) == 0 ||
+                std::strncmp(buf, "MOTK7 PONG\n", 11) == 0) {
+                /* Measure only a seated peer, using its actual lobby endpoint.
+                 * Discovery packets and unrelated sockets cannot seed delay. */
+                int slot = -1;
+                const uint64_t key = ae_np_lan_rtt_key(from);
+                if (g_lnch_hosting_lan) {
+                    for (int i = 0; i < kAeLanMaxSlots; ++i)
+                        if (g_lnch_lan_peer_ok[i] &&
+                            ae_np_lan_rtt_key(g_lnch_lan_peers[i]) == key) {
+                            slot = i;
+                            break;
+                        }
+                } else {
+                    char host[64]; in_addr expected{};
+                    if (ae_np_lan_endpoint_host(g_lnch_lan_endpoint, host, sizeof(host)) &&
+                        inet_pton(AF_INET, host, &expected) == 1 &&
+                        from.sin_addr.s_addr == expected.s_addr &&
+                        ntohs(from.sin_port) == ae_np_lan_endpoint_port(g_lnch_lan_endpoint))
+                        slot = g_lnch_remote_lan_state.host_slot;
+                }
+                char* end = nullptr;
+                const unsigned long long echo = std::strtoull(buf + 11, &end, 10);
+                if (slot < 0 || slot >= kAeLanMaxSlots || end == buf + 11 ||
+                    *end != '\n' || end[1] != '\0' || echo > UINT32_MAX) continue;
+                if (buf[7] == 'I') {
+                    char pong[48];
+                    std::snprintf(pong, sizeof(pong), "MOTK7 PONG\n%u\n", (unsigned)echo);
+                    ae_np_lan_udp_sendto(from, pong);
+                } else {
+                    (void)netplay_lan_rtt_reply(&g_lnch_lan_rtt[slot], key,
+                                               (uint32_t)echo, SDL_GetTicks());
+                }
+                continue;
             }
             if (std::strncmp(buf, "MOTK6 MODS\n", 11) == 0 && g_lnch_remote_lan &&
                 g_netplay_content_negotiation) {
@@ -17384,6 +17445,16 @@ namespace {
                     out->is_host = (slot == state.host_slot) ? 1 : 0;
                     out->is_local = (slot == g_lnch_lan_my_slot) ? 1 : 0;
                     out->latency_ms = -1;
+                    if (!out->is_local) {
+                        if ((g_lnch_hosting_lan && g_lnch_lan_peer_ok[slot]) ||
+                            (g_lnch_remote_lan && slot == state.host_slot)) {
+                            if (g_lnch_lan_rtt[slot].peer)
+                                out->latency_ms = g_lnch_lan_rtt[slot].latency_ms;
+                        } else if (!g_lnch_remote_lan) {
+                            /* A file-only participant shares this machine. */
+                            out->latency_ms = 0;
+                        }
+                    }
                     if (out->is_local) {
                         ae_np_lan_sync_local_slot_bios();
                         ae_np_lan_sync_local_slot_memcard();
@@ -17469,6 +17540,7 @@ namespace {
             if (from_slot < kAeLanMaxSlots && to_slot < kAeLanMaxSlots) {
                 std::swap(g_lnch_lan_peers[from_slot], g_lnch_lan_peers[to_slot]);
                 std::swap(g_lnch_lan_peer_ok[from_slot], g_lnch_lan_peer_ok[to_slot]);
+                std::swap(g_lnch_lan_rtt[from_slot], g_lnch_lan_rtt[to_slot]);
             }
             state.started = false;
             ae_np_lan_sync_legacy_names(state);
