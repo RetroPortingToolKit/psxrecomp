@@ -53,6 +53,8 @@ static uint32_t expected_saved_v0, last_thread_switch;
 static uint32_t test_istat, test_imask;
 static uint32_t test_timers[3][3];
 static uint32_t test_gpu_status, test_gpu_data, test_gpu_control;
+static uint32_t test_dram_control;
+static unsigned test_dram_control_writes;
 static unsigned test_gpu_writes;
 uint32_t dma_cycles_to_internal_event(void) { return UINT32_MAX; }
 static uint16_t test_sio_mode, test_sio_ctrl, test_sio_baud;
@@ -163,6 +165,7 @@ void psx_advance_cycles_slow(uint32_t cycles) { (void)cycles; CHECK(0); }
 
 static uint32_t read_word(uint32_t address)
 {
+    if (address == 0x1f801060u) return test_dram_control;
     if (address == 0x1f801814u) return test_gpu_status;
     if (address == 0x1f8010a8u) return 0;
     if (address == 0x1f801070u) return test_istat;
@@ -177,6 +180,11 @@ static uint32_t read_word(uint32_t address)
 
 static void write_word(uint32_t address, uint32_t value)
 {
+    if (address == 0x1f801060u) {
+        test_dram_control = value;
+        ++test_dram_control_writes;
+        return;
+    }
     if (address == 0x1f801810u) {
         test_gpu_data = value;
         ++test_gpu_writes;
@@ -1247,6 +1255,32 @@ static void check_native_pad(void)
     CHECK(native_call(&irq_cpu, 0xb0, 0x14, 0, 0, 0) == 1);
 }
 
+static void check_native_mem_size(void)
+{
+    CPUState cpu = {0};
+    cpu.read_word = read_word;
+    cpu.write_word = write_word;
+    cpu.gpr[2] = 0x12345678;
+    const uint32_t physical_bytes = g_psx_ram_size;
+    test_dram_control = 0xa5a5ff88u;
+    cpu.gpr[4] = 2;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x9f) == PSX_NATIVE_BIOS_RETURN);
+    CHECK(test_dram_control == 0xa5a5f888u && read_word(0x60) == 2);
+    CHECK(cpu.gpr[2] == 0x12345678 && g_psx_ram_size == physical_bytes);
+    cpu.gpr[4] = 8;
+    CHECK(psx_native_bios_service(&cpu, 0xa0, 0x9f) == PSX_NATIVE_BIOS_RETURN);
+    CHECK(test_dram_control == 0xa5a5fb88u && read_word(0x60) == 8);
+    CHECK(g_psx_ram_size == physical_bytes);
+    const unsigned writes = test_dram_control_writes;
+    const uint32_t unsupported[] = {0, 1, 3, 4, 16, UINT32_MAX};
+    for (unsigned i = 0; i < sizeof unsupported / sizeof *unsupported; ++i) {
+        cpu.gpr[4] = unsupported[i];
+        CHECK(psx_native_bios_service(&cpu, 0xa0, 0x9f) == PSX_NATIVE_BIOS_UNSUPPORTED);
+        CHECK(test_dram_control == 0xa5a5fb88u && read_word(0x60) == 8);
+        CHECK(test_dram_control_writes == writes && cpu.gpr[2] == 0x12345678);
+    }
+}
+
 static void check_native_cd_and_loadexec(void)
 {
     CPUState cpu = {0};
@@ -1366,6 +1400,7 @@ int main(void)
     check_native_hardware_event_classes();
     check_native_files();
     check_native_cd_and_loadexec();
+    check_native_mem_size();
     puts("bios_hle_events_test: OK");
     return 0;
 }

@@ -89,6 +89,9 @@ bool psx_prepare_native_bios_boot(CPUState &cpu, const std::string &disc,
     const uint32_t events = threads + config->threads * kThreadBytes;
     clear_span(kHeapBegin, static_cast<uint32_t>(tables_size));
     psx_host_write_word(0x60, psx_ram_live_bytes() >> 20);
+    // Retail boot initializes the controller's bank-size bit 11. SetMem
+    // subsequently changes bits 8..10 while preserving this bus setup.
+    psx_host_write_word(0x1f801060u, 0x00000b88u);
     psx_host_write_word(0x64, 0);
     psx_host_write_word(0x68, 0xff);
     // The standard vector points to a designated native entry. A title may
