@@ -74,6 +74,10 @@ def main():
     sources = [("probe", fixture), ("sw", framework / "runtime/src/gpu_sw_renderer.c"),
                ("rp", framework / "runtime/src/render_pass_plan.c"),
                ("xr", framework / "runtime/src/psx_openxr.c")]
+    for name in ("frame_interpolation", "host_time"):
+        source = framework / "runtime/src" / (name + ".c")
+        if source.exists():
+            sources.append((name, source))
     if (framework / "runtime/src/render_thread.c").exists():
         sources.append(("rth", framework / "runtime/src/render_thread.c"))
     if (framework / "runtime/src/present_thread.c").exists():
