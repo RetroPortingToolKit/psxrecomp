@@ -763,6 +763,18 @@ void psx_netplay_execution_anchor(uint32_t tick)
     s_commit_anchor_ready = 1;
 }
 
+/* Companion to the rollback owner's explicit movie-gap HC re-prime. This
+ * retires omitted producer rows only: it does not accept a state baseline,
+ * change executed inputs, or waive the boot / post-movie peer checks. */
+void psx_netplay_frame_commit_prime_after(uint32_t tick)
+{
+    if (!g_np.rollback || !s_commit_anchor_ready ||
+        psx_netplay_rb_is_resimulating())
+        return;
+    if (s_commit_next_tick <= tick)
+        s_commit_next_tick = tick + 1u;
+}
+
 static NpPartSlot *np_part_ring_execution(uint32_t tick)
 {
     NpPartSlot *part = &s_part_ring[tick % NP_PART_RING];

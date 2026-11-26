@@ -30,6 +30,7 @@ def main():
     abort_name = "psx_netplay_rb_abort_resim_core_mismatch"
     abort_source = function(rb_source[rb_source.rindex("int " + abort_name):], abort_name)
     lineage = "static void np_flush_confirmed_frame_commits" in source
+    media_prime = "void psx_netplay_frame_commit_prime_after" in source
     if lineage:
         reconcile = function_body(source, "static void np_rollback_reconcile_wire(void)")
         assert reconcile.index("np_invalidate_execution_from(t)") < reconcile.index("netplay_ih_promote(")
@@ -49,6 +50,10 @@ def main():
                      "np_note_executed_pad", "np_execution_inputs_confirmed",
                      "np_invalidate_execution_from"):
             helpers += function(source, name)
+    if media_prime:
+        helpers += function(source, "psx_netplay_frame_commit_prime_after")
+        settle = function_body(rb_source, "static void rb_fmv_tick_settle(void)")
+        assert "psx_netplay_frame_commit_prime_after(sim);" in settle
     for name in ("np_part_ring_put", "np_part_ring_get", "np_check_core_diverge"):
         helpers += function(source, name)
     if lineage:
@@ -214,6 +219,38 @@ int main(void) {
     assert(sent==1&&!np_part_ring_get(1));
     make_episode(nRNetRbPhaseReplay);finish(1,0x1111);
     assert(sent==2&&last_sent_tick==1&&last_sent_core==0x1111);
+    /* A long live movie intentionally omits commits. Its established HC
+     * re-prime must also retire that producer gap; wrapping the local ring
+     * must not strand every later real, authoritative execution. */
+    reset();finish(0,0x1234);netplay_hc_note_peer(&g_np.hc,0,0x1234);
+    publish(0,1,0xffff,0);publish(1,1,0xffff,0);finish(1,0x1001);
+    netplay_hc_note_peer(&g_np.hc,1,0x1001);assert(s_commit_anchor_ready);
+    media_depth24=media_hot=1;
+    for(uint32_t tick=2;tick<=200;++tick) {
+        publish(0,tick,0xffff,0);publish(1,tick,0xffff,0);finish(tick,0x1000+tick);
+    }
+    assert(sent==2&&s_commit_next_tick==2);
+    media_depth24=media_hot=0;netplay_hc_prime_after(&g_np.hc,200);
+#if HAS_MEDIA_PRIME
+    psx_netplay_frame_commit_prime_after(200);
+#endif
+    publish(0,201,0xffff,0);publish(1,201,0xbfff,1);finish(201,0x2201);
+    assert(sent==2); /* re-prime never certifies a prediction */
+    promote(1,201,0xbfff);np_flush_confirmed_frame_commits();
+    if(sent!=3||last_sent_tick!=201||last_sent_core!=0x2201) {
+        fputs("FAIL: rollback movie gap stranded post-movie FRAME_COMMIT\n",stderr);return 5;
+    }
+    assert(!netplay_hc_confirm_through(&g_np.hc,201));
+    netplay_hc_note_peer(&g_np.hc,201,0x2201);
+    assert(netplay_hc_confirm_through(&g_np.hc,201));
+#if HAS_MEDIA_PRIME
+    reset();psx_netplay_frame_commit_prime_after(200);
+    assert(s_commit_next_tick==0&&!s_commit_anchor_ready); /* boot gate retained */
+    finish(0,0x1234);netplay_hc_note_peer(&g_np.hc,0,0x1234);
+    publish(0,1,0xffff,0);publish(1,1,0xffff,0);finish(1,0x1001);
+    g_np.rollback=0;psx_netplay_frame_commit_prime_after(200);
+    assert(s_commit_next_tick==2); /* delay has no omitted-movie boundary */
+#endif
     puts("confirmed ancestry / promotion / replay / real mismatch controls PASS");
 #endif
     return 0;
@@ -228,6 +265,7 @@ int main(void) {
         command = [args.compiler, "-std=c11", "-O2", "-Wall", "-Wextra",
                    "-Wno-unused-function", "-DPSX_HAS_RECOMP_NET",
                    f"-DHAS_LINEAGE={int(lineage)}", "-I", str(ROOT / "runtime/include"),
+                   f"-DHAS_MEDIA_PRIME={int(media_prime)}",
                    "-I", str(args.recomp_net / "include"), str(c),
                    str(ROOT / "runtime/src/netplay_input_hist.c"),
                    str(ROOT / "runtime/src/psx_net_pad.c"),

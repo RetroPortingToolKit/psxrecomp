@@ -1275,8 +1275,14 @@ static void rb_fmv_tick_settle(void)
         g_fmv_lockstep_until = sim + RB_FMV_LOCKSTEP_MIN;
         /* Live FRAME_COMMITs were skipped during depth24 — waive the gap so
          * hash_confirm can advance again once digests resume. */
-        if (g_b.hc)
+        if (g_b.hc) {
             netplay_hc_prime_after(g_b.hc, sim);
+            /* The contiguous producer must retire the same deliberately
+             * omitted movie rows. The next real state still needs its own
+             * executed-input lineage and matching peer FRAME_COMMIT. */
+            extern void psx_netplay_frame_commit_prime_after(uint32_t tick);
+            psx_netplay_frame_commit_prime_after(sim);
+        }
         fprintf(stderr,
                 "psxrecomp: rb FMV settle until sim=%u invent_hold=%u "
                 "dense_lockstep min=%u max=%u confirm=%u "
