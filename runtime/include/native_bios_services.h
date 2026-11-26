@@ -95,11 +95,19 @@ static inline uint32_t psx_native_pad_patch_helper(int started) {
            (started ? 0x884u : 0x894u);
 }
 
+/* Physical addresses of the published, guest-writable IRQ callbacks. */
+static inline int psx_native_bios_irq_token(uint32_t phys) {
+    return phys >= PSX_NATIVE_IRQ_TOKENS &&
+           phys - PSX_NATIVE_IRQ_TOKENS < PSX_NATIVE_IRQ_NODE_COUNT * 8 &&
+           !(phys & 3u);
+}
+
 /* Intact BREAK markers at these addresses belong to the native dispatcher.
  * A copied guest exception prefix may branch here inside one compiled unit;
  * it must leave that unit so the runtime can check the live marker first. */
 static inline int psx_native_bios_dispatch_marker(uint32_t address) {
     const uint32_t phys = address & 0x1fffffffu;
+    if (psx_native_bios_irq_token(phys)) return 1;
     if (phys == PSX_NATIVE_EXCEPTION_ENTRY ||
         phys == PSX_NATIVE_EXCEPTION_PATCH_RESUME ||
         phys == PSX_NATIVE_WAIT_EVENT_RESUME ||

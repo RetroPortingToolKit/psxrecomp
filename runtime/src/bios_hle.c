@@ -375,9 +375,8 @@ static uint32_t native_builtin_irq_call(CPUState *cpu, uint32_t node,
 static uint32_t native_irq_call(CPUState *cpu, uint32_t function)
 {
     const uint32_t phys = function & 0x1fffffffu;
-    if (phys >= PSX_NATIVE_IRQ_TOKENS &&
-        phys - PSX_NATIVE_IRQ_TOKENS < PSX_NATIVE_IRQ_NODE_COUNT * 8 &&
-        !(phys & 3u) && cpu->read_word(phys) == PSX_NATIVE_EXCEPTION_MARKER)
+    if (psx_native_bios_irq_token(phys) &&
+        cpu->read_word(phys) == PSX_NATIVE_EXCEPTION_MARKER)
         return native_builtin_irq_call(cpu, (phys - PSX_NATIVE_IRQ_TOKENS) / 8,
                                        (phys & 4u) != 0);
     cpu->gpr[31] = PSX_NATIVE_IRQ_CALLBACK_LINK;
@@ -638,6 +637,17 @@ static int bios_hle_dispatch(struct CPUState* cpu, uint32_t phys)
 {
 #if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
     if (s_native_kernel_on) {
+        if (psx_native_bios_irq_token(phys)) {
+            if (cpu->read_word(phys) != PSX_NATIVE_EXCEPTION_MARKER) return 0;
+            /* A guest-installed wrapper can call the original published
+             * callback. Preserve the same provider and verifier result as
+             * direct native-chain traversal; edited RAM remains guest code. */
+            const uint32_t return_address = cpu->gpr[31];
+            cpu->gpr[2] = native_builtin_irq_call(cpu,
+                (phys - PSX_NATIVE_IRQ_TOKENS) / 8, (phys & 4u) != 0);
+            cpu->gpr[31] = return_address;
+            return 1;
+        }
         const uint32_t pad_start = psx_native_pad_patch_helper(1) & 0x1fffffffu;
         const uint32_t pad_stop = psx_native_pad_patch_helper(0) & 0x1fffffffu;
         if (phys == pad_start || phys == pad_stop) {
