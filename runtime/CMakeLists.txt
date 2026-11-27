@@ -3713,4 +3713,3 @@ foreach(_target IN LISTS _shared_targets)
     target_link_libraries(${_target} PRIVATE recomp-image-core::core)
   endif()
 endforeach()
-
