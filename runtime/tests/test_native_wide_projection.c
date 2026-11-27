@@ -215,6 +215,18 @@ int main(void) {
     ws_nw_sync_target();assert(fixture_wide_target==0);
     draw_area_left=161;draw_area_right=319;
     ws_nw_sync_target();assert(fixture_wide_target==0); /* right camera, next band */
+    int32_t host_left,host_right;
+    draw_area_host_x_bounds(&host_left,&host_right);
+    assert(host_left==135 && host_right==345);
+    assert(!draw_area_out_point(140,40) && !draw_area_out_point(340,40));
+    assert(draw_area_out_point(134,40) && draw_area_out_point(346,40));
+    assert(draw_area_out_point(140,240)); /* Y still follows native draw area. */
+    set_dot_packet(0x10000,140,40);gp0_cmd_buf[0]=0x74808080u;
+    last_textured_rect.calls=0;gp0_exec_textured_8x8();
+    assert(last_textured_rect.calls==1 && last_textured_rect.x==140);
+    draw_area_left=0;draw_area_right=158;
+    draw_area_host_x_bounds(&host_left,&host_right);
+    assert(host_left==-26 && host_right==184);
     ws_fb_n=1;ws_fb_base[0]=512;draw_area_left=673;draw_area_right=831;
     ws_nw_sync_target();assert(fixture_wide_target==512);
     ws_fb_n=0;display_area_y=0;draw_area_left=0;draw_area_right=158;

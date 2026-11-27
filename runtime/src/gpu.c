@@ -5428,9 +5428,19 @@ static inline int32_t draw_area_wide_x_margin(void) {
 }
 
 static inline void draw_area_host_x_bounds(int32_t *left, int32_t *right) {
-    int32_t margin = draw_area_wide_x_margin();
     *left  = (int32_t)draw_area_left;
     *right = (int32_t)draw_area_right;
+    NativeWideSplit split;
+    if (ws_local_split_draw_layout(&split)) {
+        /* Invert the renderer's per-camera mapping, even while drawing the
+         * next Y band. Retain canonical writes as well as revealed pixels. */
+        int32_t wide_left = split.clip_left - split.shift;
+        int32_t wide_right = split.clip_right - split.shift;
+        if (wide_left < *left) *left = wide_left;
+        if (wide_right > *right) *right = wide_right;
+        return;
+    }
+    int32_t margin = draw_area_wide_x_margin();
     if (margin > 0) {
         /* Use the union of the guest draw area and the widescreen mirror.
          * Wider staging areas may share the framebuffer X origin; clamping them
