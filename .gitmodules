@@ -30,4 +30,4 @@
 	url = https://github.com/mstan/mips-recomp-core.git
 [submodule "external/shared-cores/recomp-image-core"]
 	path = external/shared-cores/recomp-image-core
-	url = https://github.com/mstan/recomp-image-core-candidate-20261124.git
+	url = https://github.com/mstan/recomp-image-core.git
