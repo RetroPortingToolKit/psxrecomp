@@ -102,7 +102,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "present_sync.h"
 #include "latency_ring.h"
 #include "sio.h"
-#include "psx_host_rumble.h"
+#include <recomp_input_effects.h>
 #include "psx_jogcon_ffb.h"
 #include "psx_jogcon_ffb_sdl.h"
 #ifndef PSX_MAX_PLAYERS
@@ -1504,8 +1504,16 @@ extern "C" void psx_mod_set_rewind_blocked(int blocked) {
 }
 
 /* psx_mod_set_host_rumble: per-seat title rumble, stamped with the rumble
- * VBlank so a value the mod stops refreshing lapses (psx_host_rumble.h). */
-static PsxHostRumbleSlot g_mod_rumble[PSX_MAX_PLAYERS];
+ * VBlank. The shared input owner composes and expires the two sources. */
+static ri_haptics* g_haptics = nullptr;
+static ri_haptics* controller_haptics() {
+    if (!g_haptics) {
+        const ri_haptic_profile profile = {100u, 0u};
+        g_haptics = ri_haptics_create(PSX_MAX_PLAYERS, profile);
+        if (!g_haptics) std::abort();
+    }
+    return g_haptics;
+}
 static uint32_t          g_rumble_vblank = 0;
 
 extern "C" int psx_mod_set_host_rumble(uint32_t player, uint32_t small,
@@ -1520,7 +1528,9 @@ extern "C" int psx_mod_set_host_rumble(uint32_t player, uint32_t small,
         const int card = psx_netplay_input_player();
         player = card >= 0 && card < PSX_MAX_PLAYERS ? (uint32_t)card : 0u;
     }
-    psx_host_rumble_set(&g_mod_rumble[player], g_rumble_vblank, small, large);
+    ri_haptics_set(controller_haptics(), player, 1,
+        (uint16_t)((large > 255u ? 255u : large) * 257u), small ? 0xFFFFu : 0u,
+        RI_HAPTIC_FRAME32, g_rumble_vblank, 8u);
     return 1;
 }
 extern "C" void psx_mod_set_savestate_blocked(int blocked) {
@@ -5951,11 +5961,29 @@ static void close_player_haptic(PlayerInput& p) {
     p.ffb_probed = false;
 }
 
+static void emit_controller_rumble(void*, uint32_t device, uint16_t low,
+                                   uint16_t high, uint32_t duration) {
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
+        PlayerInput& p = g_players[s];
+        if (!p.handle || (uint32_t)p.instance + 1u != device) continue;
+#if defined(PSX_SDL3)
+        const int rc = SDL_GameControllerRumble(p.handle, low, high, duration) ? 0 : -1;
+#else
+        const int rc = SDL_GameControllerRumble(p.handle, low, high, duration);
+#endif
+        if (rc != 0 && !p.rumble_warned) {
+            std::fprintf(stderr, "psxrecomp runtime: controller for slot %d rejected rumble: %s\n", s + 1, SDL_GetError());
+            p.rumble_warned = true;
+        }
+        return;
+    }
+}
+
 static void close_player(PlayerInput& p) {
     close_player_haptic(p);
     if (p.handle) {
-        if (p.rumble_small || p.rumble_large)
-            (void)SDL_GameControllerRumble(p.handle, 0, 0, 0);
+        ri_haptics_release_device(controller_haptics(), (uint32_t)p.instance + 1u,
+                                   emit_controller_rumble, nullptr);
         SDL_GameControllerClose(p.handle);
         p.handle = nullptr;
         p.instance = -1;
@@ -6109,7 +6137,14 @@ static void update_controller_rumble(void) {
         update_jogcon_ffb(s, p, trace);
         uint8_t small = 0, large = 0;
         sio_get_pad_rumble(s, &small, &large);
-        psx_host_rumble_merge(&g_mod_rumble[s], g_rumble_vblank, &small, &large);
+        ri_haptics_set(controller_haptics(), (unsigned)s, 0, (uint16_t)((unsigned)large * 257u),
+                        small ? 0xFFFFu : 0u, RI_HAPTIC_HELD, 0, 0);
+        uint16_t low = 0, high = 0;
+        ri_haptics_values(controller_haptics(), (unsigned)s, g_rumble_vblank, 0, &low, &high);
+        if (!small && high) small = 0xFFu;
+        large = (uint8_t)(low / 257u);
+        ri_haptics_route(controller_haptics(), (unsigned)s,
+                         p.handle ? (uint32_t)p.instance + 1u : 0u);
         if (!p.handle) {
             if (trace && (!p.rumble_known || p.rumble_small != small ||
                           p.rumble_large != large))
@@ -6124,25 +6159,6 @@ static void update_controller_rumble(void) {
 
         const bool changed = !p.rumble_known || p.rumble_small != small ||
                              p.rumble_large != large;
-        if (small || large || (changed && p.rumble_known)) {
-            const Uint16 low_frequency = (Uint16)((unsigned)large * 257u);
-            const Uint16 high_frequency = small ? 0xFFFFu : 0u;
-#if defined(PSX_SDL3)
-            const int rc = SDL_GameControllerRumble(
-                p.handle, low_frequency, high_frequency,
-                (small || large) ? 100u : 0u) ? 0 : -1;
-#else
-            const int rc = SDL_GameControllerRumble(
-                p.handle, low_frequency, high_frequency,
-                (small || large) ? 100u : 0u);
-#endif
-            if (rc != 0 && !p.rumble_warned) {
-                std::fprintf(stderr,
-                    "psxrecomp runtime: controller for slot %d rejected rumble: %s\n",
-                    s + 1, SDL_GetError());
-                p.rumble_warned = true;
-            }
-        }
         if (trace && changed) {
             std::fprintf(stdout,
                 "psxrecomp rumble: slot=%d small=%u large=%u\n",
@@ -6152,6 +6168,7 @@ static void update_controller_rumble(void) {
         p.rumble_large = large;
         p.rumble_known = true;
     }
+    ri_haptics_tick(controller_haptics(), g_rumble_vblank, 0, emit_controller_rumble, nullptr);
 }
 
 /* Initial wire mode at boot/hotplug. Configuration capability is selected
@@ -22312,7 +22329,8 @@ int main(int argc, char** argv) {
         mod_controller_source_reset();
         mod_pad_transform_reset();
         g_direct_shortcut_allowed = 0;
-        std::memset(g_mod_rumble, 0, sizeof g_mod_rumble);
+        for (unsigned s = 0; s < PSX_MAX_PLAYERS; ++s)
+            ri_haptics_set(controller_haptics(), s, 1, 0, 0, RI_HAPTIC_HELD, 0, 0);
         g_p1_claimed_buttons = 0;
         psx_rewind_set_title_blocked(0);
         savestate_set_title_blocked(0);
