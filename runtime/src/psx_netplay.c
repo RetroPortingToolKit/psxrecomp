@@ -5682,11 +5682,14 @@ int psx_netplay_poll_admit(void)
  * PSX_RB_DET_SELFTEST: 106 of 262 replayed saves). */
 uint32_t psx_netplay_snap_resume_hint(const CPUState *cpu)
 {
-    uint32_t hint = psx_compiled_irq_resume_pc();
-    if (!psx_is_dispatchable(hint))
-        hint = psx_last_irq_check_pc();
+    uint32_t hint = psx_irq_resume_context_snapshot_site() != 0
+                        ? psx_irq_resume_context_snapshot_pc() : 0u;
     if (!psx_is_dispatchable(hint) && cpu)
         hint = cpu->pc;
+    if (!psx_is_dispatchable(hint))
+        hint = psx_compiled_irq_resume_pc();
+    if (!psx_is_dispatchable(hint))
+        hint = psx_last_irq_check_pc();
     return hint;
 }
 

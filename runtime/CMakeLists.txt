@@ -3333,6 +3333,10 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
                          COMMAND ${Python3_EXECUTABLE}
                                  ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_begin_ownership.py
                                  --compiler ${CMAKE_C_COMPILER})
+                add_test(NAME netplay_snapshot_resume_test
+                         COMMAND ${Python3_EXECUTABLE}
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_snapshot_resume.py
+                                 --compiler ${CMAKE_C_COMPILER})
                 add_test(NAME netplay_joint_recovery_test
                          COMMAND ${Python3_EXECUTABLE}
                                  ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_joint_recovery.py

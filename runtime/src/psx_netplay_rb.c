@@ -1692,33 +1692,40 @@ static int rb_boot_snap_tick(void)
     return 0;
 }
 
-/* Prefer BB-edge / IRQ check PCs — finish_frame often sees cpu->pc==0 while the
- * guest is parked in the vblank present path. IRQ/sticky/$ra first: bare
- * function-entry snaps picked short jr-$ra leaves (0x8006A9F8) whose top-level
- * flush_resume re-dispatch published pc=0 (cps exit: final_ra=0x8006CCA0). */
+/* Use the same materialized snapshot context as save/load and rewind. IRQ
+ * latches can describe an older guest call: substituting one for a live PC
+ * combines that old block with unrelated registers. Retain the parked-present
+ * fallbacks only after the explicit/current context, and reject unsafe host
+ * calls and dirty-pump sites before serializing any of them. */
 static uint32_t pick_snap_resume_pc(const CPUState *c, uint32_t hint)
 {
-    const uint32_t cands[6] = {
-        psx_last_irq_check_pc(),
-        g_last_good_bb_pc,
-        psx_compiled_irq_resume_pc(),
-        c ? c->gpr[31] : 0u,
+    const uint32_t cands[7] = {
+        psx_irq_resume_context_snapshot_site() != 0
+            ? psx_irq_resume_context_snapshot_pc() : 0u,
         hint,
         c ? c->pc : 0u,
+        psx_compiled_irq_resume_pc(),
+        psx_last_irq_check_pc(),
+        g_last_good_bb_pc,
+        c ? c->gpr[31] : 0u,
     };
     const int boot0 = rb_boot_snap_tick();
     int i;
     if (boot0) {
-        for (i = 0; i < 6; ++i) {
-            if (rb_resume_pc_ok(cands[i]) && rb_pc_is_bios(cands[i]))
-                return rb_canonicalize_resume_pc(cands[i]);
+        for (i = 0; i < 7; ++i) {
+            uint32_t pc = rb_canonicalize_resume_pc(cands[i]);
+            if (rb_resume_pc_ok(pc) && rb_pc_is_bios(pc) &&
+                psx_irq_resume_context_snapshot_safe_at(pc))
+                return pc;
         }
         /* Defer rather than stamp main-RAM residue into dig0. */
         return 0;
     }
-    for (i = 0; i < 6; ++i) {
-        if (rb_resume_pc_ok(cands[i]))
-            return rb_canonicalize_resume_pc(cands[i]);
+    for (i = 0; i < 7; ++i) {
+        uint32_t pc = rb_canonicalize_resume_pc(cands[i]);
+        if (rb_resume_pc_ok(pc) &&
+            psx_irq_resume_context_snapshot_safe_at(pc))
+            return pc;
     }
     return 0;
 }
@@ -5142,6 +5149,9 @@ static void enter_verify_at_tip(uint32_t done)
                 "psxrecomp: rb verify tip pin FAILED tip=%u\n",
                 (unsigned)done);
         fflush(stderr);
+        /* A matching digest cannot authorize a tip that cannot be resumed. */
+        abort_episode_realign("verify tip has no safe snapshot context");
+        return;
     }
     /* av/cd computed once here and reused by both prints below plus the wire
      * send. Previously av/aux/core were each computed a second time here
