@@ -1914,7 +1914,10 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
     return true;
 }
 
-bool mod_runtime_clear_for_netplay(std::string* error) {
+/* Drop the session's mod plan before a netplay commit installs its own, or
+ * when a netplay session ends. Silent: only the caller knows whether the
+ * session it leaves behind is vanilla. */
+static void clear_session_plan(std::string* error) {
     mod_reset_plugin_sessions();
     psx_mod_netplay_set_active(0);
     psx_mod_netplay_set_loading(0);
@@ -1924,7 +1927,7 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     RuntimeMods& s = state();
     if (!s.initialized) {
         if (error) error->clear();
-        return true;
+        return;
     }
     clear_function_entry_hooks();
     s.disc_extents.clear();
@@ -1962,7 +1965,19 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     for (FunctionOverridePlugin& pending : function_override_plugins())
             pending.armed = false;
     if (error) error->clear();
-    std::fprintf(stdout, "psxrecomp: mods cleared for netplay (vanilla session)\n");
+}
+
+/* Say so only for a session that really runs no mods: a title profile or the
+ * player's own-view features, installed after the clear, announce
+ * themselves. A runtime without a mod catalog has nothing to clear. */
+static void announce_vanilla_netplay() {
+    if (state().initialized)
+        std::fprintf(stdout, "psxrecomp: mods cleared for netplay (vanilla session)\n");
+}
+
+bool mod_runtime_clear_for_netplay(std::string* error) {
+    clear_session_plan(error);
+    announce_vanilla_netplay();
     return true;
 }
 
@@ -2119,9 +2134,9 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
 
 bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path,
                                 std::string* error) {
-    if (!mod_runtime_clear_for_netplay(error)) return false;
     const PSXModNetplayProfile* profile = psx_mod_netplay_profile();
-    if (!profile) return true;
+    if (!profile) return mod_runtime_clear_for_netplay(error);
+    clear_session_plan(error);
     RuntimeMods& s = state();
     if (!s.initialized || !mod_plugin_registered(profile->plugin_id)) {
         if (error) *error = "Title netplay simulation plugin is not registered";
@@ -2954,10 +2969,10 @@ bool mod_runtime_commit_for_direct_netplay(const std::filesystem::path& disc_pat
 }
 
 void mod_runtime_end_netplay() {
-    if (psx_mod_netplay_is_active()) mod_runtime_clear_for_netplay();
+    if (psx_mod_netplay_is_active()) clear_session_plan(nullptr);
     if (!offline_manager_before_netplay) return;
     RuntimeMods& s = state();
-    mod_runtime_clear_for_netplay();
+    clear_session_plan(nullptr);
     s.manager = std::move(*offline_manager_before_netplay);
     offline_manager_before_netplay.reset();
     session_plan_fp().clear();
@@ -3030,19 +3045,25 @@ static bool commit_netplay_own_features(const std::filesystem::path& disc_path,
                                         std::string* error, bool host_only_features) {
     RuntimeMods& s = state();
     std::string why;
-    (void)mod_runtime_clear_for_netplay(&why);
+    clear_session_plan(&why);
     if (!s.initialized) return true;
     note_disc(s, disc_path);
     const ModResolution full =
         s.manager.resolve(s.game_id, s.exe_sha256, s.disc_sha256);
-    if (!full.ok) return true; /* the player's set does not resolve: vanilla */
+    if (!full.ok) { /* the player's set does not resolve: vanilla */
+        announce_vanilla_netplay();
+        return true;
+    }
     std::vector<std::string> keep = mod_runtime_netplay_view_features(full);
     if (host_only_features)
         keep.erase(std::remove_if(keep.begin(), keep.end(), [](const std::string& key) {
             const size_t slash = key.find('/');
             return !mod_runtime_feature_host_only(key.substr(0, slash), key.substr(slash + 1));
         }), keep.end());
-    if (keep.empty()) return true;
+    if (keep.empty()) {
+        announce_vanilla_netplay();
+        return true;
+    }
     /* The player's selection with every other feature off. */
     std::map<std::string, ModSelection> reduced = s.manager.selections();
     for (const auto& [id, versions] : s.manager.packages()) {

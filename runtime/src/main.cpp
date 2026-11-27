@@ -15645,7 +15645,7 @@ namespace {
         /* mods_enabled asserts that a SIM-AFFECTING mod feature is on locally
          * beyond what the ruleset imposes. On PSX that is never true for a
          * netplay session: every netplay launch, rematch included, goes
-         * through mod_runtime_clear_for_netplay and refuses to start if the
+         * through a netplay mod commit (mod_runtime.cpp) and refuses to start if the
          * plan cannot be cleared, and the caps a match runs (aspect, turbo
          * loads, BIOS, FMV skip) are the server's ruleset, settled through
          * match_caps like any host's. There is no cosmetic-exemption
