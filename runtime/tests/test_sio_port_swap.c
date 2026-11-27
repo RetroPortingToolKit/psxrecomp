@@ -107,6 +107,20 @@ static void pad(unsigned logical, uint16_t buttons) {
     sio_set_pad_state_slot((int)logical, buttons);
 }
 
+static void native_packet(unsigned port, int buttons) {
+    uint8_t packet[34]; memset(packet, 0xa5, sizeof packet);
+    const uint32_t bytes = sio_read_pad_packet((int)port, packet);
+    expect("native packet status", buttons < 0 ? 0xffu : 0u, packet[0]);
+    if (buttons < 0) {
+        expect("native unplug only writes status", 1, bytes);
+        expect("native unplug keeps old ID", 0xa5, packet[1]);
+    } else {
+        expect("native digital packet size", 4, bytes);
+        expect("native digital ID", 0x41, packet[1]);
+        expect("native buttons match wire", (unsigned)buttons, packet[2] | packet[3] << 8);
+    }
+}
+
 int main(void) {
     sio_set_multitap(0);
     sio_set_pads_swapped(0);
@@ -121,16 +135,19 @@ int main(void) {
     expect("plain: port 1 is pad 0", 0xABCD, (unsigned)poll_port(0));
     expect("plain: port 2", (unsigned)port2_plain, (unsigned)poll_port(1));
 
+    native_packet(0, 0xABCD); native_packet(1, port2_plain);
     sio_set_pads_swapped(1);
     expect("swap reported", 1, (unsigned)sio_get_pads_swapped());
     expect("swapped: port 2 is pad 0", 0xABCD, (unsigned)poll_port(1));
     expect("swapped: port 1", (unsigned)port2_plain, (unsigned)poll_port(0));
+    native_packet(1, 0xABCD); native_packet(0, port2_plain);
     /* The pad keeps its own state: a new press shows on its new port. */
     sio_set_pad_state_slot(0, 0xFFBF);
     expect("swapped: live buttons on port 2", 0xFFBF, (unsigned)poll_port(1));
     /* An unplugged pad 0 leaves port 2 empty while swapped. */
     sio_set_pad_connected(0, 0);
     expect("swapped: unplugged pad 0", (unsigned)-1, (unsigned)poll_port(1));
+    native_packet(1, -1);
     sio_set_pad_connected(0, 1);
     sio_set_pad_state_slot(0, 0xABCD);
 
@@ -145,6 +162,26 @@ int main(void) {
     sio_set_pads_swapped(1);
     expect("tap: port 1 still slot A", 0xABCD, (unsigned)poll_port(0));
     sio_set_pads_swapped(0);
+    sio_set_multitap(0);
+#endif
+
+    sio_set_multitap(0); sio_set_pads_swapped(0);
+    sio_set_pad_type(0, SIO_PAD_DIGITAL, 1, 2, 3, 4);
+    sio_set_pad_config_capable(0, 1);
+    sio_request_pad_type(0, SIO_PAD_DUALSHOCK);
+    uint8_t native[34];
+    expect("native commits pending analogue request", 8, sio_read_pad_packet(0, native));
+    expect("native analogue ID", 0x73, native[1]);
+    expect("native right X", 3, native[4]);
+    expect("native right Y", 4, native[5]);
+    expect("native left X", 1, native[6]);
+    expect("native left Y", 2, native[7]);
+#if PSX_MAX_PLAYERS >= 5
+    pad(0, 0xabcd);
+    sio_set_multitap(1); sio_set_multitap_port(0);
+    expect("native multitap packet size", 34, sio_read_pad_packet(0, native));
+    expect("native multitap ID", 0x80, native[1]);
+    expect("native tap slot A ID", 0x41, native[2]);
     sio_set_multitap(0);
 #endif
 

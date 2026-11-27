@@ -2,12 +2,8 @@
  *
  * The property under test is PARITY: the player-facing "skip the BIOS and go
  * straight to the game" flag must resolve to the same boot behaviour on every
- * linked BIOS image that exports a shell entry — retail SCPH-1001 (which also
- * exports a DeliverEvent anchor, so it gets the kernel-call HLE tier too) and
- * the bundled OpenBIOS (which deliberately does not, so its kernel calls stay
- * LLE). The regression this pins: boot_skip used to be derived from the
- * already-anchor-gated call-HLE decision, so choosing OpenBIOS silently left
- * the player sitting in the boot animation.
+ * linked BIOS image that exports a shell entry. The regression this pins:
+ * boot_skip used to be derived from the already-gated call-HLE decision.
  */
 #include "bios_hle_plan.h"
 
@@ -22,17 +18,16 @@ static void expect(int cond, const char *what) {
     }
 }
 
-/* The two images this build actually links. Only the anchors differ. */
-#define RETAIL_ANCHORS   /* deliver_event_ret */ 1, /* shell_entry */ 1
-#define OPENBIOS_ANCHORS /* deliver_event_ret */ 0, /* shell_entry */ 1
+#define KNOWN_EVENT_ABI   /* event ABI */ 1, /* shell entry */ 1
+#define UNKNOWN_EVENT_ABI /* event ABI */ 0, /* shell entry */ 1
 
 static PsxBiosHleRequest req(int bios_hle, int keep_intro, int fast_boot,
-                             int have_der, int have_shell, int have_game) {
+                             int have_event_abi, int have_shell, int have_game) {
     PsxBiosHleRequest r;
     r.bios_hle               = bios_hle;
     r.keep_intro             = keep_intro;
     r.fast_boot              = fast_boot;
-    r.have_deliver_event_ret = have_der;
+    r.have_event_abi         = have_event_abi;
     r.have_shell_entry       = have_shell;
     r.have_game_entry        = have_game;
     return r;
@@ -41,48 +36,46 @@ static PsxBiosHleRequest req(int bios_hle, int keep_intro, int fast_boot,
 int main(void) {
     /* ---- 1. PARITY: bios_hle=true skips the boot on BOTH images ---------- */
     PsxBiosHlePlan retail =
-        psx_bios_hle_plan(req(1, 0, 0, RETAIL_ANCHORS, 1));
-    PsxBiosHlePlan openbios =
-        psx_bios_hle_plan(req(1, 0, 0, OPENBIOS_ANCHORS, 1));
+        psx_bios_hle_plan(req(1, 0, 0, KNOWN_EVENT_ABI, 1));
+    PsxBiosHlePlan unknown =
+        psx_bios_hle_plan(req(1, 0, 0, UNKNOWN_EVENT_ABI, 1));
 
     expect(retail.boot_skip == 1,   "retail: bios_hle=true skips the boot");
-    expect(openbios.boot_skip == 1, "OpenBIOS: bios_hle=true skips the boot");
-    expect(retail.boot_skip == openbios.boot_skip,
+    expect(unknown.boot_skip == 1, "unknown event ABI: bios_hle=true skips the boot");
+    expect(retail.boot_skip == unknown.boot_skip,
            "boot behaviour is identical across BIOS images (the whole point)");
-    expect(openbios.boot_skip_denied == 0,
-           "OpenBIOS: a shell-entry image never reports a boot-skip denial");
+    expect(unknown.boot_skip_denied == 0,
+           "a shell-entry image never reports a boot-skip denial");
 
     /* ...while the kernel-call axis still differs, loudly, as designed. */
     expect(retail.call_hle == 1,        "retail: kernel-call HLE granted");
     expect(retail.call_hle_denied == 0, "retail: no call-HLE denial");
-    expect(openbios.call_hle == 0,
-           "OpenBIOS: kernel-call HLE refused (no DeliverEvent anchor)");
-    expect(openbios.call_hle_denied == 1,
-           "OpenBIOS: the call-HLE refusal is reported, not silent");
+    expect(unknown.call_hle == 0, "unknown event ABI: kernel-call HLE refused");
+    expect(unknown.call_hle_denied == 1, "the call-HLE refusal is reported");
 
     /* ---- 2. Opting out still works, identically on both images ----------- */
     for (int i = 0; i < 2; i++) {
-        const int der = (i == 0) ? 1 : 0;  /* retail, then OpenBIOS */
-        const char *who = (i == 0) ? "retail" : "OpenBIOS";
+        const int abi = (i == 0) ? 1 : 0;
+        const char *who = (i == 0) ? "known ABI" : "unknown ABI";
 
-        PsxBiosHlePlan off = psx_bios_hle_plan(req(0, 0, 0, der, 1, 1));
+        PsxBiosHlePlan off = psx_bios_hle_plan(req(0, 0, 0, abi, 1, 1));
         expect(off.boot_skip == 0 && off.call_hle == 0,
                "bios_hle=false = pure LLE, real intro");
         expect(off.call_hle_denied == 0 && off.boot_skip_denied == 0,
                "bios_hle=false denies nothing (nothing was asked for)");
 
-        PsxBiosHlePlan keep = psx_bios_hle_plan(req(1, 1, 0, der, 1, 1));
+        PsxBiosHlePlan keep = psx_bios_hle_plan(req(1, 1, 0, abi, 1, 1));
         expect(keep.boot_skip == 0, "keep_intro=true plays the real intro");
 
         /* The deprecated fast_boot alias is boot-only and independent of the
          * call tier — it must skip the boot even with bios_hle off. */
-        PsxBiosHlePlan fb = psx_bios_hle_plan(req(0, 0, 1, der, 1, 1));
+        PsxBiosHlePlan fb = psx_bios_hle_plan(req(0, 0, 1, abi, 1, 1));
         expect(fb.boot_skip == 1, "fast_boot alias skips the boot");
         expect(fb.call_hle == 0,  "fast_boot never enables kernel-call HLE");
 
         /* keep_intro suppresses the bios_hle-implied skip, not an explicit
          * fast_boot request. */
-        PsxBiosHlePlan fb_keep = psx_bios_hle_plan(req(1, 1, 1, der, 1, 1));
+        PsxBiosHlePlan fb_keep = psx_bios_hle_plan(req(1, 1, 1, abi, 1, 1));
         expect(fb_keep.boot_skip == 1,
                "explicit fast_boot wins over keep_intro");
         (void)who;
@@ -119,15 +112,15 @@ int main(void) {
                                   (bits >> 4) & 1, (bits >> 5) & 1);
         PsxBiosHlePlan p = psx_bios_hle_plan(r);
 
-        /* boot_skip must NEVER depend on the DeliverEvent anchor: flipping
+        /* boot_skip must NEVER depend on the event table ABI: flipping
          * only that bit may change call_hle, never the boot decision. */
         PsxBiosHleRequest flipped = r;
-        flipped.have_deliver_event_ret = !r.have_deliver_event_ret;
+        flipped.have_event_abi = !r.have_event_abi;
         PsxBiosHlePlan q = psx_bios_hle_plan(flipped);
         expect(p.boot_skip == q.boot_skip,
-               "boot-skip is independent of the DeliverEvent anchor");
+               "boot-skip is independent of the event table ABI");
         expect(p.boot_skip_denied == q.boot_skip_denied,
-               "boot-skip denial is independent of the DeliverEvent anchor");
+               "boot-skip denial is independent of the event table ABI");
 
         /* call_hle must never depend on the shell entry or the game. */
         PsxBiosHleRequest flip2 = r;

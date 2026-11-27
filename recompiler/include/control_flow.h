@@ -74,7 +74,8 @@ void rebuild_control_flow_metadata(
 
 class ControlFlowAnalyzer {
 public:
-    explicit ControlFlowAnalyzer(const PS1Executable& exe);
+    explicit ControlFlowAnalyzer(const PS1Executable& exe,
+                                 bool native_kernel_boundaries = false);
 
     // Analyze control flow for a single function
     ControlFlowGraph analyze_function(const Function& func);
@@ -97,6 +98,7 @@ public:
 
 private:
     const PS1Executable& exe_;
+    bool native_kernel_boundaries_;
 
     // One past the last address that DISCOVERY and BLOCK CONSTRUCTION may
     // reach for `func`: the function's own end, clamped to the image's
