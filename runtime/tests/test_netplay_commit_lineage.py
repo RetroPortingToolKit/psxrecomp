@@ -31,6 +31,7 @@ def main():
     abort_source = function(rb_source[rb_source.rindex("int " + abort_name):], abort_name)
     lineage = "static void np_flush_confirmed_frame_commits" in source
     media_prime = "void psx_netplay_frame_commit_prime_after" in source
+    requeue = "static void np_defer_rewind" in source
     if lineage:
         reconcile = function_body(source, "static void np_rollback_reconcile_wire(void)")
         assert reconcile.index("np_invalidate_execution_from(t)") < reconcile.index("netplay_ih_promote(")
@@ -54,6 +55,9 @@ def main():
         helpers += function(source, "psx_netplay_frame_commit_prime_after")
         settle = function_body(rb_source, "static void rb_fmv_tick_settle(void)")
         assert "psx_netplay_frame_commit_prime_after(sim);" in settle
+    if requeue:
+        helpers += function(source, "np_defer_rewind")
+        helpers += function(source, "psx_netplay_requeue_correction")
     for name in ("np_part_ring_put", "np_part_ring_get", "np_check_core_diverge"):
         helpers += function(source, name)
     if lineage:
@@ -82,12 +86,16 @@ def main():
 #include "netplay_sim_pad_cache.h"
 #include "crc32.h"
 #define NP_SLOT_CAP 2
-static struct { CPUState *cpu; void *session; int slot_count,rollback; NetplayHashConfirm hc; NetplayInputHist ih; } g_np;
+static struct { CPUState *cpu; void *session; int slot_count,rollback,needs_advance; NetplayHashConfirm hc; NetplayInputHist ih; } g_np;
 static PsxNetplaySimPadCache s_sim_pad_cache;
 static uint32_t wanted_core;
 static int sent,boot_gate,transfer,abort_calls,recovery_calls,media_depth24,media_hot;
 static uint32_t last_sent_tick,last_sent_core;
 static RNetRbSession *g_rb;
+static int begin_allowed,begin_calls,begin_slot;static uint32_t begin_tick;
+int psx_netplay_rb_begin_rewind(uint32_t tick,int slot) {
+    ++begin_calls;begin_tick=tick;begin_slot=slot;return begin_allowed;
+}
 static struct { NetplayHashConfirm *hc; } g_b;
 static uint32_t g_agreed_through,g_agreed_span_lo,g_peer_resolved_through;
 static uint32_t g_peer_frontier,g_local_advertised_through,g_auth_snap_through;
@@ -159,6 +167,7 @@ static void reset(void) {
     memset(&g_np,0,sizeof(g_np));g_np.cpu=&cpu;g_np.session=&g_np;g_np.slot_count=2;g_np.rollback=1;
     netplay_hc_reset(&g_np.hc);netplay_ih_reset(&g_np.ih,2);np_part_ring_reset();
     g_b.hc=&g_np.hc;
+    begin_allowed=1;begin_calls=0;begin_tick=0;begin_slot=-1;
     psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);sent=0;boot_gate=0;transfer=0;abort_calls=0;recovery_calls=0;media_depth24=0;media_hot=0;
     if(g_rb){rnet_rb_destroy(g_rb);g_rb=NULL;}
 }
@@ -230,6 +239,24 @@ int main(void) {
     assert(!netplay_hc_confirm_through(&g_np.hc,2));
     netplay_hc_note_peer(&g_np.hc,2,0x2202);
     assert(netplay_hc_confirm_through(&g_np.hc,2));
+#if HAS_REQUEUE
+    /* A closed episode owes the earliest unfinished correction. Preserve it
+     * across refusal and retire its old descendants before trying recovery. */
+    reset();finish(0,0x1234);netplay_hc_note_peer(&g_np.hc,0,0x1234);
+    publish(0,1,0xffff,0);publish(1,1,0xbfff,1);finish(1,0xdead);
+    publish(0,2,0xffff,0);publish(1,2,0xffff,0);finish(2,0xbeef);
+    np_defer_rewind(2,1);begin_allowed=0;g_np.needs_advance=1;
+    assert(!psx_netplay_requeue_correction(1,1));
+    assert(s_deferred_rw_valid&&s_deferred_rw_tick==1&&s_deferred_rw_slot==1);
+    assert(!np_part_ring_get(1)&&!np_part_ring_get(2)&&s_commit_next_tick==1);
+    publish(0,1,0xffff,0);publish(1,1,0xbfff,1);finish(1,0xdead);
+    begin_allowed=1;assert(psx_netplay_requeue_correction(2,1));
+    assert(begin_tick==1&&begin_slot==1&&!s_deferred_rw_valid&&!g_np.needs_advance);
+    assert(!np_part_ring_get(1)&&!np_part_ring_get(2));
+    int before=begin_calls;assert(!psx_netplay_requeue_correction(3,2));
+    assert(begin_calls==before);g_np.rollback=0;
+    assert(!psx_netplay_requeue_correction(3,1)&&begin_calls==before);
+#endif
     /* Delay-sync has no rollback movie-exit re-prime. Every actual executed
      * state must be committed, including a short hot24-bit movie interval;
      * otherwise one absent slot stalls the producer forever after wrapping. */
@@ -301,6 +328,7 @@ int main(void) {
                    "-Wno-unused-function", "-DPSX_HAS_RECOMP_NET",
                    f"-DHAS_LINEAGE={int(lineage)}", "-I", str(ROOT / "runtime/include"),
                    f"-DHAS_MEDIA_PRIME={int(media_prime)}",
+                   f"-DHAS_REQUEUE={int(requeue)}",
                    "-I", str(args.recomp_net / "include"), str(c),
                    str(ROOT / "runtime/src/netplay_input_hist.c"),
                    str(ROOT / "runtime/src/psx_net_pad.c"),

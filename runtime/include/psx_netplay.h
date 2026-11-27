@@ -416,6 +416,9 @@ void psx_netplay_on_rb_snap_loaded(void);
  * after the transfer completes; this does not block rollback's own keyframes. */
 int psx_netplay_collective_transfer_active(void);
 int psx_netplay_defer_recovery_for_transfer(uint32_t mismatch_tick, int slot);
+/* Retain a completed correction when its old episode closes below it. The
+ * normal guarded recovery runs now or retries through reconciliation. */
+int psx_netplay_requeue_correction(uint32_t mismatch_tick, int slot);
 
 /* §64: restart hc-fork persist/retry clocks after tip-extend abandon so a
  * second recovery episode cannot open on the same Live tick. */

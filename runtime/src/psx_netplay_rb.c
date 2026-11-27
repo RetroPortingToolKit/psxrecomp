@@ -3250,6 +3250,34 @@ static int joint_accept_peer_commit(void)
  * TipHold path: finalize (clamp) at the peer commit tip — do NOT
  * tip_hold_try_finalize (that would flush deferred rereplay first).
  * Verify/Replay path: abort + live realign as before. */
+static void finalize_peer_tip_hold_commit(uint32_t snap_tick)
+{
+    uint32_t from = g_tip_hold_rereplay_from;
+    uint32_t first_bad = g_tip_hold_rereplay_mismatch;
+    uint32_t tip = rnet_rb_get_target_tick(g_rb);
+    int slot = (int)rnet_rb_get_corrected_slot(g_rb);
+    int repair;
+    if (!from) from = g_tip_extend_from_tick;
+    repair = g_tip_hold_rereplay_pending && from != 0u && from < tip;
+    if (repair) {
+        /* A peer's higher endpoint does not certify our unreplayed suffix. */
+        if (snap_tick > from) snap_tick = from;
+        if (first_bad <= from || first_bad > tip) first_bad = from + 1u;
+        if (slot < 0) slot = (g_b.local_slot && *g_b.local_slot != 0) ? 0 : 1;
+    }
+    g_tip_hold_rereplay_pending = 1;
+    g_tip_hold_rereplay_from = snap_tick;
+    g_tip_hold_block_quiet = 0;
+    finalize_tip_hold();
+    if (repair) {
+        fprintf(stderr, "psxrecomp: rb peer COMMIT retains correction t=%u slot=%d "
+                        "after matched tip=%u\n", (unsigned)first_bad, slot,
+                        (unsigned)snap_tick);
+        fflush(stderr);
+        (void)psx_netplay_requeue_correction(first_bad, slot);
+    }
+}
+
 static int maybe_abandon_tip_extend(void)
 {
     RNetRbPhase phase;
@@ -3356,10 +3384,7 @@ static int maybe_abandon_tip_extend(void)
         fflush(stderr);
         /* Clamp commit to snap/from — skip tip_hold_try_finalize (would
          * flush deferred rereplay into the doomed span). */
-        g_tip_hold_rereplay_pending = 1;
-        g_tip_hold_rereplay_from = snap_tick;
-        g_tip_hold_block_quiet = 0;
-        finalize_tip_hold();
+        finalize_peer_tip_hold_commit(snap_tick);
         return 1;
     }
 
