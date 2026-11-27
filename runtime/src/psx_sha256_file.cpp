@@ -86,6 +86,11 @@ bool try_native(std::ifstream& file, std::vector<uint8_t>& buffer,
 template<class Hash>
 PsxFileHashResult hash_file(const std::filesystem::path& path,
                            uint8_t out[32], Hash& native) {
+    // Only a regular file, or a link to one, has the bytes we promise to hash.
+    // libc++ opens a directory and reads it as empty, so check before opening.
+    std::error_code status_error;
+    if (!std::filesystem::is_regular_file(path, status_error))
+        return PsxFileHashResult::OpenError;
     // Some filebuf implementations otherwise turn each 1 MiB read into many
     // small CRT reads. Keep this separate buffer alive until after file closes.
     std::vector<char> file_buffer(1024 * 1024);
