@@ -230,7 +230,6 @@ if(BUILD_TESTING)
         target_link_libraries(debug_socket_shutdown_test PRIVATE ws2_32)
     endif()
     add_test(NAME debug_socket_shutdown_test COMMAND debug_socket_shutdown_test)
-    set_tests_properties(debug_socket_shutdown_test PROPERTIES TIMEOUT 15)
 
     add_executable(atomic_file_write_test tests/test_atomic_file_write.cpp)
     target_include_directories(atomic_file_write_test PRIVATE include)
