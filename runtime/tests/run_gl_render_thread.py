@@ -87,7 +87,11 @@ def main():
     sources = [("probe", fixture), ("sw", src / "gpu_sw_renderer.c"),
                ("rp", src / "render_pass_plan.c"),
                ("xr", src / "psx_openxr.c"), ("rth", src / "render_thread.c"), ("pth", src / "present_thread.c"),
-               ("facade", src / "gpu_render.c"), ("fg", src / "frame_gen.c")]
+               ("facade", src / "gpu_render.c")]
+    for name in ("frame_gen", "frame_interpolation", "presentation_scene"):
+        source = src / (name + ".c")
+        if source.exists():
+            sources.append((name, source))
     sections = [] if platform.system() == "Darwin" else ["-ffunction-sections", "-fdata-sections"]
     # MinGW's PE linker reports undefined references from sections it later
     # collects, so there LTO drops them first (as run_gl_scale_invariance.py).

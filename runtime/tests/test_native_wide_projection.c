@@ -188,6 +188,36 @@ int main(void) {
     gpu_render_projective_end();
     assert(!fixture_pgxp_enabled && !fixture_pgxp_cpu_mode);
     psx_mod_set_render_projective(0);
+    /* Captured local V82 draw areas: a two-pixel authored central divider.
+     * Each camera gets its own reveal, while full-frame overlays and texture
+     * subrects keep the ordinary mapping. */
+    NativeWideSplit split;
+    assert(native_wide_split(160,424,0,0,158,&split));
+    assert(split.shift==26 && split.margin==26 && split.clip_left==0 && split.clip_right==210);
+    assert(native_wide_split(160,424,0,161,319,&split));
+    assert(split.shift==78 && split.clip_left==213 && split.clip_right==423);
+    assert(!native_wide_split(160,424,0,0,319,&split));
+    assert(!native_wide_split(160,424,0,64,95,&split));
+    assert(!native_wide_split(160,320,0,0,158,&split));
+    assert(!native_wide_split(0,424,0,0,158,&split));
+    assert(!native_wide_split(160,426,0,0,158,&split));
+    reset_gpu_state_for_test();configure_native_wide_16_9();
+    const uint32_t layouts[]={2};
+    gpu_ws_set_local_viewport_state_gate(0x8006a81c,layouts,1);
+    test_ram[0x6a81c/4]=2;
+    gpu_ws_set_local_split_native_wide(1);
+    ws_local_viewport_cfg=0;
+    assert(gpu_ws_local_split_source_width()==160);
+    assert(ws_nw_configured_offset()==52 && ws_nw_present_width()==424);
+    draw_area_left=0;draw_area_right=158;ws_nw_hud_corners=1;
+    assert(ws_nw_hud_shift(8,20)==0); /* canonical HUD coordinates retained */
+    split_recent_left_age=split_recent_right_age=0;
+    ws_local_viewport_cfg=1;
+    assert(gpu_ws_local_split_source_width()==0);
+    assert(gpu_ws_netplay_local_viewport_width()==426 && ws_nw_configured_offset()==133);
+    ws_local_viewport_cfg=0;test_ram[0x6a81c/4]=0;
+    assert(gpu_ws_local_split_source_width()==0 && ws_nw_configured_offset()==53);
+    gpu_ws_set_local_split_native_wide(0);
     puts("native_wide_projection_test: PASS");
     return 0;
 }

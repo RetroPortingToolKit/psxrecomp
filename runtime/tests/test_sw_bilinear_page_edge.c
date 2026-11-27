@@ -13,6 +13,7 @@
 
 int g_ws_bd_stretch_on, g_ws_bd_stretch_pct;
 int psx_ws_prim_in_backdrop(void) { return 0; }
+int gpu_ws_local_split_source_width(void) { return 0; }
 int g_psx_vram_dirty_tracking;
 void gpu_vram_dirty_mark_row_impl(uint32_t y) { (void)y; }
 void gpu_vram_dirty_mark_rect(int x, int y, int w, int h) {

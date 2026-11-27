@@ -30,6 +30,8 @@
 #include "gpu_sw_renderer.h"
 #include "gpu_vram_dirty.h"
 #include "gpu_sw_edges.h"
+#include "native_wide_split.h"
+extern int gpu_ws_local_split_source_width(void);
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -167,6 +169,11 @@ static inline RTarget rt_hires(void) {
  * (top/bottom edge flicker as the buffers flip). Canonical VRAM never showed
  * this because its draw-area clip already confines it. Scale matches SSAA. */
 static int view_enabled, view_shift, view_pad_left, view_pad_right;
+static int wide_split_width;
+static int wide_split_layout(NativeWideSplit *out) {
+    return native_wide_split(wide_split_width, g_wide_w, g_wide_cur_base,
+                             g_clip_x1, g_clip_x2, out);
+}
 static inline RTarget rt_wide(void) {
     int s = g_scale;
     RTarget t;
@@ -175,12 +182,22 @@ static inline RTarget rt_wide(void) {
     t.cx1 = view_pad_left * s; t.cy1 = g_clip_y1 * s;
     t.cx2 = (g_wide_w - view_pad_right) * s - 1;
     t.cy2 = g_clip_y2 * s + (s - 1);
+    NativeWideSplit split;
+    if (wide_split_layout(&split)) {
+        if (t.cx1 < split.clip_left * s) t.cx1 = split.clip_left * s;
+        if (t.cx2 > (split.clip_right + 1) * s - 1)
+            t.cx2 = (split.clip_right + 1) * s - 1;
+    }
     return t;
 }
 
 /* X-translation (native px) from canonical VRAM space into the active wide
  * surface: local_x = vram_x - base_x + OFFSET. */
-static inline int wide_dx(void) { return g_wide_off + view_shift - g_wide_cur_base; }
+static inline int wide_dx(void) {
+    NativeWideSplit split;
+    return wide_split_layout(&split) ? split.shift + view_shift
+         : g_wide_off + view_shift - g_wide_cur_base;
+}
 
 /* Native-wide 2D-backdrop X-stretch (SW renderer), mirroring the GL
  * wide_set_bd_scale exactly. The far 2D backdrop (sprite-tagged tile grid: sky
@@ -196,11 +213,18 @@ static inline WideBd wide_bd_get(void) {
     extern int g_ws_bd_stretch_on, g_ws_bd_stretch_pct;
     if (g_ws_bd_stretch_on && g_wide_w > 0 && g_wide_cur && psx_ws_prim_in_backdrop()) {
         int native_w = g_wide_w - 2 * g_wide_off;
+        int target_w = g_wide_w, base = g_wide_cur_base;
+        NativeWideSplit split;
+        if (wide_split_layout(&split)) {
+            native_w = split.source_width;
+            target_w = split.target_width;
+            base = split.source_x;
+        }
         if (native_w > 0) {
             b.on = 1;
             b.scale = g_ws_bd_stretch_pct > 0 ? (float)g_ws_bd_stretch_pct / 100.0f
-                                              : (float)g_wide_w / (float)native_w;
-            b.center = (float)g_wide_cur_base + (float)native_w / 2.0f;
+                                              : (float)target_w / (float)native_w;
+            b.center = (float)base + (float)native_w / 2.0f;
         }
     }
     return b;
@@ -1821,6 +1845,7 @@ void sw_wide_set_view(int enabled, int shift, int pad_left, int pad_right) {
 }
 
 void sw_wide_configure(int wide_w, int offset) {
+    wide_split_width = gpu_ws_local_split_source_width();
     if (wide_w <= 0) { wide_free_all(); g_wide_w = 0; g_wide_off = 0; return; }
     if (wide_w != g_wide_w) wide_free_all();
     g_wide_w = wide_w;

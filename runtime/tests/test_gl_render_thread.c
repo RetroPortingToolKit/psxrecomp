@@ -76,6 +76,8 @@ int g_ws_tex_edge_pct=0;
 void psx_ws_dbg_gate_frame_snapshot(void){}
 void gpu_depth24_upload_span_reset(void){}
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
+static int g_split_width;
+int gpu_ws_local_split_source_width(void){return g_split_width;}
 int render_pass_netplay_enabled(void){return 0;}
 uint64_t psx_cycle_count=0;
 uint32_t g_psx_vblank_cycles=564480u;
@@ -104,6 +106,13 @@ int psx_present_vsync_owns_cadence(void){
     return 0;
 }
 void latency_ring_mark(LatencyStage s){(void)s;}
+static uint64_t test_latency_frame=UINT64_MAX;
+uint64_t latency_ring_current_frame(void){return test_latency_frame;}
+void latency_ring_replay_frame(uint64_t frame){test_latency_frame=frame;}
+uint64_t psx_get_cycle_count(void){return psx_cycle_count;}
+int psx_capture_active(void){return 0;}
+int psx_capture_wants_readback(void){return 0;}
+void psx_capture_store_frame(const uint8_t *rgb,int w,int h){(void)rgb;(void)w;(void)h;}
 void gpu_timeline_note(uint8_t k,uint32_t a,uint32_t b){(void)k;(void)a;(void)b;}
 
 static uint16_t vram[1024*512];
@@ -268,6 +277,35 @@ static void frame(int f, int buf_x) {
     gl_renderer_render_thread_frame_boundary();
 }
 
+static void test_split_transitions(int scale) {
+    const int width=424*scale, height=512*scale;
+    uint32_t *pixels=malloc((size_t)width*height*sizeof(*pixels));
+    check(pixels!=NULL,"split transition allocation");
+    if(!pixels)return;
+    g_prim_id=-1;g_bg_full=0;
+    for(int pass=0;pass<4;pass++) {
+        g_split_width=(pass&1)?160:0;
+        gr_wide_configure(424,52);gr_wide_set_target(0);
+        gr_set_draw_offset(0,0);gr_set_draw_area(0,0,319,239);
+        gr_wide_set_view(0,0,0,0);mask_bits(0,0);
+        gr_set_semi_transparency(0,0);
+        gr_fill_rect(0,0,320,240,0);gr_wide_clear(0,0,240,0);
+        gr_set_draw_area(0,0,158,239);gr_draw_flat_rect(-32,40,224,40,0x001f);
+        gr_set_draw_area(161,0,319,239);gr_draw_flat_rect(128,40,224,40,0x03e0);
+        /* A producer may already be classifying the next frame while the
+         * render thread drains these commands. Use the recorded layout. */
+        g_split_width=0;
+        check(gr_render_wide_display(pixels,width*4,0,0,240)==width*240*scale,"split transition readback");
+        const int row=60*scale*width;
+        if(pass&1) {
+            check((pixels[row]&0xffffff)==0xf80000 && (pixels[row+210*scale]&0xffffff)==0xf80000,"threaded left camera clip");
+            check((pixels[row+213*scale]&0xffffff)==0x00f800 && (pixels[row+423*scale]&0xffffff)==0x00f800,"threaded right camera clip");
+            check((pixels[row+211*scale]&0xffffff)==0 && (pixels[row+212*scale]&0xffffff)==0,"threaded center divider");
+        } else check((pixels[row]&0xffffff)==0 && (pixels[row+423*scale]&0xffffff)==0,"ordinary mapping restored");
+    }
+    free(pixels);
+}
+
 int main(int argc, char **argv) {
     int scale = argc > 1 ? atoi(argv[1]) : 1;
     int threaded = argc > 2 && argv[2][0] == '1';
@@ -411,6 +449,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 16; ++i) if (wrapped[i] != 0x03e0) wrap_ok = 0;
     check(wrap_ok, "HD wrapped transfer observes following fill");
     check(native[0] == 31, "later draws do not mutate returned snapshot");
+    test_split_transitions(scale);
     gl_renderer_render_thread_sync("fixture_final_check");
     check(glGetError() == GL_NO_ERROR, "GL error");
     uint64_t batch_diag[9];

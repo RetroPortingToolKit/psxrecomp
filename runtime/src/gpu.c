@@ -11,6 +11,7 @@
  */
 
 #include "gpu.h"
+#include "native_wide_split.h"
 #include "gpu_gl_renderer.h"
 #include "mod_texture_banks.h"
 #include "display_scanout.h"
@@ -126,6 +127,7 @@ static int ws_local_viewport_cfg = 0;
  * title's own scene classification. */
 static int ws_local_viewport_native = 0;
 static int ws_vertical_split_active(void);
+static int ws_local_split_layout_active(void);
 static int ws_local_native_split(void) {
     return ws_local_viewport_cfg && ws_local_viewport_native && ws_vertical_split_active();
 }
@@ -597,8 +599,10 @@ static int ws_native_wide_configured(void) {
 
 
 static int ws_local_viewport_slot = 0;
+static int ws_local_split_native;
 static int ws_local_viewport_draw_target(int *base_x);
 static int ws_vertical_split_active(void);
+static int ws_local_split_draw_layout(NativeWideSplit *out);
 #define WS_LOCAL_WIDTH_SITES_MAX 16
 static uint32_t ws_local_width_sites[WS_LOCAL_WIDTH_SITES_MAX];
 static int ws_local_width_count;
@@ -619,6 +623,9 @@ int32_t psx_ws_local_viewport_width(int32_t vanilla) {
 }
 void gpu_ws_set_local_viewport_native_wide(int enabled) {
     ws_local_viewport_native = enabled ? 1 : 0;
+}
+void gpu_ws_set_local_split_native_wide(int enabled) {
+    ws_local_split_native = enabled != 0;
 }
 void gpu_ws_set_netplay_local_viewport(int enabled, int slot) {
     ws_local_viewport_cfg = enabled ? 1 : 0;
@@ -659,6 +666,15 @@ static int ws_local_viewport_layout(int *base_x, int *source_w,
     return final_w > src_w && off > 0;
 }
 
+int gpu_ws_local_split_source_width(void) {
+    GpuDisplayInfo di;
+    if (!ws_local_split_native || ws_local_viewport_cfg ||
+        !ws_native_wide_configured() || !ws_local_split_layout_active()) return 0;
+    gpu_get_display_info(&di);
+    return !di.disabled && !di.depth24 && di.width >= 4 &&
+           !(di.width & 1u) && di.width <= 1024u ? (int)di.width / 2 : 0;
+}
+
 static int ws_nw_configured_offset(void) {
     if (!ws_native_wide_configured()) return 0;
     int local_offset = 0;
@@ -666,8 +682,11 @@ static int ws_nw_configured_offset(void) {
         return local_offset;
     int64_t numr = (int64_t)3 * ws_cfg_num - (int64_t)4 * ws_cfg_den;
     int w = (int)ws_disp_w();
-    return (int)((w * numr + (int64_t)4 * ws_cfg_den) /
-                 ((int64_t)8 * ws_cfg_den));
+    int offset = (int)((w * numr + (int64_t)4 * ws_cfg_den) /
+                       ((int64_t)8 * ws_cfg_den));
+    /* Keep each camera's two margins integral and symmetric. One-pixel
+     * quantization per camera follows the ordinary native-wide policy. */
+    return gpu_ws_local_split_source_width() ? offset & ~1 : offset;
 }
 static int ws_nw_offset(void) {
     if (!ws_native_wide_active()) return 0;
@@ -3686,6 +3705,9 @@ static int ws_nw_left_hud_packet(void) {
 }
 static int32_t ws_nw_hud_shift(int32_t x, int32_t w) {
     if (!ws_native_wide_active()) return 0;
+    /* Local split HUD translation belongs only to the wide mirror. Keep the
+     * same packet's canonical VRAM coordinates intact. */
+    if (ws_local_split_draw_layout(NULL)) return 0;
     if (g_bg2d_host_size && ws_tagged_world_primitive()) return 0;
     int32_t off = ws_nw_offset();
     if (off <= 0) return 0;
@@ -4012,6 +4034,19 @@ static int ws_is_fb_base(uint32_t bx) {
     return 0;
 }
 
+static int ws_local_split_draw_layout(NativeWideSplit *out) {
+    int half = gpu_ws_local_split_source_width();
+    if (!half) return 0;
+    for (int i = 0; i < ws_fb_n; ++i)
+        if (native_wide_split(half, ws_nw_present_width(), (int)ws_fb_base[i],
+                              (int)draw_area_left, (int)draw_area_right, out))
+            return 1;
+    GpuDisplayInfo di;
+    gpu_get_display_info(&di);
+    return native_wide_split(half, ws_nw_present_width(), (int)di.display_x,
+                             (int)draw_area_left, (int)draw_area_right, out);
+}
+
 static void split_trace_reset(GpuVerticalSplitTrace *trace) {
     memset(trace, 0, sizeof(*trace));
 }
@@ -4081,6 +4116,12 @@ static int ws_local_viewport_state_ok(void) {
 static int ws_vertical_split_active(void) {
     return split_recent_left_age <= 8 && split_recent_right_age <= 8 &&
            ws_local_viewport_state_ok();
+}
+static int ws_local_split_layout_active(void) {
+    /* A declared layout state is available before the first camera packets;
+     * it avoids presenting one incorrectly mapped transition frame. */
+    return ws_local_viewport_state_addr && ws_local_viewport_state_value_count
+         ? ws_local_viewport_state_ok() : ws_vertical_split_active();
 }
 
 int gpu_last_frame_vertical_split_screen(void) {

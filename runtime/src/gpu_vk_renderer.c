@@ -28,6 +28,7 @@
 #include "psx_rewind.h"
 #include "crash_trace.h"
 #include "gpu_vk_upload.h"
+#include "native_wide_split.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -2991,7 +2992,16 @@ static void set_vp_scissor(VkCommandBuffer cb) {
 /* X-translation (native px) from canonical VRAM space into the active wide
  * surface: local_x = vram_x - base_x + OFFSET. Same as GL/SW wide_dx(). */
 static int view_enabled, view_shift, view_pad_left, view_pad_right;
-static int wide_dx(void) { return s_wide_offset + view_shift - s_wide_cur_base; }
+static int wide_split_width;
+static int wide_split_layout(NativeWideSplit *out) {
+    return native_wide_split(wide_split_width, s_wide_w, s_wide_cur_base,
+                             s_da_x1, s_da_x2, out);
+}
+static int wide_dx(void) {
+    NativeWideSplit split;
+    return wide_split_layout(&split) ? split.shift + view_shift
+         : s_wide_offset + view_shift - s_wide_cur_base;
+}
 
 static void wide_free_all(void) {
     int any = 0;
@@ -3106,8 +3116,14 @@ static void wide_pass_begin(VkCommandBuffer cb) {
     int y1 = s_da_y1 < 0 ? 0 : s_da_y1;
     int y2 = s_da_y2 >= VRAM_H ? VRAM_H - 1 : s_da_y2;
     int hh = y2 - y1 + 1; if (hh < 0) hh = 0;
-    VkRect2D sc = { { view_pad_left * S, y1 * S },
-        { (uint32_t)((s_wide_w - view_pad_left - view_pad_right) * S), (uint32_t)(hh * S) } };
+    int x1 = view_pad_left, x2 = s_wide_w - view_pad_right - 1;
+    NativeWideSplit split;
+    if (wide_split_layout(&split)) {
+        if (x1 < split.clip_left) x1 = split.clip_left;
+        if (x2 > split.clip_right) x2 = split.clip_right;
+    }
+    VkRect2D sc = { { x1 * S, y1 * S },
+        { (uint32_t)((x2 >= x1 ? x2 - x1 + 1 : 0) * S), (uint32_t)(hh * S) } };
     p_vkCmdSetScissor(cb, 0, 1, &sc);
 }
 
@@ -3660,8 +3676,10 @@ static void vkb_wide_set_view(int enabled, int shift, int pad_left, int pad_righ
 
 static void vkb_wide_configure(int wide_w, int offset) {
     if (!s_ready) return;
-    if (wide_w == s_wide_w && offset == s_wide_offset) return;
+    int split = gpu_ws_local_split_source_width();
+    if (wide_w == s_wide_w && offset == s_wide_offset && split == wide_split_width) return;
     flush_tex_batch(); flush_geometry();
+    wide_split_width = split;
     if (wide_w <= 0) { wide_free_all(); s_wide_w = 0; s_wide_offset = 0; return; }
     if (wide_w != s_wide_w) wide_free_all();
     s_wide_w = wide_w;

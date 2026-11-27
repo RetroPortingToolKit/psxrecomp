@@ -464,6 +464,8 @@ static int           s_swap_interval = 1; /* SDL_GL swap interval (vsync mode) *
  * the native-wide fast-path latch, depth24) is captured when a call is
  * recorded and read back through the ctx_* accessors below during replay. */
 #include "render_thread.h"
+#include "native_wide_split.h"
+extern int gpu_ws_local_split_source_width(void);
 static int       s_rth_on = 0;
 static uint16_t *s_rth_vram_pub = NULL;   /* gpu.c's VRAM (guest-visible)      */
 static uint16_t *s_rth_vram_priv = NULL;  /* render thread's upload source     */
@@ -471,6 +473,7 @@ static uint16_t *s_rth_vram_priv = NULL;  /* render thread's upload source     *
 static int       s_rthx_prim = 0;         /* current record carries prim tags  */
 static int       s_rthx_tagged = 0, s_rthx_backdrop = 0;
 static int       s_rths_flat_bd = 0, s_rths_vp_w = 0, s_rths_bg_full = 0;
+static int       s_rths_split_width, s_direct_split_width;
 static inline int rth_replaying(void) { return s_rth_on && rt_on_render_thread(); }
 /* Frame generation (defined with the render-thread code near the end). */
 
@@ -488,6 +491,9 @@ static int ctx_flat_backdrop(void) {
 }
 static int ctx_vp_width(void) {
     return rth_replaying() ? s_rths_vp_w : gpu_ws_netplay_local_viewport_width();
+}
+static int ctx_split_width(void) {
+    return rth_replaying() ? s_rths_split_width : s_direct_split_width;
 }
 static int ctx_bg_full(void) {
     return rth_replaying() ? s_rths_bg_full : gpu_ws_background_requires_full_composite();
@@ -1027,7 +1033,15 @@ uint64_t gl_renderer_wide_triangle_recovery_count(void) {
 /* X-translation (native px) from canonical VRAM space into the active wide
  * surface: local_x = vram_x - base_x + OFFSET. Same as SW wide_dx(). */
 static int view_enabled, view_shift, view_pad_left, view_pad_right;
-static inline int wide_dx(void) { return g_wide_off + view_shift - g_wide_cur_base; }
+static int wide_split_layout(NativeWideSplit *out) {
+    return native_wide_split(ctx_split_width(), g_wide_w, g_wide_cur_base,
+                             s_area_x1, s_area_x2, out);
+}
+static inline int wide_dx(void) {
+    NativeWideSplit split;
+    return wide_split_layout(&split) ? split.shift + view_shift
+         : g_wide_off + view_shift - g_wide_cur_base;
+}
 
 /* Wide-surface mask stencil: the rect (wide-local native px, [x0,x1) x
  * [y0,y1)) where a surface's stencil may differ from its alpha (bit 15), per
@@ -3362,6 +3376,13 @@ static void wide_band_rows(int *out_sy, int *out_sh) {
 static void wide_band_scissor_x(int x, int w) {
     int sy, sh;
     wide_band_rows(&sy, &sh);
+    NativeWideSplit split;
+    if (wide_split_layout(&split)) {
+        int end = x + w;
+        if (x < split.clip_left) x = split.clip_left;
+        if (end > split.clip_right + 1) end = split.clip_right + 1;
+        w = end > x ? end - x : 0;
+    }
     glEnable(GL_SCISSOR_TEST);
     glScissor(x * s_out_scale, sy * s_out_scale, w * s_out_scale, sh * s_out_scale);
 }
@@ -3488,7 +3509,7 @@ static int wide_fast_center_valid(void) {
      * draws. Tags are installed before DMA, so no earlier center draws skip. */
     // The native split seam occupies canonical edge columns that the expanded
     // camera renders as world. Copying those columns reinstates the divider.
-    return s_wide_fast && ctx_vp_width() <= 0 && !ctx_bg_full();
+    return s_wide_fast && ctx_vp_width() <= 0 && ctx_split_width() <= 0 && !ctx_bg_full();
 }
 /* The one predicate for "the wide surface's centre columns [g_wide_off,
  * g_wide_off+native_w) are the canonical framebuffer, unshifted". A camera view
@@ -3523,15 +3544,22 @@ static void wide_bd_scale(int gate, float *out_scale, float *out_center) {
     float scale = 1.0f, center = 0.0f;
     if (gate && g_ws_bd_stretch_on && g_wide_w > 0) {
         int native_w = g_wide_w - 2 * g_wide_off;
+        int target_w = g_wide_w, base = g_wide_cur_base;
+        NativeWideSplit split;
+        if (wide_split_layout(&split)) {
+            native_w = split.source_width;
+            target_w = split.target_width;
+            base = split.source_x;
+        }
         if (native_w > 0) {
             scale  = g_ws_bd_stretch_pct > 0 ? (float)g_ws_bd_stretch_pct / 100.0f
-                                             : (float)g_wide_w / (float)native_w;
+                                             : (float)target_w / (float)native_w;
             if (gate == 2) {
                 scale = g_ws_tex_edge_pct > 0
                       ? (float)g_ws_tex_edge_pct / 100.0f : scale;
                 scale = -scale; /* shader: expand only beyond canonical edges */
             }
-            center = (float)g_wide_cur_base + (float)native_w / 2.0f;
+            center = (float)base + (float)native_w / 2.0f;
         }
     }
     if (scale != 1.0f) s_bdg_applied++;
@@ -4064,6 +4092,13 @@ static void hiw_wide_set(HiCmd *c, int gate) {
         c->wsx = view_pad_left;
         c->wsw = g_wide_w - view_pad_left - view_pad_right;
         wide_band_rows(&c->wsy, &c->wsh);
+    }
+    NativeWideSplit split;
+    if (wide_split_layout(&split)) {
+        int end = c->wsx + c->wsw;
+        if (c->wsx < split.clip_left) c->wsx = split.clip_left;
+        if (end > split.clip_right + 1) end = split.clip_right + 1;
+        c->wsw = end > c->wsx ? end - c->wsx : 0;
     }
 }
 
@@ -7321,6 +7356,8 @@ static void glb_wide_configure(int wide_w, int offset) {
     flush_line_batch();
     flush_tex_batch();   /* a queued batch's wide mirror targets the CURRENT surfaces */
     hiw_flush_queue();   /* ...and so does a windowed-mode queued one */
+    s_direct_split_width = rth_replaying() ? s_rths_split_width
+                                           : gpu_ws_local_split_source_width();
     if (wide_w <= 0) { wide_free_all(); g_wide_w = 0; g_wide_off = 0; s_cw_wide_ms += cw_ms() - t0; return; }
     if (wide_w != g_wide_w) { wide_free_all(); s_wide_refused_logged = 0; }
     g_wide_w = wide_w;
@@ -10877,7 +10914,7 @@ static int s_rthm_wide_w = 0, s_rthm_wide_off = 0;
 static int s_rthm_base[WIDE_MAX_SURF];
 static int s_rthm_area[4] = { 0, 0, VRAM_W - 1, VRAM_H - 1 };
 /* Last stream state sent (RTH_STATE); -1 forces the first send. */
-static int s_rthe_flat_bd = -1, s_rthe_vp_w = -1, s_rthe_bg_full = -1;
+static int s_rthe_flat_bd = -1, s_rthe_vp_w = -1, s_rthe_bg_full = -1, s_rthe_split_width = -1;
 static uint64_t s_rth_presents = 0, s_rth_presents_stale = 0;
 
 #define RTHF_PRIM      0x0001u
@@ -10932,9 +10969,11 @@ static void rth_send_state(void) {
     int flat = gpu_ws_nw_flat_backdrop_enabled() ? 1 : 0;
     int vp = gpu_ws_netplay_local_viewport_width();
     int bg = gpu_ws_background_requires_full_composite() ? 1 : 0;
-    if (flat == s_rthe_flat_bd && vp == s_rthe_vp_w && bg == s_rthe_bg_full) return;
+    int split = gpu_ws_local_split_source_width();
+    if (flat == s_rthe_flat_bd && vp == s_rthe_vp_w && bg == s_rthe_bg_full && split == s_rthe_split_width) return;
     s_rthe_flat_bd = flat; s_rthe_vp_w = vp; s_rthe_bg_full = bg;
-    RTH_REC(RTH_STATE, 0, flat, vp, bg);
+    s_rthe_split_width = split;
+    RTH_REC(RTH_STATE, 0, flat, vp, bg, split);
 }
 
 /* Per-primitive widescreen tags, read by bd_prim_gate during replay. Taken
@@ -11667,7 +11706,11 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
     case RTH_PRESENT_VRAM:
     case RTH_PRESENT_WIDE: rth_replay_present(c, (const uint8_t *)payload); break;
     case RTH_STATE:
+        if (s_rths_split_width != v[3]) {
+            flush_flat_batch(); flush_tex_batch(); hiw_flush_queue();
+        }
         s_rths_flat_bd = v[0]; s_rths_vp_w = v[1]; s_rths_bg_full = v[2];
+        s_rths_split_width = v[3];
         break;
 #ifndef PSX_NO_DEBUG_TOOLS
     case RTH_RING_CAPTURE: rth_ring_capture_now(v); break;
@@ -11719,7 +11762,7 @@ int gl_renderer_render_thread_start(int max_frames) {
     memcpy(priv, s_vram, (size_t)VRAM_W * VRAM_H * sizeof(uint16_t));
     s_rth_vram_pub = s_vram;
     s_rth_vram_priv = priv;
-    s_rthe_flat_bd = s_rthe_vp_w = s_rthe_bg_full = -1;
+    s_rthe_flat_bd = s_rthe_vp_w = s_rthe_bg_full = s_rthe_split_width = -1;
     rth_mirror_resync();
     s_vram = priv;
     rth_rebind_vram(priv);

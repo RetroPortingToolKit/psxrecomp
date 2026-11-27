@@ -41,6 +41,8 @@ int psx_ws_prim_is_tagged(void){return 0;}
 void gpu_depth24_upload_span_reset(void){}
 /* Netplay unsplit view and forward-pass opt-in: off in these fixtures. */
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
+static int test_local_split_width;
+int gpu_ws_local_split_source_width(void){return test_local_split_width;}
 int gpu_ws_display_width(void){return 320;}
 int render_pass_netplay_enabled(void){return 0;}
 /* Hidden tests explicitly select swap interval zero and have no frontend
@@ -108,7 +110,7 @@ static void verify_bank_batching(void) {
    check(gl_renderer_fbo_peek(400,300,96,96,enabled?result:baseline),"batch pixel read");
   }
   check(memcmp(baseline,result,sizeof baseline)==0,"ordered semi batching pixel equivalence");
-  check(mask?counts[1]==counts[0]:counts[1]<counts[0],"batch reduction only on supported path");
+  check((test_batch_hle||mask)?counts[1]==counts[0]:counts[1]<counts[0],"batch policy honors supported path");
  }
  psx_mod_set_texture_bank_batching(0);s_tex_filter=0;
  glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
@@ -678,6 +680,37 @@ cleanup:
  free(wide_before);free(wide_after);free(native_before);free(native_after);
 }
 
+static void verify_local_split_wide(void) {
+ /* Same native packets in two independent camera clips. The extra pixels
+  * belong to their own camera and must not replace either canonical half. */
+ test_local_split_width=160;
+ glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+ glb_wide_set_view(0,0,0,0);
+ glb_set_draw_area(0,0,319,239);glb_wide_configure(424,52);glb_wide_set_target(0);
+ glb_fill_rect(0,0,320,240,0);
+ glb_wide_clear(0,0,240,0);
+ glb_set_draw_area(0,0,158,239);
+ glb_draw_flat_rect(-32,40,224,40,0x001f);
+ glb_set_draw_area(161,0,319,239);
+ glb_draw_flat_rect(128,40,224,40,0x03e0);
+ check(glb_vram_read(0,60)==0x001f && glb_vram_read(158,60)==0x001f,"split canonical left retained");
+ check(glb_vram_read(159,60)==0 && glb_vram_read(160,60)==0,"split canonical divider retained");
+ check(glb_vram_read(161,60)==0x03e0 && glb_vram_read(319,60)==0x03e0,"split canonical right retained");
+ uint32_t *pixels=calloc((size_t)424*s_out_scale*240*s_out_scale,sizeof(uint32_t));
+ check(pixels!=NULL,"split wide pixel allocation");
+ if(pixels){
+  check(glb_render_wide_display(pixels,424*s_out_scale*4,0,0,240)>0,"split wide readback");
+  const int row=60*s_out_scale*424*s_out_scale;
+  check(((pixels[row]>>16)&0xff)>200 && ((pixels[row]>>8)&0xff)==0,"left reveal is left camera");
+  check(((pixels[row+210*s_out_scale]>>16)&0xff)>200,"left camera reaches its inner edge");
+  check((pixels[row+211*s_out_scale]&0xffffff)==0 && (pixels[row+212*s_out_scale]&0xffffff)==0,"split wide divider retained");
+  check((pixels[row+213*s_out_scale]&0xff)==0 && ((pixels[row+213*s_out_scale]>>8)&0xff)>200,"right camera starts at its own edge");
+  check(((pixels[row+423*s_out_scale]>>8)&0xff)>200,"right reveal is right camera");
+  free(pixels);
+ }
+ test_local_split_width=0;glb_set_draw_area(0,0,1023,511);glb_wide_disable_target();glb_wide_configure(0,0);
+}
+
 int main(int argc,char **argv){
  int scale=argc>1?atoi(argv[1]):1;
  if(SDL_Init(SDL_INIT_VIDEO)!=0)return 2;
@@ -855,6 +888,7 @@ int main(int argc,char **argv){
  check(glb_vram_read(102,302)==0x7c00,"dual software authority samples ordinary VRAM");
  test_title_profile_active=test_title_profile_banks=0;
  gl_renderer_set_cpu_auth_dual(0);
+ verify_local_split_wide();
  verify_view_transactions_and_geometry_export();
  printf("checks=%d failures=%d\n",checks,failures);
  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
