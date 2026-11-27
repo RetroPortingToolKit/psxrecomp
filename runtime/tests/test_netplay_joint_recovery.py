@@ -36,6 +36,7 @@ def check_transfer_ownership(compiler):
     functions = ''
     for signature in (
         'int psx_netplay_collective_transfer_active(void)',
+        'static void np_defer_rewind(uint32_t tick, int slot)',
         'int psx_netplay_defer_recovery_for_transfer(uint32_t tick, int slot)',
         'static void np_det_selftest_tick(uint32_t done)',
         'static void np_try_hc_fork_recovery(uint32_t fork_tick)',

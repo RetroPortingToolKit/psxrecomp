@@ -520,6 +520,7 @@ void psx_netplay_pad_trace_dev(int card, int fallback, int sdl_start,
 void psx_netplay_on_rb_snap_loaded(void) {}
 int psx_netplay_collective_transfer_active(void) { return 0; }
 int psx_netplay_defer_recovery_for_transfer(uint32_t t, int s) { (void)t; (void)s; return 0; }
+int psx_netplay_requeue_correction(uint32_t t, int s) { (void)t; (void)s; return 0; }
 void psx_netplay_hc_fork_recovery_restart(void) {}
 void psx_netplay_hc_fork_recovery_clear(void) {}
 void psx_netplay_cd_bisect_arm(uint32_t from_sim, uint32_t ticks)
@@ -763,6 +764,18 @@ void psx_netplay_execution_anchor(uint32_t tick)
     s_commit_anchor_ready = 1;
 }
 
+/* Companion to the rollback owner's explicit movie-gap HC re-prime. This
+ * retires omitted producer rows only: it does not accept a state baseline,
+ * change executed inputs, or waive the boot / post-movie peer checks. */
+void psx_netplay_frame_commit_prime_after(uint32_t tick)
+{
+    if (!g_np.rollback || !s_commit_anchor_ready ||
+        psx_netplay_rb_is_resimulating())
+        return;
+    if (s_commit_next_tick <= tick)
+        s_commit_next_tick = tick + 1u;
+}
+
 static NpPartSlot *np_part_ring_execution(uint32_t tick)
 {
     NpPartSlot *part = &s_part_ring[tick % NP_PART_RING];
@@ -895,15 +908,35 @@ int psx_netplay_collective_transfer_active(void)
     return g_np.xfer != NP_XFER_NONE;
 }
 
-int psx_netplay_defer_recovery_for_transfer(uint32_t tick, int slot)
+static void np_defer_rewind(uint32_t tick, int slot)
 {
-    if (!psx_netplay_collective_transfer_active()) return 0;
     if (!s_deferred_rw_valid || tick < s_deferred_rw_tick) {
         s_deferred_rw_valid = 1;
         s_deferred_rw_tick = tick;
         s_deferred_rw_slot = slot;
         s_deferred_rw_logged = 0;
     }
+}
+
+int psx_netplay_defer_recovery_for_transfer(uint32_t tick, int slot)
+{
+    if (!psx_netplay_collective_transfer_active()) return 0;
+    np_defer_rewind(tick, slot);
+    return 1;
+}
+
+int psx_netplay_requeue_correction(uint32_t tick, int slot)
+{
+    if (!g_np.rollback || !g_np.session || slot < 0 || slot >= g_np.slot_count)
+        return 0;
+    np_defer_rewind(tick, slot);
+    np_invalidate_execution_from(s_deferred_rw_tick);
+    /* Reuse the existing owner and its safety gates. A refused request stays
+     * queued; authoritative history alone cannot repair already-run state. */
+    if (!psx_netplay_rb_begin_rewind(s_deferred_rw_tick, s_deferred_rw_slot))
+        return 0;
+    g_np.needs_advance = 0;
+    s_deferred_rw_valid = 0;
     return 1;
 }
 
@@ -5670,11 +5703,14 @@ int psx_netplay_poll_admit(void)
  * PSX_RB_DET_SELFTEST: 106 of 262 replayed saves). */
 uint32_t psx_netplay_snap_resume_hint(const CPUState *cpu)
 {
-    uint32_t hint = psx_compiled_irq_resume_pc();
-    if (!psx_is_dispatchable(hint))
-        hint = psx_last_irq_check_pc();
+    uint32_t hint = psx_irq_resume_context_snapshot_site() != 0
+                        ? psx_irq_resume_context_snapshot_pc() : 0u;
     if (!psx_is_dispatchable(hint) && cpu)
         hint = cpu->pc;
+    if (!psx_is_dispatchable(hint))
+        hint = psx_compiled_irq_resume_pc();
+    if (!psx_is_dispatchable(hint))
+        hint = psx_last_irq_check_pc();
     return hint;
 }
 
