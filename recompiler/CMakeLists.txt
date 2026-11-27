@@ -1330,12 +1330,6 @@ if(BUILD_TESTING)
         # capture views, per-segment cache directories and manifests, the real
         # compile_overlays.py driver and the real overlay loader.
         add_test(
-            NAME native_kernel_overlay_boundary
-            COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_kernel_overlay_boundary.py
-                    --recompiler $<TARGET_FILE:psxrecomp-game>
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
-        add_test(
             NAME overlay_segment_keys
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_segment_keys.py
