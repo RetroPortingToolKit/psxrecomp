@@ -67,7 +67,7 @@ bool player_setting_typed_get(const PlayerPreferences& prefs,const std::string& 
     PLAYER_NUMBER("controller.mouse_sensitivity",mouse_sensitivity)
 #undef PLAYER_BOOL
 #undef PLAYER_NUMBER
-    if (id=="memcard.dir" && prefs.has_memcard_dir) { value=prefs.memcard_dir.u8string(); return true; }
+    if (id=="memcard.dir" && prefs.has_memcard_dir) { value=psx_path::utf8(prefs.memcard_dir); return true; }
     auto found=prefs.extra_player_settings.find(id);
     if (found==prefs.extra_player_settings.end()) return false;
     value=found->second;

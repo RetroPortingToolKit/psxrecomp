@@ -233,6 +233,7 @@ if(BUILD_TESTING)
 
     add_executable(atomic_file_write_test tests/test_atomic_file_write.cpp)
     target_include_directories(atomic_file_write_test PRIVATE include)
+    target_compile_features(atomic_file_write_test PRIVATE cxx_std_20)
     target_compile_features(atomic_file_write_test PRIVATE cxx_std_17)
     add_test(NAME atomic_file_write_test COMMAND atomic_file_write_test)
 
