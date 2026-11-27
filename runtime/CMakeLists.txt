@@ -1993,7 +1993,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_overlay_capture_retry.cpp
         src/overlay_capture.c
         src/host_span_ring.c
-        src/psx_ram_geometry.c)
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_retry_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_retry_test PRIVATE
@@ -2009,7 +2010,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_overlay_capture_queue_bound.cpp
         src/overlay_capture.c
         src/host_span_ring.c
-        src/psx_ram_geometry.c)
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_queue_bound_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_queue_bound_test PRIVATE
@@ -2025,7 +2027,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_overlay_capture_replay_latest.cpp
         src/overlay_capture.c
         src/host_span_ring.c
-        src/psx_ram_geometry.c)
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_replay_latest_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_replay_latest_test PRIVATE
@@ -2041,7 +2044,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_overlay_capture_replay_retry.cpp
         src/overlay_capture.c
         src/host_span_ring.c
-        src/psx_ram_geometry.c)
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_replay_retry_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_replay_retry_test PRIVATE
@@ -2058,7 +2062,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_overlay_capture_history.cpp
         src/overlay_capture.c
         src/host_span_ring.c
-        src/psx_ram_geometry.c)
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_history_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_history_test PRIVATE
@@ -2072,7 +2077,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_executable(overlay_capture_guard_word_test
         tests/test_overlay_capture_guard_word.cpp
         src/host_span_ring.c
-        src/overlay_capture.c)
+        src/overlay_capture.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_guard_word_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_guard_word_test PRIVATE
@@ -2081,6 +2087,24 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         ${PSX_SDL_LIBRARIES})
     add_test(NAME overlay_capture_guard_word_test
              COMMAND overlay_capture_guard_word_test)
+
+    # A periodic capture may fire between the first and last page of a CD
+    # read: the read's pages carry no evidence from before it, and code run on
+    # a landed page is named. No capture fires while a turbo load runs vblanks
+    # faster than real time.
+    add_executable(overlay_capture_mid_dma_test
+        tests/test_overlay_capture_mid_dma.cpp
+        src/overlay_capture.c
+        src/host_span_ring.c
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
+    target_include_directories(overlay_capture_mid_dma_test PRIVATE
+        include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(overlay_capture_mid_dma_test PRIVATE
+        SDL_MAIN_HANDLED PSX_OVERLAY_CAPTURE_TEST=1
+        $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(overlay_capture_mid_dma_test PRIVATE ${PSX_SDL_LIBRARIES})
+    add_test(NAME overlay_capture_mid_dma_test COMMAND overlay_capture_mid_dma_test)
 
     add_executable(overlay_path_canon_test
         tests/test_overlay_path_canon.c

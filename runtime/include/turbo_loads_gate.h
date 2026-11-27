@@ -36,6 +36,13 @@ int turbo_loads_gate_step(TurboLoadsGate *g, int data_read, int load_hold, int r
 /* Data-read vblanks in the current window (for load telemetry). */
 int turbo_loads_gate_window_reads(const TurboLoadsGate *g);
 
+/* Whether the last vblank ran faster than real time for a load: Fast Loading
+ * engaged, the post-load CD wait, or the HLE boot window. The frontend records
+ * its decision once per vblank; code that takes vblanks as a measure of wall
+ * time (the overlay autocapture cadence) reads it. */
+void turbo_loads_set_engaged(int engaged);
+int turbo_loads_engaged(void);
+
 #ifdef __cplusplus
 }
 #endif
