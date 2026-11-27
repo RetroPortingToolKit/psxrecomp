@@ -2313,6 +2313,14 @@ static void realign_invalidate_evidence(uint32_t tick)
     fflush(stderr);
 }
 
+static void realign_applied(uint32_t tick)
+{
+    realign_invalidate_evidence(tick);
+    /* Only a successful restore replaces the executed timeline. Retire its
+     * old descendants and let fresh executions republish from this anchor. */
+    psx_netplay_execution_anchor(tick);
+}
+
 static void schedule_live_realign(uint32_t tick, const char *why)
 {
     /* A declined joint baseline never authorizes a one-seat restore. */
@@ -7314,7 +7322,7 @@ static int try_apply_pending_load(CPUState *cpu_in)
                  * post-realign production fills need; prepare_local_tip still
                  * emits. Keep absurd tip in the ring — cushion refuses invent
                  * on miss (§45) until real rows land. */
-                realign_invalidate_evidence(loaded_tick);
+                realign_applied(loaded_tick);
                 fprintf(stderr,
                         "psxrecomp: rb realign applied tick=%u pc=0x%08x core=%08x "
                         "cd=%08x\n",

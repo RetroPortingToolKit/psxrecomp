@@ -26,7 +26,7 @@ def main():
     parser.add_argument("--recomp-net", type=Path, default=ROOT / "lib/recomp-net")
     args = parser.parse_args()
     source = (args.source / "runtime/src/psx_netplay.c").read_text(encoding="utf-8")
-    rb_source = (ROOT / "runtime/src/psx_netplay_rb.c").read_text(encoding="utf-8")
+    rb_source = (args.source / "runtime/src/psx_netplay_rb.c").read_text(encoding="utf-8")
     abort_name = "psx_netplay_rb_abort_resim_core_mismatch"
     abort_source = function(rb_source[rb_source.rindex("int " + abort_name):], abort_name)
     lineage = "static void np_flush_confirmed_frame_commits" in source
@@ -61,6 +61,15 @@ def main():
     helpers += function(source, "np_emit_frame_commit") + function(source, "note_sim_pad")
     if lineage:
         helpers += function(source, "np_rb_apply_frame_slot")
+        helpers += function(rb_source, "realign_invalidate_evidence")
+        if "static void realign_applied" in rb_source:
+            helpers += function(rb_source, "realign_applied")
+            apply = function_body(rb_source, "static int try_apply_pending_load(")
+            assert "realign_applied(loaded_tick);" in apply
+            schedule = function_body(rb_source, "static void schedule_live_realign(")
+            assert "realign_applied(" not in schedule
+        else:
+            helpers += "static void realign_applied(uint32_t t) { realign_invalidate_evidence(t); }\n"
     fixture = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -79,6 +88,13 @@ static uint32_t wanted_core;
 static int sent,boot_gate,transfer,abort_calls,recovery_calls,media_depth24,media_hot;
 static uint32_t last_sent_tick,last_sent_core;
 static RNetRbSession *g_rb;
+static struct { NetplayHashConfirm *hc; } g_b;
+static uint32_t g_agreed_through,g_agreed_span_lo,g_peer_resolved_through;
+static uint32_t g_peer_frontier,g_local_advertised_through,g_auth_snap_through;
+static int g_agreed_valid;
+static void *g_snaps;
+static void netplay_peer_frontier_clamp(uint32_t *p,uint32_t t) { if(*p>t)*p=t; }
+static uint32_t netplay_snap_ring_drop_after(void *p,uint32_t t) { (void)p;(void)t;return 0; }
 int psx_netplay_collective_transfer_active(void) { return transfer; }
 int psx_netplay_rb_boot_dig0_gate(void) { return boot_gate; }
 void psx_netplay_rb_boot_dig0_note_local(uint32_t core) { (void)core; }
@@ -142,6 +158,7 @@ static void reset(void) {
     static CPUState cpu;
     memset(&g_np,0,sizeof(g_np));g_np.cpu=&cpu;g_np.session=&g_np;g_np.slot_count=2;g_np.rollback=1;
     netplay_hc_reset(&g_np.hc);netplay_ih_reset(&g_np.ih,2);np_part_ring_reset();
+    g_b.hc=&g_np.hc;
     psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);sent=0;boot_gate=0;transfer=0;abort_calls=0;recovery_calls=0;media_depth24=0;media_hot=0;
     if(g_rb){rnet_rb_destroy(g_rb);g_rb=NULL;}
 }
@@ -195,6 +212,24 @@ int main(void) {
     transfer=0;np_flush_confirmed_frame_commits();assert(sent==2);
     /* Session/user-load cleanup retires host-only lineage as well. */
     np_part_ring_reset();assert(s_commit_next_tick==0&&!s_commit_anchor_ready);
+    /* A successful live realign also discards the old execution timeline.
+     * Its next FRAME_COMMIT must come from the newly executed successor,
+     * even when the old timeline already published farther ahead. */
+    reset();finish(0,0x1234);netplay_hc_note_peer(&g_np.hc,0,0x1234);
+    for(uint32_t t=1;t<=3;++t) {
+        publish(0,t,0xffff,0);publish(1,t,0xffff,0);finish(t,0x1000+t);
+        netplay_hc_note_peer(&g_np.hc,t,0x1000+t);
+    }
+    assert(sent==4&&s_commit_next_tick==4);
+    realign_applied(1);
+    if(s_commit_next_tick!=2||np_part_ring_get(2)||np_part_ring_get(3)) {
+        fputs("FAIL: applied realign retained discarded execution descendants\n",stderr);return 6;
+    }
+    publish(0,2,0xffff,0);publish(1,2,0xffff,0);finish(2,0x2202);
+    assert(sent==5&&last_sent_tick==2&&last_sent_core==0x2202);
+    assert(!netplay_hc_confirm_through(&g_np.hc,2));
+    netplay_hc_note_peer(&g_np.hc,2,0x2202);
+    assert(netplay_hc_confirm_through(&g_np.hc,2));
     /* Delay-sync has no rollback movie-exit re-prime. Every actual executed
      * state must be committed, including a short hot24-bit movie interval;
      * otherwise one absent slot stalls the producer forever after wrapping. */
