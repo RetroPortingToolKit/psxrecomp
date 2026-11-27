@@ -971,6 +971,7 @@ if(NOT PSXRECOMP_SKIP_BIOS_STALE_CHECK AND _psxrt_bios_linked)
             execute_process(
                 COMMAND "${CMAKE_COMMAND}" "-DROOT=${PSXRECOMP_ROOT}"
                         "-DPROFILE=${_psxrt_chk_profile}"
+                        -DRECOMP_SHARED_CORE_ROOT=${RECOMP_SHARED_CORE_ROOT}
                         -P "${PSXRECOMP_ROOT}/tools/bios_emitter_fingerprint.cmake"
                 WORKING_DIRECTORY "${PSXRECOMP_ROOT}"
                 OUTPUT_VARIABLE _psxrt_cur_fp OUTPUT_STRIP_TRAILING_WHITESPACE
