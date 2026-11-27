@@ -1,6 +1,6 @@
-/* GunCon controls in keybinds.ini [guncon] (PS1B-305): the defaults, loading
- * a section with a primary and an alt, a file without the section, and the
- * section surviving a save. argv[1] is a scratch directory. */
+/* Keyboard and GunCon controls in keybinds.ini: explicit unbound maps,
+ * defaults, primary and alternate bindings, missing sections, and saving.
+ * argv[1] is a scratch directory. */
 #include "psx_keybinds.h"
 
 #include <stdio.h>
@@ -119,6 +119,51 @@ int main(int argc, char **argv) {
     expect(file_contains(ini, "[guncon]") && file_contains(ini, "offscreen_shot = W"),
            "a generated file has [guncon] with the defaults");
     expect(file_contains(ini, "a              = Mouse3, A"), "A's default written as Mouse3, A");
+    remove(ini);
+
+    /* An explicitly empty keyboard map is a saved choice. It must not be
+     * silently replaced by the default map, including after save/reopen. */
+    const char *empty_controls =
+        "up=None\ndown=None\nleft=None\nright=None\n"
+        "cross=None\ncircle=None\nsquare=None\ntriangle=None\n"
+        "l1=None\nr1=None\nl2=None\nr2=None\nl3=None\nr3=None\n"
+        "start=None\nselect=None\n"
+        "ls_up=None\nls_down=None\nls_left=None\nls_right=None\n"
+        "rs_up=None\nrs_down=None\nrs_left=None\nrs_right=None\n";
+    char unbound_file[2048];
+    snprintf(unbound_file, sizeof(unbound_file),
+             "[player1]\n%s[player2]\ncross=K\n", empty_controls);
+    write_file(ini, unbound_file);
+    psx_keybinds_init(dir);
+    expect(psx_keybinds_get_button(1, PSX_KB_CROSS) == SDL_SCANCODE_UNKNOWN,
+           "an explicitly empty Player1 map stays unbound");
+    expect(psx_keybinds_get_button(2, PSX_KB_CROSS) == SDL_SCANCODE_K,
+           "the other player's explicit binding remains independent");
+    keys[SDL_SCANCODE_X] = 1;
+    keys[SDL_SCANCODE_UP] = 1;
+    expect(psx_keybinds_pad_word(keys, 1) == 0xffff,
+           "default gameplay keys do not drive an explicitly unbound player");
+    keys[SDL_SCANCODE_X] = keys[SDL_SCANCODE_UP] = 0;
+    psx_keybinds_save();
+    psx_keybinds_init(dir);
+    expect(psx_keybinds_get_button(1, PSX_KB_CROSS) == SDL_SCANCODE_UNKNOWN,
+           "an explicitly empty Player1 map survives save/reopen");
+    expect(psx_keybinds_get_button(3, PSX_KB_CROSS) == SDL_SCANCODE_X,
+           "a missing player section keeps the default keyboard map");
+    snprintf(unbound_file, sizeof(unbound_file), "[player2]\n%s", empty_controls);
+    write_file(ini, unbound_file);
+    psx_keybinds_init(dir);
+    expect(psx_keybinds_get_button(2, PSX_KB_CROSS) == SDL_SCANCODE_UNKNOWN,
+           "an explicitly empty Player2 map stays unbound");
+    psx_keybinds_save();
+    psx_keybinds_init(dir);
+    expect(psx_keybinds_get_button(2, PSX_KB_CROSS) == SDL_SCANCODE_UNKNOWN,
+           "an explicitly empty Player2 map survives save/reopen");
+    psx_keybinds_reset_player(1);
+    expect(psx_keybinds_get_button(1, PSX_KB_CROSS) == SDL_SCANCODE_X,
+           "an explicit reset still restores the default keyboard map");
+    expect(psx_keybinds_get_button(2, PSX_KB_CROSS) == SDL_SCANCODE_UNKNOWN,
+           "resetting Player1 preserves Player2's unbound choice");
     remove(ini);
 
     if (failures) { fprintf(stderr, "guncon keybinds: %d failure(s)\n", failures); return 1; }
