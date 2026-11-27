@@ -586,12 +586,29 @@ int sio_card_protocol_active(void) {
     return 0;
 }
 
+static void (*cards_replaced_hook)(void);
+
+void sio_set_cards_replaced_hook(void (*hook)(void)) {
+    cards_replaced_hook = hook;
+}
+
+uint8_t sio_card_flag(int slot) {
+    return slot >= 0 && slot < 2 ? mc_slots[slot].flag : 0xff;
+}
+
+void sio_card_mark_written(int slot) {
+    if (slot < 0 || slot >= 2) return;
+    mc_slots[slot].flag = 0;
+    if (mc_slot == slot) mc_flag = 0;
+}
+
 void sio_cards_replaced(void) {
     if (mc_state != MC_IDLE)
         mc_cmd |= MC_CARD_REPLACED;
     for (int slot = 0; slot < 2; ++slot)
         if (mc_slots[slot].state != MC_IDLE)
             mc_slots[slot].cmd |= MC_CARD_REPLACED;
+    if (cards_replaced_hook) cards_replaced_hook();
 }
 
 #if SIO_MODEL_CYCLE_PACED
@@ -1572,7 +1589,7 @@ void sio_set_legacy_cfg(int v) {
         pad_in_config[s] = 0;
 }
 
-static void pad_process_byte(uint8_t tx_byte) {
+static void pad_commit_pending_requests(void) {
     /* Apply any pending host type change (the emulated analog button) ONLY while
      * the bus is idle and the pad is not in config mode. This guarantees the
      * reported type (0x41/0x73) is stable for the whole of any poll or config
@@ -1602,6 +1619,34 @@ static void pad_process_byte(uint8_t tx_byte) {
             }
         }
     }
+}
+
+uint32_t sio_read_pad_packet(int physical_port, uint8_t out[34]) {
+    if (!out || physical_port < 0 || physical_port > 1) return 0;
+    pad_commit_pending_requests();
+    out[0] = 0xFF;
+    if (!pad_port_has_device(physical_port)) return 1;
+    const int logical = pad_logical_for_port(physical_port);
+    if (sio_multitap_active() &&
+        (sio_dual_multitap() || physical_port == sio_multitap_port)) {
+        out[0] = 0;
+        out[1] = 0x80;
+        for (int slot = 0; slot < 4; ++slot)
+            pad_fill_status8(logical + slot, out + 2 + slot * 8);
+        return 34;
+    }
+    uint8_t poll[8];
+    pad_fill_status8(logical, poll);
+    const uint32_t bytes = (poll[0] & 15u) * 2u;
+    if (!bytes || bytes > 6u) return 0;
+    out[0] = 0;
+    out[1] = poll[0];
+    memcpy(out + 2, poll + 2, bytes);
+    return bytes + 2;
+}
+
+static void pad_process_byte(uint8_t tx_byte) {
+    pad_commit_pending_requests();
     switch (pad_state) {
     case PAD_IDLE:
         /* Standard address 01h selects Slot A (or the standalone pad). With a
