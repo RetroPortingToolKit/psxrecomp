@@ -2960,6 +2960,27 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     endif()
     add_test(NAME sw_faithful_authority_test COMMAND sw_faithful_authority_test)
 
+    # Replays renderer recordings (gpu_render_record.h) through the software
+    # renderer. It uses the runtime's float flags: clang contracts a*b+c into
+    # an FMA by default on arm64, which rounds recorded games' Gouraud and
+    # texture interpolation differently from the runtime that recorded them.
+    add_executable(gr_replay tests/replay_gr_recording.c src/gpu_sw_renderer.c)
+    target_include_directories(gr_replay PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(gr_replay PRIVATE m)
+    endif()
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(gr_replay PRIVATE -ffp-contract=off)
+    endif()
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        add_test(NAME gr_replay_random_test
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/gen_gr_random.py
+                --replay $<TARGET_FILE:gr_replay>
+                --out ${CMAKE_CURRENT_BINARY_DIR}/gr_random)
+    endif()
+
     # Bilinear neighbours clamp inside the base texel's 256-texel page.
     add_executable(sw_bilinear_page_edge_test tests/test_sw_bilinear_page_edge.c)
     target_include_directories(sw_bilinear_page_edge_test PRIVATE include src)
