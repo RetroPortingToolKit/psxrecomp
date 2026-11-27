@@ -195,7 +195,7 @@ int psx_bios_module_cache_path(const char *exe_dir, const char *stem,
     n = snprintf(out, cap, "%s/cache/bios/%s/bm%d_%08x_f%d/%s_%08X." PSX_BM_EXT,
                  exe_dir, overlay_loader_arch_abi(),
                  PSX_BIOS_MODULE_ABI_VERSION, (unsigned)PSX_OVERLAY_CODEGEN_HASH,
-                 (int)PSX_OVERLAY_RUNTIME_FLAVOR, stem, crc32);
+                 (int)PSX_OVERLAY_FLAVOR, stem, crc32);
     return n > 0 && (size_t)n < cap;
 }
 
@@ -460,7 +460,7 @@ static int build_module(const BmToolchain *tk, const char *dump_path,
     char flavor[32];
     int rc;
     const char *compiler = tk->has_gcc ? "gcc" : "tcc";
-    snprintf(flavor, sizeof(flavor), "%d", (int)PSX_OVERLAY_RUNTIME_FLAVOR);
+    snprintf(flavor, sizeof(flavor), "%d", (int)PSX_OVERLAY_FLAVOR);
     if (!append_q(cmd, sizeof(cmd), tk->python) ||
         !append_s(cmd, sizeof(cmd), " ") || !append_q(cmd, sizeof(cmd), tk->builder) ||
         !append_s(cmd, sizeof(cmd), " --dump ") || !append_q(cmd, sizeof(cmd), dump_path) ||

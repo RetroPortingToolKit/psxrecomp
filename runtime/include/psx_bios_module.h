@@ -90,9 +90,11 @@ struct PsxBiosBackend;
 /* Combined tag: ABI version (low 16) | codegen flavor (high 16), like
  * PSX_OVERLAY_ABI_TAG. The flavor comes from the same -DPSX_OVERLAY_FLAVOR
  * the executable was built with; the glue and the host both evaluate it. */
-#include "overlay_flavor.h"
+#ifndef PSX_OVERLAY_FLAVOR
+#define PSX_OVERLAY_FLAVOR 0
+#endif
 #define PSX_BIOS_MODULE_ABI_TAG \
-    ((int)((PSX_BIOS_MODULE_ABI_VERSION & 0xFFFF) | ((PSX_OVERLAY_RUNTIME_FLAVOR & 0xFFFF) << 16)))
+    ((int)((PSX_BIOS_MODULE_ABI_VERSION & 0xFFFF) | ((PSX_OVERLAY_FLAVOR & 0xFFFF) << 16)))
 
 /* What the BIOS dispatcher needs beyond OverlayCallbacks. Function members
  * are the runtime's real implementations; pointer members alias the
