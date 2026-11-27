@@ -11,7 +11,9 @@
  *   - the load is refused, and disc 1 stays mounted, when disc 2 cannot be
  *     mounted, when the state is refused after the mount, or when its header
  *     is not this build's;
- *   - netplay, and a recorded input replay, see only the mounted disc.
+ *   - netplay, and a recorded input replay, see only the mounted disc;
+ *   - the BIOS folder is named after the booted image, and its old states
+ *     move out of scph1001/ once (PS1B-291).
  *
  *   savestate_disc_scope_test DIR   (DIR must exist; the test works in a
  *                                    subfolder and removes its own files)
@@ -393,6 +395,88 @@ static void file_load_preserves_slot(CPUState* cpu) {
     unplant(0, 0);
 }
 
+/* PS1B-291: the BIOS folder is named after the booted image, and that image's
+ * states leave the old shared scph1001/ folder once. */
+static void plant_header(const char* path, uint32_t cksum) {
+    uint8_t hdr[16];
+    uint32_t words[3];
+    int i;
+    FILE* f;
+    words[0] = BOOT_STATE_MAGIC;
+    words[1] = BOOT_STATE_VERSION;
+    words[2] = cksum;
+    for (i = 0; i < 12; ++i) hdr[i] = (uint8_t)(words[i / 4] >> ((i % 4) * 8));
+    memset(hdr + 12, 0, 4);
+    f = fopen(path, "wb");
+    if (!f) { CHECK(!"cannot plant a header"); return; }
+    fwrite(hdr, 1, sizeof(hdr), f);
+    fclose(f);
+}
+
+static int bios_file_exists(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
+
+static void bios_folder_named_after_image(void) {
+    char token[32], root[700], dir[720], a[800], b[800], c[800], other[800];
+    char moved_a[800], moved_b[800], moved_c[800], marker[800], stale[800];
+    const char* sd;
+    size_t sl;
+
+    savestate_bios_token_for_image("SCPH-5552", 0, token, sizeof(token));
+    CHECK(strcmp(token, "scph5552") == 0);
+    savestate_bios_token_for_image("SCPH-1001", 0, token, sizeof(token));
+    CHECK(strcmp(token, "scph1001") == 0);
+    savestate_bios_token_for_image("SCPH-5500", 0, token, sizeof(token));
+    CHECK(strcmp(token, "scph5500") == 0);
+    savestate_bios_token_for_image("SCPH-5552", 1, token, sizeof(token));
+    CHECK(strcmp(token, "openbios") == 0);
+    savestate_bios_token_for_image(NULL, 0, token, sizeof(token));
+    CHECK(strcmp(token, "scph1001") == 0);
+    savestate_bios_token_for_image("", 0, token, sizeof(token));
+    CHECK(strcmp(token, "scph1001") == 0);
+
+    snprintf(root, sizeof(root), "%s/bios_token", s_work);
+    savestate_set_disc_scope(0);
+    savestate_set_disc_roster(NULL, 0);
+    /* An earlier build: every retail state under scph1001/. */
+    savestate_configure(root, BIOS_SUM, ENTRY_PC, "scph1001", 0);
+    snprintf(dir, sizeof(dir), "%s/scph1001", root);
+    snprintf(a, sizeof(a), "%s/state_%08X_slot00.pst", dir, (unsigned)ENTRY_PC);
+    snprintf(b, sizeof(b), "%s/state_%08X_slot00.thumb", dir, (unsigned)ENTRY_PC);
+    snprintf(c, sizeof(c), "%s/state_%08X_disc2_slot03.pst", dir, (unsigned)ENTRY_PC);
+    snprintf(other, sizeof(other), "%s/state_%08X_slot01.pst", dir, (unsigned)ENTRY_PC);
+    plant_header(a, BIOS_SUM);
+    plant_header(b, 0);               /* thumb: no header, moves with its state */
+    plant_header(c, BIOS_SUM);
+    plant_header(other, 0x0BADF00Du); /* another image's state: stays */
+
+    savestate_configure(root, BIOS_SUM, ENTRY_PC, "scph5552", 0);
+    sd = savestate_dir();
+    sl = strlen(sd);
+    CHECK(sl > 9 && strcmp(sd + sl - 9, "/scph5552") == 0);
+    snprintf(moved_a, sizeof(moved_a), "%s/scph5552/state_%08X_slot00.pst", root, (unsigned)ENTRY_PC);
+    snprintf(moved_b, sizeof(moved_b), "%s/scph5552/state_%08X_slot00.thumb", root, (unsigned)ENTRY_PC);
+    snprintf(moved_c, sizeof(moved_c), "%s/scph5552/state_%08X_disc2_slot03.pst", root, (unsigned)ENTRY_PC);
+    snprintf(marker, sizeof(marker), "%s/.pst_bios_named_scph5552", root);
+    CHECK(bios_file_exists(moved_a) && !bios_file_exists(a));
+    CHECK(bios_file_exists(moved_b) && !bios_file_exists(b));
+    CHECK(bios_file_exists(moved_c) && !bios_file_exists(c));
+    CHECK(bios_file_exists(other));
+    CHECK(bios_file_exists(marker));
+
+    /* Once only: a state an old build writes to scph1001/ later stays. */
+    snprintf(stale, sizeof(stale), "%s/state_%08X_slot05.pst", dir, (unsigned)ENTRY_PC);
+    plant_header(stale, BIOS_SUM);
+    savestate_configure(root, BIOS_SUM, ENTRY_PC, "scph5552", 0);
+    CHECK(bios_file_exists(stale));
+
+    remove(moved_a); remove(moved_b); remove(moved_c); remove(other);
+    remove(stale); remove(marker);
+}
+
 int main(int argc, char** argv) {
     CPUState cpu;
     if (argc < 2) {
@@ -414,6 +498,7 @@ int main(int argc, char** argv) {
     mounted_disc_only();
     single_disc_unchanged();
     file_load_preserves_slot(&cpu);
+    bios_folder_named_after_image();
 
     if (s_fails) {
         fprintf(stderr, "savestate_disc_scope_test: %d check(s) failed\n", s_fails);

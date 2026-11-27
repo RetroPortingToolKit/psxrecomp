@@ -1443,6 +1443,7 @@ if(BUILD_TESTING)
                 bpe_container
                 audit_playtest_diagnostics_package
                 package_title_release
+                package_setup_host_lookup
                 bundled_release_layout
                 collect_game_misses
                 cursor_writers
