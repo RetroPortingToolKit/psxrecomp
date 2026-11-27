@@ -6,6 +6,7 @@
 #include "autocompile.h"
 #include "host_span_ring.h"
 #include "overlay_loader.h"
+#include "overlay_flavor.h"
 
 #include <stdarg.h>   /* autocompile_set_degraded takes a format + varargs */
 #include <stdint.h>
@@ -29,9 +30,6 @@
 #  endif
 #endif
 
-#ifndef PSX_OVERLAY_FLAVOR
-#define PSX_OVERLAY_FLAVOR 0
-#endif
 
 /* 8192, not 4096: a 208-address --force-interior list made the runtime-built command
  * 6,392 chars, and snprintf's silent truncation cut it mid-argument, so every compile
@@ -1157,7 +1155,7 @@ void autocompile_configure(const char *cmd, const char *cwd) {
     setenv("PSX_OVERLAY_LIVE_AUTOCOMPILE", "1", 1);
     {
         char flavor_buf[16];
-        snprintf(flavor_buf, sizeof flavor_buf, "%d", (int)PSX_OVERLAY_FLAVOR);
+        snprintf(flavor_buf, sizeof flavor_buf, "%d", (int)PSX_OVERLAY_RUNTIME_FLAVOR);
         setenv("PSX_OVERLAY_FLAVOR", flavor_buf, 1);
     }
     /* The architecture too (see the Windows block): Xcode's clang is an
@@ -1300,7 +1298,7 @@ static int autocompile_request_impl(void) {
      * always write the flavor this runtime reads. */
     {
         char flavor_buf[16];
-        snprintf(flavor_buf, sizeof flavor_buf, "%d", (int)PSX_OVERLAY_FLAVOR);
+        snprintf(flavor_buf, sizeof flavor_buf, "%d", (int)PSX_OVERLAY_RUNTIME_FLAVOR);
         SetEnvironmentVariableA("PSX_OVERLAY_FLAVOR", flavor_buf);
     }
     /* And the ARCHITECTURE: shards must be this runtime's "<os>-<arch>"

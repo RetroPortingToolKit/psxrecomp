@@ -868,6 +868,15 @@ def recompiler_project_root_args(args) -> list:
     return []
 
 
+def recompiler_overlay_args(args) -> list:
+    result = recompiler_project_root_args(args)
+    # The native-provider flavor is published by the actual runtime target,
+    # including for offline publishers. Never infer it from ENHANCED alone.
+    if int(getattr(args, 'flavor', 0)) & 4:
+        result.append('--native-kernel-boundaries')
+    return result
+
+
 BIOS_RESIDENT_PRODUCER = 'bios_resident_manifest'
 BIOS_RESIDENT_MARKER = 'psxrecomp bios resident shard v1'
 
@@ -4927,7 +4936,7 @@ def generate_interior_fragment_static(interior: int, data: bytes,
         cmd = [args.recompiler, psx, '--seeds', seeds_path,
                '--out-dir', out_dir_tmp, '--overlay',
                '--ws-config', os.path.abspath(args.game_toml)]
-        cmd += recompiler_project_root_args(args)
+        cmd += recompiler_overlay_args(args)
         sub_env = dict(os.environ)
         if args.cps:
             sub_env['PSX_CPS'] = '1'
@@ -5943,7 +5952,7 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
         cmd = [args.recompiler, psx, '--seeds', seeds_path,
                '--out-dir', out_dir_tmp, '--overlay',
                '--ws-config', os.path.abspath(args.game_toml)]
-        cmd += recompiler_project_root_args(args)
+        cmd += recompiler_overlay_args(args)
         r = subprocess.run(cmd, capture_output=True, text=True,
                            cwd=os.path.dirname(os.path.abspath(args.game_toml)),
                            env=sub_env)
@@ -7586,7 +7595,7 @@ def _static_capture_job_in_segment(cap, args, toml, forced_interiors,
                '--out-dir', out_dir_tmp,
                '--overlay',
                '--ws-config', os.path.abspath(args.game_toml)]
-        cmd += recompiler_project_root_args(args)
+        cmd += recompiler_overlay_args(args)
         print(f'  recompile: {args.recompiler} ...{" [CPS]" if args.cps else ""}')
         toml_dir = os.path.dirname(os.path.abspath(args.game_toml))
         sub_env = dict(os.environ)
@@ -8288,7 +8297,7 @@ def main():
                    # sites that resolve into overlay code) are applied. --ws-config
                    # only adopts the widescreen lists, not the game's exe/paths.
                    '--ws-config', os.path.abspath(args.game_toml)]
-            cmd += recompiler_project_root_args(args)
+            cmd += recompiler_overlay_args(args)
             print(f'  recompile: {args.recompiler} ...{" [CPS]" if args.cps else ""}')
             toml_dir = os.path.dirname(os.path.abspath(args.game_toml))
             sub_env = dict(os.environ)
