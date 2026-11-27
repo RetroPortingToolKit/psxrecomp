@@ -14,6 +14,20 @@ function(psx_shared_core component)
   set(SEGA_PSG_BUILD_TESTS OFF)
   add_subdirectory("${RECOMP_SHARED_CORE_ROOT}/${component}"
     "${CMAKE_BINARY_DIR}/shared-cores/${component}" EXCLUDE_FROM_ALL)
+  if(component STREQUAL "mips-recomp-core"
+     AND NOT EXISTS "${RECOMP_SHARED_CORE_ROOT}/${component}/include/mips_recomp/decoder.h")
+    # The pinned provider exports a flat header whose name also belongs to the
+    # PSX image adapter. Keep the namespaced consumer include unambiguous.
+    set(_decoder "${RECOMP_SHARED_CORE_ROOT}/${component}/include/mips_decoder.h")
+    if(NOT EXISTS "${_decoder}")
+      message(FATAL_ERROR "Missing shared MIPS decoder header: ${_decoder}")
+    endif()
+    file(TO_CMAKE_PATH "${_decoder}" _decoder)
+    set(_headers "${CMAKE_BINARY_DIR}/shared-headers")
+    file(CONFIGURE OUTPUT "${_headers}/mips_recomp/decoder.h" CONTENT
+      "#pragma once\n#include \"@_decoder@\"\n" @ONLY)
+    target_include_directories(mips_recomp_core PUBLIC "${_headers}")
+  endif()
 endfunction()
 if(NOT TARGET mips-recomp-core::core)
   psx_shared_core(mips-recomp-core)
