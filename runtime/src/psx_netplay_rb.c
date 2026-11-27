@@ -8801,6 +8801,12 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
     RNetRbCorrection corr;
     uint32_t snap_n;
     int joint = (wire_flags & PSX_RB_SYNC_FLAG_RETAINED_LOAD) != 0;
+    /* The initiator owns the transfer mode, as it owns light-tip class. A
+     * local media observation may be ahead of its load tick; it cannot
+     * promise a keyframe the peer never offered. Ordinary episodes retain
+     * their local snapshot and verified-frontier requirements below. */
+    int media_kf = rb_media_kf_enabled() &&
+                   (wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF);
     int transfer = joint && joint_two_peer_session() &&
                    (wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) && rb_media_kf_enabled();
     int transfer_guest = transfer && g_b.local_slot && *g_b.local_slot == 1;
@@ -9222,9 +9228,7 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
         int skip_ok = (g_ownership_skip_snap && g_agreed_valid &&
                        load == g_agreed_through) ||
                       (joint && g_pin_valid && g_pin_tick == load);
-        int media_kf_ok = rb_media_kf_enabled() &&
-                          ((wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) ||
-                           rb_want_heal_kf(mismatch, load));
+        int media_kf_ok = media_kf;
         if (!skip_ok && !media_kf_ok && sess() &&
             rnet_session_sim_tick(sess()) <= load) {
             /* Not there yet (a slow peer): the initiator's inputs up to its
@@ -9311,10 +9315,7 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
          * while choose_load raises to a near-tip media snap — same trust as
          * missing-snap OK (host KF probe/transfer). Do not NACK. */
         if (!joint && have_f && load > frontier) {
-            int media_kf_ok = rb_media_kf_enabled() &&
-                              ((wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) ||
-                               rb_fmv_tick_unsafe_for_episode(load) ||
-                               rb_fmv_tick_unsafe_for_episode(mismatch));
+            int media_kf_ok = media_kf;
             if (media_kf_ok) {
                 fprintf(stderr,
                         "psxrecomp: rb follow MEDIA-KF allow load=%u past "
@@ -9366,9 +9367,7 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
     }
     psx_netplay_timesync_on_episode_boundary();
     clear_episode_wire_state();
-    if (rb_media_kf_enabled() &&
-        ((wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) ||
-         rb_want_heal_kf(mismatch, load))) {
+    if (media_kf) {
         g_media_kf_episode = 1;
         g_media_kf_ready = 0;
         g_media_kf_host_armed = 0;

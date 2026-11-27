@@ -29,6 +29,16 @@ def main():
     else:
         start = source.index('        /* Clamp commit to snap/from')
         peer_step = source[start:source.index('        return 1;', start)]
+    follower = function(source, 'begin_follower')
+    media_init = ''
+    if '    int media_kf =' in follower:
+        start = follower.index('    int media_kf =')
+        media_init = follower[start:follower.index(';', start)+1]
+        # A transfer exception needs the initiator's actual offer. Local media
+        # history cannot promise either a missing snapshot or a higher frontier.
+        assert 'int media_kf_ok = media_kf;' in follower
+    start = follower.rindex('    clear_episode_wire_state();') + len('    clear_episode_wire_state();')
+    media_arm = follower[start:follower.index('    g_episode_snap_applied = 0;', start)]
     fixture = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -45,6 +55,14 @@ static int aborted,finalized,nacked,stashed,followed;
 static int g_tip_hold_rereplay_pending,g_tip_hold_block_quiet;
 static uint32_t g_tip_hold_rereplay_from,g_tip_hold_rereplay_mismatch,g_tip_extend_from_tick;
 static int local_slot,queued,queued_slot;static uint32_t queued_tick,committed_target;
+static int media_enabled=1,local_wants_media;
+static int g_media_kf_episode,g_media_kf_ready,g_media_kf_host_armed,g_media_kf_sending;
+static int g_post_fmv_heal_kf;static uint32_t g_post_fmv_heal_fork_tick;
+#define RNET_RB_SYNC_FLAG_MEDIA_KF 4u
+#define RB_FMV_HEAL_VERIFY_SPAN 4u
+static int rb_media_kf_enabled(void) { return media_enabled; }
+static int rb_want_heal_kf(uint32_t mismatch,uint32_t load) { (void)mismatch;(void)load;return local_wants_media; }
+static int rb_post_fmv_heal_eligible(void) { return 1; }
 static struct { int *local_slot; } g_b={&local_slot};
 static void clear_tip_hold_rereplay_pending(void);
 #define RB_EPOCH_SLOT_MASK 7u
@@ -80,6 +98,12 @@ static void begin(uint32_t epoch,uint32_t load,int joint) {
     ++followed;
 }
 ''' + peer_helpers + '\nstatic void peer_commit(uint32_t snap_tick) {\n' + peer_step + r'''
+}
+static void arm_follower_media(uint8_t wire_flags,int joint) {
+    uint32_t mismatch=66,load=65,target=68;
+    g_media_kf_episode=g_media_kf_ready=g_media_kf_host_armed=g_media_kf_sending=0;
+    g_post_fmv_heal_kf=0;g_post_fmv_heal_fork_tick=0;
+''' + media_init + '\n' + media_arm + r'''
 }
 static void reset(RNetRbPhase phase,uint32_t committed) {
     state=(Owner){1,0,25,phase,3894,1};g_last_commit_epoch=committed;
@@ -122,6 +146,19 @@ int main(void) {
     /* No deferred execution: preserve ordinary clean finalization. */
     reset(nRNetRbPhaseTipHold,16);peer_commit(3894);
     assert(finalized==1&&committed_target==3894&&!queued);
+    /* Recorded Linux boundary: the host offers an ordinary load65 while this
+     * follower has already observed media at66. It must not wait for a
+     * keyframe that its initiator never offered. */
+    local_wants_media=1;arm_follower_media(0,0);
+    if(g_media_kf_episode||g_post_fmv_heal_kf) {
+        fputs("FAIL: follower waits for an unoffered media keyframe\n",stderr);return 7;
+    }
+    local_wants_media=0;arm_follower_media(RNET_RB_SYNC_FLAG_MEDIA_KF,0);
+    assert(g_media_kf_episode&&!g_media_kf_ready&&g_post_fmv_heal_kf);
+    arm_follower_media(RNET_RB_SYNC_FLAG_MEDIA_KF,1);
+    assert(g_media_kf_episode&&!g_post_fmv_heal_kf);
+    media_enabled=0;local_wants_media=1;arm_follower_media(RNET_RB_SYNC_FLAG_MEDIA_KF,0);
+    assert(!g_media_kf_episode&&!g_post_fmv_heal_kf);
     puts("production retired-BEGIN / TipHold / legitimate arbitration controls PASS");
     return 0;
 }
