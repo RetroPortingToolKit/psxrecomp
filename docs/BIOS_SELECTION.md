@@ -181,12 +181,8 @@ Slot files are also isolated on disk under the per-game memcard root:
 
 On first configure, any legacy loose `<memcard_dir>/state_*_slot*.pst` files are
 moved once by `.pst` header `bios_checksum` (bundled OpenBIOS wordsum →
-`openbios/`, otherwise → `scph1001/`). Builds before PS1B-291 filed every
-retail image's states under `scph1001/`, so a build whose image is not
-SCPH-1001 then moves, once, the states in `scph1001/` whose header checksum is
-its own image (with their `.thumb`/`.hdres` files) into its own folder. States
-of another image stay put, and an existing file is never overwritten. The
-marker `<memcard_dir>/.pst_bios_named_<image>` records that the move ran.
+`openbios/`, otherwise → `scph1001/`). New snapshots use the current image folder. Execution snapshots are
+build-specific and older image folders are not migrated.
 Memory cards stay in `<memcard_dir>/`;
 netplay guest sandbox remains `<memcard_dir>/netplay/` (unscoped).
 

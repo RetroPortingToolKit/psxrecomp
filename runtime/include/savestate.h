@@ -40,9 +40,7 @@ int savestate_title_blocked(void);
  *   dir is the per-game memcard/save ROOT; slots land at
  *   <dir>/<bios_token>/state_<entry_pc>_slotNN.pst.
  *   Loose legacy <dir>/state_*.pst files are migrated once by .pst header
- *   bios_checksum (openbios_wordsum → openbios/; else → scph1001/), and a
- *   retail token other than scph1001 then claims its own states from
- *   scph1001/ once (PS1B-291).
+ *   bios_checksum (openbios_wordsum → openbios/; else → scph1001/).
  *
  * When bios_token is NULL/empty: dir is used as-is (netplay guest sandbox /
  * leave restore of an already-scoped path). */
@@ -51,9 +49,8 @@ void savestate_configure(const char* dir, uint32_t bios_checksum, uint32_t entry
 
 /* The <bios_token> folder for the image a build boots (PS1B-291): "openbios"
  * when bundled, else the profile id lower-cased without punctuation
- * ("SCPH-5552" -> "scph5552"); "scph1001" when the id is unknown. With a
- * token other than scph1001/openbios, savestate_configure moves this image's
- * states (header checksum match) out of the old shared scph1001/ folder once. */
+ * ("SCPH-5552" -> "scph5552"); "scph1001" when the id is unknown.
+ * Execution snapshots are build-specific; older snapshots are not moved. */
 void savestate_bios_token_for_image(const char* image_id, int bundled,
                                     char* out, size_t cap);
 

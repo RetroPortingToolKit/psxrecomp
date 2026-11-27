@@ -396,7 +396,7 @@ static void file_load_preserves_slot(CPUState* cpu) {
 }
 
 /* PS1B-291: the BIOS folder is named after the booted image, and that image's
- * states leave the old shared scph1001/ folder once. */
+ * older build snapshots stay untouched in the old folder. */
 static void plant_header(const char* path, uint32_t cksum) {
     uint8_t hdr[16];
     uint32_t words[3];
@@ -421,7 +421,7 @@ static int bios_file_exists(const char* path) {
 
 static void bios_folder_named_after_image(void) {
     char token[32], root[700], dir[720], a[800], b[800], c[800], other[800];
-    char moved_a[800], moved_b[800], moved_c[800], marker[800], stale[800];
+    char current[800];
     const char* sd;
     size_t sl;
 
@@ -457,24 +457,12 @@ static void bios_folder_named_after_image(void) {
     sd = savestate_dir();
     sl = strlen(sd);
     CHECK(sl > 9 && strcmp(sd + sl - 9, "/scph5552") == 0);
-    snprintf(moved_a, sizeof(moved_a), "%s/scph5552/state_%08X_slot00.pst", root, (unsigned)ENTRY_PC);
-    snprintf(moved_b, sizeof(moved_b), "%s/scph5552/state_%08X_slot00.thumb", root, (unsigned)ENTRY_PC);
-    snprintf(moved_c, sizeof(moved_c), "%s/scph5552/state_%08X_disc2_slot03.pst", root, (unsigned)ENTRY_PC);
-    snprintf(marker, sizeof(marker), "%s/.pst_bios_named_scph5552", root);
-    CHECK(bios_file_exists(moved_a) && !bios_file_exists(a));
-    CHECK(bios_file_exists(moved_b) && !bios_file_exists(b));
-    CHECK(bios_file_exists(moved_c) && !bios_file_exists(c));
-    CHECK(bios_file_exists(other));
-    CHECK(bios_file_exists(marker));
+    snprintf(current, sizeof(current), "%s/scph5552/state_%08X_slot00.pst", root, (unsigned)ENTRY_PC);
+    CHECK(!bios_file_exists(current));
+    CHECK(bios_file_exists(a) && bios_file_exists(b));
+    CHECK(bios_file_exists(c) && bios_file_exists(other));
+    remove(a); remove(b); remove(c); remove(other);
 
-    /* Once only: a state an old build writes to scph1001/ later stays. */
-    snprintf(stale, sizeof(stale), "%s/state_%08X_slot05.pst", dir, (unsigned)ENTRY_PC);
-    plant_header(stale, BIOS_SUM);
-    savestate_configure(root, BIOS_SUM, ENTRY_PC, "scph5552", 0);
-    CHECK(bios_file_exists(stale));
-
-    remove(moved_a); remove(moved_b); remove(moved_c); remove(other);
-    remove(stale); remove(marker);
 }
 
 int main(int argc, char** argv) {
