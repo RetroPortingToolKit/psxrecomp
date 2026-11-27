@@ -202,22 +202,33 @@ int main(void) {
     assert(!native_wide_split(0,424,0,0,158,&split));
     assert(!native_wide_split(160,426,0,0,158,&split));
     reset_gpu_state_for_test();configure_native_wide_16_9();
-    const uint32_t layouts[]={2};
-    gpu_ws_set_local_viewport_state_gate(0x8006a81c,layouts,1);
+    const uint32_t menu_states[]={0};
+    gpu_ws_set_local_viewport_state_gate(0x8006b4f0,menu_states,1);
     test_ram[0x6a81c/4]=2;
-    gpu_ws_set_local_split_native_wide(1);
+    gpu_ws_set_local_split_native_wide(1,0x8006a81c,2);
     ws_local_viewport_cfg=0;
     assert(gpu_ws_local_split_source_width()==160);
     assert(ws_nw_configured_offset()==52 && ws_nw_present_width()==424);
     draw_area_left=0;draw_area_right=158;ws_nw_hud_corners=1;
     assert(ws_nw_hud_shift(8,20)==0); /* canonical HUD coordinates retained */
+    display_area_y=256;draw_area_top=0;draw_area_bottom=239;
+    ws_nw_sync_target();assert(fixture_wide_target==0);
+    draw_area_left=161;draw_area_right=319;
+    ws_nw_sync_target();assert(fixture_wide_target==0); /* right camera, next band */
+    ws_fb_n=1;ws_fb_base[0]=512;draw_area_left=673;draw_area_right=831;
+    ws_nw_sync_target();assert(fixture_wide_target==512);
+    ws_fb_n=0;display_area_y=0;draw_area_left=0;draw_area_right=158;
     split_recent_left_age=split_recent_right_age=0;
     ws_local_viewport_cfg=1;
     assert(gpu_ws_local_split_source_width()==0);
     assert(gpu_ws_netplay_local_viewport_width()==426 && ws_nw_configured_offset()==133);
+    test_ram[0x6b4f0/4]=1; /* Existing NET modal-menu guard is independent. */
+    assert(gpu_ws_netplay_local_viewport_width()==0);
+    test_ram[0x6b4f0/4]=0;
+    assert(gpu_ws_netplay_local_viewport_width()==426);
     ws_local_viewport_cfg=0;test_ram[0x6a81c/4]=0;
     assert(gpu_ws_local_split_source_width()==0 && ws_nw_configured_offset()==53);
-    gpu_ws_set_local_split_native_wide(0);
+    gpu_ws_set_local_split_native_wide(0,0,0);
     puts("native_wide_projection_test: PASS");
     return 0;
 }

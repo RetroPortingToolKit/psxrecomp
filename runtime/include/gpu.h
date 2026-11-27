@@ -125,7 +125,8 @@ void gpu_ws_set_local_viewport_width_sites(const uint32_t *sites, int count);
 void gpu_ws_set_local_viewport_native_wide(int enabled);
 /* A title that expands both local camera halves can retain them side by side.
  * The selected NET single-camera path remains a separate presentation mode. */
-void gpu_ws_set_local_split_native_wide(int enabled);
+void gpu_ws_set_local_split_native_wide(int enabled, uint32_t layout_addr,
+                                       uint32_t layout_value);
 int gpu_ws_local_split_source_width(void);
 int psx_ws_is_local_viewport_width_site(uint32_t pc);
 void gpu_vertical_split_debug(int *active, int *left_age, int *right_age);

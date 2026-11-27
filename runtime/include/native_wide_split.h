@@ -5,6 +5,7 @@
  * inset at each inner edge preserves the game's central divider. Other draw
  * areas (including whole-frame overlays) retain the ordinary wide mapping. */
 typedef struct NativeWideSplit {
+    int framebuffer_x;
     int source_x, source_width;
     int target_x, target_width;
     int shift, margin;
@@ -27,6 +28,7 @@ static inline int native_wide_split(int half, int wide_width, int base,
         inset_left = area_left - (base + half);
     } else return 0;
     if (out) {
+        out->framebuffer_x = base;
         out->source_x = base + slot * half;
         out->source_width = half;
         out->target_x = slot ? wide_width / 2 : 0;

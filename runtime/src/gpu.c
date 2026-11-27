@@ -600,6 +600,7 @@ static int ws_native_wide_configured(void) {
 
 static int ws_local_viewport_slot = 0;
 static int ws_local_split_native;
+static uint32_t ws_local_split_state_addr, ws_local_split_state_value;
 static int ws_local_viewport_draw_target(int *base_x);
 static int ws_vertical_split_active(void);
 static int ws_local_split_draw_layout(NativeWideSplit *out);
@@ -624,8 +625,11 @@ int32_t psx_ws_local_viewport_width(int32_t vanilla) {
 void gpu_ws_set_local_viewport_native_wide(int enabled) {
     ws_local_viewport_native = enabled ? 1 : 0;
 }
-void gpu_ws_set_local_split_native_wide(int enabled) {
+void gpu_ws_set_local_split_native_wide(int enabled, uint32_t layout_addr,
+                                       uint32_t layout_value) {
     ws_local_split_native = enabled != 0;
+    ws_local_split_state_addr = enabled ? layout_addr : 0;
+    ws_local_split_state_value = layout_value;
 }
 void gpu_ws_set_netplay_local_viewport(int enabled, int slot) {
     ws_local_viewport_cfg = enabled ? 1 : 0;
@@ -4120,8 +4124,9 @@ static int ws_vertical_split_active(void) {
 static int ws_local_split_layout_active(void) {
     /* A declared layout state is available before the first camera packets;
      * it avoids presenting one incorrectly mapped transition frame. */
-    return ws_local_viewport_state_addr && ws_local_viewport_state_value_count
-         ? ws_local_viewport_state_ok() : ws_vertical_split_active();
+    return ws_local_split_state_addr
+         ? psx_read_word(ws_local_split_state_addr) == ws_local_split_state_value
+         : ws_vertical_split_active();
 }
 
 int gpu_last_frame_vertical_split_screen(void) {
@@ -4149,6 +4154,13 @@ static void ws_nw_sync_target(void) {
         return;
     }
     if (ws_local_viewport_cfg) { gr_wide_disable_target(); return; }
+    NativeWideSplit split;
+    if (ws_local_split_draw_layout(&split)) {
+        /* Both camera clips draw into the same framebuffer's wide surface,
+         * including the next Y band while the previous one is displayed. */
+        gr_wide_set_target(split.framebuffer_x);
+        return;
+    }
     int display_base = 0;
     if (ws_display_viewport_draw_target(&display_base)) {
         gr_wide_set_target(display_base);

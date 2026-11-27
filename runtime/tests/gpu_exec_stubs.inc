@@ -438,8 +438,9 @@ void gr_wide_set_view(int enabled, int shift, int left, int right) {
     fixture_wide_view.left = left;
     fixture_wide_view.right = right;
 }
-void gr_wide_set_target(int base_x) { (void)base_x; }
-void gr_wide_disable_target(void) {}
+static int fixture_wide_target = -1;
+void gr_wide_set_target(int base_x) { fixture_wide_target = base_x; }
+void gr_wide_disable_target(void) { fixture_wide_target = -1; }
 void gr_wide_clear(int base_x, int y, int h, uint16_t color) {
     (void)base_x; (void)y; (void)h; (void)color;
 }
