@@ -35,9 +35,6 @@
 #include "boot_state.h"
 #include "source_stateio_identity.h"
 #include "bios_hle.h"
-#include "native_bios_boot.h"
-#include "native_bios_services.h"
-#include "psx_native_idle_wait.h"
 #include "bios_hle_plan.h"
 #include "psx_bios_known_images.h"
 #include "psx_bios_backend.h"
@@ -105,7 +102,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "present_sync.h"
 #include "latency_ring.h"
 #include "sio.h"
-#include "psx_host_rumble.h"
+#include <recomp_input_effects.h>
 #include "psx_jogcon_ffb.h"
 #include "psx_jogcon_ffb_sdl.h"
 #ifndef PSX_MAX_PLAYERS
@@ -1507,8 +1504,16 @@ extern "C" void psx_mod_set_rewind_blocked(int blocked) {
 }
 
 /* psx_mod_set_host_rumble: per-seat title rumble, stamped with the rumble
- * VBlank so a value the mod stops refreshing lapses (psx_host_rumble.h). */
-static PsxHostRumbleSlot g_mod_rumble[PSX_MAX_PLAYERS];
+ * VBlank. The shared input owner composes and expires the two sources. */
+static ri_haptics* g_haptics = nullptr;
+static ri_haptics* controller_haptics() {
+    if (!g_haptics) {
+        const ri_haptic_profile profile = {100u, 0u};
+        g_haptics = ri_haptics_create(PSX_MAX_PLAYERS, profile);
+        if (!g_haptics) std::abort();
+    }
+    return g_haptics;
+}
 static uint32_t          g_rumble_vblank = 0;
 
 extern "C" int psx_mod_set_host_rumble(uint32_t player, uint32_t small,
@@ -1523,7 +1528,9 @@ extern "C" int psx_mod_set_host_rumble(uint32_t player, uint32_t small,
         const int card = psx_netplay_input_player();
         player = card >= 0 && card < PSX_MAX_PLAYERS ? (uint32_t)card : 0u;
     }
-    psx_host_rumble_set(&g_mod_rumble[player], g_rumble_vblank, small, large);
+    ri_haptics_set(controller_haptics(), player, 1,
+        (uint16_t)((large > 255u ? 255u : large) * 257u), small ? 0xFFFFu : 0u,
+        RI_HAPTIC_FRAME32, g_rumble_vblank, 8u);
     return 1;
 }
 extern "C" void psx_mod_set_savestate_blocked(int blocked) {
@@ -5954,11 +5961,29 @@ static void close_player_haptic(PlayerInput& p) {
     p.ffb_probed = false;
 }
 
+static void emit_controller_rumble(void*, uint32_t device, uint16_t low,
+                                   uint16_t high, uint32_t duration) {
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
+        PlayerInput& p = g_players[s];
+        if (!p.handle || (uint32_t)p.instance + 1u != device) continue;
+#if defined(PSX_SDL3)
+        const int rc = SDL_GameControllerRumble(p.handle, low, high, duration) ? 0 : -1;
+#else
+        const int rc = SDL_GameControllerRumble(p.handle, low, high, duration);
+#endif
+        if (rc != 0 && !p.rumble_warned) {
+            std::fprintf(stderr, "psxrecomp runtime: controller for slot %d rejected rumble: %s\n", s + 1, SDL_GetError());
+            p.rumble_warned = true;
+        }
+        return;
+    }
+}
+
 static void close_player(PlayerInput& p) {
     close_player_haptic(p);
     if (p.handle) {
-        if (p.rumble_small || p.rumble_large)
-            (void)SDL_GameControllerRumble(p.handle, 0, 0, 0);
+        ri_haptics_release_device(controller_haptics(), (uint32_t)p.instance + 1u,
+                                   emit_controller_rumble, nullptr);
         SDL_GameControllerClose(p.handle);
         p.handle = nullptr;
         p.instance = -1;
@@ -6112,7 +6137,14 @@ static void update_controller_rumble(void) {
         update_jogcon_ffb(s, p, trace);
         uint8_t small = 0, large = 0;
         sio_get_pad_rumble(s, &small, &large);
-        psx_host_rumble_merge(&g_mod_rumble[s], g_rumble_vblank, &small, &large);
+        ri_haptics_set(controller_haptics(), (unsigned)s, 0, (uint16_t)((unsigned)large * 257u),
+                        small ? 0xFFFFu : 0u, RI_HAPTIC_HELD, 0, 0);
+        uint16_t low = 0, high = 0;
+        ri_haptics_values(controller_haptics(), (unsigned)s, g_rumble_vblank, 0, &low, &high);
+        if (!small && high) small = 0xFFu;
+        large = (uint8_t)(low / 257u);
+        ri_haptics_route(controller_haptics(), (unsigned)s,
+                         p.handle ? (uint32_t)p.instance + 1u : 0u);
         if (!p.handle) {
             if (trace && (!p.rumble_known || p.rumble_small != small ||
                           p.rumble_large != large))
@@ -6127,25 +6159,6 @@ static void update_controller_rumble(void) {
 
         const bool changed = !p.rumble_known || p.rumble_small != small ||
                              p.rumble_large != large;
-        if (small || large || (changed && p.rumble_known)) {
-            const Uint16 low_frequency = (Uint16)((unsigned)large * 257u);
-            const Uint16 high_frequency = small ? 0xFFFFu : 0u;
-#if defined(PSX_SDL3)
-            const int rc = SDL_GameControllerRumble(
-                p.handle, low_frequency, high_frequency,
-                (small || large) ? 100u : 0u) ? 0 : -1;
-#else
-            const int rc = SDL_GameControllerRumble(
-                p.handle, low_frequency, high_frequency,
-                (small || large) ? 100u : 0u);
-#endif
-            if (rc != 0 && !p.rumble_warned) {
-                std::fprintf(stderr,
-                    "psxrecomp runtime: controller for slot %d rejected rumble: %s\n",
-                    s + 1, SDL_GetError());
-                p.rumble_warned = true;
-            }
-        }
         if (trace && changed) {
             std::fprintf(stdout,
                 "psxrecomp rumble: slot=%d small=%u large=%u\n",
@@ -6155,6 +6168,7 @@ static void update_controller_rumble(void) {
         p.rumble_large = large;
         p.rumble_known = true;
     }
+    ri_haptics_tick(controller_haptics(), g_rumble_vblank, 0, emit_controller_rumble, nullptr);
 }
 
 /* Initial wire mode at boot/hotplug. Configuration capability is selected
@@ -22315,7 +22329,8 @@ int main(int argc, char** argv) {
         mod_controller_source_reset();
         mod_pad_transform_reset();
         g_direct_shortcut_allowed = 0;
-        std::memset(g_mod_rumble, 0, sizeof g_mod_rumble);
+        for (unsigned s = 0; s < PSX_MAX_PLAYERS; ++s)
+            ri_haptics_set(controller_haptics(), s, 1, 0, 0, RI_HAPTIC_HELD, 0, 0);
         g_p1_claimed_buttons = 0;
         psx_rewind_set_title_blocked(0);
         savestate_set_title_blocked(0);
@@ -22476,9 +22491,6 @@ session_reboot:
     /* A replay belongs to the session it started in. */
     replay_frontend_reset();
     s_replay_guest_restored = false;
-#if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
-    psx_native_card_bind(nullptr);
-#endif
     g_ovl_session_disc = resolved_disc.string();
     ovl_look_posted_reset();
     /* A new backend/session must not inherit the prior applied settings or
@@ -23791,23 +23803,6 @@ session_reboot:
      * REPLACES the old fast_boot snapshot restore, and fast_boot=true now
      * aliases the boot-skip alone. Env overrides: PSX_BIOS_HLE /
      * PSX_BIOS_HLE_KEEP_INTRO ('0' = off, anything else = on). */
-#if defined(PSX_NATIVE_KERNEL) && PSX_NATIVE_KERNEL
-    {
-        std::string boot_error;
-        if (!psx_prepare_native_bios_boot(cpu, resolved_disc.string(), boot_error)) {
-            std::fprintf(stderr, "psxrecomp: native kernel startup: %s\n", boot_error.c_str());
-            return 1;
-        }
-        psx_bios_hle_configure_native();
-        psx_native_card_bind(&cpu);
-        psx_idle_skip_set_hw_countdown_timing(1);
-        // The scheduler restores the live thread from its TCB on the very
-        // first dispatch, so publish the initial register context through its
-        // existing guest-ABI writer before it takes ownership.
-        psx_sched_save_context(&cpu, psx_sched_current_tcb(&cpu), cpu.pc);
-        std::fprintf(stdout, "psxrecomp: native kernel boot entry=0x%08x\n", cpu.pc);
-    }
-#else
     {
         /* How this session boots. Offline it is the player's choice (the
          * game's game.toml, then settings.toml, then the launcher). The peers
@@ -23839,14 +23834,14 @@ session_reboot:
         /* The two axes (kernel-call HLE, boot-skip) have DIFFERENT per-image
          * requirements, so they are decided in ONE pure place —
          * psx_bios_hle_plan(), runtime/src/bios_hle_plan.c. Conflating them
-         * broke boot-skip on OpenBIOS: call-HLE needs the event table ABI,
+         * broke boot-skip on OpenBIOS: call-HLE needs deliver_event_ret, the
          * boot-skip needs only shell_entry_phys, so refusing the former must
          * not silently cancel the latter. */
         PsxBiosHleRequest req;
         req.bios_hle               = boot.bios_hle;
         req.keep_intro             = boot.keep_intro;
         req.fast_boot              = boot.fast_boot;
-        req.have_event_abi         = psx_bios_hle_event_abi_supported();
+        req.have_deliver_event_ret = (psx_bios_image.deliver_event_ret != 0);
         req.have_shell_entry       = (psx_bios_image.shell_entry_phys != 0);
         req.have_game_entry        = (game_entry_pc != 0);
         const PSXModNetplayProfile* boot_profile = psx_mod_netplay_profile();
@@ -23857,11 +23852,14 @@ session_reboot:
         }
         const PsxBiosHlePlan plan = psx_bios_hle_plan(req);
 
-        /* B0 event calls rely on the selected image's kernel event table. */
+        /* Call-HLE is a per-image capability, not just a preference: an image
+         * exporting no DeliverEvent anchor (OpenBIOS until validated) declares
+         * that axis STRUCTURALLY UNAVAILABLE — servicing B0 events with
+         * mismatched semantics wedges the guest in event waits. */
         if (plan.call_hle_denied) {
             std::fprintf(stdout,
-                "psxrecomp: bios_hle kernel-call tier unavailable on %s "
-                "(unverified event table ABI); kernel calls stay LLE\n",
+                "psxrecomp: bios_hle kernel-call tier unavailable on %s (no "
+                "DeliverEvent anchor); kernel calls stay LLE\n",
                 psx_bios_image.image_id);
         }
         if (plan.boot_skip_denied) {
@@ -23882,7 +23880,6 @@ session_reboot:
     /* R3000A reset state. */
     cpu.pc = 0xBFC00000u;
     cpu.cop0[12] = 0x00400000u; /* SR: BEV=1 (boot exception vectors) */
-#endif
 
     /* Host hotkeys: config.ini [KeyMap] next to the exe (VolumeUp/Down).
      * Prefer exe-dir file; if missing, fall back to cwd config.ini so a

@@ -152,17 +152,12 @@ int  boot_state_resume_sections_enabled(void);
 int  boot_state_save(const CPUState* cpu, uint32_t bios_checksum,
                      uint32_t entry_pc, const char* path);
 
-/* Replace `to` by `from` in one step (Windows: MoveFileExA with
- * MOVEFILE_REPLACE_EXISTING; elsewhere rename). Returns 1 on success; on
- * failure `to` is unchanged. boot_state_replace.inc. */
-int  boot_state_replace_file(const char* from, const char* to);
-
-/* Write `path` through `<path>.tmp`: `write` fills the open temporary and
- * returns 1 on success. Only a complete, cleanly closed temporary replaces
- * `path`; any failure removes the temporary, keeps the previous `path` byte
- * for byte and returns 0. boot_state_replace.inc. */
+/* The shared persistence owner publishes a complete streamed snapshot. The
+ * serializer writes through its bounded sink; failure keeps the previous file.
+ * No additional whole-state buffer or worker is introduced. */
+struct RecompAtomicFile;
 int  boot_state_write_file_atomic(const char* path,
-                                  int (*write)(FILE* f, void* ctx), void* ctx);
+                                  int (*write)(struct RecompAtomicFile*, void* ctx), void* ctx);
 
 /* Same as boot_state_save, but into a malloc'd buffer (caller frees *out_data).
  * Compresses large sections (disk-oriented). */

@@ -1195,7 +1195,7 @@ def run():
     parser.add_argument('--runtime-config', type=Path,
                         help='Packaged config controlling native cache namespace/code generation')
     parser.add_argument('--runtime-build-dir', type=Path,
-                        help='Read and validate the staged runtime overlay ABI, including native BIOS and PGXP bits')
+                        help='Read and validate the staged runtime overlay ABI (base or PGXP)')
     parser.add_argument('--runtime-target', default='psx-runtime')
     parser.add_argument('--recompiler', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
@@ -1227,9 +1227,7 @@ def run():
     if args.runtime_build_dir:
         from release_stage import _flavor_from_build
         flavor = _flavor_from_build(str(args.runtime_build_dir), args.runtime_target)
-        # PGXP (bit 1) and the selected native BIOS provider (bit 2) are
-        # independent cache/ABI inputs. Preserve both; unknown bits stay invalid.
-        require(flavor in (0, 2, 4, 6), 'Unsupported runtime overlay flavor')
+        require(flavor in (0, 2), 'Unsupported runtime overlay flavor')
         require(args.action == 'release' or flavor == 0,
                 'Static AOT generation currently requires a flavor-0 runtime')
     import tomllib
