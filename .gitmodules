@@ -1,7 +1,7 @@
 [submodule "lib/recomp-net"]
 	path = lib/recomp-net
 	url = https://github.com/RetroPortingToolKit/recomp-net.git
-	branch = main
+	branch = experimental/local-rollback
 
 [submodule "lib/retcomm-rbengine"]
 	path = lib/retcomm-rbengine
