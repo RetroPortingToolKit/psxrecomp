@@ -230,7 +230,6 @@ if(BUILD_TESTING)
         target_link_libraries(debug_socket_shutdown_test PRIVATE ws2_32)
     endif()
     add_test(NAME debug_socket_shutdown_test COMMAND debug_socket_shutdown_test)
-    set_tests_properties(debug_socket_shutdown_test PROPERTIES TIMEOUT 15)
 
     add_executable(atomic_file_write_test tests/test_atomic_file_write.cpp)
     target_include_directories(atomic_file_write_test PRIVATE include)
@@ -1486,6 +1485,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     # Title-supplied host rumble (psx_mod_set_host_rumble) merge and expiry.
     add_executable(host_rumble_test tests/test_host_rumble.c)
     target_include_directories(host_rumble_test PRIVATE include)
+    target_link_libraries(host_rumble_test PRIVATE recomp-input::core)
     add_test(NAME host_rumble_test COMMAND host_rumble_test)
     # JogCon motor byte -> host wheel haptics ([controller] jogcon_force_feedback).
     add_executable(jogcon_ffb_test tests/test_jogcon_ffb.c)
