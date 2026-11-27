@@ -7,6 +7,7 @@
  * restores the full machine then unwinds to the scheduler and re-dispatches. */
 
 #include "savestate.h"
+#include <recomp_persistence/atomic_file.h>
 #include "memcard.h"
 #include "mod_netplay.h"
 #include "mod_snapshot.h"
@@ -608,11 +609,7 @@ static void savestate_write_hd_residency(int slot) {
     size_t size = 0;
     if (!savestate_hd_path(slot, path, sizeof(path))) return;
     if (!gpu_hd_textures_residency_save(&data, &size)) { remove(path); return; }
-    FILE* f = fopen(path, "wb");
-    if (f) {
-        const int ok = fwrite(data, 1, size, f) == size;
-        if (fclose(f) != 0 || !ok) remove(path);
-    }
+    (void)recomp_atomic_file_store(path, data, size);
     free(data);
 }
 static void savestate_read_hd_residency(int slot) {
@@ -709,7 +706,7 @@ int savestate_slot_mtime(int slot, int64_t* out_time) {
 
 int savestate_capture_thumb(int slot) {
     char path[600];
-    FILE* f;
+    RecompAtomicFile* f;
     SavestateThumbHeader hdr;
     uint32_t thumb[SAVESTATE_THUMB_W * SAVESTATE_THUMB_H];
     GpuDisplayInfo di;
@@ -733,17 +730,14 @@ int savestate_capture_thumb(int slot) {
     hdr.magic[3] = 'H';
     hdr.w = SAVESTATE_THUMB_W;
     hdr.h = SAVESTATE_THUMB_H;
-    f = fopen(path, "wb");
+    f = recomp_atomic_file_begin(path, sizeof(hdr) + sizeof(thumb));
     if (!f) return 0;
-    if (fwrite(&hdr, 1, sizeof(hdr), f) != sizeof(hdr) ||
-        fwrite(thumb, sizeof(uint32_t),
-               SAVESTATE_THUMB_W * SAVESTATE_THUMB_H, f) !=
-            SAVESTATE_THUMB_W * SAVESTATE_THUMB_H) {
-        fclose(f);
-        remove(path);
+    if (!recomp_atomic_file_write(f, &hdr, sizeof(hdr)) ||
+        !recomp_atomic_file_write(f, thumb, sizeof(thumb))) {
+        recomp_atomic_file_abort(f);
         return 0;
     }
-    return fclose(f) == 0;
+    return recomp_atomic_file_commit(f);
 }
 
 int savestate_read_thumb(int slot, uint32_t* out_argb, int out_w, int out_h) {
@@ -856,8 +850,6 @@ int savestate_read_slot(int slot, uint8_t** data_out, size_t* size_out) {
 
 int savestate_write_slot(int slot, const void* data, size_t size) {
     char path[600];
-    FILE* f;
-    size_t wrote;
     if (!data || size == 0) return 0;
     if (!savestate_slot_path(slot, path, sizeof(path))) {
         fprintf(stderr,
@@ -867,25 +859,9 @@ int savestate_write_slot(int slot, const void* data, size_t size) {
         return 0;
     }
     ensure_dir(s_dir);
-    f = fopen(path, "wb");
-    if (!f) {
-        fprintf(stderr, "savestate: write_slot fopen('%s') failed: %s\n",
+    if (!recomp_atomic_file_store(path, data, size)) {
+        fprintf(stderr, "savestate: write_slot publish('%s') failed: %s\n",
                 path, strerror(errno));
-        return 0;
-    }
-    wrote = fwrite(data, 1, size, f);
-    if (wrote != size) {
-        fprintf(stderr,
-                "savestate: write_slot fwrite('%s') %zu/%zu failed: %s\n",
-                path, wrote, size, strerror(errno));
-        fclose(f);
-        remove(path);
-        return 0;
-    }
-    if (fflush(f) != 0 || fclose(f) != 0) {
-        fprintf(stderr, "savestate: write_slot flush/close('%s') failed: %s\n",
-                path, strerror(errno));
-        remove(path);
         return 0;
     }
     return 1;

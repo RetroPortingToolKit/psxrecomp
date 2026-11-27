@@ -1,3 +1,4 @@
+#include <recomp_diagnostics/owner_mailbox.h>
 /*
  * debug_server.c -- TCP debug server for PSX recomp v4
  *
@@ -160,17 +161,14 @@ static int  s_recv_len = 0;
 /* ---- Dedicated TCP I/O thread (keeps the socket queryable under emu load) ----
  * The I/O thread owns accept/recv/send. A command still EXECUTES on the emu
  * thread at the debug_server_poll() safe point (no state races; the ~200 send
- * sites are unchanged — send_line buffers into s_resp_buf instead of touching
+ * sites are unchanged — send_line appends to an owned mailbox reply instead of touching
  * the socket). The client is one-command-per-connection, so a single in-flight
  * request slot suffices. A lock-free `ping` fast-path on the I/O thread answers
  * even while the emu thread is buried (freeze liveness). See debug_server_poll /
  * io_thread_main. */
-enum { IO_IDLE = 0, IO_REQ = 1, IO_RESP = 2 };
-static SDL_Thread *s_io_thread   = NULL;
-static SDL_mutex  *s_io_mutex    = NULL;
-static SDL_cond   *s_io_req_cv   = NULL;   /* emu waits on this for a request   */
-static SDL_cond   *s_io_resp_cv  = NULL;   /* I/O waits on this for a response  */
-static volatile int s_io_state   = IO_IDLE;
+static SDL_Thread *s_io_thread = NULL;
+static rd_owner_mailbox *s_owner_mailbox = NULL;
+static rd_mailbox_reply *s_command_reply = NULL; /* borrowed only during owner callback */
 #if defined(PSX_SDL3)
 static SDL_AtomicInt s_io_running;
 static int io_is_running(void *ctx) { (void)ctx; return SDL_GetAtomicInt(&s_io_running); }
@@ -180,10 +178,6 @@ static SDL_atomic_t s_io_running;
 static int io_is_running(void *ctx) { (void)ctx; return SDL_AtomicGet(&s_io_running); }
 static void io_set_running(int on) { SDL_AtomicSet(&s_io_running, on); }
 #endif
-static char  s_io_req[RECV_BUF_SIZE];      /* request line (I/O -> emu)         */
-static char *s_resp_buf = NULL;            /* response bytes (emu -> I/O)       */
-static size_t s_resp_len = 0, s_resp_cap = 0;
-static int    s_resp_overflow = 0;
 static int    s_in_command = 0;            /* 1 while emu runs process_command  */
 static int    io_thread_main(void *arg);   /* defined near debug_server_poll    */
 static volatile int s_fmv_quiet = 0;
@@ -4991,30 +4985,12 @@ static int send_all_blocking(sock_t sock, const char *data, size_t len)
     return ok;
 }
 
-/* Append a response line to s_resp_buf (the I/O thread sends it). Only active
- * while the emu thread is processing a command; async pushes (e.g. watchpoint
- * events) have no persistent client under the one-command-per-connection
- * protocol and are dropped — matching the prior near-no-op behaviour. */
+/* Async pushes have no persistent one-shot client. The common mailbox owns
+ * complete response lines, the 64MiB profile and atomic overflow drops. */
 void debug_server_send_line(const char *json)
 {
-    if (!s_in_command) return;
-    size_t len = strlen(json);
-    size_t need = s_resp_len + len + 2;          /* + '\n' + NUL */
-    if (need > s_resp_cap) {
-        size_t cap = s_resp_cap ? s_resp_cap : 65536;
-        while (cap < need) cap *= 2;
-        if (cap > (64u * 1024u * 1024u)) {        /* hard cap: drop the overflow */
-            s_resp_overflow = 1;
-            return;
-        }
-        char *nb = (char *)realloc(s_resp_buf, cap);
-        if (!nb) { s_resp_overflow = 1; return; }
-        s_resp_buf = nb; s_resp_cap = cap;
-    }
-    memcpy(s_resp_buf + s_resp_len, json, len);
-    s_resp_len += len;
-    s_resp_buf[s_resp_len++] = '\n';
-    s_resp_buf[s_resp_len] = '\0';
+    if (s_in_command && s_command_reply)
+        (void)rd_mailbox_reply_line(s_command_reply, json);
 }
 
 void debug_server_send_fmt(const char *fmt, ...)
@@ -17795,13 +17771,9 @@ void debug_server_init(int port)
     phase_sampler_start();
     /* The I/O worker waits for readiness with bounded cancellation. */
 
-    /* Start the TCP I/O thread + its handoff primitives. */
-    s_io_mutex   = SDL_CreateMutex();
-    s_io_req_cv  = SDL_CreateCond();
-    s_io_resp_cv = SDL_CreateCond();
-    s_resp_cap   = 65536;
-    s_resp_buf   = (char *)malloc(s_resp_cap);
-    if (s_io_mutex && s_io_req_cv && s_io_resp_cv && s_resp_buf) {
+    /* The existing socket worker uses the shared owner-thread mailbox. */
+    s_owner_mailbox = rd_owner_mailbox_create_psx();
+    if (s_owner_mailbox) {
         io_set_running(1);
         s_io_thread = SDL_CreateThread(io_thread_main, "psx-dbg-io", NULL);
         if (!s_io_thread) io_set_running(0);
@@ -17886,29 +17858,17 @@ static int io_thread_main(void *arg)
             continue;
         }
 
-        /* Hand the request to the emu thread and wait (bounded) for its reply. */
-        SDL_LockMutex(s_io_mutex);
-        strncpy(s_io_req, req, sizeof(s_io_req) - 1);
-        s_io_req[sizeof(s_io_req) - 1] = '\0';
-        s_io_state = IO_REQ;
-        SDL_CondSignal(s_io_req_cv);
-        int waited = 0;
-        while (s_io_state != IO_RESP && io_is_running(NULL)) {
-            if (SDL_CondWaitTimeout(s_io_resp_cv, s_io_mutex, 1000) == SDL_MUTEX_TIMEDOUT) {
-                waited += 1000;
-                if (waited >= 30000) break;   /* emu wedged: give up on this one */
-            }
-        }
-        if (s_io_state == IO_RESP) {
-            if (s_resp_len > 0) send_all_blocking(c, s_resp_buf, s_resp_len);
-            s_io_state = IO_IDLE;
+        /* A transport error expires only this wait. Late completion belongs
+         * to its original request and cannot answer another connection. */
+        rd_mailbox_result *reply = rd_owner_mailbox_call(s_owner_mailbox, req, 30000u);
+        if (rd_mailbox_result_status(reply) == RD_MAILBOX_COMPLETED) {
+            size_t length = rd_mailbox_result_size(reply);
+            if (length) send_all_blocking(c, rd_mailbox_result_data(reply), length);
         } else {
             const char *busy = "{\"ok\":false,\"err\":\"emu busy or frozen\"}\n";
             send_all_blocking(c, busy, strlen(busy));
-            /* leave state as IO_REQ; the emu's poll discards it (state!=IO_REQ
-             * check) once it finally finishes — handled in debug_server_poll. */
         }
-        SDL_UnlockMutex(s_io_mutex);
+        rd_mailbox_result_destroy(reply);
         sock_close(c);
     }
     return 0;
@@ -17921,6 +17881,16 @@ void debug_server_get_status(int *listening, int *port, int *error)
     if (error)     *error     = s_listen_err;
 }
 
+static void execute_owner_request(void *user, const char *request, rd_mailbox_reply *reply)
+{
+    (void)user;
+    s_command_reply = reply;
+    s_in_command = 1;
+    if (request[0]) process_command(request);
+    s_in_command = 0;
+    s_command_reply = NULL;
+}
+
 void debug_server_poll(void)
 {
     /* Phase 1.0e-e2 starvation watchdog heartbeat. Refreshes the
@@ -17929,30 +17899,8 @@ void debug_server_poll(void)
     extern void starvation_watchdog_heartbeat(void);
     starvation_watchdog_heartbeat();
 
-    if (!s_io_mutex || s_in_command) return;   /* no server, or re-entrant */
-
-    SDL_LockMutex(s_io_mutex);
-    if (s_io_state != IO_REQ) { SDL_UnlockMutex(s_io_mutex); return; }
-    char req[RECV_BUF_SIZE];
-    strncpy(req, s_io_req, sizeof(req) - 1);
-    req[sizeof(req) - 1] = '\0';
-    SDL_UnlockMutex(s_io_mutex);
-
-    /* Execute on the emu thread (safe point). send_line appends to s_resp_buf. */
-    s_resp_len = 0;
-    s_resp_overflow = 0;
-    s_in_command = 1;
-    if (req[0]) process_command(req);
-    s_in_command = 0;
-
-    SDL_LockMutex(s_io_mutex);
-    /* Only deliver if the I/O thread is still waiting (it may have timed out and
-     * moved on, in which case the response is discarded). */
-    if (s_io_state == IO_REQ) {
-        s_io_state = IO_RESP;
-        SDL_CondSignal(s_io_resp_cv);
-    }
-    SDL_UnlockMutex(s_io_mutex);
+    if (!s_owner_mailbox || s_in_command) return;
+    (void)rd_owner_mailbox_poll(s_owner_mailbox, execute_owner_request, NULL);
 }
 
 void debug_server_record_frame(void)
@@ -18071,8 +18019,8 @@ void debug_server_shutdown(void)
     /* Join before closing: the worker keeps sole ownership of its sockets
      * while its cancellable waits are active. */
     io_set_running(0);
+    rd_owner_mailbox_stop(s_owner_mailbox);
     if (s_io_thread) {
-        if (s_io_mutex) { SDL_LockMutex(s_io_mutex); SDL_CondSignal(s_io_resp_cv); SDL_UnlockMutex(s_io_mutex); }
         SDL_WaitThread(s_io_thread, NULL);
         s_io_thread = NULL;
     }
@@ -18084,13 +18032,9 @@ void debug_server_shutdown(void)
         sock_close(s_client);
         s_client = SOCK_INVALID;
     }
-    if (s_io_mutex) { SDL_DestroyMutex(s_io_mutex); s_io_mutex = NULL; }
-    if (s_io_req_cv) { SDL_DestroyCond(s_io_req_cv); s_io_req_cv = NULL; }
-    if (s_io_resp_cv) { SDL_DestroyCond(s_io_resp_cv); s_io_resp_cv = NULL; }
-    free(s_resp_buf);
-    s_resp_buf = NULL;
-    s_resp_cap = s_resp_len = 0;
-    s_io_state = IO_IDLE;
+    rd_owner_mailbox_destroy(s_owner_mailbox);
+    s_owner_mailbox = NULL;
+    s_command_reply = NULL;
 #ifdef _WIN32
     if (s_wsa_started) { WSACleanup(); s_wsa_started = 0; }
 #endif

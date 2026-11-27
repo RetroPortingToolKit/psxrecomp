@@ -3,6 +3,7 @@
 #endif
 #define RECOMP_AUDIO_DRC_IMPL
 #include "recomp_audio_drc.h"
+#include <stdlib.h>
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>

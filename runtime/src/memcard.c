@@ -16,6 +16,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include "memcard.h"
+#include <recomp_persistence/atomic_file.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -114,56 +115,15 @@ static int load_card_image(int card, FILE* f) {
 /* Publish base and tail together. The exclusive temporary is beside the card,
  * so rename never crosses filesystems. Failed writes never replace the card. */
 static int publish_card(const MemCard* c, const uint8_t* tail, uint32_t size) {
-    static unsigned sequence;
-    char temporary[576];
-    FILE* f = NULL;
-    int descriptor = -1;
-    for (unsigned attempt = 0; attempt < 32u; ++attempt) {
-#ifdef _WIN32
-        snprintf(temporary, sizeof temporary, "%s.tmp.%lu.%u", c->filepath,
-                 (unsigned long)_getpid(), ++sequence);
-        descriptor = _open(temporary, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY,
-                           _S_IREAD | _S_IWRITE);
-#else
-        snprintf(temporary, sizeof temporary, "%s.tmp.%lu.%u", c->filepath,
-                 (unsigned long)getpid(), ++sequence);
-        descriptor = open(temporary, O_WRONLY | O_CREAT | O_EXCL, 0600);
-#endif
-        if (descriptor >= 0) break;
-    }
-    if (descriptor < 0) return -1;
-#ifdef _WIN32
-    f = _fdopen(descriptor, "wb");
-#else
-    f = fdopen(descriptor, "wb");
-#endif
-    if (!f) {
-#ifdef _WIN32
-        _close(descriptor);
-#else
-        close(descriptor);
-#endif
-        remove(temporary);
-        return -1;
-    }
-    int ok = fwrite(c->data, 1, MEMCARD_SIZE, f) == MEMCARD_SIZE;
-    if (ok && size) ok = fwrite(tail, 1, size, f) == size;
-    if (fflush(f) != 0) ok = 0;
-#ifdef _WIN32
-    if (ok && _commit(_fileno(f)) != 0) ok = 0;
-#else
-    if (ok && fsync(fileno(f)) != 0) ok = 0;
-#endif
-    if (fclose(f) != 0) ok = 0;
-    if (ok) {
-#ifdef _WIN32
-        ok = MoveFileExA(temporary, c->filepath,
-                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-        ok = rename(temporary, c->filepath) == 0;
-#endif
-    }
-    if (!ok) remove(temporary);
+    if (size && !tail) return -1;
+    if ((size_t)size > SIZE_MAX - MEMCARD_SIZE) return -1;
+    const size_t bytes = MEMCARD_SIZE + (size_t)size;
+    uint8_t* snapshot = (uint8_t*)malloc(bytes);
+    if (!snapshot) return -1;
+    memcpy(snapshot, c->data, MEMCARD_SIZE);
+    if (size) memcpy(snapshot + MEMCARD_SIZE, tail, size);
+    const int ok = recomp_atomic_file_store(c->filepath, snapshot, bytes);
+    free(snapshot);
     return ok ? 0 : -1;
 }
 

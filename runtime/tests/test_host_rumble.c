@@ -1,37 +1,23 @@
-/* psx_host_rumble.h: title-supplied rumble merge and expiry. */
+/* The shared owner used by main.cpp, with the PSX guest/mod profile. */
+#include <recomp_input_effects.h>
 #include <stdio.h>
-#include "psx_host_rumble.h"
-
-static int s_fail;
-#define CHECK(c, m) do { if (!(c)) { fprintf(stderr, "FAIL %s\n", m); ++s_fail; } } while (0)
-
+static int failed;
+#define CHECK(c,m) do {if(!(c)){fprintf(stderr,"FAIL %s\n",m);++failed;}}while(0)
 int main(void) {
-    PsxHostRumbleSlot slot = {0, 0, 0, 0};
-    uint8_t small = 0, large = 0;
-    psx_host_rumble_merge(&slot, 5, &small, &large);
-    CHECK(small == 0 && large == 0, "never set: guest motors unchanged");
-
-    psx_host_rumble_set(&slot, 10, 1, 150);
-    psx_host_rumble_merge(&slot, 10, &small, &large);
-    CHECK(small == 0xFF && large == 150, "set: small on, large 150");
-
-    small = 0; large = 200;
-    psx_host_rumble_merge(&slot, 12, &small, &large);
-    CHECK(large == 200 && small == 0xFF, "louder guest large motor wins");
-
-    small = 0; large = 0;
-    psx_host_rumble_merge(&slot, 10 + PSX_HOST_RUMBLE_TTL - 1, &small, &large);
-    CHECK(large == 150, "still live just before the TTL");
-    small = 0; large = 0;
-    psx_host_rumble_merge(&slot, 10 + PSX_HOST_RUMBLE_TTL, &small, &large);
-    CHECK(small == 0 && large == 0, "lapses after the TTL without a refresh");
-
-    psx_host_rumble_set(&slot, 0xFFFFFFFEu, 0, 999);
-    small = 0; large = 0;
-    psx_host_rumble_merge(&slot, 1u, &small, &large);
-    CHECK(large == 255 && small == 0, "clamped to 255; VBlank wrap handled");
-
-    if (s_fail) return 1;
-    puts("host rumble tests passed");
-    return 0;
+    ri_haptic_profile profile={100u,0u};
+    ri_haptics*c=ri_haptics_create(8,profile);
+    uint16_t low=0,high=0;
+    CHECK(c,"owner allocation");
+    ri_haptics_values(c,0,5,0,&low,&high);CHECK(!low&&!high,"unset neutral");
+    ri_haptics_set(c,0,1,150u*257u,65535u,RI_HAPTIC_FRAME32,10,8);
+    ri_haptics_values(c,0,10,0,&low,&high);CHECK(low==150u*257u&&high==65535u,"mod motors");
+    ri_haptics_set(c,0,0,200u*257u,0,RI_HAPTIC_HELD,0,0);
+    ri_haptics_values(c,0,12,0,&low,&high);CHECK(low==200u*257u&&high==65535u,"guest maximum");
+    ri_haptics_values(c,0,17,0,&low,&high);CHECK(high==65535u,"before TTL");
+    ri_haptics_values(c,0,18,0,&low,&high);CHECK(!high&&low==200u*257u,"at TTL guest remains");
+    ri_haptics_set(c,0,1,65535u,0,RI_HAPTIC_FRAME32,0xfffffffeu,8);
+    ri_haptics_values(c,0,1,0,&low,&high);CHECK(low==65535u&&!high,"VBlank wrap");
+    ri_haptics_destroy(c);
+    if(failed)return 1;
+    puts("shared PSX host rumble tests passed");return 0;
 }

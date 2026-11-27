@@ -9,6 +9,8 @@ if(NOT DEFINED PSXRECOMP_ROOT)
 endif()
 file(TO_CMAKE_PATH "${PSXRECOMP_ROOT}" PSXRECOMP_ROOT)
 
+include("${PSXRECOMP_ROOT}/cmake/SharedCoreIntegration.cmake")
+
 # The rebuild CLI configures this as `generate` for its instrumented pass and
 # `use` after it has merged the collected profile.  Keep the switch here,
 # beside the target it must affect: an otherwise unconsumed cache entry makes a
@@ -17,7 +19,6 @@ set(PSX_PGO "" CACHE STRING "PGO mode: empty, generate, or use")
 set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
 include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_execution_profile.cmake")
-include("${PSXRECOMP_ROOT}/cmake/psx_native_kernel.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_native_cpu_spans.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_direct_guest_memory.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_observation_time.cmake")
@@ -41,6 +42,9 @@ include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_windows_manifest.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
+if(NOT TARGET recomp-image-core::core)
+  psx_shared_core(recomp-image-core)
+endif()
 include("${PSXRECOMP_ROOT}/runtime/openxr_dependency.cmake")
 include("${PSXRECOMP_ROOT}/runtime/overlay_static_sources.cmake")
 include("${PSXRECOMP_ROOT}/runtime/netplay_dependency.cmake")
@@ -524,9 +528,6 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/iso_reader.cpp
     ${PSXRECOMP_ROOT}/runtime/src/iso_reader_c.cpp
     ${PSXRECOMP_ROOT}/runtime/src/disc_boot_image.cpp
-    ${PSXRECOMP_ROOT}/runtime/src/native_bios_boot.cpp
-    ${PSXRECOMP_ROOT}/runtime/src/native_bios_services.c
-    ${PSXRECOMP_ROOT}/runtime/src/native_bios_card.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_cycles.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_icache.c
     ${PSXRECOMP_ROOT}/runtime/src/starvation_ring.c
@@ -966,6 +967,7 @@ if(NOT PSXRECOMP_SKIP_BIOS_STALE_CHECK AND _psxrt_bios_linked)
             execute_process(
                 COMMAND "${CMAKE_COMMAND}" "-DROOT=${PSXRECOMP_ROOT}"
                         "-DPROFILE=${_psxrt_chk_profile}"
+                        -DRECOMP_SHARED_CORE_ROOT=${RECOMP_SHARED_CORE_ROOT}
                         -P "${PSXRECOMP_ROOT}/tools/bios_emitter_fingerprint.cmake"
                 WORKING_DIRECTORY "${PSXRECOMP_ROOT}"
                 OUTPUT_VARIABLE _psxrt_cur_fp OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -1748,7 +1750,7 @@ function(psxrecomp_add_runtime_target target)
         ${generated_sources}
         ${PSXRT_EXTRAS_SOURCES}
     )
-    target_link_libraries(${target} PRIVATE chdr-static psx_texture_image_decode)
+    target_link_libraries(${target} PRIVATE chdr-static psx_texture_image_decode mips-recomp-core::core recomp-image-core::core recomp-audio::core recomp-persistence-core::core recomp-input::core retro-runtime::presentation recomp-diagnostics-core::core recomp-mod-core::core)
     if(PSX_MEMORY_CARD_MANAGER)
         target_compile_definitions(${target} PRIVATE PSX_MEMORY_CARD_MANAGER=1)
         if(WIN32)
@@ -1772,7 +1774,6 @@ function(psxrecomp_add_runtime_target target)
     else()
         psxrecomp_execution_profile(${target} CONTRACT_FILES ${_execution_contract})
     endif()
-    psxrecomp_native_kernel(${target})
     psxrecomp_native_idle_wait(${target} ${PSXRT_NATIVE_IDLE_WAIT_SITES})
     psxrecomp_present_images(${target})
     psxrecomp_host_pacing(${target})
@@ -1916,11 +1917,6 @@ function(psxrecomp_add_runtime_target target)
         set(_psxrt_overlay_flavor 0)
     endif()
     set_target_properties(${target} PROPERTIES OUTPUT_NAME "${_psxrt_exe_name}")
-
-    get_target_property(_psxrt_native_kernel ${target} PSX_USE_NATIVE_KERNEL)
-    if(_psxrt_native_kernel)
-        math(EXPR _psxrt_overlay_flavor "${_psxrt_overlay_flavor} | 4")
-    endif()
 
     # Publish the OVERLAY CODEGEN FLAVOR this target links with, for the same
     # reason the exe name is published just below: so nothing downstream has to
@@ -2121,19 +2117,7 @@ function(psxrecomp_add_runtime_target target)
     set_source_files_properties(
         ${PSXRECOMP_ROOT}/runtime/src/overlay_loader.c
         ${PSXRECOMP_ROOT}/runtime/src/boot_state.c
-        ${PSXRECOMP_ROOT}/runtime/src/boot_state_capture_jobs.c
-        ${PSXRECOMP_ROOT}/runtime/src/psx_bios_module.c
         PROPERTIES OBJECT_DEPENDS ${_codegen_hash_hdr})
-    # Earlier providers can already have added an equivalent runtime/include
-    # path (for example cmake/../runtime/include). Source include directories
-    # precede target include directories, keeping the build-owned hash ahead
-    # of an ignored legacy header without changing every runtime command.
-    set_property(SOURCE
-        ${PSXRECOMP_ROOT}/runtime/src/overlay_loader.c
-        ${PSXRECOMP_ROOT}/runtime/src/boot_state.c
-        ${PSXRECOMP_ROOT}/runtime/src/boot_state_capture_jobs.c
-        ${PSXRECOMP_ROOT}/runtime/src/psx_bios_module.c
-        APPEND PROPERTY INCLUDE_DIRECTORIES ${PSXRECOMP_CODEGEN_HASH_INCLUDE_DIR})
 
     target_include_directories(${target} PRIVATE
         ${PSXRECOMP_RUNTIME_INCLUDE_DIRS}
@@ -2346,17 +2330,6 @@ function(psxrecomp_add_runtime_target target)
     if(PSX_SHELLWIN_INTERP)
         target_compile_definitions(${target} PRIVATE PSX_SHELLWIN_INTERP_DEFAULT=1)
     endif()
-    set_property(SOURCE
-        "${PSXRECOMP_ROOT}/runtime/src/main.cpp"
-        "${PSXRECOMP_ROOT}/runtime/src/bios_hle.c"
-        # Cache identity and compiler children must observe the same selected
-        # provider as boot/dispatch. This remains source-local: no guest objects
-        # need rebuilding just to publish the host's native marker contract.
-        "${PSXRECOMP_ROOT}/runtime/src/overlay_loader.c"
-        "${PSXRECOMP_ROOT}/runtime/src/autocompile.c"
-        "${PSXRECOMP_ROOT}/runtime/src/psx_bios_module.c"
-        APPEND PROPERTY COMPILE_DEFINITIONS
-        "$<$<BOOL:$<TARGET_PROPERTY:PSX_USE_NATIVE_KERNEL>>:PSX_NATIVE_KERNEL=1>")
     if(PSX_GL_BATCH_IMPL STREQUAL "HLE")
         target_compile_definitions(${target} PRIVATE PSX_GL_BATCH_HLE=1)
     endif()

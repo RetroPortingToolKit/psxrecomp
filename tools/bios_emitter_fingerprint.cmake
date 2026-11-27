@@ -1,4 +1,4 @@
-# bios_emitter_fingerprint.cmake — THE emitter fingerprint, as a CMake script.
+# bios_emitter_fingerprint.cmake â€” THE emitter fingerprint, as a CMake script.
 #
 #   cmake -DPROFILE=bios/<stem>.toml [-DROOT=<framework>] [-DFP_DEBUG=1] \
 #         [-DFP_LIST=1] -P tools/bios_emitter_fingerprint.cmake
@@ -100,6 +100,28 @@ if(EXISTS "${ROOT}/recompiler/CMakeLists.txt")
     foreach(_header IN LISTS _headers)
         fp_add(header "${_header}")
     endforeach()
+    # The compatibility decoder delegates to this pinned provider. Hash its
+    # implementation as well as the facade, including explicit checkout roots.
+    if(EXISTS "${ROOT}/cmake/SharedCoreIntegration.cmake")
+        if(NOT RECOMP_SHARED_CORE_ROOT)
+            set(RECOMP_SHARED_CORE_ROOT "$ENV{RECOMP_SHARED_CORE_ROOT}")
+        endif()
+        if(NOT RECOMP_SHARED_CORE_ROOT)
+            set(RECOMP_SHARED_CORE_ROOT "${ROOT}/external/shared-cores")
+        endif()
+        file(TO_CMAKE_PATH "${RECOMP_SHARED_CORE_ROOT}" RECOMP_SHARED_CORE_ROOT)
+        set(_mips_root "${RECOMP_SHARED_CORE_ROOT}/mips-recomp-core")
+        if(NOT EXISTS "${_mips_root}/CMakeLists.txt")
+            message(FATAL_ERROR "bios_emitter_fingerprint: initialize the pinned MIPS core dependency")
+        endif()
+        file(GLOB_RECURSE _mips_inputs LIST_DIRECTORIES false
+            "${_mips_root}/include/*.h" "${_mips_root}/include/*.hpp"
+            "${_mips_root}/src/*.c" "${_mips_root}/src/*.cpp")
+        list(SORT _mips_inputs)
+        foreach(_mips_input IN LISTS _mips_inputs)
+            fp_add(dependency "${_mips_input}")
+        endforeach()
+    endif()
     # Cycle headers the emitter bakes into the C it writes, unless an include
     # line already brought them in.
     foreach(_extra IN ITEMS "${ROOT}/runtime/include/psx_cyc.h" "${ROOT}/runtime/include/psx_instr_cost.h")

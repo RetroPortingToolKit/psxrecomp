@@ -23,5 +23,6 @@ done
 CMAKE_BIN="${CMAKE:-cmake}"
 command -v "$CMAKE_BIN" >/dev/null 2>&1 || { echo "bios_emitter_fingerprint: cmake not found on PATH" >&2; exit 1; }
 args+=(-DPROFILE="$PROFILE")
+[ -n "${RECOMP_SHARED_CORE_ROOT:-}" ] && args+=(-DRECOMP_SHARED_CORE_ROOT="$RECOMP_SHARED_CORE_ROOT")
 [ -n "${PSXRECOMP_FP_DEBUG:-}" ] && args+=(-DFP_DEBUG=1)
 exec "$CMAKE_BIN" "${args[@]}" -P "$ROOT/tools/bios_emitter_fingerprint.cmake"

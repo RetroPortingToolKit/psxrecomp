@@ -261,7 +261,6 @@ static int psxrecomp_game_main(int argc, char** argv) {
     const char*           extra_funcs_path = nullptr;
     bool                  inspect_mode = false;
     bool                  overlay_mode = false;
-    bool                  native_kernel_boundaries = false;
     bool                  reachable_discovery = false;
     std::set<uint32_t>    ws_tag_funcs;         // [widescreen] sprite_tag_funcs
     std::set<uint32_t>    ds_funcs;             // [data_shards] funcs
@@ -447,8 +446,6 @@ static int psxrecomp_game_main(int argc, char** argv) {
                  * in-parent labels. Set unconditionally by compile_overlays.py for
                  * every overlay input — never a human toggle. */
                 overlay_mode = true;
-            } else if (arg == "--native-kernel-boundaries") {
-                native_kernel_boundaries = true;
             }
         }
     }
@@ -1327,7 +1324,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
         // in the host's current-byte range. This block test alone is NOT proof
         // of reachability: the publisher must compare the emitted host+alias
         // CRC/range identities with the preselected cached owner before use.
-        PSXRecomp::ControlFlowAnalyzer hosted_cfg_analyzer(*exe, overlay_mode && native_kernel_boundaries);
+        PSXRecomp::ControlFlowAnalyzer hosted_cfg_analyzer(*exe);
         std::map<uint32_t, PSXRecomp::ControlFlowGraph> hosted_cfgs;
         for (const auto& seed : hosted_interior_seeds) {
             uint32_t target = seed.first;
@@ -1533,7 +1530,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
 
 
     // Control flow analysis
-    PSXRecomp::ControlFlowAnalyzer cfg_analyzer(*exe, overlay_mode && native_kernel_boundaries);
+    PSXRecomp::ControlFlowAnalyzer cfg_analyzer(*exe);
     auto all_cfgs = cfg_analyzer.analyze_all_functions(analysis_result.functions);
 
     // Print CFG summary statistics
@@ -1610,7 +1607,6 @@ static int psxrecomp_game_main(int argc, char** argv) {
     codegen_config.emit_line_numbers = true;
     codegen_config.split_mid_function_targets = !overlay_mode;
     codegen_config.overlay_mode = overlay_mode;
-    codegen_config.native_kernel_boundaries = native_kernel_boundaries;
     codegen_config.ws_signed_x_bound_sites = ws_signed_x_bound_sites;
     codegen_config.ws_sprite_tag_funcs = ws_tag_funcs;
     codegen_config.data_shard_funcs = ds_funcs;
@@ -1805,7 +1801,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
             variant_views.push_back(std::make_unique<PSXRecomp::PS1Executable>(
                 PSXRecomp::segment_view(*exe, plan.segment)));
             const PSXRecomp::PS1Executable& view = *variant_views.back();
-            PSXRecomp::ControlFlowAnalyzer view_cfg(view, overlay_mode && native_kernel_boundaries);
+            PSXRecomp::ControlFlowAnalyzer view_cfg(view);
             const auto variant_cfgs = view_cfg.analyze_all_functions(plan.functions);
             variant_codegens.push_back(std::make_unique<PSXRecomp::CodeGenerator>(
                 view, PSXRecomp::rebase_codegen_config(codegen_config, *exe, plan.segment)));
