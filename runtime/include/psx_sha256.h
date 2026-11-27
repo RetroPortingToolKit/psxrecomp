@@ -1,19 +1,15 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#include <recomp_mod/sha256.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct psx_sha256_ctx {
-    uint32_t h[8];
-    uint64_t total;
-    uint8_t buffer[64];
-    size_t buffered;
-} psx_sha256_ctx;
+typedef rmod_sha256_state psx_sha256_ctx;
 
-/* Self-contained public-domain SHA-256 implementation. */
+/* Compatibility names for the shared portable SHA-256 primitive. */
 void psx_sha256_init(psx_sha256_ctx* ctx);
 void psx_sha256_update(psx_sha256_ctx* ctx, const uint8_t* data, size_t len);
 void psx_sha256_final(psx_sha256_ctx* ctx, uint8_t out[32]);

@@ -18,7 +18,7 @@ psxrecomp_add_runtime_target(psx-runtime
 )
 
 # With -DPSX_PGXP_VARIANT=ON, psxrecomp_add_runtime_target auto-clones a
-# psx-runtime-pgxp sibling (PSXRecomp_pgxp.exe) compiled with -DPSX_PGXP=1 —
+# psx-runtime-pgxp sibling (PSXRecomp_pgxp.exe) compiled with -DPSX_PGXP=1 â€”
 # the framework-dev validation surface for the PGXP value-propagation engine
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
@@ -206,7 +206,7 @@ if(BUILD_TESTING)
     target_include_directories(postfx_publication_test PRIVATE include)
     add_test(NAME postfx_publication_test COMMAND postfx_publication_test)
     # Windows UTF-8 text boundary (issue #371): the helpers legacy Windows
-    # relies on, and — with the shipped manifest — a UTF-8 process code page.
+    # relies on, and â€” with the shipped manifest â€” a UTF-8 process code page.
     if(WIN32)
         add_executable(host_time_threads_test tests/test_host_time_threads.c src/host_time.c)
         target_include_directories(host_time_threads_test PRIVATE include)
@@ -1100,7 +1100,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         PSX_ENABLE_BLOCK_CYCLES=1)
     add_test(NAME psx_guest_cycle_scale_gate_test COMMAND psx_guest_cycle_scale_gate_test)
 
-    # Segment misses in static game code (docs/SEGMENT_AWARE_CODE.md §5.5):
+    # Segment misses in static game code (docs/SEGMENT_AWARE_CODE.md Â§5.5):
     # classification against the dispatch rows, the ring and the per-PC
     # summary the TCP command and the exit report read.
     add_executable(psx_segment_miss_test
@@ -1118,7 +1118,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     # PSX_OVERLAY_DLL_BUILD is the seam psx_cycles.h already provides for a TU
     # that supplies its own psx_advance_cycles (overlay DLLs forward it through
     # a callback shim). Without it the header inlines the production definition
-    # and this test's counting stub is a redefinition — the whole runtime test
+    # and this test's counting stub is a redefinition â€” the whole runtime test
     # suite stopped building at "redefinition of 'psx_advance_cycles'", which
     # also blocked every test registered after it.
     target_compile_definitions(psx_icache_fastpath_test PRIVATE
@@ -1977,7 +1977,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     # (white-box) and stubs its externs.
     # src/crc32.c is linked rather than stubbed: spu.c's capture/shadow paths
     # feed real CRCs that this test checks, so a zero-returning stub would make
-    # those assertions vacuous. (This target did not link at all before —
+    # those assertions vacuous. (This target did not link at all before â€”
     # crc32_update was undefined on origin/master too.)
     add_executable(spu_fidelity_test tests/test_spu_fidelity.c src/crc32.c)
     target_include_directories(spu_fidelity_test PRIVATE include)
@@ -2566,7 +2566,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     # ---- previously-unregistered standalone tests -------------------------
     # These 16 existed in runtime/tests/ with no add_test() entry. Their only
     # build instructions were a gcc command line in each file's header comment,
-    # which nothing executes — so when the runtime API moved under them they
+    # which nothing executes â€” so when the runtime API moved under them they
     # broke silently and stayed broken. Four had already rotted when they were
     # collected here (2026-08-11):
     #
@@ -2583,7 +2583,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     #
     # Registering them is only half the fix; check_test_registration.cmake at
     # the end of this file is what stops the next one from going unnoticed.
-    # Each test's build recipe now lives HERE and nowhere else — the header
+    # Each test's build recipe now lives HERE and nowhere else â€” the header
     # comments were reduced to a `ctest -R <name>` pointer so there is exactly
     # one description of how a test is built, and it is one the build executes.
 
@@ -2636,7 +2636,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_test(NAME cdrom_lid_state_test COMMAND cdrom_lid_state_test)
 
     # Cross-device I_STAT ownership: a memory-card ACK IRQ (SIO0) must not
-    # clear another device's pending source — pinned on SPU (I_STAT bit 9)
+    # clear another device's pending source â€” pinned on SPU (I_STAT bit 9)
     # staying set across card ACK delivery until the guest acknowledges it.
     # Scratch working dir for the same reason as sio_card_protocol_test: the
     # test self-provisions test_dir/card1.mcd relative to its cwd.
@@ -2941,7 +2941,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_test(NAME gpu_vk_upload_alignment_test
              COMMAND gpu_vk_upload_alignment_test)
 
-    # Portable rollback helpers — required for MotK netplay unit tests that use
+    # Portable rollback helpers â€” required for MotK netplay unit tests that use
     # the netplay_* compatibility shims. The peer-facing ones (hash_confirm,
     # input_hist, rb_post) live in recomp-net; the snap ring in retcomm-rbengine.
     set(_RBE_ROOT "${RECOMP_RBENGINE_ROOT}")
@@ -3513,7 +3513,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     target_include_directories(sio_card_protocol_test PRIVATE include src)
     # Runs in a build-tree scratch dir, NOT in tests/: the test writes
     # test_dir/card1.mcd relative to the working directory (self-provisioning it
-    # via mkdir if absent), and tests/test_dir/card1.mcd is a TRACKED fixture —
+    # via mkdir if absent), and tests/test_dir/card1.mcd is a TRACKED fixture â€”
     # running it from tests/ overwrites that file and leaves the repo dirty.
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/sio_card_protocol_scratch)
     add_test(NAME sio_card_protocol_test COMMAND sio_card_protocol_test
@@ -3522,7 +3522,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
 
     # POSIX-only: dlopen()s a fixture .so out of a synthetic cache tree, so it
     # cannot link under MinGW/MSVC (-ldl). run_overlay_posix_test.sh already
-    # stages the cache tree, builds the fixture and the test, and runs it — so
+    # stages the cache tree, builds the fixture and the test, and runs it â€” so
     # register THAT rather than reimplementing its fixture staging here.
     if(UNIX)
         find_program(BASH_EXECUTABLE bash)
@@ -3696,6 +3696,8 @@ foreach(_target IN LISTS _shared_targets)
   endif()
   if("${_sources}" MATCHES "mod_runtime[.]cpp")
     target_link_libraries(${_target} PRIVATE recomp-mod-core::core)
+  elseif("${_sources}" MATCHES "psx_sha256[.]c")
+    target_link_libraries(${_target} PRIVATE recomp-mod-core::hash)
   endif()
   if("${_sources}" MATCHES "memcard[.]c|boot_state|capture_writer|tas_checkpoint_roundtrip|netplay_capture_ring|atomic_file_write")
     target_link_libraries(${_target} PRIVATE recomp-persistence-core::core)
