@@ -10754,6 +10754,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     if (psx_bios_hle_boot_turbo_active())
         turbo_loads_active = 1;
     probe_turbo = turbo_loads_active;
+    turbo_loads_set_engaged(turbo_loads_active);
 
     load_transition_note(cdrom_data_read_active(), logical_load_active,
                          turbo_loads_active, load_run_value);

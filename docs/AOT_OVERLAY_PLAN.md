@@ -226,8 +226,9 @@ Open verification before committing (do these first — see §6 revised):
   `dma.c:484-498` → `overlay_capture_on_dma(load_start, size, ram+load_start)`.
 - Gated on `[runtime] overlay_cache` and auto-armed on the first post-BIOS-handoff
   DMA (`overlay_capture.c:82-89`). Dedup by `load_addr` (`:91-95`).
-- A second signal — sustained dirty-RAM-interp pressure sampled ~every 2s while
-  *not* mid-CD-load — auto-fires fresh captures for new *variants* at a reused
+- A second signal, sustained dirty-RAM-interp pressure sampled ~every 2s (also
+  while the drive reads, but not during turbo-load vblanks that run faster than
+  real time), auto-fires fresh captures for new *variants* at a reused
   address (`overlay_capture.c:299-532`).
 
 ### 1.2 Capture record (`overlay_captures.json`, schema "v2")

@@ -130,7 +130,6 @@ extern "C" uint32_t dirty_ram_get_bitmap_word_count(void) {
 extern "C" uint32_t dirty_ram_get_bitmap_word(uint32_t index) {
     return index < DIRTY_RAM_EXEC_PAGE_BITMAP_WORDS ? g_dirty_pages[index] : 0u;
 }
-extern "C" int cdrom_load_in_progress(void) { return 0; }
 extern "C" int fntrace_is_game_started(void) { return 1; }
 extern "C" void overlay_loader_check_cache(uint32_t, uint32_t,
                                              const uint8_t *) {}
