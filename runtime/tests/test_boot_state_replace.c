@@ -1,7 +1,7 @@
 /* State-file replace: a save must never cost the player the previous file.
  *
  * boot_state_save() writes through boot_state_write_file_atomic(): the state
- * goes to <path>.tmp and replaces <path> only when complete. This test drives
+ * uses the shared streaming transaction and replaces <path> only when complete. This test drives
  * that helper with stand-in writers, so it needs no serializer:
  *   - replace onto an absent and an existing target (a bare Windows rename
  *     refuses the existing one);
@@ -57,14 +57,14 @@ typedef struct { const char *text; int fail_after; } Writer;
 
 /* Writes `text`; with fail_after set, stops after that many bytes and fails,
  * as the serializer does when a section write fails midway. */
-static int stand_in_writer(FILE *f, void *ctx) {
+static int stand_in_writer(RecompAtomicFile *f, void *ctx) {
     const Writer *w = (const Writer *)ctx;
     size_t n = strlen(w->text);
     if (w->fail_after >= 0) {
-        fwrite(w->text, 1, (size_t)w->fail_after, f);
+        recomp_atomic_file_write(f, w->text, (size_t)w->fail_after);
         return 0;
     }
-    return fwrite(w->text, 1, n, f) == n;
+    return recomp_atomic_file_write(f, w->text, n);
 }
 
 int main(int argc, char **argv) {
@@ -79,25 +79,19 @@ int main(int argc, char **argv) {
     remove(tmp);
     remove_dir(tmp);
 
-    /* 1. replace onto an absent target */
-    check(write_bytes(tmp, "NEW", 3), "stage tmp 1");
-    check(boot_state_replace_file(tmp, target) == 1, "replace onto absent target");
+    /* 1. replace onto an absent target through the actual serializer binding. */
+    Writer first = { "NEW", -1 };
+    check(boot_state_write_file_atomic(target, stand_in_writer, &first) == 1, "replace onto absent target");
     check(read_is(target, "NEW", 3), "target content after first replace");
     check(!exists(tmp), "tmp consumed");
 
     /* 2. replace onto an EXISTING target */
-    check(write_bytes(tmp, "NEWER", 5), "stage tmp 2");
-    check(boot_state_replace_file(tmp, target) == 1, "replace onto existing target");
+    Writer newer = { "NEWER", -1 };
+    check(boot_state_write_file_atomic(target, stand_in_writer, &newer) == 1, "replace onto existing target");
     check(read_is(target, "NEWER", 5), "target content after overwrite");
     check(!exists(tmp), "tmp consumed on overwrite");
 
-    /* 3. a refused replace (missing source) leaves the target intact */
-    check(boot_state_replace_file(tmp, target) == 0, "refuse missing source");
-    check(read_is(target, "NEWER", 5), "target intact after refused replace");
-
-    /* 4. null arguments refuse */
-    check(boot_state_replace_file(NULL, target) == 0, "refuse null from");
-    check(boot_state_replace_file(target, NULL) == 0, "refuse null to");
+    /* 3. null arguments refuse without invoking a serializer. */
     check(boot_state_write_file_atomic(NULL, stand_in_writer, NULL) == 0,
           "refuse null path");
 
@@ -112,15 +106,22 @@ int main(int argc, char **argv) {
         check(!exists(tmp), "tmp removed after failed write");
     }
 
-    /* 6. a temporary that cannot be created keeps the previous file */
+    check(boot_state_write_file_atomic(target, NULL, NULL) == 0,
+          "refuse null serializer");
+
+    /* A legacy temporary belongs to somebody else; never truncate/remove it. */
     {
         Writer w = { "NEW-STATE", -1 };
-        check(make_dir(tmp) == 0, "block tmp with a folder");
-        check(boot_state_write_file_atomic(target, stand_in_writer, &w) == 0,
-              "uncreatable tmp refuses the save");
-        check(read_is(target, old_state, sizeof old_state),
-              "old state byte for byte after uncreatable tmp");
-        remove_dir(tmp);
+        check(write_bytes(tmp, "FOREIGN", 7), "stage foreign temporary");
+        check(boot_state_write_file_atomic(target, stand_in_writer, &w) == 1,
+              "exclusive transaction ignores a foreign temporary");
+        check(read_is(tmp, "FOREIGN", 7), "foreign temporary preserved");
+        remove(tmp);
+        char missing[700];
+        snprintf(missing, sizeof missing, "%s/missing-parent/state.pst", dir);
+        check(boot_state_write_file_atomic(missing, stand_in_writer, &w) == 0,
+              "uncreatable temporary refuses the save");
+        check(read_is(target, "NEW-STATE", 9), "last complete state preserved");
     }
 
     /* 7. a complete save replaces the previous file */
@@ -134,7 +135,7 @@ int main(int argc, char **argv) {
 
     remove(target);
     if (failures) { fprintf(stderr, "%d failure(s)\n", failures); return 1; }
-    puts("PASS: replace onto absent and existing target; failed or uncreatable "
-         "save keeps the previous file byte for byte");
+    puts("PASS: shared streamed replace, absent/existing target, abort, "
+         "uncreatable path and foreign-temporary preservation");
     return 0;
 }

@@ -12,6 +12,13 @@ int fntrace_is_game_started(void){return fixture_game_started;}
 void fntrace_restore_game_started(int started){fixture_game_started=started!=0;}
 #endif
 #include <assert.h>
+#ifdef _WIN32
+#include <process.h>
+#define fixture_pid _getpid
+#else
+#include <unistd.h>
+#define fixture_pid getpid
+#endif
 
 static uint8_t ram[8*1024*1024], spad[1024], spuram[512*1024], arenas[16];
 static uint32_t ram_bytes=2*1024*1024, arena_bytes, cd_frames, pending_cd_frames;
@@ -229,6 +236,21 @@ int main(void) {
     assert(same_len==len && !memcmp(saved,same_word,len));
     free(same_word);
     free(saved);
+    /* The streamed disk binding must produce the same snapshot as the owned
+     * buffer writer, then load through the real validated file reader. */
+    cpu.pc=0x80050044;ram[0x100]=0xab;
+    assert(boot_state_save_buffer(&cpu,123,0x801b0000,&saved,&len));
+    char disk_path[96];
+    snprintf(disk_path,sizeof disk_path,"boot_state_streamed_fixture_%lu.pst",(unsigned long)fixture_pid());
+    assert(boot_state_save(&cpu,123,0x801b0000,disk_path));
+    FILE* disk=fopen(disk_path,"rb");assert(disk);
+    uint8_t* bytes=malloc(len);assert(bytes);
+    assert(fread(bytes,1,len,disk)==len && fgetc(disk)==EOF);
+    assert(!fclose(disk) && !memcmp(bytes,saved,len));
+    cpu.pc=0xdeadbeef;ram[0x100]=0x55;
+    assert(boot_state_load(disk_path,123,0x801b0000,&cpu));
+    assert(cpu.pc==0x80050044 && ram[0x100]==0xab);
+    assert(!remove(disk_path));free(bytes);free(saved);
     puts("snapshot handoff: normal pipeline, cold/warm, BIOS/game, compressed/raw and atomic rejection passed");
     return 0;
 }

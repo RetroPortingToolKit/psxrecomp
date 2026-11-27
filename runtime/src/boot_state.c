@@ -36,7 +36,7 @@
 #  include <time.h>
 #endif
 
-/* boot_state_write_file_atomic() and boot_state_replace_file(). Included here
+/* boot_state_write_file_atomic(). Included here
  * rather than built as its own source so every target that compiles or
  * includes boot_state.c gets them without another source in its list. */
 #include "boot_state_replace.inc"
@@ -329,7 +329,7 @@ static int sync_vram_mirror_for_save(void)
 
 /* File or growable memory sink — both save paths share one serializer. */
 typedef struct BsOut {
-    FILE*    f;       /* non-NULL => write to file */
+    RecompAtomicFile* f; /* non-NULL => stream to the shared file owner */
     uint8_t* data;    /* memory sink (owned by caller / save_buffer) */
     size_t   len;
     size_t   cap;
@@ -417,7 +417,7 @@ static int bs_raw_capture_reserve(BsOut *o, const CPUState *cpu,
 static int bs_write(BsOut* o, const void* p, size_t n) {
     if (!n) return 1;
     if (o->f)
-        return fwrite(p, 1, n, o->f) == n;
+        return recomp_atomic_file_write(o->f, p, n);
 #if PSX_NATIVE_CAPTURE_JOBS
     if (o->no_zlib) {
         if (n > SIZE_MAX - o->len || !bs_reserve(o, o->len + n)) return 0;
@@ -892,7 +892,7 @@ typedef struct {
     uint32_t        entry_pc;
 } BsFileSave;
 
-static int boot_state_file_writer(FILE* f, void* ctx) {
+static int boot_state_file_writer(RecompAtomicFile* f, void* ctx) {
     const BsFileSave* s = (const BsFileSave*)ctx;
     BsOut o;
     memset(&o, 0, sizeof o);
@@ -900,7 +900,7 @@ static int boot_state_file_writer(FILE* f, void* ctx) {
     return boot_state_save_to(&o, s->cpu, s->bios_checksum, s->entry_pc);
 }
 
-/* The snapshot goes to `<path>.tmp` and replaces `path` only when complete, so
+/* The shared snapshot transaction replaces `path` only when complete, so
  * a refused or failed save keeps the previous state file intact instead of
  * truncating it. */
 int boot_state_save(const CPUState* cpu, uint32_t bios_checksum,
