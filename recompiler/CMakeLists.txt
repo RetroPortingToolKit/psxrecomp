@@ -3,6 +3,7 @@ project(PSXRecomp C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(CTest)
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/SharedCoreIntegration.cmake")
 
 # libchdr is needed by exactly one target here: the user-facing `psxrecomp`
 # media CLI. It arrives via FetchContent + ExternalProject, which is by far the
@@ -35,6 +36,10 @@ if(PSXRECOMP_ENABLE_CHD)
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
             LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
     endif()
+endif()
+
+if(PSXRECOMP_ENABLE_CHD AND NOT TARGET recomp-image-core::core)
+  psx_shared_core(recomp-image-core)
 endif()
 
 add_subdirectory(lib/fmt)
@@ -1824,6 +1829,18 @@ if(BUILD_TESTING AND Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_${_t}.py")
     endforeach()
 endif()
+
+# Every target compiling the compatibility facade resolves into the shared decoder.
+get_property(_shared_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(_target IN LISTS _shared_targets)
+  get_target_property(_sources ${_target} SOURCES)
+  if("${_sources}" MATCHES "mips_decoder[.]cpp")
+    target_link_libraries(${_target} PRIVATE mips-recomp-core::core)
+  endif()
+  if("${_sources}" MATCHES "(iso_reader|cue_sheet)[.]cpp")
+    target_link_libraries(${_target} PRIVATE recomp-image-core::core)
+  endif()
+endforeach()
 
 # ---- output-name collision guard (must stay LAST) ---------------------------
 # Fails configure if any two targets here would write the same file on a

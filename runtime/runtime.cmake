@@ -9,6 +9,8 @@ if(NOT DEFINED PSXRECOMP_ROOT)
 endif()
 file(TO_CMAKE_PATH "${PSXRECOMP_ROOT}" PSXRECOMP_ROOT)
 
+include("${PSXRECOMP_ROOT}/cmake/SharedCoreIntegration.cmake")
+
 # The rebuild CLI configures this as `generate` for its instrumented pass and
 # `use` after it has merged the collected profile.  Keep the switch here,
 # beside the target it must affect: an otherwise unconsumed cache entry makes a
@@ -41,6 +43,9 @@ include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_windows_manifest.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
+if(NOT TARGET recomp-image-core::core)
+  psx_shared_core(recomp-image-core)
+endif()
 include("${PSXRECOMP_ROOT}/runtime/openxr_dependency.cmake")
 include("${PSXRECOMP_ROOT}/runtime/overlay_static_sources.cmake")
 include("${PSXRECOMP_ROOT}/runtime/netplay_dependency.cmake")
@@ -966,6 +971,7 @@ if(NOT PSXRECOMP_SKIP_BIOS_STALE_CHECK AND _psxrt_bios_linked)
             execute_process(
                 COMMAND "${CMAKE_COMMAND}" "-DROOT=${PSXRECOMP_ROOT}"
                         "-DPROFILE=${_psxrt_chk_profile}"
+                        -DRECOMP_SHARED_CORE_ROOT=${RECOMP_SHARED_CORE_ROOT}
                         -P "${PSXRECOMP_ROOT}/tools/bios_emitter_fingerprint.cmake"
                 WORKING_DIRECTORY "${PSXRECOMP_ROOT}"
                 OUTPUT_VARIABLE _psxrt_cur_fp OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -1748,7 +1754,7 @@ function(psxrecomp_add_runtime_target target)
         ${generated_sources}
         ${PSXRT_EXTRAS_SOURCES}
     )
-    target_link_libraries(${target} PRIVATE chdr-static psx_texture_image_decode)
+    target_link_libraries(${target} PRIVATE chdr-static psx_texture_image_decode mips-recomp-core::core recomp-image-core::core recomp-audio::core recomp-persistence-core::core recomp-input::core retro-runtime::presentation recomp-diagnostics-core::core recomp-mod-core::core)
     if(PSX_MEMORY_CARD_MANAGER)
         target_compile_definitions(${target} PRIVATE PSX_MEMORY_CARD_MANAGER=1)
         if(WIN32)

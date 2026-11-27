@@ -47,6 +47,8 @@ extern "C" const char* host_launch_timing_stage_name(uint32_t stage) {
 #endif
 
 #include <algorithm>
+#include <memory>
+#include <recomp_mod.h>
 #include <array>
 #include <cctype>
 #include <cstdlib>
@@ -567,27 +569,71 @@ void set_error(const std::string& error) {
     state().error = error;
 }
 
-void apply_main_write(const ModResolution::Write& write) {
-    if (write.fields.empty()) {
-        for (size_t i = 0; i < write.replacement.size(); ++i)
-            psx_host_write_byte((uint32_t)write.location + (uint32_t)i,
-                                write.replacement[i]);
-        dirty_ram_mark_executable_range(
-            (uint32_t)write.location & 0x1FFFFFFFu,
-            (uint32_t)write.replacement.size());
-        return;
+// The PSX resolver retains its manifest extensions and ordered field edits;
+// the shared transaction provider owns validation, mutation and restoration.
+bool apply_main_plan(RuntimeMods& s,bool restoring) {
+    struct Byte { uint8_t expected,replacement; };
+    std::map<uint32_t,Byte> bytes;
+    for(const auto& w:s.plan.writes) {
+        if(w.target!=ModPatchTarget::MainExe)continue;
+        for(size_t i=0;i<w.expected.size();++i) {
+            const uint32_t address=(uint32_t)w.location+(uint32_t)i;
+            const uint8_t expected=restoring?psx_read_byte(address):w.expected[i];
+            const auto inserted=bytes.emplace(address,Byte{expected,expected});
+            if(!inserted.second&&inserted.first->second.expected!=expected)return false;
+        }
     }
-    for (const ModResolution::Write::Field& field : write.fields) {
-        for (size_t i = 0; i < field.replacement.size(); ++i)
-            psx_host_write_byte(
-                (uint32_t)write.location +
-                    (uint32_t)field.offset + (uint32_t)i,
-                field.replacement[i]);
-        dirty_ram_mark_executable_range(
-            ((uint32_t)write.location +
-             (uint32_t)field.offset) & 0x1FFFFFFFu,
-            (uint32_t)field.replacement.size());
+    if(bytes.empty())return true;
+    for(const auto& w:s.plan.writes) {
+        if(w.target!=ModPatchTarget::MainExe)continue;
+        auto set=[&](size_t offset,const std::vector<uint8_t>& replacement) {
+            for(size_t i=0;i<replacement.size();++i) {
+                auto at=bytes.find((uint32_t)w.location+(uint32_t)offset+(uint32_t)i);
+                if(at==bytes.end())return false;
+                at->second.replacement=replacement[i];
+            }
+            return true;
+        };
+        if(w.fields.empty()) {if(!set(0,w.replacement))return false;}
+        else for(const auto& f:w.fields)if(!set(f.offset,f.replacement))return false;
     }
+    struct Extent {uint32_t address;std::vector<uint8_t> expected,replacement;};
+    std::vector<Extent> extents;
+    for(const auto& b:bytes) {
+        if(extents.empty()||(uint64_t)extents.back().address+extents.back().expected.size()!=b.first)
+            extents.push_back({b.first,{},{}});
+        extents.back().expected.push_back(b.second.expected);
+        extents.back().replacement.push_back(b.second.replacement);
+    }
+    std::vector<rmod_patch> patches;
+    for(const auto& x:extents)patches.push_back({"ram",x.address,x.expected.data(),x.replacement.data(),x.expected.size()});
+    std::unique_ptr<rmod_context,decltype(&rmod_destroy)> context(rmod_create(),rmod_destroy);
+    if(!context){s.error="Cannot allocate shared mod transaction";return false;}
+    // Packaged titles need not ship a loose PS-X EXE. The independently
+    // verified original disc remains the target identity in that case.
+    const std::string& original=s.exe_sha256.empty()?s.disc_sha256:s.exe_sha256;
+    if(!rmod_bind_plan(context.get(),s.game_id.c_str(),original.c_str(),s.plan.fingerprint.c_str())){
+        s.error=rmod_error(context.get());return false;
+    }
+    rmod_engine engine{};engine.game_id=s.game_id.c_str();engine.original_image_sha256=original.c_str();
+    // Called only at the owner-thread dispatch/restore safe point. No hooks or
+    // private state mutate within this byte transaction.
+    engine.begin=[](void*){return 1;};
+    engine.read=[](void*,const char* space,uint64_t a,uint8_t* out,size_t n){
+        if(std::strcmp(space,"ram")||a>UINT32_MAX||n>UINT32_MAX-a)return 0;
+        for(size_t i=0;i<n;++i)out[i]=psx_read_byte((uint32_t)(a+i));return 1;
+    };
+    engine.write=[](void*,const char* space,uint64_t a,const uint8_t* in,size_t n){
+        if(std::strcmp(space,"ram")||a>UINT32_MAX||n>UINT32_MAX-a)return 0;
+        for(size_t i=0;i<n;++i)psx_host_write_byte((uint32_t)(a+i),in[i]);
+        dirty_ram_mark_executable_range((uint32_t)a&0x1FFFFFFFu,(uint32_t)n);return 1;
+    };
+    engine.finish=[](void*,int){};
+    uint8_t identity[32];
+    const int result=rmod_apply(context.get(),patches.data(),patches.size(),nullptr,0,&engine,identity);
+    if(result<0){std::fputs("Shared mod transaction could not restore RAM\n",stderr);std::abort();}
+    if(!result)s.error=rmod_error(context.get());
+    return result==1;
 }
 
 bool restored_main_matches_plan(const RuntimeMods& s, uint32_t& failed_at) {
@@ -1665,7 +1711,7 @@ RecompLauncherCModProvider provider = {
     provider_feature_set_option,
     provider_diagnostic_count,
     provider_diagnostic_get,
-    nullptr, /* archive_extension â€” PSX defaults */
+    nullptr, /* archive_extension — PSX defaults */
     nullptr, /* archive_description */
     provider_commit_netplay,
     provider_feature_resource_count,
@@ -2929,6 +2975,12 @@ bool mod_runtime_feature_host_only(const std::string& package_id,
     return false;
 }
 
+bool mod_runtime_local_feature_enabled(const std::string& package_id,
+                                       const std::string& feature_id) {
+    return mod_runtime_feature_host_only(package_id, feature_id) &&
+           state().manager.feature_enabled(package_id, feature_id);
+}
+
 std::vector<std::string> mod_runtime_netplay_view_features(const ModResolution& plan) {
     /* A feature stays on online only when everything it contributes is a
      * local-view plugin: no EXE/disc write, overlay or derived disc (those
@@ -3119,24 +3171,9 @@ extern "C" void mod_runtime_on_dispatch(uint32_t target) {
     if (!s.initialized || s.main_applied ||
         (target & 0x1FFFFFFFu) != s.entry_phys) return;
 
-    for (const ModResolution::Write& write : s.plan.writes) {
-        if (write.target != ModPatchTarget::MainExe) continue;
-        for (size_t i = 0; i < write.expected.size(); ++i) {
-            if (psx_read_byte((uint32_t)write.location + (uint32_t)i) !=
-                write.expected[i]) {
-                std::fprintf(stderr,
-                    "psxrecomp: mod plan %s rejected at 0x%08X "
-                    "(expected-byte guard failed; booting unmodified)\n",
-                    s.plan.fingerprint.c_str(),
-                    (unsigned)((uint32_t)write.location + (uint32_t)i));
-                s.main_applied = true;
-                return;
-            }
-        }
-    }
-    for (const ModResolution::Write& write : s.plan.writes) {
-        if (write.target != ModPatchTarget::MainExe) continue;
-        apply_main_write(write);
+    if(!apply_main_plan(s,false)) {
+        std::fprintf(stderr,"psxrecomp: guarded mod transaction rejected: %s\n",s.error.c_str());
+        s.main_applied=true;return;
     }
     s.main_applied = true;
     if (!s.plan.writes.empty())
@@ -3175,11 +3212,10 @@ extern "C" void mod_runtime_on_savestate_loaded(void) {
         }
     }
 
-    bool applied = false;
-    for (const ModResolution::Write& write : s.plan.writes) {
-        if (write.target != ModPatchTarget::MainExe) continue;
-        apply_main_write(write);
-        applied = true;
+    bool applied=false;
+    for(const auto& write:s.plan.writes)if(write.target==ModPatchTarget::MainExe)applied=true;
+    if(!apply_main_plan(s,true)) {
+        std::fprintf(stderr,"psxrecomp: restored mod transaction rejected: %s\n",s.error.c_str());return;
     }
     s.main_applied = true;
     for (const ModResolution::Plugin& plugin : s.plan.plugins) {

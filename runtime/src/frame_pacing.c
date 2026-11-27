@@ -51,34 +51,23 @@ void frame_pacer_wait(FramePacer *p, double period_ms) {
     uint64_t period = (uint64_t)((double)freq * (period_ms / 1000.0));
     uint64_t now = SDL_GetPerformanceCounter();
 
-    if (p->next_deadline == 0 ||
-        now >= p->next_deadline + period * FRAME_PACER_CATCHUP_MAX_PERIODS) {
-        /* First frame, or sustained slowness beyond the catch-up window:
-         * re-anchor (forgive the debt). */
-        p->next_deadline = now + period;
-        return;
-    }
-    if (now >= p->next_deadline) {
-        /* In debt from a recent stall: run this frame unpaced and advance
-         * the deadline, repaying one period of debt per fast frame. */
-        p->next_deadline += period;
-        return;
-    }
+    const uint64_t deadline = retro_catchup_frame_deadline(p, now, period,
+        FRAME_PACER_CATCHUP_MAX_PERIODS);
+    if (!deadline) return;
 
 #if PSX_NATIVE_HOST_PACING
-    (void)psx_host_wait_until(p->next_deadline, freq, period);
+    (void)psx_host_wait_until(deadline, freq, period);
 #else
     for (;;) {
         now = SDL_GetPerformanceCounter();     /* ONE read per iteration */
-        uint32_t ms = frame_pacing_sleep_ms(now, p->next_deadline, freq, period);
+        uint32_t ms = frame_pacing_sleep_ms(now, deadline, freq, period);
         if (ms == 0) break;
         /* Waitable timer on Win32; usleep on Unix — not coarse Sleep/SDL_Delay. */
         psx_host_sleep_ms(ms);
     }
-    while (SDL_GetPerformanceCounter() < p->next_deadline) {
+    while (SDL_GetPerformanceCounter() < deadline) {
         /* final sub-ms spin */
     }
 #endif
-    p->next_deadline += period;
 }
 #endif /* FRAME_PACING_PURE_ONLY */
