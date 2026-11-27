@@ -1275,8 +1275,14 @@ static void rb_fmv_tick_settle(void)
         g_fmv_lockstep_until = sim + RB_FMV_LOCKSTEP_MIN;
         /* Live FRAME_COMMITs were skipped during depth24 — waive the gap so
          * hash_confirm can advance again once digests resume. */
-        if (g_b.hc)
+        if (g_b.hc) {
             netplay_hc_prime_after(g_b.hc, sim);
+            /* The contiguous producer must retire the same deliberately
+             * omitted movie rows. The next real state still needs its own
+             * executed-input lineage and matching peer FRAME_COMMIT. */
+            extern void psx_netplay_frame_commit_prime_after(uint32_t tick);
+            psx_netplay_frame_commit_prime_after(sim);
+        }
         fprintf(stderr,
                 "psxrecomp: rb FMV settle until sim=%u invent_hold=%u "
                 "dense_lockstep min=%u max=%u confirm=%u "
@@ -1686,33 +1692,40 @@ static int rb_boot_snap_tick(void)
     return 0;
 }
 
-/* Prefer BB-edge / IRQ check PCs — finish_frame often sees cpu->pc==0 while the
- * guest is parked in the vblank present path. IRQ/sticky/$ra first: bare
- * function-entry snaps picked short jr-$ra leaves (0x8006A9F8) whose top-level
- * flush_resume re-dispatch published pc=0 (cps exit: final_ra=0x8006CCA0). */
+/* Use the same materialized snapshot context as save/load and rewind. IRQ
+ * latches can describe an older guest call: substituting one for a live PC
+ * combines that old block with unrelated registers. Retain the parked-present
+ * fallbacks only after the explicit/current context, and reject unsafe host
+ * calls and dirty-pump sites before serializing any of them. */
 static uint32_t pick_snap_resume_pc(const CPUState *c, uint32_t hint)
 {
-    const uint32_t cands[6] = {
-        psx_last_irq_check_pc(),
-        g_last_good_bb_pc,
-        psx_compiled_irq_resume_pc(),
-        c ? c->gpr[31] : 0u,
+    const uint32_t cands[7] = {
+        psx_irq_resume_context_snapshot_site() != 0
+            ? psx_irq_resume_context_snapshot_pc() : 0u,
         hint,
         c ? c->pc : 0u,
+        psx_compiled_irq_resume_pc(),
+        psx_last_irq_check_pc(),
+        g_last_good_bb_pc,
+        c ? c->gpr[31] : 0u,
     };
     const int boot0 = rb_boot_snap_tick();
     int i;
     if (boot0) {
-        for (i = 0; i < 6; ++i) {
-            if (rb_resume_pc_ok(cands[i]) && rb_pc_is_bios(cands[i]))
-                return rb_canonicalize_resume_pc(cands[i]);
+        for (i = 0; i < 7; ++i) {
+            uint32_t pc = rb_canonicalize_resume_pc(cands[i]);
+            if (rb_resume_pc_ok(pc) && rb_pc_is_bios(pc) &&
+                psx_irq_resume_context_snapshot_safe_at(pc))
+                return pc;
         }
         /* Defer rather than stamp main-RAM residue into dig0. */
         return 0;
     }
-    for (i = 0; i < 6; ++i) {
-        if (rb_resume_pc_ok(cands[i]))
-            return rb_canonicalize_resume_pc(cands[i]);
+    for (i = 0; i < 7; ++i) {
+        uint32_t pc = rb_canonicalize_resume_pc(cands[i]);
+        if (rb_resume_pc_ok(pc) &&
+            psx_irq_resume_context_snapshot_safe_at(pc))
+            return pc;
     }
     return 0;
 }
@@ -2298,6 +2311,14 @@ static void realign_invalidate_evidence(uint32_t tick)
             "psxrecomp: rb realign evidence clamp tick=%u (snaps_dropped=%u)\n",
             (unsigned)tick, (unsigned)dropped);
     fflush(stderr);
+}
+
+static void realign_applied(uint32_t tick)
+{
+    realign_invalidate_evidence(tick);
+    /* Only a successful restore replaces the executed timeline. Retire its
+     * old descendants and let fresh executions republish from this anchor. */
+    psx_netplay_execution_anchor(tick);
 }
 
 static void schedule_live_realign(uint32_t tick, const char *why)
@@ -3229,6 +3250,34 @@ static int joint_accept_peer_commit(void)
  * TipHold path: finalize (clamp) at the peer commit tip — do NOT
  * tip_hold_try_finalize (that would flush deferred rereplay first).
  * Verify/Replay path: abort + live realign as before. */
+static void finalize_peer_tip_hold_commit(uint32_t snap_tick)
+{
+    uint32_t from = g_tip_hold_rereplay_from;
+    uint32_t first_bad = g_tip_hold_rereplay_mismatch;
+    uint32_t tip = rnet_rb_get_target_tick(g_rb);
+    int slot = (int)rnet_rb_get_corrected_slot(g_rb);
+    int repair;
+    if (!from) from = g_tip_extend_from_tick;
+    repair = g_tip_hold_rereplay_pending && from != 0u && from < tip;
+    if (repair) {
+        /* A peer's higher endpoint does not certify our unreplayed suffix. */
+        if (snap_tick > from) snap_tick = from;
+        if (first_bad <= from || first_bad > tip) first_bad = from + 1u;
+        if (slot < 0) slot = (g_b.local_slot && *g_b.local_slot != 0) ? 0 : 1;
+    }
+    g_tip_hold_rereplay_pending = 1;
+    g_tip_hold_rereplay_from = snap_tick;
+    g_tip_hold_block_quiet = 0;
+    finalize_tip_hold();
+    if (repair) {
+        fprintf(stderr, "psxrecomp: rb peer COMMIT retains correction t=%u slot=%d "
+                        "after matched tip=%u\n", (unsigned)first_bad, slot,
+                        (unsigned)snap_tick);
+        fflush(stderr);
+        (void)psx_netplay_requeue_correction(first_bad, slot);
+    }
+}
+
 static int maybe_abandon_tip_extend(void)
 {
     RNetRbPhase phase;
@@ -3335,10 +3384,7 @@ static int maybe_abandon_tip_extend(void)
         fflush(stderr);
         /* Clamp commit to snap/from — skip tip_hold_try_finalize (would
          * flush deferred rereplay into the doomed span). */
-        g_tip_hold_rereplay_pending = 1;
-        g_tip_hold_rereplay_from = snap_tick;
-        g_tip_hold_block_quiet = 0;
-        finalize_tip_hold();
+        finalize_peer_tip_hold_commit(snap_tick);
         return 1;
     }
 
@@ -5136,6 +5182,9 @@ static void enter_verify_at_tip(uint32_t done)
                 "psxrecomp: rb verify tip pin FAILED tip=%u\n",
                 (unsigned)done);
         fflush(stderr);
+        /* A matching digest cannot authorize a tip that cannot be resumed. */
+        abort_episode_realign("verify tip has no safe snapshot context");
+        return;
     }
     /* av/cd computed once here and reused by both prints below plus the wire
      * send. Previously av/aux/core were each computed a second time here
@@ -7298,7 +7347,7 @@ static int try_apply_pending_load(CPUState *cpu_in)
                  * post-realign production fills need; prepare_local_tip still
                  * emits. Keep absurd tip in the ring — cushion refuses invent
                  * on miss (§45) until real rows land. */
-                realign_invalidate_evidence(loaded_tick);
+                realign_applied(loaded_tick);
                 fprintf(stderr,
                         "psxrecomp: rb realign applied tick=%u pc=0x%08x core=%08x "
                         "cd=%08x\n",
@@ -8752,6 +8801,12 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
     RNetRbCorrection corr;
     uint32_t snap_n;
     int joint = (wire_flags & PSX_RB_SYNC_FLAG_RETAINED_LOAD) != 0;
+    /* The initiator owns the transfer mode, as it owns light-tip class. A
+     * local media observation may be ahead of its load tick; it cannot
+     * promise a keyframe the peer never offered. Ordinary episodes retain
+     * their local snapshot and verified-frontier requirements below. */
+    int media_kf = rb_media_kf_enabled() &&
+                   (wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF);
     int transfer = joint && joint_two_peer_session() &&
                    (wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) && rb_media_kf_enabled();
     int transfer_guest = transfer && g_b.local_slot && *g_b.local_slot == 1;
@@ -8980,6 +9035,30 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
         }
         return;
     }
+    /* Reject retired BEGINs before either owner can yield. A delayed BEGIN
+     * from the last committed epoch (or behind the agreed execution tip)
+     * must not destroy a newer active episode merely because its initiator
+     * has the lower seat. Numeric epoch order alone proves nothing. */
+    if (!g_rb)
+        return;
+    {
+        const int current = rnet_rb_is_active(g_rb) &&
+                            epoch == rnet_rb_get_epoch_id(g_rb);
+        if (!current && epoch == g_last_commit_epoch) {
+            follow_refuse_nack(epoch, mismatch, load, target, slot,
+                               "already committed (zombie epoch)");
+            return;
+        }
+        if (!joint && !current && g_agreed_valid && load < g_agreed_through &&
+            !g_joining) {
+            char detail[96];
+            snprintf(detail, sizeof(detail),
+                     "behind agreed tip=%u (zombie load)",
+                     (unsigned)g_agreed_through);
+            follow_refuse_nack(epoch, mismatch, load, target, slot, detail);
+            return;
+        }
+    }
     /* New epoch while TipHold: initiator span-cap committed and reopened —
      * yield tip-hold so we can follow (was silently dropping SYNC). */
     if (g_rb && rnet_rb_is_tip_holding(g_rb) &&
@@ -9059,31 +9138,6 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
             }
             return;
         }
-    }
-    if (!g_rb)
-        return;
-    /* §87/§101: never reopen an epoch we already committed (tip-hold /
-     * ownership). NACK so the initiator aborts Seal instead of waiting 4s.
-     * Soak: tie-break follow of zombie epoch=8 after tip-hold commit →
-     * rb_baseline hang while peer already left → peer pcap_freeze. */
-    if (!rnet_rb_is_active(g_rb) && epoch == g_last_commit_epoch) {
-        char detail[96];
-        snprintf(detail, sizeof(detail), "already committed (zombie epoch)");
-        follow_refuse_nack(epoch, mismatch, load, target, slot, detail);
-        return;
-    }
-    /* §87/§101: load strictly behind agreed tip rewinds into a dead timeline
-     * (soak: follow load=1808 after commit tip=1852; session-136 load=3184
-     * vs agreed tip=3200 → silent REFUSED ×100 + seal timeout). load==agreed
-     * is the ownership-chain skip-snap continue and stays legal. */
-    if (!joint && !rnet_rb_is_active(g_rb) && g_agreed_valid && load < g_agreed_through &&
-        !g_joining) {
-        char detail[96];
-        snprintf(detail, sizeof(detail),
-                 "behind agreed tip=%u (zombie load)",
-                 (unsigned)g_agreed_through);
-        follow_refuse_nack(epoch, mismatch, load, target, slot, detail);
-        return;
     }
     if (rnet_rb_is_active(g_rb)) {
         /* §60/§61: tip-extend same-epoch is handled above. Same-epoch BEGIN
@@ -9174,9 +9228,7 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
         int skip_ok = (g_ownership_skip_snap && g_agreed_valid &&
                        load == g_agreed_through) ||
                       (joint && g_pin_valid && g_pin_tick == load);
-        int media_kf_ok = rb_media_kf_enabled() &&
-                          ((wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) ||
-                           rb_want_heal_kf(mismatch, load));
+        int media_kf_ok = media_kf;
         if (!skip_ok && !media_kf_ok && sess() &&
             rnet_session_sim_tick(sess()) <= load) {
             /* Not there yet (a slow peer): the initiator's inputs up to its
@@ -9263,10 +9315,7 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
          * while choose_load raises to a near-tip media snap — same trust as
          * missing-snap OK (host KF probe/transfer). Do not NACK. */
         if (!joint && have_f && load > frontier) {
-            int media_kf_ok = rb_media_kf_enabled() &&
-                              ((wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) ||
-                               rb_fmv_tick_unsafe_for_episode(load) ||
-                               rb_fmv_tick_unsafe_for_episode(mismatch));
+            int media_kf_ok = media_kf;
             if (media_kf_ok) {
                 fprintf(stderr,
                         "psxrecomp: rb follow MEDIA-KF allow load=%u past "
@@ -9318,9 +9367,7 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
     }
     psx_netplay_timesync_on_episode_boundary();
     clear_episode_wire_state();
-    if (rb_media_kf_enabled() &&
-        ((wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) ||
-         rb_want_heal_kf(mismatch, load))) {
+    if (media_kf) {
         g_media_kf_episode = 1;
         g_media_kf_ready = 0;
         g_media_kf_host_armed = 0;
