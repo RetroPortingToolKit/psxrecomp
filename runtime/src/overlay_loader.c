@@ -2037,7 +2037,7 @@ static void warn_on_cgtag_mismatch(const char *tier) {
     char expect[64];
     snprintf(expect, sizeof expect, "cg%d_%08x_gc%08x_f%u",
              PSX_OVERLAY_CODEGEN_VER, (unsigned)PSX_OVERLAY_CODEGEN_HASH,
-             (unsigned)s_config_hash, (unsigned)PSX_OVERLAY_FLAVOR);
+             (unsigned)s_config_hash, (unsigned)PSX_OVERLAY_RUNTIME_FLAVOR);
     snprintf(pattern, sizeof pattern, "%s/cg*", base);
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
@@ -2065,7 +2065,7 @@ static void warn_on_cgtag_mismatch(const char *tier) {
              s_cache_dir, s_game_id, tier, PSX_OVERLAY_ARCH_ABI);
     snprintf(expect, sizeof expect, "cg%d_%08x_gc%08x_f%u",
              PSX_OVERLAY_CODEGEN_VER, (unsigned)PSX_OVERLAY_CODEGEN_HASH,
-             (unsigned)s_config_hash, (unsigned)PSX_OVERLAY_FLAVOR);
+             (unsigned)s_config_hash, (unsigned)PSX_OVERLAY_RUNTIME_FLAVOR);
     if (psx_overlay_posix_find_other_cache_tag(base, expect, found,
                                                sizeof(found))) {
         loader_log("*** OVERLAY CACHE HASH MISMATCH: this build reads %s/%s but "
@@ -2214,7 +2214,7 @@ static void scan_tier_cache_dirs(const char *tier_name, int tier) {
     snprintf(dir, sizeof(dir), "%s/%s/%s/%s/cg%d_%08x_gc%08x_f%u",
              s_cache_dir, s_game_id, tier_name, PSX_OVERLAY_ARCH_ABI,
              PSX_OVERLAY_CODEGEN_VER, (unsigned)PSX_OVERLAY_CODEGEN_HASH,
-             (unsigned)s_config_hash, (unsigned)PSX_OVERLAY_FLAVOR);
+             (unsigned)s_config_hash, (unsigned)PSX_OVERLAY_RUNTIME_FLAVOR);
     scan_one_cache_dir(dir, tier);
     abi_preflight_sweep(dir);
     /* KUSEG and KSEG1 shards: per-segment subdirectories of the same tag. */

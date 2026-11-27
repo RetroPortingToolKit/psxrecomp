@@ -9,6 +9,41 @@ both implementations or offer live implementation switching.
 
 ## Selecting a build
 
+Normal ENHANCED builds select the strict host-native BIOS executive
+(`PSX_NATIVE_KERNEL=ON`). It reads the original disc's boot executable, owns
+kernel initialization and supported BIOS services, and reports unsupported
+services instead of dispatching them into firmware. Writable guest vectors,
+tables, SDK patches, RAM and runtime overlays retain their ordinary byte guards
+and dispatch paths. The `bios-kernel` execution family identifies the selected
+executive and its source contract. REFERENCE targets retain their separately
+selected firmware implementation; they do not inherit another target's native
+compile definition.
+
+The native event wait advances to device deadlines while retaining a guest
+continuation, so interrupts, thread changes and current-build snapshots can
+resume a waiting call. Native service coverage is qualified by title and route;
+an executive identity alone does not establish gameplay, native saves or a
+cross-build netplay profile.
+
+SDK kernel reinitialization uses a separate guest-resident kernel heap and
+publishes its own event, process and thread tables through the ordinary kernel
+globals. Native C0 interrupt registration publishes writable 16-byte HandlerInfo nodes
+into that same priority chain, so guest prepend, unlink and callback patches
+remain effective. GetSystemInfo's guarded native thunk also retains the two
+instruction immediates that SDK initialization reads to locate its writable
+thread/event/stack configuration. None of these operations copies or executes
+firmware instructions.
+
+The native backup-unit provider publishes writable File/Device records and
+honors device callback overrides. It supports synchronous memory-card file
+open, seek, read, write, close, directory iteration and format, plus deferred
+directory loading and asynchronous file transfers. Descriptor, cursor and pending
+transfer state lives in guest RAM; original
+directory checksums, block chains and the shared atomic card-file publisher
+remain authoritative. Pending transfers retain their accepted sector and buffer
+independently of later seeks; completion advances the live cursor and publishes
+the backup-unit, file and raw-card notifications in their operation order.
+
 Configure separate output directories with `-DPSX_EXECUTION_PROFILE=ENHANCED`
 (default) or `-DPSX_EXECUTION_PROFILE=REFERENCE`. Oracle runtime targets always
 select REFERENCE. The setting selects only declared implementation families;
@@ -185,3 +220,33 @@ prove that a normal GTE call after HLE still arms its own latency.
 Title promotion additionally needs isolated HLE/LLE caller-result comparisons,
 measured useful gameplay throughput/load time, clean audio, and owner playtest
 acceptance. Preserve the LLE floor even when it is slower than real time.
+
+
+The native BIOS PAD provider owns `InitPAD2`/`StartPAD2`/`StopPAD2` and
+`PAD_init2`/`PAD_dr`. It publishes the existing SIO device packets directly
+into writable guest buffers instead of executing firmware serial polling.
+PAD and card work share one writable priority-2 `HandlerInfo`; removing or
+patching that node affects the actual delivery path. Buffer pointers, enable
+state and the legacy packed-button destination live in guest RAM, so current
+snapshots and replay state retain them. The legacy API keeps its two
+byte-swapped active-low port halfwords and its digital/NeGcon filtering.
+Unknown services and invalid packet/buffer contracts still fail explicitly.
+
+The ABI and shared handler order follow the primary OpenBIOS
+[driver](https://github.com/pcsx-redux/nugget/blob/main/openbios/sio0/driver.c)
+and [legacy PAD routines](https://github.com/pcsx-redux/nugget/blob/main/openbios/sio0/pad.c).
+
+Older SDK `_patch_pad` routines also derive start/stop callbacks and writable
+patch storage from the `ChangeClearPAD` table entry. The native table exposes
+those addresses; intact callback markers update the same guest pad-enable
+state, while edited markers remain owned by the guest. This follows the
+OpenBIOS [PAD counterpatch](https://github.com/pcsx-redux/nugget/blob/main/openbios/patches/patch_pad_2.c).
+
+
+Mutable kernel prefixes may branch or fall through to native BIOS marker entries. Overlay
+code generation keeps an intact marker as an external CPS transfer through the
+normal dispatcher, whose live-word check retains ownership only while the
+marker is intact. Edited marker bytes remain ordinary guest code. The selected
+native BIOS provider adds overlay flavor bit 4, and codegen version 19 excludes
+older cache units that could inline a marker as a no-op. The original static
+game-code path does not select this overlay-only boundary contract.
