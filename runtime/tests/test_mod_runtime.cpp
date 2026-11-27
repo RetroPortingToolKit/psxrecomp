@@ -138,15 +138,6 @@ static int hud_calls;
 static void old_session_hud(int, int, void*) { ++hud_calls; }
 static int hd_replacements_value, hd_reload_calls;
 static std::string hd_root;
-/* Renderer installation is outside this registry fixture. Keep its scan
- * boundary explicit; real HD install validation has its own production tests. */
-extern "C" int gpu_hd_textures_validate_install(const char* input, const char*,
-    char* resolved, size_t resolved_capacity, char* message, size_t capacity) {
-    if (message && capacity) message[0] = 0;
-    if (!input || !fs::exists(input)) return 0;
-    if (resolved && resolved_capacity) std::snprintf(resolved, resolved_capacity, "%s", input);
-    return 1;
-}
 extern "C" void gpu_hd_textures_shutdown(void) { ++hd_shutdown_calls; hd_root.clear(); }
 extern "C" int gpu_hd_textures_configure(const char* root, int replacements, int dump,
                                           char*, size_t) {
