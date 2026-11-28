@@ -14,16 +14,22 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#if defined(PSX_TEST_OBSERVATION)
+#include "../src/spu_observation_time.c"
+int psx_in_device_service;
+static unsigned device_observations;
+void psx_devices_observe(void) { ++device_observations; }
+#undef psx_get_cycle_count
+#else
 #include "../src/spu.c"
+#endif
 
 uint64_t s_frame_count;
+uint64_t psx_cycle_count;
+#define g_cycle psx_cycle_count
 #if defined(PSX_TEST_SCHEDULER)
 #include "interrupts.h"
 void psx_set_midframe_audio_pump(void (*fn)(void));
-uint64_t psx_cycle_count;
-#define g_cycle psx_cycle_count
-#else
-static uint64_t g_cycle;
 #endif
 uint64_t psx_get_cycle_count(void) { return g_cycle; }
 void audio_trace_pcm(int tap, const int16_t *stereo, int frames) { (void)tap; (void)stereo; (void)frames; }
@@ -109,7 +115,14 @@ static void test_snapshot_keeps_clock_phase(void) {
           "current and pre-clock snapshot lengths validate, others do not");
 
     g_cycle = 768u * 5000u + 400u;               /* restored guest clock, same phase */
+#if defined(PSX_TEST_OBSERVATION)
+    const unsigned before_restore = device_observations;
+#endif
     CHECK(spu_snapshot_read(snap, n) == 1, "snapshot with clock phase loads");
+#if defined(PSX_TEST_OBSERVATION)
+    CHECK(device_observations == before_restore,
+          "snapshot restore never services devices against a partially restored clock");
+#endif
     spu_catch_up();
     CHECK(spu_output_available() == 0u, "no samples owed right after restore");
     g_cycle += 367u;

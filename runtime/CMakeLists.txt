@@ -3258,6 +3258,11 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_executable(spu_guest_clock_test tests/test_spu_guest_clock.c)
     target_include_directories(spu_guest_clock_test PRIVATE include)
     add_test(NAME spu_guest_clock_test COMMAND spu_guest_clock_test)
+    add_executable(spu_restore_observation_test tests/test_spu_guest_clock.c)
+    target_include_directories(spu_restore_observation_test PRIVATE include)
+    target_compile_definitions(spu_restore_observation_test PRIVATE
+        PSX_TEST_OBSERVATION=1 PSX_OBSERVATION_TIME=1)
+    add_test(NAME spu_restore_observation_test COMMAND spu_restore_observation_test)
     add_executable(host_sampler_test tests/test_host_sampler.c src/host_sampler.c)
     target_include_directories(host_sampler_test PRIVATE include)
     target_compile_definitions(host_sampler_test PRIVATE PSX_NO_DEBUG_TOOLS=1)
