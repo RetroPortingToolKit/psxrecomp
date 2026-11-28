@@ -10,11 +10,16 @@ PsxBiosHlePlan psx_bios_hle_plan(PsxBiosHleRequest req)
     p.call_hle_denied  = 0;
     p.boot_skip_denied = 0;
 
-    /* Axis 1 — call-HLE requires a supported event table ABI. */
+    /* Axis 1 — call-HLE. Anchor-gated on deliver_event_ret: servicing B0
+     * events without the kernel's own DeliverEvent return address would send a
+     * delivered callback back to the wrong PC. An image that omits the anchor
+     * declares the tier structurally unavailable and config/env cannot force
+     * it on (OpenBIOS bring-up: the shell menu hung in a CD-event wait under
+     * HLE, booted fine under LLE). */
     const int want_call = (req.bios_hle != 0);
     if (want_call) {
-        if (req.have_event_abi) p.call_hle = 1;
-        else                    p.call_hle_denied = 1;
+        if (req.have_deliver_event_ret) p.call_hle = 1;
+        else                            p.call_hle_denied = 1;
     }
 
     /* Axis 2 — boot-skip. Derived from the REQUESTED bios_hle, deliberately
