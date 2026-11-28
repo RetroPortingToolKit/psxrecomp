@@ -18,7 +18,7 @@ int main() {
     const auto root = std::filesystem::temp_directory_path() /
                       ("psx-atomic-write-" + std::to_string(nonce));
     std::filesystem::create_directories(root);
-    const auto target = root / "receipt.json";
+    const auto target = root / std::filesystem::u8path(u8"\u8A18\u9332-\u00E9.json");
     {
         std::ofstream old(target, std::ios::binary);
         old << "old";

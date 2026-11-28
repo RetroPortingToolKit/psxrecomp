@@ -3,6 +3,7 @@
 #include "recomp_launcher.h"
 #include "host_enhancements.h"
 #include "video_texture_filter.h"
+#include "psx_path_utf8.h"
 #include <map>
 #include <sstream>
 #include <iomanip>
@@ -54,6 +55,15 @@ static int no_set(void*,const char*,const char*,const char*,const char*) { retur
 static int no_enable(void*,const char*,const char*,int) { return 0; }
 
 int main() {
+    const std::string unicode_utf8="cards/\xE6\x97\xA5\xE6\x9C\xAC-\xC3\xA9";
+    const auto unicode_path=std::filesystem::u8path(unicode_utf8);
+    const auto unicode_baseline=player_settings_baseline(false,false,false,100,unicode_path);
+    assert(unicode_baseline.at("memcard.dir")==unicode_utf8);
+    PSXRecompV4::UserSettings unicode_preferences;
+    unicode_preferences.has_memcard_dir=true;unicode_preferences.memcard_dir=unicode_path;
+    std::string exposed_path;
+    assert(player_setting_typed_get(unicode_preferences,"memcard.dir",exposed_path));
+    assert(exposed_path==unicode_utf8);
     const auto path=std::filesystem::temp_directory_path()/
         ("player-settings-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".toml");
     struct Cleanup { std::filesystem::path p; ~Cleanup(){std::error_code ec;std::filesystem::remove(p,ec);} } cleanup{path};
