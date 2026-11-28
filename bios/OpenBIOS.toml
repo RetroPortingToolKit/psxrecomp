@@ -111,12 +111,21 @@ resume    = "none"              # 0x8017EAA0 (_patch_card payload)
 # 0x460C, 0x461C). They are data, not instructions, so they unbless nothing
 # and a range there would only widen what the verifier stops checking.
 
-# The event HLE provider recognizes the pinned EvCB layout by image SHA-256.
-# Its callbacks return through a nested dispatcher call using the caller's
-# link. There is no firmware-specific deliver_event_ret export.
+# HLE anchors: only the boot-skip anchor is exported. deliver_event_ret is
+# deliberately ABSENT (0) until the B0 event services are validated against
+# this kernel's EvCB behavior (they are believed compatible — OpenBIOS
+# reimplements the documented kernel ABI, EvCB anchor 0x120/0x124, TCB
+# 0x108/0x110 — but believed is not verified). Absent = the kernel-call HLE
+# tier is STRUCTURALLY UNAVAILABLE here and config/env cannot force it on.
 #
-# The boot-skip still depends only on shell_entry_phys. The two decisions are
-# independent in psx_bios_hle_plan().
+# That refusal is scoped to kernel calls ONLY. The boot-skip is a separate axis
+# gated on shell_entry_phys alone and works under pure LLE, so `bios_hle` (and
+# the deprecated `fast_boot` alias) skips the boot animation and goes straight
+# to the game on THIS image exactly as it does on retail SCPH-1001 — the flag
+# means one thing on every BIOS. Both axes are decided in one pure place,
+# psx_bios_hle_plan() (runtime/include/bios_hle_plan.h), which exists because
+# deriving the boot-skip from the anchor-gated call tier silently took the skip
+# away on this image (fixed 2026-07-27).
 #
 # shell_entry_phys was verified against the generated C (2026-07-23):
 #  - startShell (ELF symbol, ROM 0xBFC074DC) ends `lui $t9,0x8003; jr $t9`
