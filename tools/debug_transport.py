@@ -15,6 +15,13 @@ class DebugError(RuntimeError):
     """A transport, framing, schema or runtime command failure."""
 
 
+def available_local_port():
+    """Choose an unused loopback port immediately before an owned test launch."""
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        return listener.getsockname()[1]
+
+
 class DebugClient:
     def __init__(self, port: int, *, timeout: float = 3.0,
                  max_response_bytes: int = 1024 * 1024):
