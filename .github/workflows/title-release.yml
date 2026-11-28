@@ -415,7 +415,7 @@ jobs:
         set -euo pipefail
         for archive in dist/"${PSX_ZIP_PREFIX}"-*.zip; do
           list="$(unzip -Z1 "${archive}")"
-          if unzip -p "${archive}" '*.execution.json' 2>/dev/null | grep -q 'native-executive-1-v1'; then
+          if unzip -p "${archive}" '*.execution.json' 2>/dev/null | grep 'native-executive-1-v1'; then
             echo "::error::release product uses the withdrawn native BIOS executive: ${archive}" >&2
             exit 1
           fi
