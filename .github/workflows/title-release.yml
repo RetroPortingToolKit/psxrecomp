@@ -1,0 +1,618 @@
+name: PSX title release
+'on':
+  workflow_call:
+    inputs:
+      title:
+        required: true
+        type: string
+      zip-prefix:
+        required: true
+        type: string
+      platforms:
+        required: true
+        type: string
+      package-kind:
+        required: true
+        type: string
+      package-script:
+        required: true
+        type: string
+      extra-package-script:
+        required: false
+        type: string
+        default: ''
+      extra-cmake-args:
+        required: false
+        type: string
+        default: ''
+      require-retail-backend:
+        required: false
+        type: boolean
+        default: false
+      lint-boot-exe:
+        required: false
+        type: boolean
+        default: true
+      portable-linux:
+        required: false
+        type: boolean
+        default: false
+      extra-check-script:
+        required: false
+        type: string
+        default: ''
+      provider-ref:
+        required: true
+        type: string
+      version:
+        required: false
+        type: string
+        default: ''
+      bump:
+        required: false
+        type: string
+        default: patch
+      publish:
+        required: false
+        type: boolean
+        default: true
+      channel:
+        required: false
+        type: string
+        default: public
+      reuse-cached-emitters:
+        required: false
+        type: boolean
+        default: true
+permissions:
+  contents: write
+env:
+  CMAKE_BUILD_TYPE: Release
+jobs:
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      publish: ${{ steps.meta.outputs.publish }}
+      reuse_emitters: ${{ steps.meta.outputs.reuse_emitters }}
+    steps:
+    - name: Checkout (tags for auto-bump)
+      if: github.event_name == 'workflow_dispatch'
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: '0'
+    - name: Normalize version / tag
+      id: meta
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${PSX_INPUT_EVENT}" == "workflow_dispatch" ]]; then
+          RAW="${PSX_INPUT_VERSION}"
+          BUMP="${PSX_INPUT_BUMP}"
+          PUBLISH="${PSX_INPUT_PUBLISH}"
+          REUSE="${PSX_INPUT_REUSE}"
+        else
+          RAW="${PSX_INPUT_REF}"
+          BUMP="patch"
+          PUBLISH="true"
+          REUSE="true"
+        fi
+        RAW="$(printf '%s' "${RAW}" | tr -d '[:space:]')"
+        if [[ -z "${RAW}" ]]; then
+          # Prefer shared helper when present (optional); else inline bump.
+          if [[ -x psxrecomp/tools/ci/normalize_version.sh ]]; then
+            eval "$(bash psxrecomp/tools/ci/normalize_version.sh --next "${BUMP}" | grep -E '^(VERSION|TAG)=')"
+            VER="${VERSION}"
+            TAG="${TAG}"
+          else
+            LATEST="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1 || true)"
+            BASE="${LATEST#v}"
+            if [[ -z "${BASE}" && -f VERSION ]]; then
+              BASE="$(tr -d '[:space:]' <VERSION)"
+              BASE="${BASE#v}"
+            fi
+            BASE="${BASE:-0.0.0}"
+            BASE="${BASE%%[-+]*}"
+            IFS=. read -r MA MI PA <<<"${BASE}"
+            MA="${MA:-0}"; MI="${MI:-0}"; PA="${PA:-0}"
+            case "${BUMP}" in
+              major) MA=$((MA + 1)); MI=0; PA=0 ;;
+              minor) MI=$((MI + 1)); PA=0 ;;
+              *) PA=$((PA + 1)) ;;
+            esac
+            VER="${MA}.${MI}.${PA}"
+            TAG="v${VER}"
+            echo "Auto-bumped ${BUMP}: ${LATEST:-none} â†’ ${VER}"
+          fi
+        else
+          VER="${RAW#v}"
+          if [[ ! "${VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][A-Za-z0-9.+-]*)?$ ]]; then
+            echo "::error::invalid version '${RAW}' (want X.Y.Z or vX.Y.Z)"
+            exit 1
+          fi
+          TAG="v${VER}"
+        fi
+        if [[ "${PSX_INPUT_EVENT}" == "workflow_dispatch" ]] && \
+           git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+          echo "::error::tag ${TAG} already exists â€” bump again or pass an explicit version"
+          exit 1
+        fi
+        echo "version=${VER}" >>"$GITHUB_OUTPUT"
+        echo "tag=${TAG}" >>"$GITHUB_OUTPUT"
+        echo "publish=${PUBLISH}" >>"$GITHUB_OUTPUT"
+        echo "reuse_emitters=${REUSE}" >>"$GITHUB_OUTPUT"
+        echo "Using version ${VER} (tag ${TAG}), publish=${PUBLISH}, reuse_emitters=${REUSE}"
+      env:
+        PSX_INPUT_VERSION: ${{ inputs.version }}
+        PSX_INPUT_BUMP: ${{ inputs.bump }}
+        PSX_INPUT_PUBLISH: ${{ inputs.publish }}
+        PSX_INPUT_REUSE: ${{ inputs.reuse-cached-emitters }}
+        PSX_INPUT_REF: ${{ github.ref_name }}
+        PSX_INPUT_EVENT: ${{ github.event_name }}
+  build:
+    name: ${{ matrix.artifact }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.platforms) }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+    - name: Bootstrap portable Linux container
+      if: inputs.portable-linux && runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y --no-install-recommends \
+          ca-certificates curl git libstdc++6 python3 python3-pip unzip
+        python3 -m pip install --no-cache-dir \
+          'cmake==3.30.9' 'tomli==2.2.1'
+
+        # Focal does not package glslc. Use two exact LunarG Focal SDK
+        # packages. Their declared glibc floor is 2.29.
+        curl -fsSLo /tmp/shaderc.deb \
+          https://packages.lunarg.com/vulkan/1.3.283/pool/main/s/shaderc/shaderc_2024.1~rc1-1lunarg20.04-1_amd64.deb
+        curl -fsSLo /tmp/vulkan-headers.deb \
+          https://packages.lunarg.com/vulkan/1.3.283/pool/main/v/vulkan-headers/vulkan-headers_1.3.283.0~rc1-1lunarg20.04-1_all.deb
+        printf '%s  %s\n' \
+          '2e78ad32359737d3654dd49c412f6ff16d4da0c5b2dfc80485aacb0d8d6f70e3' /tmp/shaderc.deb \
+          '1a55db9d5c356580d77331f63359b351e600e05fff2ca63d6835b4d7809c66b1' /tmp/vulkan-headers.deb \
+          | sha256sum -c -
+        dpkg -i /tmp/shaderc.deb /tmp/vulkan-headers.deb
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: '1'
+    - name: Checkout release provider
+      uses: actions/checkout@v4
+      with:
+        repository: RetroPortingToolKit/psxrecomp
+        ref: ${{ inputs.provider-ref }}
+        path: .psx-release-provider
+        persist-credentials: false
+    - name: Pin VERSION
+      shell: bash
+      run: |
+        set -euo pipefail
+        printf '%s\n' "${RELEASE_VERSION}" >VERSION
+        echo "VERSION=$(cat VERSION)"
+    - name: Record framework revisions
+      shell: bash
+      run: bash psxrecomp/tools/ci/record_pins.sh
+    - name: Lint boot-EXE name consistency
+      shell: bash
+      run: bash psxrecomp/tools/ci/check_boot_exe.sh .
+      if: inputs.lint-boot-exe
+    - name: Verify committed game C
+      shell: bash
+      run: bash psxrecomp/tools/ci/check_generated.sh --root .
+      if: inputs.package-kind == 'prebuilt'
+    - name: Verify BIOS backend stamps
+      shell: bash
+      run: bash psxrecomp/tools/ci/check_bios_stamps.sh --framework psxrecomp
+      if: inputs.package-kind == 'prebuilt'
+    - name: Setup host mode (no game C / BIOS backends in CI)
+      shell: bash
+      run: bash psxrecomp/tools/ci/clear_generated.sh
+      if: inputs.package-kind == 'setup'
+    - name: Setup MSYS2 (Windows)
+      if: runner.os == 'Windows'
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: 'true'
+        install: mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-SDL2
+          mingw-w64-x86_64-pkgconf mingw-w64-x86_64-vulkan-headers mingw-w64-x86_64-shaderc curl zip unzip
+    - name: Install deps (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        export TZ=Etc/UTC
+        SUDO=''
+        if command -v sudo >/dev/null 2>&1; then SUDO=sudo; fi
+        ${SUDO} apt-get update
+        # X11 + xtst required when FetchContent builds SDL3 (XTEST).
+        ${SUDO} apt-get install -y --no-install-recommends \
+          build-essential cmake ninja-build pkg-config \
+          libsdl2-dev libgl1-mesa-dev libxtst-dev \
+          libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+          libxfixes-dev libxi-dev libxss-dev libxkbcommon-dev \
+          libasound2-dev libpulse-dev libudev-dev zip \
+          libvulkan-dev binutils ccache
+        if ! command -v glslc >/dev/null 2>&1; then
+          ${SUDO} apt-get install -y --no-install-recommends glslc
+        fi
+    - name: Install deps (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install cmake ninja pkg-config sdl3 \
+          vulkan-headers shaderc molten-vk \
+          || brew install cmake ninja pkg-config sdl2 \
+          vulkan-headers shaderc molten-vk
+    - name: Verify Vulkan build tools
+      run: |
+        set -euo pipefail
+        command -v glslc
+        glslc --version || true
+        HDR=""
+        for candidate in \
+            /mingw64/include/vulkan/vulkan.h \
+            /usr/include/vulkan/vulkan.h \
+            /opt/homebrew/include/vulkan/vulkan.h \
+            /usr/local/include/vulkan/vulkan.h; do
+          if [[ -f "${candidate}" ]]; then
+            HDR="${candidate}"
+            break
+          fi
+        done
+        if [[ -z "${HDR}" ]] && command -v brew >/dev/null 2>&1; then
+          BREW_HDR="$(brew --prefix)/include/vulkan/vulkan.h"
+          if [[ -f "${BREW_HDR}" ]]; then
+            HDR="${BREW_HDR}"
+          fi
+        fi
+        if [[ -z "${HDR}" ]]; then
+          echo "::error::vulkan/vulkan.h not found"
+          exit 1
+        fi
+        echo "Found ${HDR}"
+    - name: Cache SDL3 source
+      if: runner.os != 'macOS'
+      uses: actions/cache@v4
+      with:
+        path: .cache/sdl3-src
+        key: sdl3-3.4.10-src
+    - name: Prefetch SDL3 source
+      if: runner.os != 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Use repo-relative paths for tar: Windows GITHUB_WORKSPACE is D:\â€¦
+        # and GNU tar treats drive-letter abs paths as remote hosts
+        # ("Cannot connect to D"). Prefer prefetch_sdl3.sh when present.
+        OUT=".cache/sdl3-src"
+        sdl3_env() {
+          local abs="${OUT}"
+          if command -v cygpath >/dev/null 2>&1; then
+            abs="$(cygpath -m "${OUT}")"
+          elif [[ -d "${OUT}" ]]; then
+            abs="$(cd "${OUT}" && pwd)"
+          fi
+          echo "PSX_SDL3_SOURCE_DIR=${abs}" >>"$GITHUB_ENV"
+          echo "SDL3 source ready: ${abs}"
+        }
+        if [[ -f "${OUT}/CMakeLists.txt" ]]; then
+          sdl3_env
+          echo "SDL3 source cache hit"
+          exit 0
+        fi
+        if [[ -f psxrecomp/tools/ci/prefetch_sdl3.sh ]]; then
+          chmod +x psxrecomp/tools/ci/prefetch_sdl3.sh
+          bash psxrecomp/tools/ci/prefetch_sdl3.sh --out-dir "${OUT}"
+          exit 0
+        fi
+        # Submodule may predate the helper â€” inline HTTP/1.1 prefetch.
+        echo "prefetch_sdl3.sh missing; using inline curl --http1.1"
+        mkdir -p .cache
+        VER=3.4.10
+        SHA=12b34280415ec8418c864408b93d008a20a6530687ee613d60bfbd20411f2785
+        URL="https://github.com/libsdl-org/SDL/releases/download/release-${VER}/SDL3-${VER}.tar.gz"
+        TAR=".cache/SDL3-${VER}.tar.gz"
+        curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 2 -o "${TAR}" "${URL}"
+        echo "${SHA}  ${TAR}" | sha256sum -c -
+        rm -rf "${OUT}.extracting"
+        mkdir -p "${OUT}.extracting"
+        # --force-local: belt-and-suspenders if a path ever gains a colon.
+        if tar --help 2>&1 | grep -q -- '--force-local'; then
+          tar --force-local -xzf "${TAR}" -C "${OUT}.extracting"
+        else
+          tar -xzf "${TAR}" -C "${OUT}.extracting"
+        fi
+        INNER="$(find "${OUT}.extracting" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+        rm -rf "${OUT}"
+        mv "${INNER}" "${OUT}"
+        rm -rf "${OUT}.extracting"
+        sdl3_env
+    - name: Fetch portable toolchain (Windows emitters)
+      if: runner.os == 'Windows'
+      uses: ./psxrecomp/.github/actions/fetch-toolchain
+      with:
+        artifact: ${{ matrix.artifact }}
+    - name: Emitter cache key
+      id: emitter_cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        SHA="$(git -C psxrecomp rev-parse HEAD)"
+        echo "psxrecomp_sha=${SHA}" >>"$GITHUB_OUTPUT"
+        echo "key=${{ runner.os }}-${{ matrix.artifact }}-emitters-${SHA}" >>"$GITHUB_OUTPUT"
+        echo "psxrecomp SHA ${SHA}"
+    - name: Cache emitters (build-recompiler)
+      id: cache_emitters
+      uses: actions/cache@v4
+      with:
+        path: build-recompiler
+        key: ${{ steps.emitter_cache.outputs.key }}
+    - name: Build recompiler tools (emitters)
+      if: steps.cache_emitters.outputs.cache-hit != 'true' || needs.prepare.outputs.reuse_emitters != 'true'
+      uses: ./psxrecomp/.github/actions/build-emitters
+    - name: Verify emitters present
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Restored cache or fresh build must leave both emitters in place.
+        test -d build-recompiler
+        find build-recompiler -type f \( -name 'psxrecomp-game*' -o -name 'psxrecomp-bios*' \) | head
+        count="$(find build-recompiler -type f \( -name 'psxrecomp-game*' -o -name 'psxrecomp-bios*' \) | wc -l | tr -d ' ')"
+        if [[ "${count}" -lt 2 ]]; then
+          echo "::error::expected psxrecomp-game + psxrecomp-bios under build-recompiler (found ${count})"
+          exit 1
+        fi
+    - name: Setup ccache (Linux/macOS)
+      if: runner.os != 'Windows'
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: game-${{ matrix.artifact }}
+        max-size: 2G
+    - name: Configure & build the game
+      env:
+        CMAKE_OSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target || '' }}
+        PSX_PACKAGE_KIND: ${{ inputs.package-kind }}
+        PSX_EXTRA_CMAKE_ARGS: ${{ inputs.extra-cmake-args }}
+        PSX_REQUIRE_RETAIL_BACKEND: ${{ inputs.require-retail-backend }}
+        PSX_RELEASE_CHANNEL: ${{ github.event_name == 'push' && 'public' || inputs.channel }}
+      run: |
+        bash .psx-release-provider/tools/ci/build_release_host.sh
+    - name: Package selected product
+      env:
+        PSX_PACKAGE_SCRIPT: ${{ inputs.package-script }}
+        PSX_EXTRA_PACKAGE_SCRIPT: ${{ inputs.extra-package-script }}
+      run: |
+        set -euo pipefail
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          export PSXRECOMP_RUNTIME_BIN_DIR=/mingw64/bin BPE_RUNTIME_BIN_DIR=/mingw64/bin
+        fi
+        export RELEASE_VERSION
+        bash "${PSX_PACKAGE_SCRIPT}" build-ci "${{ matrix.artifact }}" build-recompiler
+        if [[ -n "${PSX_EXTRA_PACKAGE_SCRIPT}" ]]; then
+          bash "${PSX_EXTRA_PACKAGE_SCRIPT}" build-ci "${{ matrix.artifact }}" build-recompiler
+        fi
+        ls -la dist/
+    - name: Exclude loading packages from every release product
+      env:
+        PSX_ZIP_PREFIX: ${{ inputs.zip-prefix }}
+      run: |
+        set -euo pipefail
+        for archive in dist/"${PSX_ZIP_PREFIX}"-*.zip; do
+          list="$(unzip -Z1 "${archive}")"
+          if unzip -p "${archive}" '*.execution.json' 2>/dev/null | grep -E 'native-executive-[0-9]+-v[0-9]+'; then
+            echo "::error::release product uses the withdrawn native BIOS executive: ${archive}" >&2
+            exit 1
+          fi
+          if printf '%s\n' "${list}" | grep -Eiq '(^|/)psx\.enhancement\.(cd-speed|fast-loading)(/|[._-]|$)'; then
+            echo "::error::release product contains an excluded loading package: ${archive}" >&2
+            exit 1
+          fi
+        done
+    - name: Verify zip contents
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Assert the artifact, not the intent: every rule below was once
+        # "the packager does that by default" and shipped broken anyway.
+        ZIP=$(ls dist/${PSX_ZIP_PREFIX}-*-"${{ matrix.artifact }}".zip | head -1)
+        echo "checking ${ZIP}"
+        LIST="$(unzip -Z1 "${ZIP}")"
+        # 1. It is a game: the executable, the bundled OpenBIOS, and the
+        #    runtime data sit at the root.
+        for must in 'bios/openbios.bin' 'bios/OpenBIOS.LICENSE' 'game.toml' 'psx_game_version.txt' 'assets/fonts/' 'licenses/recomp-ui-LICENSE' 'assets/fonts/NOTICE.md' 'assets/img/NOTICE.md' 'mods/bundled/'; do
+          if ! grep -q "^${must}" <<<"${LIST}"; then
+            echo "::error::release zip lacks ${must}" >&2
+            printf '%s\n' "${LIST}" | head -40 >&2
+            exit 1
+          fi
+        done
+        MANIFESTS=$(grep -c 'mods/bundled/.*/manifest\.toml' <<<"${LIST}" || true)
+        echo "mod manifests in zip: ${MANIFESTS}"
+        if [[ "${MANIFESTS}" -lt 1 ]]; then
+          echo "::error::release zip ships no mod catalog (mods/bundled/*/manifest.toml)" >&2
+          exit 1
+        fi
+        # 2. It is NOT a build kit: no framework tree, no CLI, no emitters at
+        #    the root, no sources, no generated C.
+        for never in '^psxrecomp/' '^recomp-ui/' '^psxrecomp_cli.py' '^psxrecomp-game' '^psxrecomp-bios' \
+                     '^generated/' '^seeds/' '^CMakeLists.txt' '^codegen_setup\.' '^toolchain/' '^src/'; do
+          if grep -qE "${never}" <<<"${LIST}"; then
+            echo "::error::release zip contains build-kit content matching ${never}" >&2
+            grep -E "${never}" <<<"${LIST}" | head -20 >&2
+            exit 1
+          fi
+        done
+        if grep -E '\.c$' <<<"${LIST}" | grep -qv '^overlay_toolchain/'; then
+          echo "::error::release zip contains C sources outside overlay_toolchain/" >&2
+          grep -E '\.c$' <<<"${LIST}" | grep -v '^overlay_toolchain/' | head -20 >&2
+          exit 1
+        fi
+        # 2b. A bundled TinyCC ships its LGPL-2.1 notice beside the binary and
+        #     in licenses/ (its win64 zip carries none of its own).
+        if grep -q '^overlay_toolchain/tcc/tcc\.exe$' <<<"${LIST}"; then
+          for must in 'overlay_toolchain/tcc/COPYING' 'licenses/TinyCC-LICENSE.txt'; do
+            if ! grep -qx "${must}" <<<"${LIST}"; then
+              echo "::error::release zip bundles TinyCC without ${must}" >&2
+              exit 1
+            fi
+          done
+        fi
+        # 3. No BIOS dump, disc, or memory card; the only image is OpenBIOS.
+        if grep -iE '(^|/)SCPH|\.(cue|iso|img|chd|mcd|mcr)$' <<<"${LIST}" | grep -qv '\.toml$'; then
+          echo "::error::release zip contains a BIOS dump, disc, or memory card" >&2
+          grep -iE '(^|/)SCPH|\.(cue|iso|img|chd|mcd|mcr)$' <<<"${LIST}" | grep -v '\.toml$' >&2
+          exit 1
+        fi
+        if grep -iE '\.bin$' <<<"${LIST}" | grep -qv '^bios/openbios.bin$'; then
+          echo "::error::release zip contains a .bin other than bios/openbios.bin" >&2
+          grep -iE '\.bin$' <<<"${LIST}" | grep -v '^bios/openbios.bin$' >&2
+          exit 1
+        fi
+        # 4. Per-machine mod state never ships: state.toml is one machine's
+        #    selections, mods/installed/ is one developer's installs, and
+        #    developer-channel packages are unfinished work.
+        if grep -q 'state\.toml' <<<"${LIST}"; then
+          echo "::error::release zip contains mods/state.toml (per-machine state)" >&2
+          exit 1
+        fi
+        if grep -q 'mods/installed/' <<<"${LIST}"; then
+          echo "::error::release zip contains mods/installed (per-machine installs)" >&2
+          exit 1
+        fi
+        if unzip -p "${ZIP}" 'mods/**/manifest.toml' 2>/dev/null \
+             | grep -Eq '^[[:space:]]*channel[[:space:]]*=[[:space:]]*"developer"'; then
+          echo "::error::release zip contains developer-channel mod packages" >&2
+          exit 1
+        fi
+        echo "zip verified: compiled game, bundled OpenBIOS, mod catalog, no kit / dumps / dev mods"
+      if: inputs.package-kind == 'prebuilt'
+      env:
+        PSX_ZIP_PREFIX: ${{ inputs.zip-prefix }}
+    - name: Verify zip ships the mod catalog
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Gate the release on the catalog actually being inside the zip.
+        # The packager stages mods/ by default, but this shipped broken for
+        # a long time precisely because nothing checked: the Mods page was
+        # empty in every release and the build logs looked fine. Assert the
+        # artifact, not the intent.
+        ZIP=$(ls dist/${PSX_ZIP_PREFIX}-*-"${{ matrix.artifact }}".zip | head -1)
+        echo "checking ${ZIP}"
+        MANIFESTS=$(unzip -l "${ZIP}" | grep -c 'mods/bundled/.*/manifest\.toml' || true)
+        echo "mod manifests in zip: ${MANIFESTS}"
+        if [[ "${MANIFESTS}" -lt 1 ]]; then
+          echo "::error::release zip ships no mod catalog (mods/bundled/*/manifest.toml)" >&2
+          unzip -l "${ZIP}" | head -40 >&2
+          exit 1
+        fi
+        # Per-machine mod state must never ship: preloaded catalogs are
+        # default-disabled, so a leaked state.toml makes one machine's
+        # selections everybody's defaults.
+        if unzip -l "${ZIP}" | grep -q 'state\.toml'; then
+          echo "::error::release zip contains mods/state.toml (per-machine state)" >&2
+          exit 1
+        fi
+        # Same rule, other half: mods/installed/ is the launcher-owned tree of
+        # .psxmod archives a developer installed as a player would. Only
+        # mods/bundled/ is build output, and only build output ships.
+        if unzip -l "${ZIP}" | grep -q 'mods/installed/'; then
+          echo "::error::release zip contains mods/installed (per-machine installs)" >&2
+          exit 1
+        fi
+        # Developer-channel packages are unfinished work that ships with
+        # local builds only. The packager drops them under CI automatically
+        # (it keys off $CI); assert the outcome so a future change to that
+        # default cannot quietly publish in-progress mods.
+        if unzip -p "${ZIP}" 'mods/**/manifest.toml' 2>/dev/null \
+             | grep -Eq '^[[:space:]]*channel[[:space:]]*=[[:space:]]*"developer"'; then
+          echo "::error::release zip contains developer-channel mod packages" >&2
+          exit 1
+        fi
+        echo "mod catalog verified in ${ZIP} (no developer-channel packages)"
+      if: inputs.package-kind == 'setup'
+      env:
+        PSX_ZIP_PREFIX: ${{ inputs.zip-prefix }}
+    - name: Title-specific checks
+      if: inputs.extra-check-script != ''
+      env:
+        PSX_EXTRA_CHECK_SCRIPT: ${{ inputs.extra-check-script }}
+        PSX_ARTIFACT: ${{ matrix.artifact }}
+      run: |
+        bash "${PSX_EXTRA_CHECK_SCRIPT}"
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.zip-prefix }}-${{ matrix.artifact }}
+        path: dist/${{ inputs.zip-prefix }}-*-${{ matrix.artifact }}*.zip
+        if-no-files-found: error
+        retention-days: '30'
+    container: ${{ matrix.container || '' }}
+  release:
+    name: GitHub Release
+    needs:
+    - prepare
+    - build
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout (for tagging on workflow_dispatch)
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: '0'
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        merge-multiple: 'false'
+    - name: Flatten zips
+      run: |
+        set -euo pipefail
+        mkdir -p dist
+        find artifacts -type f -name "${PSX_ZIP_PREFIX}-*.zip" -exec cp -v {} dist/ \;
+        ls -la dist/
+      env:
+        PSX_ZIP_PREFIX: ${{ inputs.zip-prefix }}
+        PSX_GAME_TITLE: ${{ inputs.title }}
+    - name: Ensure release tag exists
+      if: github.event_name == 'workflow_dispatch'
+      env:
+        TAG: ${{ needs.prepare.outputs.tag }}
+        PSX_ZIP_PREFIX: ${{ inputs.zip-prefix }}
+        PSX_GAME_TITLE: ${{ inputs.title }}
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+          git tag -a "${TAG}" -m "${PSX_GAME_TITLE} ${TAG}"
+        fi
+        if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+          git push origin "refs/tags/${TAG}"
+        fi
+    - name: Publish release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ needs.prepare.outputs.tag }}
+        name: ${{ inputs.title }} ${{ needs.prepare.outputs.tag }}
+        files: |
+          dist/${{ inputs.zip-prefix }}-*.zip
+        generate_release_notes: 'true'
+        fail_on_unmatched_files: 'true'
+        target_commitish: ${{ github.sha }}
