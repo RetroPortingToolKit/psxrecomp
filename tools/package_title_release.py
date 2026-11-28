@@ -448,15 +448,20 @@ class Toolchain:
         self.env = dict(os.environ)
         if plat == 'windows':
             self.bin = Path(toolchain_bin).resolve()
-            for tool in ('cmake.exe', 'ninja.exe', 'gcc.exe', 'g++.exe', 'objdump.exe'):
+            for tool in ('cmake.exe', 'ninja.exe'):
                 if not (self.bin / tool).is_file():
                     fail('%s missing from %s (pass --toolchain-bin)' % (tool, self.bin))
+            def native_tool(*names):
+                found = next((self.bin / name for name in names if (self.bin / name).is_file()), None)
+                if not found:
+                    fail('%s missing from %s (pass --toolchain-bin)' % (' or '.join(names), self.bin))
+                return str(found)
             self.env['PATH'] = str(self.bin) + os.pathsep + self.env.get('PATH', '')
             self.cmake = str(self.bin / 'cmake.exe')
-            self.gcc = str(self.bin / 'gcc.exe')
-            self.gxx = str(self.bin / 'g++.exe')
+            self.gcc = native_tool('gcc.exe', 'clang.exe')
+            self.gxx = native_tool('g++.exe', 'clang++.exe')
             self.make = str(self.bin / 'ninja.exe')
-            self.objdump = str(self.bin / 'objdump.exe')
+            self.objdump = native_tool('objdump.exe', 'llvm-objdump.exe')
             self.exe_suffix = '.exe'
         else:
             for tool in ('cmake', 'gcc', 'g++'):
@@ -1043,6 +1048,26 @@ def strip_regional_toolchain(ctx):
             fail('native strip tool missing for regional emitter staging')
         for name in ('psxrecomp-game.exe', 'psxrecomp-bios.exe'):
             run([stripper, '--strip-debug', toolchain / name], 'strip staged emitter')
+        compiler_root = Path(ctx.tc.bin).parent
+        llvm_notice = compiler_root / 'LICENSE.TXT'
+        if llvm_notice.is_file():
+            copy(llvm_notice, ctx.stage / 'licenses/LLVM-LICENSE.txt')
+        for source in (compiler_root / 'x86_64-w64-mingw32/share/mingw32').glob('COPYING*'):
+            copy(source, ctx.stage / 'licenses' / source.name)
+        for relative in ('deps/share/licenses/SDL3/LICENSE.txt', 'share/licenses/SDL3/LICENSE.txt'):
+            notice = compiler_root / relative
+            if notice.is_file():
+                copy(notice, ctx.stage / 'licenses/SDL3-LICENSE.txt')
+                break
+        for relative in ('deps/include/zlib.h', 'include/zlib.h'):
+            header = compiler_root / relative
+            if header.is_file():
+                text = read_text(header)
+                if '*/' in text:
+                    notice = ctx.stage / 'licenses/zlib-NOTICE.txt'
+                    notice.parent.mkdir(parents=True, exist_ok=True)
+                    notice.write_text(text[:text.index('*/') + 2] + '\n', encoding='utf-8')
+                break
     for relative, old, new in (
             ('compile_overlays.py', 'C:/Users/...', '<Windows user path>'),
             ('include/audio_trace.h', 'F:/Projects/_audio_round2/ROUND2_PLAN.md',
