@@ -401,6 +401,18 @@ jobs:
           bash "${PSX_EXTRA_PACKAGE_SCRIPT}" build-ci "${{ matrix.artifact }}" build-recompiler
         fi
         ls -la dist/
+    - name: Exclude loading packages from every release product
+      env:
+        PSX_ZIP_PREFIX: ${{ inputs.zip-prefix }}
+      run: |
+        set -euo pipefail
+        for archive in dist/"${PSX_ZIP_PREFIX}"-*.zip; do
+          list="$(unzip -Z1 "${archive}")"
+          if printf '%s\n' "${list}" | grep -Eiq '(^|/)psx\.enhancement\.(cd-speed|fast-loading)(/|$)'; then
+            echo "::error::release product contains an excluded loading package: ${archive}" >&2
+            exit 1
+          fi
+        done
     - name: Verify zip contents
       shell: bash
       run: |
