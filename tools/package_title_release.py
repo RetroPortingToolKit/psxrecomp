@@ -1097,8 +1097,8 @@ def package_existing(args):
         fail('package-existing requires an audited Release build')
     if ctx.cache.get('PSX_EXECUTION_PROFILE') != 'ENHANCED':
         fail('package-existing requires the host-native ENHANCED build profile')
-    if cmake_bool(ctx.cache.get('PSX_NATIVE_KERNEL', 'OFF')):
-        fail('package-existing requires the stable compiled BIOS/kernel path')
+    # The bound execution contract below identifies the built provider.
+    # Legacy stable builds can retain an unused old cache flag.
     for key, value in ctx.cache.items():
         if key.endswith('GEOMETRY_VALIDATE') and cmake_bool(value):
             fail('cannot package a private geometry-validation build')
@@ -1216,7 +1216,7 @@ def payload_gates(stage, plat, exe_name):
     for sidecar in Path(stage).glob('*.execution.json'):
         data = json.loads(read_text(sidecar))
         if any(item.get('name') == 'bios-kernel' and
-               item.get('contract') != 'native-executive-0-v1'
+               item.get('contract', '').startswith('native-executive-')
                for item in data.get('implementations', [])):
             fail('release requires the stable compiled BIOS/kernel path')
     """Content that must never ship, whatever the title config says."""
