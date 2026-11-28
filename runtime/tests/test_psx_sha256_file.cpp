@@ -110,14 +110,31 @@ int main(int argc, char** argv) {
           hex(observed.data()) ==
           "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
           "standard abc vector");
+#if !defined(_WIN32)
+    // Callers such as /proc/self/exe pass a link; the file it names is hashed.
+    const auto link = root / "link.bin";
+    std::filesystem::create_symlink(path, link);
+    observed.fill(0);
+    check(psx_sha256_file(link, observed.data()) == PsxFileHashResult::Ok &&
+          hex(observed.data()) ==
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+          "link to a regular file hashed");
+    check(std::filesystem::remove(link), "remove fixture link");
+#endif
     observed.fill(0xa5);
     expected = observed;
     check(psx_sha256_file(root / "absent", observed.data()) == PsxFileHashResult::OpenError,
           "missing file rejected");
     check(observed == expected, "missing file leaves output untouched");
-    check(psx_sha256_file(root, observed.data()) != PsxFileHashResult::Ok,
+    check(psx_sha256_file(root, observed.data()) == PsxFileHashResult::OpenError,
           "directory rejected");
-    check(observed == expected, "unreadable file leaves output untouched");
+    check(observed == expected, "directory leaves output untouched");
+#if !defined(_WIN32)
+    // A device opens and reads like an empty file; it is not one.
+    check(psx_sha256_file("/dev/null", observed.data()) == PsxFileHashResult::OpenError,
+          "device rejected");
+    check(observed == expected, "device leaves output untouched");
+#endif
     // Delete only our two exact fixture paths; no recursive cleanup.
     check(std::filesystem::remove(path), "remove fixture file");
     check(std::filesystem::remove(root), "remove empty fixture directory");

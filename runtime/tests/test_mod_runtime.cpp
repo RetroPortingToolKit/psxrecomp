@@ -24,6 +24,7 @@
 #include <csetjmp>
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -33,6 +34,19 @@
 #include <iterator>
 #include <string>
 #include <vector>
+#if defined(_WIN32)
+#include <io.h>
+static int fd_dup(int fd) { return _dup(fd); }
+static int fd_dup2(int from, int to) { return _dup2(from, to); }
+static int fd_close(int fd) { return _close(fd); }
+static int fd_of(FILE* file) { return _fileno(file); }
+#else
+#include <unistd.h>
+static int fd_dup(int fd) { return dup(fd); }
+static int fd_dup2(int from, int to) { return dup2(from, to); }
+static int fd_close(int fd) { return close(fd); }
+static int fd_of(FILE* file) { return fileno(file); }
+#endif
 
 namespace fs = std::filesystem;
 
@@ -138,15 +152,6 @@ static int hud_calls;
 static void old_session_hud(int, int, void*) { ++hud_calls; }
 static int hd_replacements_value, hd_reload_calls;
 static std::string hd_root;
-/* Renderer installation is outside this registry fixture. Keep its scan
- * boundary explicit; real HD install validation has its own production tests. */
-extern "C" int gpu_hd_textures_validate_install(const char* input, const char*,
-    char* resolved, size_t resolved_capacity, char* message, size_t capacity) {
-    if (message && capacity) message[0] = 0;
-    if (!input || !fs::exists(input)) return 0;
-    if (resolved && resolved_capacity) std::snprintf(resolved, resolved_capacity, "%s", input);
-    return 1;
-}
 extern "C" void gpu_hd_textures_shutdown(void) { ++hd_shutdown_calls; hd_root.clear(); }
 extern "C" int gpu_hd_textures_configure(const char* root, int replacements, int dump,
                                           char*, size_t) {
@@ -461,6 +466,45 @@ static void write_text(const fs::path& path, const std::string& text) {
     std::ofstream out(path);
     out << text;
 }
+
+/* What `fn` prints on stdout, sent through `file` meanwhile, then passed on
+ * to the real stdout so the test log keeps it. */
+template<class Fn>
+static std::string captured_stdout(const fs::path& file, Fn&& fn) {
+    std::fflush(stdout);
+    FILE* sink = std::fopen(file.string().c_str(), "w+b");
+    const int saved = sink ? fd_dup(fd_of(stdout)) : -1;
+    if (saved < 0 || fd_dup2(fd_of(sink), fd_of(stdout)) < 0) {
+        check(false, "redirect stdout into a capture file");
+        if (saved >= 0) fd_close(saved);
+        if (sink) {
+            std::fclose(sink);
+            fs::remove(file);
+        }
+        fn();
+        return {};
+    }
+    fn();
+    std::fflush(stdout);
+    const bool restored = fd_dup2(saved, fd_of(stdout)) >= 0;
+    fd_close(saved);
+    std::fclose(sink);
+    check(restored, "restore stdout after a capture");
+    std::ifstream in(file, std::ios::binary);
+    std::string text{std::istreambuf_iterator<char>(in), {}};
+    in.close();
+    fs::remove(file);
+    std::fwrite(text.data(), 1, text.size(), stdout);
+    std::fflush(stdout);
+    return text;
+}
+
+static bool mentions(const std::string& text, const char* line) {
+    return text.find(line) != std::string::npos;
+}
+
+static constexpr const char* kVanillaNetplay =
+    "psxrecomp: mods cleared for netplay (vanilla session)";
 
 static void write_bytes(const fs::path& path, const std::vector<uint8_t>& bytes) {
     fs::create_directories(path.parent_path());
@@ -993,7 +1037,12 @@ int main(int argc, char** argv) {
     check(disabled_entry_hits == 0 && unselected_entry_hits == 0,
           "hooks of plugins the plan does not activate must never run");
     /* A replaced plan drops every hook until its own activation. */
-    check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), error.c_str());
+    bool vanilla_cleared = false;
+    const std::string vanilla_log = captured_stdout(root / "vanilla-stdout.txt", [&]() {
+        vanilla_cleared = PSXRecompV4::mod_runtime_clear_for_netplay(&error);
+    });
+    check(vanilla_cleared, error.c_str());
+    check(mentions(vanilla_log, kVanillaNetplay), "a vanilla netplay commit says so");
     check(!psx_mod_function_entry_has_hook(0x80003000u),
           "clearing the active plan releases native overlay hook guards");
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30014u);
@@ -1916,7 +1965,30 @@ int main(int argc, char** argv) {
     check(!PSXRecompV4::mod_runtime_commit_for_direct_netplay(iso_path, &error), "LAN also refuses unverified resources");
     test_match_caps = {};
     test_match_caps.valid = 1;
-    check(PSXRecompV4::mod_runtime_commit_for_netplay(iso_path, &error), "explicit empty host plan remains vanilla");
+    bool empty_host_plan_ok = false;
+    const std::string empty_host_plan_log = captured_stdout(root / "empty-plan-stdout.txt", [&]() {
+        empty_host_plan_ok = PSXRecompV4::mod_runtime_commit_for_netplay(iso_path, &error);
+    });
+    check(empty_host_plan_ok, "explicit empty host plan remains vanilla");
+    check(mentions(empty_host_plan_log, kVanillaNetplay) && !mentions(empty_host_plan_log, "netplay keeps"),
+          "an empty host plan with nothing host-only to keep announces a vanilla session");
+    {
+        const auto dep_root = root / "unresolved-netplay";
+        write_text(dep_root / "packages/dep.test/1.0.0/manifest.toml",
+            "format_version = 8\nid = \"dep.test\"\nversion = \"1.0.0\"\nname = \"Dep\"\n"
+            "[[target]]\ngame_id = \"READER\"\n[[dependency]]\nid = \"absent.pkg\"\n"
+            "[[feature]]\nid = \"active\"\nname = \"Active\"\ndefault_enabled = true\n");
+        write_text(dep_root / "state.toml",
+            "format_version = 2\n[[feature]]\npackage_id = \"dep.test\"\nid = \"active\"\nenabled = true\n");
+        check(PSXRecompV4::mod_runtime_initialize(dep_root, "READER", 0, {}, &error), "unresolved selection initializes");
+        bool ok = false;
+        const std::string log = captured_stdout(root / "unresolved-stdout.txt", [&]() {
+            ok = PSXRecompV4::mod_runtime_commit_for_netplay(iso_path, &error);
+        });
+        check(ok, "an unresolved selection still commits a netplay session");
+        check(mentions(log, kVanillaNetplay) && !mentions(log, "netplay keeps"),
+              "an unresolved selection announces a vanilla session");
+    }
     // A guest may own the source without ever enabling/preparing the host's
     // feature offline. Preparation must precede the portable hash comparison.
     {
@@ -2026,8 +2098,13 @@ int main(int argc, char** argv) {
         PSXRecompV4::mod_runtime_end_netplay();
         // Vanilla netplay: the player's host-only feature stays, the rest goes.
         look_runs = plain_runs = 0;
-        check(PSXRecompV4::mod_runtime_commit_netplay_view(iso_path, &error),
-              "vanilla netplay commit");
+        bool view_ok = false;
+        const std::string view_log = captured_stdout(root / "view-stdout.txt", [&]() {
+            view_ok = PSXRecompV4::mod_runtime_commit_netplay_view(iso_path, &error);
+        });
+        check(view_ok, "vanilla netplay commit");
+        check(mentions(view_log, "psxrecomp: netplay keeps ") && !mentions(view_log, kVanillaNetplay),
+              "a commit that keeps own-view features logs the kept feature and does not claim a vanilla session");
         mod_runtime_activate_plugins();
         check(look_runs == 1 && plain_runs == 0,
               "vanilla netplay keeps only the player's host-only feature");
@@ -2636,7 +2713,14 @@ int main(int argc, char** argv) {
         return std::string(std::istreambuf_iterator<char>(file), {});
     };
     std::string offline_selection = read_selection();
-    check(PSXRecompV4::mod_runtime_commit_for_direct_netplay(iso_path, &error), error.c_str());
+    bool profile_committed = false;
+    const std::string profile_log = captured_stdout(root / "profile-stdout.txt", [&]() {
+        profile_committed = PSXRecompV4::mod_runtime_commit_for_direct_netplay(iso_path, &error);
+    });
+    check(profile_committed, error.c_str());
+    check(mentions(profile_log, "psxrecomp: title netplay profile runtime-coop-delay-v1") &&
+          !mentions(profile_log, kVanillaNetplay),
+          "a profile session names its profile and never claims to be vanilla");
     check(psx_mod_netplay_is_active() && !psx_mod_netplay_savestates_supported(),
           "profile activates host-state snapshot policy");
     const int activations_before = activation_calls;
@@ -2747,7 +2831,10 @@ int main(int argc, char** argv) {
               std::string(value) == "unified", "omitted host options use defaults rather than guest preferences");
         check(read_selection() == offline_selection, "host defaults preserve the guest's split preference");
     }
-    PSXRecompV4::mod_runtime_end_netplay();
+    const std::string end_log = captured_stdout(root / "end-stdout.txt", []() {
+        PSXRecompV4::mod_runtime_end_netplay();
+    });
+    check(!mentions(end_log, kVanillaNetplay), "ending netplay does not announce a vanilla session");
     check(!psx_mod_netplay_is_active() && psx_mod_netplay_savestates_supported() &&
           PSXRecompV4::mod_runtime_fingerprint().empty(), "profile end clears hooks and snapshot policy");
     check(read_selection() == offline_selection, "profile end preserves offline selection file");

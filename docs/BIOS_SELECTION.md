@@ -175,11 +175,15 @@ which is why it is enforced rather than warned about.
 Slot files are also isolated on disk under the per-game memcard root:
 
 - `<memcard_dir>/openbios/state_*_slot*.pst`
-- `<memcard_dir>/scph1001/state_*_slot*.pst`
+- `<memcard_dir>/<image>/state_*_slot*.pst`, where `<image>` is the booted
+  retail image's profile id in lower case without punctuation: `scph1001/`,
+  `scph5552/`, `scph5500/`, ... (`scph1001/` when the id is not recorded)
 
 On first configure, any legacy loose `<memcard_dir>/state_*_slot*.pst` files are
 moved once by `.pst` header `bios_checksum` (bundled OpenBIOS wordsum →
-`openbios/`, otherwise → `scph1001/`). Memory cards stay in `<memcard_dir>/`;
+`openbios/`, otherwise → `scph1001/`). New snapshots use the current image folder. Execution snapshots are
+build-specific and older image folders are not migrated.
+Memory cards stay in `<memcard_dir>/`;
 netplay guest sandbox remains `<memcard_dir>/netplay/` (unscoped).
 
 ## Netplay lobby settle

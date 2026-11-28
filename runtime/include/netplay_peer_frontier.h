@@ -85,7 +85,8 @@ static inline int netplay_fork_cap_retired(uint32_t fork_cap, uint32_t agreed_th
  * Returns +1 when the incoming episode wins (yield ours if still in the
  * handshake, then follow it), -1 when ours wins (drop the incoming BEGIN),
  * 0 when the rule does not apply (same epoch, or a follower seeing another
- * epoch from the initiator it already follows -- an abort-and-reopen).
+ * epoch from the initiator it already follows -- an abort-and-reopen when it
+ * is newer; an older one is dead and netplay_rb_begin_dead drops it first).
  *
  * A follower applies it too: with three or more seats two guests can both
  * BEGIN on the same mispredict, and a follower that followed whichever
@@ -106,6 +107,64 @@ static inline int netplay_rb_concurrent_begin(uint32_t ours, uint32_t theirs,
     if (their_slot > our_slot)
         return -1;
     return 0;
+}
+
+/* Newest BEGIN epoch heard from each initiator slot, and whether this peer
+ * refused it with a follow NACK.
+ *
+ * An initiator runs one episode at a time and numbers each new one above
+ * every epoch it has seen, so a BEGIN below the newest one heard from the
+ * same initiator is a delayed retransmit of an episode it already left. A
+ * NACK ends the epoch it answers: every initiator NACK path aborts that
+ * episode and reopens, if at all, under a new epoch. Following either kind
+ * revives a dead episode: the follower waits for a baseline nobody sends
+ * while the initiator, already back in Live, starves for its input (100 ms
+ * latency soak: BEGIN 536 refused, 544 followed, a late 536 retransmit
+ * stashed during 544 and unstashed after it; both peers stalled until the
+ * match ended). */
+#define NETPLAY_RB_BEGIN_SLOTS 8u
+
+typedef struct NetplayRbBeginSeen {
+    uint32_t newest[NETPLAY_RB_BEGIN_SLOTS];
+    uint8_t  heard[NETPLAY_RB_BEGIN_SLOTS];
+    uint8_t  refused[NETPLAY_RB_BEGIN_SLOTS];
+} NetplayRbBeginSeen;
+
+static inline void netplay_rb_begin_seen_reset(NetplayRbBeginSeen *s)
+{
+    if (s)
+        memset(s, 0, sizeof(*s));
+}
+
+/* Record a BEGIN heard, or this peer's NACK for one (`refused`). An older
+ * epoch never lowers the record; a newer one replaces it and its refusal. */
+static inline void netplay_rb_begin_seen_note(NetplayRbBeginSeen *s, uint32_t epoch,
+                                              uint32_t slot_mask, int refused)
+{
+    uint32_t slot = epoch & slot_mask;
+    if (!s || slot >= NETPLAY_RB_BEGIN_SLOTS)
+        return;
+    if (!s->heard[slot] || epoch > s->newest[slot]) {
+        s->heard[slot] = 1u;
+        s->newest[slot] = epoch;
+        s->refused[slot] = 0u;
+    }
+    if (refused && epoch == s->newest[slot])
+        s->refused[slot] = 1u;
+}
+
+/* 1 when the BEGIN must be dropped, not followed or stashed: it is older
+ * than the newest epoch heard from its initiator, or it is that epoch and
+ * this peer refused it. A refusal NACK lost on the way is covered by the
+ * follower's own NACK retransmit, not by answering the stale BEGIN. */
+static inline int netplay_rb_begin_dead(const NetplayRbBeginSeen *s, uint32_t epoch,
+                                        uint32_t slot_mask)
+{
+    uint32_t slot = epoch & slot_mask;
+    if (!s || slot >= NETPLAY_RB_BEGIN_SLOTS || !s->heard[slot])
+        return 0;
+    return epoch < s->newest[slot] ||
+           (epoch == s->newest[slot] && s->refused[slot]);
 }
 
 #endif /* NETPLAY_PEER_FRONTIER_H */

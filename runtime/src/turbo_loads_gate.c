@@ -3,6 +3,18 @@
 
 #define WINDOW_MASK ((UINT64_C(1) << TURBO_LOADS_WINDOW) - 1u)
 
+static int s_engaged;
+
+void turbo_loads_set_engaged(int engaged)
+{
+    s_engaged = engaged ? 1 : 0;
+}
+
+int turbo_loads_engaged(void)
+{
+    return s_engaged;
+}
+
 void turbo_loads_gate_reset(TurboLoadsGate *g)
 {
     g->history = 0;

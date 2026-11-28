@@ -4,6 +4,7 @@
 #include "dirty_ram_interp.h"
 #include "code_provider.h"
 #include "crc32.h"
+#include "turbo_loads_gate.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -455,8 +456,9 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
              * resolve `jr`-jump-tables (their address tables were wrong), fell
              * back to call_by_address, and native diverged from the interpreter
              * (the village→overworld blue screen). Live RAM is the faithful
-             * image. (Capture at a COHERENT moment — one overlay freshly loaded,
-             * via overlay_capture_dump — to avoid merging overlay generations.) */
+             * image. Generations do not merge: a page's execution evidence is
+             * cleared before any DMA or store changes its bytes (see the
+             * variant-capture automation comment). */
             if (!*first_region) fprintf(f, ",\n");
             *first_region = 0;
 
@@ -1112,8 +1114,22 @@ int overlay_capture_count(void)
 /* ---- Variant-capture automation (step 2.8) -------------------------------
  * Trigger = sustained dirty-RAM-interp pressure inside a capture window
  * (g_dirty_window_dispatches), sampled every AUTOCAP_CHECK_FRAMES vblanks,
- * gated on NOT loading (cdrom_load_in_progress — captures must be taken at
- * a coherent moment, never mid-load) plus a cooldown and a session cap.
+ * plus a cooldown. A fire may happen while the drive is reading: every
+ * vblank is a coherent moment, because a CD DMA clears the execution evidence
+ * of the pages it covers before its first word (overlay_capture_before_dma)
+ * and every RAM write through psx_write_word, guest store or DMA word, clears
+ * its page's evidence before the bytes change (memory.c
+ * overlay_watch_note_write). A snapshot only binds evidence to bytes that
+ * ran; unexecuted bytes of a page still being filled may be in it, and the
+ * loader's CRC over each compiled range rejects code built from them once
+ * they change. Titles that keep the drive reading for a whole scene
+ * (streamed commentary, a drive parked by re-reading one sector) would
+ * otherwise never capture that scene.
+ * No fire happens while turbo loads run vblanks faster than real time
+ * (turbo_loads_engaged): the interval and cooldown frame budgets would pass
+ * in a fraction of their wall time, and captures and background compiles of
+ * transient load-time images would compete with the accelerated load. A
+ * title that reads at normal pace keeps capturing.
  * On fire: write overlay_captures.json and kick the configured background
  * compile (autocompile.c). Dedup is the tool's job — compile_overlays.py
  * skips image CRCs already in the cache — and the loop self-limits: once
@@ -1127,8 +1143,8 @@ int overlay_capture_count(void)
  * EITHER signal: dispatch count (many short stubs) OR interpreted-insn count
  * (few long chains). ~250K insns/window ≈ interp >~2.5% of wall — worth a
  * capture. Faster cadence + short cooldown are safe: fires are still gated
- * on a coherent moment (not loading, provider idle) and the loop self-limits
- * as coverage converges (pressure → 0). */
+ * on real-time vblanks (no turbo load) and an idle provider, and the loop
+ * self-limits as coverage converges (pressure → 0). */
 /* There is deliberately NO lifetime trigger cap. A 64-fire "session backstop"
  * shipped 2026-07-06 and was exhausted ~4h into an attract soak, silently
  * freezing coverage growth with interp still ~50% of wall in 2D scenes —
@@ -1728,7 +1744,6 @@ static int preserve_snapshot_async(uint32_t scope_lo, uint32_t scope_hi)
 void overlay_autocapture_tick(void)
 {
     extern uint64_t s_frame_count;
-    extern int cdrom_load_in_progress(void);
     const CodeProvider *cp = code_provider_active();
 
     if (SDL_AtomicGet(&s_autocap_write_state) == 2) {
@@ -1816,7 +1831,7 @@ void overlay_autocapture_tick(void)
 
     if (delta < AUTOCAP_MIN_DISPATCHES && insns_delta < AUTOCAP_MIN_INSNS)
         return;
-    if (cdrom_load_in_progress()) return;          /* coherent moment only  */
+    if (turbo_loads_engaged()) return;             /* vblanks outrun wall time */
     if (cp->busy && cp->busy()) return;
     if (s_frame_count < s_autocap_next_ok && now_ms < s_autocap_next_ok_ms)
         return;                                    /* cooldown (x backoff)  */
