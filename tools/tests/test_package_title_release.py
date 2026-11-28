@@ -297,10 +297,10 @@ class GateTests(unittest.TestCase):
 
     def test_stable_bios_kernel_contract_is_required(self):
         sidecar = self.stage / 'Fixture.execution.json'
-        for contract in ('native-executive-0-v1', 'native-executive-1-v1'):
+        for contract in ('compiled-openbios-v1', 'native-executive-0-v1', 'native-executive-1-v1'):
             sidecar.write_text(json.dumps({'implementations': [
                 {'name': 'bios-kernel', 'contract': contract}]}))
-            if contract == 'native-executive-0-v1':
+            if contract == 'compiled-openbios-v1':
                 ptr.payload_gates(self.stage, 'windows', 'Fixture.exe')
             else:
                 with self.assertRaisesRegex(ptr.PackagingError, 'stable compiled BIOS'):

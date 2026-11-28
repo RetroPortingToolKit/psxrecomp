@@ -415,11 +415,11 @@ jobs:
         set -euo pipefail
         for archive in dist/"${PSX_ZIP_PREFIX}"-*.zip; do
           list="$(unzip -Z1 "${archive}")"
-          if unzip -p "${archive}" '*.execution.json' 2>/dev/null | grep 'native-executive-1-v1'; then
+          if unzip -p "${archive}" '*.execution.json' 2>/dev/null | grep -E 'native-executive-[0-9]+-v[0-9]+'; then
             echo "::error::release product uses the withdrawn native BIOS executive: ${archive}" >&2
             exit 1
           fi
-          if printf '%s\n' "${list}" | grep -Eiq '(^|/)psx\.enhancement\.(cd-speed|fast-loading)(/|$)'; then
+          if printf '%s\n' "${list}" | grep -Eiq '(^|/)psx\.enhancement\.(cd-speed|fast-loading)(/|[._-]|$)'; then
             echo "::error::release product contains an excluded loading package: ${archive}" >&2
             exit 1
           fi
