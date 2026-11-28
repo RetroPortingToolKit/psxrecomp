@@ -760,6 +760,12 @@ def configure_and_build(ctx):
     # as no hook. Remove any previous generate/use hook from the baseline.
     args = (['-D%s=%s' % kv for kv in owned.items()] +
             ['-UCMAKE_PROJECT_INCLUDE'] + native_toolchain_args(ctx.tc))
+    if ctx.platform == 'windows':
+        # Shared image readers can discover zlib before runtime static-link
+        # selection. Re-resolve cached import libraries for portable releases.
+        owned['ZLIB_USE_STATIC_LIBS'] = 'ON'
+        args += ['-DZLIB_USE_STATIC_LIBS=ON', '-UZLIB_LIBRARY',
+                 '-UZLIB_LIBRARY_RELEASE', '-UZLIB_LIBRARY_DEBUG']
     args += ctx.config.cmake_args + ctx.config.platform_cmake_args[ctx.platform]
     if ctx.platform == 'linux':
         # The interpreter running this script; WSL otherwise finds the Windows
