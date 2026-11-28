@@ -228,9 +228,6 @@ void sio_get_pad_jogcon_motor(int slot, uint8_t *command, uint8_t *strength);
  * pad 0 .. PSX_MAX_PLAYERS-1. */
 uint16_t sio_get_pad_buttons(void);
 uint16_t sio_get_pad_buttons_slot(int slot);
-/* Native BIOS packet: status, device ID, then the existing SIO poll payload.
- * A disconnected device updates only status. Caller provides 34 bytes. */
-uint32_t sio_read_pad_packet(int physical_port, uint8_t out[34]);
 struct PSXResolvedDigitalPad;
 int sio_get_resolved_digital_pad(int slot, struct PSXResolvedDigitalPad *out);
 
@@ -313,11 +310,6 @@ int sio_card_protocol_active(void);
 
 /* Card backing was replaced. In-flight transactions cannot use the new cards. */
 void sio_cards_replaced(void);
-/* Native card executive shares the device's new-card flag and replacement
- * notification with the byte-level SIO path. */
-void sio_set_cards_replaced_hook(void (*hook)(void));
-uint8_t sio_card_flag(int slot);
-void sio_card_mark_written(int slot);
 
 /* Post-probe handoff ring: diagnostic device state only, no guest-RAM probes. */
 typedef struct {
