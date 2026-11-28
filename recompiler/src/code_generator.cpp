@@ -1,5 +1,4 @@
 #include "code_generator.h"
-#include "../../runtime/include/native_bios_services.h"
 #include "pgxp_hook_emitter.h"
 #include "pgxp_dataflow.h"
 #include "control_flow.h"
@@ -2522,19 +2521,6 @@ std::string CodeGenerator::translate_basic_block(
 
     // Block label
     ss << fmt::format("block_{:08X}:\n", block.start_addr);
-    if (config_.overlay_mode && config_.native_kernel_boundaries &&
-        psx_native_bios_dispatch_marker(runtime_pc(block.start_addr))) {
-        const auto marker = exe_.read_word(block.start_addr);
-        if (marker && *marker == PSX_NATIVE_EXCEPTION_MARKER) {
-            // The runtime checks current bytes before claiming this entry.
-            // An edited marker is recompiled as guest code after the ordinary
-            // unit CRC invalidation. Do not execute the marker or charge it.
-            ss << config_.indent << fmt::format(
-                "cpu->pc = 0x{:08X}u; return;  /* native dispatch boundary */\n",
-                runtime_pc(block.start_addr));
-            return ss.str();
-        }
-    }
 
     // Per-block-leader cycle observe (cyc_watch ruler — universal with the BIOS
     // emitter). Sampled at the block leader BEFORE any cycle is charged, matching
