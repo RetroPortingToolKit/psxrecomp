@@ -92,7 +92,7 @@ OWNED_CMAKE = ('CMAKE_BUILD_TYPE', 'PSX_DEBUG_TOOLS', 'PSX_RELEASE_CHANNEL',
                'PSX_PUBLIC_RELEASE', 'PSXRECOMP_BIOS_STEMS', 'PSX_GAME_VERSION',
                'PSX_SOURCE_COMMIT', 'PSXRECOMP_ROOT', 'PSX_RUNTIME_IPO', 'PSX_PGO',
                'CMAKE_EXPORT_COMPILE_COMMANDS', 'CMAKE_PROJECT_INCLUDE',
-               'PSX_RUNTIME_HOT_PGO_MODE', 'PSX_RUNTIME_HOT_PGO_TARGET')
+               'PSX_RUNTIME_HOT_PGO_MODE', 'PSX_RUNTIME_HOT_PGO_TARGET', 'PSX_NATIVE_KERNEL')
 
 # Windows system DLLs a self-contained release executable may import.
 SYSTEM_DLLS = frozenset('''
@@ -314,6 +314,9 @@ class Config:
         for args in [self.cmake_args] + list(self.platform_cmake_args.values()):
             for arg in args:
                 match = re.match(r'^-D([A-Za-z0-9_]+)', arg)
+                # Maintained older builders accept this explicit safe default.
+                if re.fullmatch(r'-DPSX_NATIVE_KERNEL(?::BOOL)?=OFF', arg, re.IGNORECASE):
+                    continue
                 if match and match.group(1) in OWNED_CMAKE:
                     fail('%s: [build] cmake args may not set %s; the packager owns it '
                          '(channel via --channel)' % (self.path, match.group(1)))
@@ -753,6 +756,7 @@ def configure_and_build(ctx):
     owned = {
         'CMAKE_BUILD_TYPE': 'Release',
         'PSX_DEBUG_TOOLS': 'OFF',
+        'PSX_NATIVE_KERNEL': 'OFF',
         'PSX_RELEASE_CHANNEL': ctx.channel,
         'PSXRECOMP_BIOS_STEMS': 'OpenBIOS',
         'PSX_GAME_VERSION': ctx.version,
@@ -1109,6 +1113,8 @@ def package_existing(args):
         fail('package-existing requires an audited Release build')
     if ctx.cache.get('PSX_EXECUTION_PROFILE') != 'ENHANCED':
         fail('package-existing requires the host-native ENHANCED build profile')
+    if cmake_bool(ctx.cache.get('PSX_NATIVE_KERNEL', 'OFF')):
+        fail('package-existing requires the stable compiled BIOS/kernel path')
     for key, value in ctx.cache.items():
         if key.endswith('GEOMETRY_VALIDATE') and cmake_bool(value):
             fail('cannot package a private geometry-validation build')
@@ -1231,6 +1237,12 @@ def declared_overlay_assets(stage):
 
 
 def payload_gates(stage, plat, exe_name):
+    for sidecar in Path(stage).glob('*.execution.json'):
+        data = json.loads(read_text(sidecar))
+        if any(item.get('name') == 'bios-kernel' and
+               item.get('contract') != 'native-executive-0-v1'
+               for item in data.get('implementations', [])):
+            fail('release requires the stable compiled BIOS/kernel path')
     """Content that must never ship, whatever the title config says."""
     stage = Path(stage)
     overlay_assets = declared_overlay_assets(stage)

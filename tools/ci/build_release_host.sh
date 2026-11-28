@@ -66,7 +66,7 @@ cmake -S . -B build-ci -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DPSX_SETUP_WIZARD=ON -DPSX_EXECUTION_PROFILE=ENHANCED \
   -DPSX_GAME_VERSION="${RELEASE_VERSION}" \
   -DPSX_RELEASE_CHANNEL="${PSX_RELEASE_CHANNEL}" \
-  "${EXTRA[@]}" 2>&1 | tee build-ci-configure.log
+  "${EXTRA[@]}" -DPSX_NATIVE_KERNEL=OFF 2>&1 | tee build-ci-configure.log
 if [[ "${PSX_PACKAGE_KIND}" == "prebuilt" ]]; then
   grep -q 'linking generated game C (full runtime)' build-ci-configure.log
   grep -qE 'BIOS backends linked: .*OpenBIOS' build-ci-configure.log

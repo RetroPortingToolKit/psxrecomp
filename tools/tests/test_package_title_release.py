@@ -244,12 +244,18 @@ class ConfigTests(unittest.TestCase):
         for flag in ('PSX_PUBLIC_RELEASE', 'PSX_RELEASE_CHANNEL', 'PSX_DEBUG_TOOLS',
                      'PSXRECOMP_BIOS_STEMS', 'CMAKE_BUILD_TYPE', 'PSX_PGO',
                      'PSX_RUNTIME_IPO', 'CMAKE_PROJECT_INCLUDE',
-                     'PSX_RUNTIME_HOT_PGO_MODE', 'PSX_RUNTIME_HOT_PGO_TARGET'):
+                     'PSX_RUNTIME_HOT_PGO_MODE', 'PSX_RUNTIME_HOT_PGO_TARGET', 'PSX_NATIVE_KERNEL'):
             text = CONFIG.format(extra='').replace(
                 '"-DPSX_PGXP_VARIANT=OFF"', '"-D%s=ON"' % flag)
             (self.fixture.root / 'release.toml').write_text(text)
             with self.assertRaisesRegex(ptr.PackagingError, 'packager owns'):
                 self.fixture.config()
+
+    def test_explicit_stable_bios_default_is_compatible(self):
+        text = CONFIG.format(extra='').replace(
+            '"-DPSX_PGXP_VARIANT=OFF"', '"-DPSX_NATIVE_KERNEL=OFF"')
+        (self.fixture.root / 'release.toml').write_text(text)
+        self.assertEqual(self.fixture.config().cmake_args, ['-DPSX_NATIVE_KERNEL=OFF'])
 
     def test_unknown_key_is_an_error(self):
         (self.fixture.root / 'release.toml').write_text(
@@ -288,6 +294,17 @@ class GateTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.stage = Path(self.tmp.name) / 'stage'
         write_stage(self.stage, 'public')
+
+    def test_stable_bios_kernel_contract_is_required(self):
+        sidecar = self.stage / 'Fixture.execution.json'
+        for contract in ('native-executive-0-v1', 'native-executive-1-v1'):
+            sidecar.write_text(json.dumps({'implementations': [
+                {'name': 'bios-kernel', 'contract': contract}]}))
+            if contract == 'native-executive-0-v1':
+                ptr.payload_gates(self.stage, 'windows', 'Fixture.exe')
+            else:
+                with self.assertRaisesRegex(ptr.PackagingError, 'stable compiled BIOS'):
+                    ptr.payload_gates(self.stage, 'windows', 'Fixture.exe')
 
     def test_clean_stage_passes(self):
         ptr.payload_gates(self.stage, 'windows', 'Fixture.exe')
