@@ -1035,8 +1035,12 @@ def stage_audited_cache(ctx):
     if (receipt.get('game_id') != ctx.game_id or not receipt.get('all_pairs_valid') or
             not receipt.get('all_guards_match_known_input_bytes')):
         fail('native cache audit failed or belongs to another game/region')
+    from release_stage import _flavor_from_build
+    flavor = _flavor_from_build(str(ctx.runtime_build), ctx.config.runtime_target)
+    if receipt.get('flavor', 0) != flavor:
+        fail('native cache flavor differs from the actual runtime build')
     tag = pipeline.compiler.cache_tag(str(FRAMEWORK / 'runtime/include'),
-        str(ctx.recompiler), str(ctx.config.player_game_toml), receipt.get('flavor', 0))
+        str(ctx.recompiler), str(ctx.config.player_game_toml), flavor)
     if receipt.get('cache_tag') != tag:
         fail('native cache configuration differs from the packaged config')
     cache = ctx.aot_cache or ctx.aot_attempt / 'cache'
