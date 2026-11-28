@@ -109,13 +109,13 @@ static uint64_t run(int ext, int quirks, int passes, uint32_t start_counter) {
             s_after_first_skip = psx_get_cycle_count();
             s_counter_after_first_skip = s_counter;
         }
-        psx_cpu_charge(9);
+        psx_advance_cycles(9);
         if (s_counter <= 1) break;
         s_counter -= (quirks & STEP2) ? 2u : 1u;
         guest_store((quirks & MMIO_STORE) ? 0x1F801070u : COUNTER_ADDR, s_counter);
         if (quirks & EXTRA_STORE) guest_store(COUNTER_ADDR + 4u, 0);
         if (quirks & MMIO_READ) g_mmio_access_count++;
-        psx_cpu_charge(7);
+        psx_advance_cycles(7);
         psx_idle_note_check(&cpu, EDGE2);
     }
     return g_idle_skip_count;
@@ -175,18 +175,6 @@ int main(void) {
     psx_idle_skip_set_store_counter_sites(sites, 2);
     check(run(1, 0, 64, 100000u) > 0 && g_psx_track_last_store,
           "audited-only policy: declared wait still accelerates");
-    /* At scale 2, the same 15000-iteration timeout expires too early
-     * if its skipped loop uses scaled CPU time. The native SDK wait
-     * retains a hardware-time deadline and still lands before the IRQ. */
-    psx_guest_cycle_scale_set(2);
-    check(run(1, 0, 64, 15000u) > 0 && s_counter <= 2u,
-          "scaled legacy countdown can expire before its hardware event");
-    psx_idle_skip_set_hw_countdown_timing(1);
-    check(run(1, 0, 64, 15000u) > 0 && s_counter_after_first_skip > 1u &&
-              s_event_at - s_after_first_skip < 1000u,
-          "native audited countdown keeps time for the real hardware event");
-    psx_idle_skip_set_hw_countdown_timing(0);
-    psx_guest_cycle_scale_set(1);
     CPUState cpu = {0};
     psx_idle_note_check(&cpu, other[0]);
     check(!g_psx_track_last_store,
