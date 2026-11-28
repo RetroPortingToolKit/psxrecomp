@@ -2237,7 +2237,7 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         src/iso_reader.cpp
         src/cue_sheet.cpp)
     target_include_directories(disc_boot_image_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
-    target_link_libraries(disc_boot_image_test PRIVATE chdr-static)
+    target_link_libraries(disc_boot_image_test PRIVATE recomp-image-core::core)
     add_test(NAME disc_boot_image_test COMMAND disc_boot_image_test
         ${CMAKE_CURRENT_BINARY_DIR})
 
