@@ -58,7 +58,7 @@ static double savestate_mono_ms(void) {
 
 static char     s_dir[512];
 static char     s_root[512];          /* memcard/save root (pre-token) */
-static char     s_bios_token[32];     /* "openbios" / "scph1001", or empty */
+static char     s_bios_token[32];     /* "openbios" / "scph1001" / "scph5552"..., or empty */
 static uint32_t s_openbios_wordsum;   /* bundled OpenBIOS wordsum for migrate */
 static uint32_t s_bios_checksum;
 static uint32_t s_entry_pc;
@@ -406,6 +406,30 @@ static void migrate_legacy_pst_by_bios(const char* root, uint32_t openbios_words
                moved, skipped, root);
         fflush(stdout);
     }
+}
+
+/* Folder name for the retail image a build boots: its profile id without
+ * punctuation, lower case ("SCPH-5552" -> "scph5552"). Before PS1B-291 every
+ * retail image filed its states under scph1001/, so an EU or JP player's
+ * states sat in a folder named after the US BIOS. The bundled OpenBIOS keeps
+ * "openbios"; an image with no recorded id keeps the historical "scph1001". */
+void savestate_bios_token_for_image(const char* image_id, int bundled,
+                                    char* out, size_t cap) {
+    size_t n = 0;
+    const char* p;
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (bundled) {
+        snprintf(out, cap, "%s", "openbios");
+        return;
+    }
+    for (p = image_id; p && *p && n + 1 < cap; ++p) {
+        if (isalnum((unsigned char)*p))
+            out[n++] = (char)tolower((unsigned char)*p);
+    }
+    out[n] = '\0';
+    if (n == 0 || strcmp(out, "openbios") == 0)
+        snprintf(out, cap, "%s", "scph1001");
 }
 
 /* "_disc2", or empty for a single-disc title. Part of the slot FILENAME, not

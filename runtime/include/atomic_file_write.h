@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <recomp_persistence/atomic_file.h>
+#include "psx_path_utf8.h"
 
 namespace psx {
 
@@ -17,7 +18,8 @@ inline bool atomic_write_file(const std::filesystem::path& target,
         if (error) *error = "destination has no filename";
         return false;
     }
-    if (!recomp_atomic_file_store(target.u8string().c_str(), data.data(), data.size())) {
+    const auto target_utf8 = psx_path::utf8(target);
+    if (!recomp_atomic_file_store(target_utf8.c_str(), data.data(), data.size())) {
         if (error) *error = "atomic file publication failed";
         return false;
     }

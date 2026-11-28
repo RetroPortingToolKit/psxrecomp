@@ -2173,7 +2173,12 @@ int spu_snapshot_read(const uint8_t *p, uint32_t len) {
      * (voice state / SPU RAM split with identical CPU paths,
      * PSX_RB_DET_SELFTEST). */
     {
-        const uint64_t now = psx_get_cycle_count();
+        /* Restoring state is not a device observation. The native wrapper
+         * reads restored CLOCK without servicing the half-restored machine. */
+#ifndef PSX_SPU_RESTORE_CYCLE_COUNT
+#define PSX_SPU_RESTORE_CYCLE_COUNT() psx_get_cycle_count()
+#endif
+        const uint64_t now = PSX_SPU_RESTORE_CYCLE_COUNT();
         const uint32_t carry = phase % SPU_CYCLES_PER_SAMPLE;
         s_clock = now >= carry ? now - carry : now;
         s_clock_carry = 0;

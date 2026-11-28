@@ -1437,6 +1437,7 @@ if(BUILD_TESTING)
                 bpe_container
                 audit_playtest_diagnostics_package
                 package_title_release
+                package_setup_host_lookup
                 bundled_release_layout
                 collect_game_misses
                 cursor_writers
@@ -1578,6 +1579,7 @@ if(BUILD_TESTING)
                 launcher_pad_mode_wiring
                 netplay_start_failure_wiring
                 netplay_lan_identity_wiring
+                netplay_rb_stale_begin_wiring
                 start_refusal_wiring
                 launcher_serial_status_wiring
                 jalr_link_register_guards

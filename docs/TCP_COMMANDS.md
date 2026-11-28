@@ -463,6 +463,28 @@ bits masked off) and page with `{"skip":N}` to read all of it.
 
 ---
 
+## `gr_record_start` / `gr_record_stop` — renderer call recordings (native only)
+
+`{"cmd":"gr_record_start","path":P}` records every call into the software
+renderer backend to `P`, between complete renderer snapshots (draw settings,
+native VRAM and the high-resolution mirror). It requires the software backend,
+the wide compositor off and a new writable destination. `{"cmd":"gr_record_stop"}`
+writes the closing snapshot and replies `ops`: calls per op, indexed as in
+[`runtime/include/gpu_render_record.h`](../runtime/include/gpu_render_record.h).
+
+`gr_replay` (built with the runtime tests) replays a recording offline. It must
+reproduce every recorded read and the closing snapshot exactly, then replays
+again to check determinism op by op:
+
+```sh
+runtime/build/gr_replay capture.grr
+```
+
+A passing recording is a regression capture for software renderer changes: a
+later mismatch names the first op whose output changed.
+`tests/gen_gr_random.py` generates seeded recordings that cover every op
+(`gr_replay_random_test`).
+
 ## Rule when the server can't answer your question
 
 If an inspection need isn't covered by the existing commands, **do not fall back to printf or log files**. Instead:
@@ -515,9 +537,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**400 commands registered** — 387 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**402 commands registered** — 389 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-87 of 400 have prose above; **313 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+89 of 402 have prose above; **313 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -677,6 +699,8 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `gpu_ring_stats` | ✓ |  |  |
 | `gpu_state` | ✓ |  | ✓ |
 | `gpu_timeline` | ✓ |  |  |
+| `gr_record_start` | ✓ |  | ✓ |
+| `gr_record_stop` | ✓ |  | ✓ |
 | `gte_frame_stats` | ✓ |  |  |
 | `gte_intpl_dump` | ✓ |  |  |
 | `gte_latch_dump` | ✓ |  |  |

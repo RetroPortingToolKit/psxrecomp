@@ -108,7 +108,7 @@ static std::map<std::string,std::string> player_settings_baseline(bool fast_boot
     values["video.bios_hle"]=player_setting_flag(bios_hle);
     values["video.fov_scale"]=player_setting_text(g_fov_scale);
     values["video.low_latency_input"]=player_setting_flag(g_low_latency_input!=0);
-    values["memcard.dir"]=memcard_dir.u8string();
+    values["memcard.dir"]=psx_path::utf8(memcard_dir);
     values["controller.mouse_sensitivity"]=player_setting_text(g_mouse_sensitivity);
     values["controller.mouse_capture"]=player_setting_flag(g_mouse_capture_wanted);
 #if defined(PSX_PGXP) && PSX_PGXP

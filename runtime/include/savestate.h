@@ -47,6 +47,13 @@ int savestate_title_blocked(void);
 void savestate_configure(const char* dir, uint32_t bios_checksum, uint32_t entry_pc,
                          const char* bios_token, uint32_t openbios_wordsum);
 
+/* The <bios_token> folder for the image a build boots (PS1B-291): "openbios"
+ * when bundled, else the profile id lower-cased without punctuation
+ * ("SCPH-5552" -> "scph5552"); "scph1001" when the id is unknown.
+ * Execution snapshots are build-specific; older snapshots are not moved. */
+void savestate_bios_token_for_image(const char* image_id, int bundled,
+                                    char* out, size_t cap);
+
 /* Scope savestates to one disc of a multi-image set. The disc appears as a
  * token in the slot FILENAME inside the existing BIOS directory:
  * <saves>/<bios>/state_<entry>_disc<N>_slot<NN>.pst. Call before

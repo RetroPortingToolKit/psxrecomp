@@ -10751,6 +10751,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     if (psx_bios_hle_boot_turbo_active())
         turbo_loads_active = 1;
     probe_turbo = turbo_loads_active;
+    turbo_loads_set_engaged(turbo_loads_active);
 
     load_transition_note(cdrom_data_read_active(), logical_load_active,
                          turbo_loads_active, load_run_value);
@@ -15645,7 +15646,7 @@ namespace {
         /* mods_enabled asserts that a SIM-AFFECTING mod feature is on locally
          * beyond what the ruleset imposes. On PSX that is never true for a
          * netplay session: every netplay launch, rematch included, goes
-         * through mod_runtime_clear_for_netplay and refuses to start if the
+         * through a netplay mod commit (mod_runtime.cpp) and refuses to start if the
          * plan cannot be cleared, and the caps a match runs (aspect, turbo
          * loads, BIOS, FMV skip) are the server's ruleset, settled through
          * match_caps like any host's. There is no cosmetic-exemption
@@ -23887,15 +23888,18 @@ session_reboot:
     load_host_keymap(argv[0]);
 
     /* User save states: slots live under
-     * <memcard>/<openbios|scph1001>/, keyed by entry_pc + boot_state integrity
+     * <memcard>/<openbios|scph1001|scph5552|...>/ (the booted image's id,
+     * PS1B-291), keyed by entry_pc + boot_state integrity
      * (codegen hash/abi/ver). Memory cards stay in the memcard root. */
     if (!game_entry_pc && psx_capture_load_state_path()) {
         std::fprintf(stderr, "psxrecomp capture: --load-state requires a game save-state context\n");
         return 2;
     }
     if (game_entry_pc != 0) {
-        const char* bios_token =
-            psx_bios_image.image_bundled ? "openbios" : "scph1001";
+        char bios_token[32];
+        savestate_bios_token_for_image(psx_bios_image.image_id,
+                                       psx_bios_image.image_bundled,
+                                       bios_token, sizeof(bios_token));
         uint32_t openbios_ws = 0;
         if (const PsxBiosBackend* bundled = psx_bios_bundled()) {
             if (bundled->image)

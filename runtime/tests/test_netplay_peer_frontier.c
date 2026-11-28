@@ -69,6 +69,36 @@ int main(void)
     CHECK(netplay_rb_concurrent_begin(EP(5, 0), EP(6, 0), 1, 7u) == 0,
           "follower: initiator reopened -> not a contest (two-seat path)");
 
+    {
+        /* The 100 ms soak, as the guest saw it: host BEGIN 536 refused (zombie
+         * load) and NACKed, the host reopened as 544, the guest followed 544,
+         * then a 536 retransmit sent before the NACK landed arrived. */
+        NetplayRbBeginSeen seen;
+        const uint32_t ep536 = EP(67, 0), ep544 = EP(68, 0);
+        netplay_rb_begin_seen_reset(&seen);
+        CHECK(netplay_rb_begin_dead(&seen, ep536, 7u) == 0, "nothing heard: followable");
+        netplay_rb_begin_seen_note(&seen, ep536, 7u, 0);
+        netplay_rb_begin_seen_note(&seen, ep536, 7u, 1); /* follow NACK */
+        CHECK(netplay_rb_begin_dead(&seen, ep536, 7u),
+              "refused epoch is dead even before the initiator reopens");
+        netplay_rb_begin_seen_note(&seen, ep544, 7u, 0);
+        CHECK(netplay_rb_begin_dead(&seen, ep544, 7u) == 0, "the reopened epoch is followable");
+        CHECK(netplay_rb_begin_dead(&seen, ep536, 7u),
+              "late 536 retransmit during/after 544 is superseded (was stashed and revived)");
+        netplay_rb_begin_seen_note(&seen, ep536, 7u, 1);
+        CHECK(netplay_rb_begin_dead(&seen, ep544, 7u) == 0,
+              "a NACK for an older epoch never kills the newer one");
+        CHECK(netplay_rb_begin_dead(&seen, EP(66, 1), 7u) == 0,
+              "another initiator's epochs are judged on their own");
+        netplay_rb_begin_seen_note(&seen, EP(69, 0), 7u, 0);
+        CHECK(netplay_rb_begin_dead(&seen, ep544, 7u), "each reopen supersedes the last");
+        netplay_rb_begin_seen_note(&seen, ep544, 7u, 0);
+        CHECK(netplay_rb_begin_dead(&seen, EP(69, 0), 7u) == 0,
+              "a reordered older BEGIN never lowers the record");
+        netplay_rb_begin_seen_reset(&seen);
+        CHECK(netplay_rb_begin_dead(&seen, ep536, 7u) == 0, "session reset forgets every epoch");
+    }
+
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

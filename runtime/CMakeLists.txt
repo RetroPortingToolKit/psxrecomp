@@ -233,6 +233,7 @@ if(BUILD_TESTING)
 
     add_executable(atomic_file_write_test tests/test_atomic_file_write.cpp)
     target_include_directories(atomic_file_write_test PRIVATE include)
+    target_compile_features(atomic_file_write_test PRIVATE cxx_std_20)
     target_compile_features(atomic_file_write_test PRIVATE cxx_std_17)
     add_test(NAME atomic_file_write_test COMMAND atomic_file_write_test)
 
@@ -1993,7 +1994,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_overlay_capture_retry.cpp
         src/overlay_capture.c
         src/host_span_ring.c
-        src/psx_ram_geometry.c)
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_retry_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_retry_test PRIVATE
@@ -2009,7 +2011,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_overlay_capture_queue_bound.cpp
         src/overlay_capture.c
         src/host_span_ring.c
-        src/psx_ram_geometry.c)
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_queue_bound_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_queue_bound_test PRIVATE
@@ -2025,7 +2028,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_overlay_capture_replay_latest.cpp
         src/overlay_capture.c
         src/host_span_ring.c
-        src/psx_ram_geometry.c)
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_replay_latest_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_replay_latest_test PRIVATE
@@ -2041,7 +2045,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_overlay_capture_replay_retry.cpp
         src/overlay_capture.c
         src/host_span_ring.c
-        src/psx_ram_geometry.c)
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_replay_retry_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_replay_retry_test PRIVATE
@@ -2058,7 +2063,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         tests/test_overlay_capture_history.cpp
         src/overlay_capture.c
         src/host_span_ring.c
-        src/psx_ram_geometry.c)
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_history_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_history_test PRIVATE
@@ -2072,7 +2078,8 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_executable(overlay_capture_guard_word_test
         tests/test_overlay_capture_guard_word.cpp
         src/host_span_ring.c
-        src/overlay_capture.c)
+        src/overlay_capture.c
+        src/turbo_loads_gate.c)
     target_include_directories(overlay_capture_guard_word_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_guard_word_test PRIVATE
@@ -2081,6 +2088,24 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
         ${PSX_SDL_LIBRARIES})
     add_test(NAME overlay_capture_guard_word_test
              COMMAND overlay_capture_guard_word_test)
+
+    # A periodic capture may fire between the first and last page of a CD
+    # read: the read's pages carry no evidence from before it, and code run on
+    # a landed page is named. No capture fires while a turbo load runs vblanks
+    # faster than real time.
+    add_executable(overlay_capture_mid_dma_test
+        tests/test_overlay_capture_mid_dma.cpp
+        src/overlay_capture.c
+        src/host_span_ring.c
+        src/psx_ram_geometry.c
+        src/turbo_loads_gate.c)
+    target_include_directories(overlay_capture_mid_dma_test PRIVATE
+        include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(overlay_capture_mid_dma_test PRIVATE
+        SDL_MAIN_HANDLED PSX_OVERLAY_CAPTURE_TEST=1
+        $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(overlay_capture_mid_dma_test PRIVATE ${PSX_SDL_LIBRARIES})
+    add_test(NAME overlay_capture_mid_dma_test COMMAND overlay_capture_mid_dma_test)
 
     add_executable(overlay_path_canon_test
         tests/test_overlay_path_canon.c
@@ -2927,6 +2952,27 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     endif()
     add_test(NAME sw_faithful_authority_test COMMAND sw_faithful_authority_test)
 
+    # Replays renderer recordings (gpu_render_record.h) through the software
+    # renderer. It uses the runtime's float flags: clang contracts a*b+c into
+    # an FMA by default on arm64, which rounds recorded games' Gouraud and
+    # texture interpolation differently from the runtime that recorded them.
+    add_executable(gr_replay tests/replay_gr_recording.c src/gpu_sw_renderer.c)
+    target_include_directories(gr_replay PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(gr_replay PRIVATE m)
+    endif()
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(gr_replay PRIVATE -ffp-contract=off)
+    endif()
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        add_test(NAME gr_replay_random_test
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/gen_gr_random.py
+                --replay $<TARGET_FILE:gr_replay>
+                --out ${CMAKE_CURRENT_BINARY_DIR}/gr_random)
+    endif()
+
     # Bilinear neighbours clamp inside the base texel's 256-texel page.
     add_executable(sw_bilinear_page_edge_test tests/test_sw_bilinear_page_edge.c)
     target_include_directories(sw_bilinear_page_edge_test PRIVATE include src)
@@ -3203,6 +3249,11 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_executable(spu_guest_clock_test tests/test_spu_guest_clock.c)
     target_include_directories(spu_guest_clock_test PRIVATE include)
     add_test(NAME spu_guest_clock_test COMMAND spu_guest_clock_test)
+    add_executable(spu_restore_observation_test tests/test_spu_guest_clock.c)
+    target_include_directories(spu_restore_observation_test PRIVATE include)
+    target_compile_definitions(spu_restore_observation_test PRIVATE
+        PSX_TEST_OBSERVATION=1 PSX_OBSERVATION_TIME=1)
+    add_test(NAME spu_restore_observation_test COMMAND spu_restore_observation_test)
     add_executable(host_sampler_test tests/test_host_sampler.c src/host_sampler.c)
     target_include_directories(host_sampler_test PRIVATE include)
     target_compile_definitions(host_sampler_test PRIVATE PSX_NO_DEBUG_TOOLS=1)

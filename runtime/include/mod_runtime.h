@@ -43,6 +43,7 @@ bool mod_runtime_commit_for_netplay(const std::filesystem::path& disc_path = {},
  * compare session_plan_fp() on every peer before executing the guest. */
 bool mod_runtime_commit_for_direct_netplay(const std::filesystem::path& disc_path,
                                            std::string* error = nullptr);
+/* Run the netplay session with no mods, and log that it is vanilla. */
 bool mod_runtime_clear_for_netplay(std::string* error = nullptr);
 /* Install only the executable's trusted simulation profile (if registered).
  * Original-disc reads remain available; offline selections are never saved. */
