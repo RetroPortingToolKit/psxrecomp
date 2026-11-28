@@ -66,6 +66,8 @@ import socket
 import sys
 import argparse
 
+from debug_transport import DebugClient, DebugError
+
 DEFAULT_HOST = "127.0.0.1"
 NATIVE_PORT = 4370
 DS_PORT = 4371

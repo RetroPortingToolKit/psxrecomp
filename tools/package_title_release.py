@@ -81,7 +81,7 @@ DIAGNOSTICS_DEFAULTS = {'recording': True, 'osd': False}
 PLATFORMS = ('windows', 'linux')
 ARTIFACT_SUFFIX = {'windows': 'windows-x64.zip', 'linux': 'linux-x86_64.AppImage'}
 TOOLCHAIN_PLATFORM = {'windows': 'win', 'linux': 'linux'}
-AOT_MODES = ('cache', 'static', 'none')
+AOT_MODES = ('cache', 'static', 'audited-cache', 'none')
 OPENBIOS_SIZE = 524288
 CREATE_NO_WINDOW = 0x08000000
 PUBLIC_FORBIDDEN_MODS = frozenset((
@@ -197,7 +197,7 @@ class Config:
         'aot': {'mode', 'profile', 'cps'},
         'overlay_toolchain': {'ship'},
         'diagnostics': {'game_id', 'package_id', 'replay_helper', 'allow_hd_textures'},
-        'payload': {'start_here', 'files', 'build_files'},
+        'payload': {'start_here', 'files', 'build_files', 'game_options'},
         'linux': {'app_run', 'desktop_file', 'icon', 'payload_dir', 'env_prefix',
                   'prune_unreferenced_libs'},
         'hooks': {'prepare', 'post_build', 'post_stage'},
@@ -252,7 +252,7 @@ class Config:
         self.aot_mode = self._str(aot, 'mode', 'none')
         if self.aot_mode not in AOT_MODES:
             fail('%s: [aot] mode must be one of %s' % (self.path, ', '.join(AOT_MODES)))
-        self.aot_profile = self._file(aot, 'profile', required=self.aot_mode != 'none')
+        self.aot_profile = self._file(aot, 'profile', required=self.aot_mode in ('cache', 'static'))
         self.aot_cps = self._bool(aot, 'cps', self.aot_mode == 'static')
 
         self.ship_toolchain = self._bool(self._table(data, 'overlay_toolchain'), 'ship', False)
@@ -266,6 +266,7 @@ class Config:
                                     allow_hd_textures=self._bool(diag, 'allow_hd_textures', False))
 
         payload = self._table(data, 'payload', required=True)
+        self.ship_game_options = self._bool(payload, 'game_options', True)
         self.start_here = self._file(payload, 'start_here', required=True)
         self.files = []
         for item in payload.get('files', []):
@@ -931,7 +932,7 @@ def stage_payload(ctx):
 
     copy(config.player_game_toml, stage / 'game.toml')
     options = config.root / 'game_options.toml'
-    if options.is_file():
+    if config.ship_game_options and options.is_file():
         copy(options, stage / 'game_options.toml')
     game = tomllib.loads(read_text(stage / 'game.toml'))
     ctx.game_id = game.get('game', {}).get('id')
@@ -941,6 +942,11 @@ def stage_payload(ctx):
     # Mod catalog: the build's own catalog list is the invariant.
     run([sys.executable, TOOLS / 'release_stage.py', 'stage-mods', '--build-path', exe_dir,
          '--stage', stage, '--runtime-target', config.runtime_target], 'mod catalog staging')
+    # Loading/pacing packages never belong in any player release channel.
+    for package_id in PUBLIC_FORBIDDEN_MODS:
+        package = stage / 'mods/bundled' / package_id
+        if package.is_dir():
+            shutil.rmtree(package)
     if ctx.channel == 'public':
         run([sys.executable, TOOLS / 'mod_channel_filter.py', stage / 'mods/bundled'],
             'developer-channel pruning')
@@ -971,6 +977,9 @@ def stage_payload(ctx):
             'original-disc AOT cache', cwd=ctx.root, env=ctx.tc.env)
         if not (stage / 'AOT_CACHE_AUDIT.json').is_file():
             fail('AOT release staged no AOT_CACHE_AUDIT.json')
+    elif config.aot_mode == 'audited-cache':
+        stage_audited_cache(ctx)
+        strip_staged_cache(ctx)
     if config.ship_toolchain:
         command = [sys.executable, TOOLS / 'release_stage.py', 'stage-toolchain', '--stage', stage,
                    '--recomp-dir', ctx.recompiler_dir, '--recomp-tools', TOOLS,
@@ -1007,6 +1016,77 @@ def stage_payload(ctx):
     start_here = start_here.replace('@VERSION@', ctx.version)
     (stage / 'START_HERE.txt').write_text(start_here, encoding='utf-8', newline='\n')
     run_hooks(ctx, 'post_stage', stage=str(stage))
+
+
+def stage_audited_cache(ctx):
+    """Reuse only the original-disc artifacts named by an exact audit receipt."""
+    import aot_overlay_pipeline as pipeline
+    receipt = json.loads(read_text(ctx.aot_attempt / 'audit.json'))
+    if (receipt.get('game_id') != ctx.game_id or not receipt.get('all_pairs_valid') or
+            not receipt.get('all_guards_match_known_input_bytes')):
+        fail('native cache audit failed or belongs to another game/region')
+    tag = pipeline.compiler.cache_tag(str(FRAMEWORK / 'runtime/include'),
+        str(ctx.recompiler), str(ctx.config.player_game_toml), receipt.get('flavor', 0))
+    if receipt.get('cache_tag') != tag:
+        fail('native cache configuration differs from the packaged config')
+    cache = ctx.aot_cache or ctx.aot_attempt / 'cache'
+    pipeline.stage(cache, ctx.stage, receipt)
+def strip_staged_cache(ctx):
+    if ctx.platform == 'windows':
+        stripper = next((Path(ctx.tc.bin) / name for name in ('llvm-strip.exe', 'strip.exe')
+                         if (Path(ctx.tc.bin) / name).is_file()), None)
+    else:
+        stripper = shutil.which('strip')
+    if not stripper or not Path(stripper).is_file():
+        fail('native strip tool missing for audited cache staging')
+    staged_hashes = {}
+    for module in sorted((ctx.stage / 'cache').rglob('*.dll' if ctx.platform == 'windows' else '*.so')):
+        run([stripper, '--strip-debug', module], 'strip staged native cache')
+        staged_hashes[module.name] = sha256(module)
+    receipt = json.loads(read_text(ctx.stage / 'AOT_CACHE_AUDIT.json'))
+    receipt['staged_dll_sha256_after_debug_strip'] = staged_hashes
+    (ctx.stage / 'AOT_CACHE_AUDIT.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+
+
+def package_existing(args):
+    """Stage a previously built region without recompiling other regional products."""
+    plat = args.platform or host_platform()
+    if plat != host_platform():
+        fail('package-existing runs on the target platform host')
+    ctx = make_context(args, plat)
+    if ctx.config.aot_mode != 'audited-cache':
+        fail('package-existing requires [aot] mode = "audited-cache"')
+    ctx.runtime_build = Path(args.build_dir).resolve()
+    ctx.cache = cmake_cache(ctx.runtime_build)
+    if cmake_bool(ctx.cache.get('PSX_DEBUG_TOOLS', 'ON')):
+        fail('cannot package a private debug-tools build')
+    if ctx.cache.get('CMAKE_BUILD_TYPE') != 'Release':
+        fail('package-existing requires an audited Release build')
+    if ctx.cache.get('PSX_EXECUTION_PROFILE') != 'ENHANCED':
+        fail('package-existing requires the host-native ENHANCED build profile')
+    for key, value in ctx.cache.items():
+        if key.endswith('GEOMETRY_VALIDATE') and cmake_bool(value):
+            fail('cannot package a private geometry-validation build')
+    ctx.prov = provenance(ctx.root, ctx.root / 'recomp-ui')
+    if ctx.prov['source_dirty'] and not args.allow_dirty:
+        fail('tracked release source changes; commit them before packaging')
+    ctx.tc = Toolchain(plat, args.toolchain_bin)
+    ctx.recompiler = Path(args.recompiler).resolve()
+    if not ctx.recompiler.is_file():
+        fail('audited emitter not found: %s' % ctx.recompiler)
+    ctx.recompiler_dir = ctx.recompiler.parent
+    ctx.aot_attempt = Path(args.aot_attempt).resolve()
+    ctx.aot_cache = Path(args.aot_cache).resolve() if args.aot_cache else None
+    ctx.source_date_epoch = ctx.prov['source_date_epoch']
+    ctx.runtime_pgo = dict(status='reused-audited-build',
+                          source_commit=ctx.cache.get('PSX_SOURCE_COMMIT'))
+    check_build_outputs(ctx)
+    stage_payload(ctx)
+    artifact = package_windows(ctx) if plat == 'windows' else package_linux(ctx)
+    verify_artifact(artifact, ctx.config, args.channel, ctx.version,
+                    objdump=ctx.tc.objdump if plat == 'windows' else None, scratch=ctx.work)
+    log('PACKAGED %s' % artifact)
+    return 0
 
 
 def staged_mod_ids(stage):
@@ -1110,6 +1190,18 @@ def payload_gates(stage, plat, exe_name):
     stage = Path(stage)
     overlay_assets = declared_overlay_assets(stage)
     present = [name for name in BUILD_KIT if (stage / name).exists()]
+    if 'seeds' in present:
+        # Some original-disc runtimes read their declared seed map after launch.
+        # Permit that one data file, never a copied developer seeds directory.
+        game = tomllib.loads(read_text(stage / 'game.toml'))
+        seed = game.get('recompiler', {}).get('seeds', '')
+        relative = PurePosixPath(seed.replace('\\', '/'))
+        declared = stage / relative
+        files = {p for p in (stage / 'seeds').rglob('*') if p.is_file()}
+        if (not relative.is_absolute() and '..' not in relative.parts and
+                relative.parts[:1] == ('seeds',) and relative.suffix == '.txt' and
+                files == {declared} and not declared.is_symlink()):
+            present.remove('seeds')
     if present:
         fail('package contains build-kit/user content: %s' % ', '.join(present))
     for path in sorted(stage.rglob('*')):
@@ -1498,6 +1590,8 @@ def package(args):
     artifacts = []
     for plat in platforms:
         ctx = make_context(args, plat)
+        if ctx.config.aot_mode == 'audited-cache':
+            fail('audited-cache uses package-existing with an exact build and audit attempt')
         ui_root = ctx.root / 'recomp-ui'
         ctx.prov = provenance(ctx.root, ui_root)
         if ctx.prov['source_dirty'] and not args.allow_dirty:
@@ -1630,6 +1724,18 @@ def parse_args(argv):
                      help='package uncommitted tracked changes (recorded; not for publication)')
     pkg.add_argument('--sources-prepared', action='store_true', help=argparse.SUPPRESS)
 
+    existing = sub.add_parser('package-existing', help='stage an already audited regional Release build')
+    common(existing)
+    existing.add_argument('--platform', choices=PLATFORMS)
+    existing.add_argument('--jobs', type=int, default=2)
+    existing.add_argument('--out-dir')
+    existing.add_argument('--work-dir')
+    existing.add_argument('--build-dir', required=True)
+    existing.add_argument('--recompiler', required=True)
+    existing.add_argument('--aot-attempt', required=True)
+    existing.add_argument('--aot-cache')
+    existing.add_argument('--allow-dirty', action='store_true')
+
     ver = sub.add_parser('verify', help='extract and verify finished artifacts')
     common(ver)
     ver.add_argument('artifacts', nargs='+')
@@ -1639,7 +1745,7 @@ def parse_args(argv):
     chk.add_argument('--channel', required=True, choices=CHANNELS)
     chk.add_argument('bundled', type=Path)
 
-    if not argv or argv[0] not in ('package', 'verify', 'check-diagnostics', '-h', '--help'):
+    if not argv or argv[0] not in ('package', 'package-existing', 'verify', 'check-diagnostics', '-h', '--help'):
         argv = ['package'] + list(argv)
     args = parser.parse_args(argv)
     if args.command == 'package' and args.jobs < 1:
@@ -1659,6 +1765,8 @@ def main(argv=None):
     try:
         if args.command == 'check-diagnostics':
             return check_diagnostics_dir(args)
+        if args.command == 'package-existing':
+            return package_existing(args)
         return package(args) if args.command == 'package' else verify(args)
     except PackagingError as error:
         print('\nPACKAGING FAILED: %s' % error, file=sys.stderr, flush=True)
