@@ -858,7 +858,8 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
         # emitter's own directory) holds, and say which case this is.
         dll_src = mingw_bin or recomp_dir
         copied = 0
-        for d in ('libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll'):
+        for d in ('libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll',
+                  'libc++.dll', 'libunwind.dll'):
             p = os.path.join(dll_src, d)
             if os.path.isfile(p):
                 shutil.copy2(p, os.path.join(toolchain, d))

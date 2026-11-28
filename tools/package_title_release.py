@@ -988,6 +988,8 @@ def stage_payload(ctx):
         if ctx.platform == 'windows':
             command += ['--mingw-bin', ctx.tc.bin]
         run(command, 'overlay toolchain staging', env=ctx.tc.env)
+        if config.aot_mode == 'audited-cache':
+            strip_regional_toolchain(ctx)
 
     licenses = stage / 'licenses'
     licenses.mkdir(exist_ok=True)
@@ -1046,6 +1048,25 @@ def strip_staged_cache(ctx):
     receipt = json.loads(read_text(ctx.stage / 'AOT_CACHE_AUDIT.json'))
     receipt['staged_dll_sha256_after_debug_strip'] = staged_hashes
     (ctx.stage / 'AOT_CACHE_AUDIT.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+
+
+def strip_regional_toolchain(ctx):
+    """Keep reused developer emitters relocatable without changing source inputs."""
+    toolchain = ctx.stage / 'overlay_toolchain'
+    if ctx.platform == 'windows':
+        stripper = next((Path(ctx.tc.bin) / name for name in ('llvm-strip.exe', 'strip.exe')
+                         if (Path(ctx.tc.bin) / name).is_file()), None)
+        if not stripper:
+            fail('native strip tool missing for regional emitter staging')
+        for name in ('psxrecomp-game.exe', 'psxrecomp-bios.exe'):
+            run([stripper, '--strip-debug', toolchain / name], 'strip staged emitter')
+    for relative, old, new in (
+            ('compile_overlays.py', 'C:/Users/...', '<Windows user path>'),
+            ('include/audio_trace.h', 'F:/Projects/_audio_round2/ROUND2_PLAN.md',
+             'the shared audio measurement design')):
+        path = toolchain / relative
+        if path.is_file():
+            path.write_text(read_text(path).replace(old, new), encoding='utf-8', newline='\n')
 
 
 def package_existing(args):
