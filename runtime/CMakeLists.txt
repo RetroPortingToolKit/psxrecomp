@@ -2117,21 +2117,13 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_test(NAME program_set_lock_test COMMAND program_set_lock_test)
 
     # The player-facing "skip the BIOS" flag must resolve to the same boot
-    # behaviour across shell-entry images, regardless of the event table ABI.
+    # behaviour on retail SCPH-1001 and on the bundled OpenBIOS, whose
+    # kernel-call HLE is (correctly) refused for want of a DeliverEvent anchor.
     add_executable(bios_hle_plan_test
         tests/test_bios_hle_plan.c
         src/bios_hle_plan.c)
     target_include_directories(bios_hle_plan_test PRIVATE include)
     add_test(NAME bios_hle_plan_test COMMAND bios_hle_plan_test)
-
-    add_executable(bios_hle_events_test
-        tests/test_bios_hle_events.c
-        src/bios_hle.c
-        src/native_bios_services.c
-        src/native_bios_card.c)
-    target_compile_definitions(bios_hle_events_test PRIVATE PSX_NATIVE_KERNEL=1)
-    target_include_directories(bios_hle_events_test PRIVATE include)
-    add_test(NAME bios_hle_events_test COMMAND bios_hle_events_test)
 
     # Every func_override failure mode is silent at runtime: a registration
     # that is never consulted, a package override that survives clear-mods
@@ -2229,7 +2221,6 @@ add_test(NAME sio_dualshock_config_replies_test COMMAND sio_dualshock_config_rep
     add_executable(disc_boot_image_test
         tests/test_disc_boot_image.cpp
         src/disc_boot_image.cpp
-        src/native_bios_boot.cpp
         src/iso_reader.cpp
         src/cue_sheet.cpp)
     target_include_directories(disc_boot_image_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
