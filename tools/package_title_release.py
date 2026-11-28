@@ -953,8 +953,7 @@ def stage_payload(ctx):
     ctx.mod_packages = staged_mod_ids(stage)
     if not ctx.mod_packages:
         fail('staged mod catalog is empty')
-    if ctx.channel == 'public':
-        check_public_mod_packages(stage, ctx.mod_packages)
+    check_public_mod_packages(stage, ctx.mod_packages)
     check_diagnostics(ctx, stage)
 
     for rel in config.build_files:
@@ -1122,12 +1121,12 @@ def check_public_mod_packages(payload, package_ids):
     """Enforce release policy independently of a title's exclusion manifest."""
     forbidden = sorted({str(name).casefold() for name in package_ids} & PUBLIC_FORBIDDEN_MODS)
     if forbidden:
-        fail('public release contains forbidden loading mod package(s): %s' % ', '.join(forbidden))
+        fail('release contains forbidden loading mod package(s): %s' % ', '.join(forbidden))
     payload = Path(payload)
     for path in sorted(payload.rglob('*')):
         relative = path.relative_to(payload)
         if any(part.casefold() in PUBLIC_FORBIDDEN_MODS for part in relative.parts):
-            fail('public release contains a forbidden loading mod package path: %s' % relative.as_posix())
+            fail('release contains a forbidden loading mod package path: %s' % relative.as_posix())
 
 
 def diagnostics_features(data):
@@ -1443,8 +1442,7 @@ def verify_payload(payload, exe_path, config, channel, plat, version):
     if version not in start or '@VERSION@' in start:
         problems.append('START_HERE.txt is not stamped with %s' % version)
     staged = staged_mod_ids(payload)
-    if channel == 'public':
-        check_public_mod_packages(payload, [*staged, *manifest.get('mod_packages', [])])
+    check_public_mod_packages(payload, [*staged, *manifest.get('mod_packages', [])])
     if staged != manifest.get('mod_packages'):
         problems.append('mod catalog %s != manifest %s' % (staged, manifest.get('mod_packages')))
     found = diagnostics_manifests(payload / 'mods/bundled')

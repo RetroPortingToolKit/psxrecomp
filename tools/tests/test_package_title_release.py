@@ -888,16 +888,15 @@ class PublicModPolicyTests(unittest.TestCase):
         refresh_manifest(self.stage)
         self.verify()
 
-    def test_non_public_catalog_policy_is_unchanged(self):
-        # Development/playtest packages retain their existing policy. This
-        # release gate neither edits manifests nor changes runtime defaults.
+    def test_playtest_release_also_rejects_loading_packages(self):
         self.stage = self.fixture.root / 'stage-playtest'
         write_stage(self.stage, 'playtest')
         package = self.stage / 'mods/bundled/psx.enhancement.fast-loading/1.0.0'
         package.mkdir(parents=True)
         (package / 'manifest.toml').write_text('id = "psx.enhancement.fast-loading"\n')
         refresh_manifest(self.stage)
-        self.verify('playtest')
+        with self.assertRaisesRegex(ptr.PackagingError, 'forbidden loading mod'):
+            self.verify('playtest')
 
 
 if __name__ == '__main__':
